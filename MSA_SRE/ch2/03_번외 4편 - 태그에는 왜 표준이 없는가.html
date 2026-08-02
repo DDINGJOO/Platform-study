@@ -1,0 +1,125 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 관측성 번외편 &mdash; 4편 (완결)</div>
+  번외 1편. 프로메테우스는 왜 긁어가는가 : Pull vs Push<br>
+  번외 2편. 게이지는 왜 약한 참조인가 : 자바 참조 4단계<br>
+  번외 3편. StatsD : UDP로 쏘고 잊어라<br>
+  <b>번외 4편. 태그에는 왜 표준이 없는가 : Mechanism vs Policy</b> &larr; 지금 이 글
+</div>
+
+<p>Micrometer 시리즈에서 태그가 얼마나 위험한지 봤어요 &mdash; 태그 조합 수가 곧 시계열 수, 곧 청구서니까요. 그렇게 중요하면 이상하지 않나요? <span class="obsv-mark">왜 Micrometer는 "태그는 이것만 써라, env&middot;service는 필수다" 같은 표준을 만들지 않았을까요?</span> user_id 금지 같은 뻔한 규칙조차 기본으로 안 막아둔 이유가 뭘까요?</p>
+
+<p>게으름이 아니에요. 이건 소프트웨어 설계의 오래된 원칙이 의도적으로 적용된 결과예요. 이름하여 <b>mechanism vs policy</b>.</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 메커니즘과 정책: 도구와 법</h2>
+
+<p>유닉스 세계의 고전 원칙이 있어요 &mdash; <i>"메커니즘을 제공하되, 정책을 강요하지 마라(Provide mechanism, not policy)."</i> X 윈도우 시스템의 설계 문서에 새겨진 문장이에요.</p>
+
+<p><b>메커니즘</b>은 "무엇을 할 수 있는가"예요 &mdash; 도구, 능력, 수단. <b>정책</b>은 "무엇을 해야 하는가"예요 &mdash; 규칙, 기준, 판단. 망치(메커니즘)는 어디에 못을 박을지(정책) 모르고, 몰라야 해요. 못 박을 곳까지 정해진 망치는 그 집에서만 쓸 수 있는 망치가 되니까요.</p>
+
+<p>범용 도구일수록 정책을 비워둬야 넓게 쓰입니다. 그리고 Micrometer는 1편에서 봤듯 <b>파사드</b> &mdash; 태생이 범용 도구예요.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. Micrometer가 준 것: 도구상자 전부</h2>
+
+<p>실제로 뜯어보면 태그를 다스릴 메커니즘은 <b>완비</b>돼 있어요:</p>
+
+<div class="obsv-code">// 공통 태그 강제 부착
+registry.config().commonTags("service", "claims", "env", "prod");
+
+// 금지 태그 거부
+MeterFilter.deny(id -&gt; id.getTag("user_id") != null)
+
+// 태그 값 접기 (카디널리티 압축)
+MeterFilter.replaceTagValues("status", v -&gt; v.charAt(0) + "xx")
+
+// 카디널리티 상한 (안전벨트)
+MeterFilter.maximumAllowableTags("http.server.requests", "uri", 200,
+                                 MeterFilter.deny())</div>
+
+<p>부착, 거부, 변형, 상한 &mdash; 필요한 동사가 다 있죠. 없는 건 딱 하나, <b>"그래서 뭘 막고 뭘 붙일지"라는 판단</b>이에요. 도구상자는 가득한데 작업 지시서만 비어 있는 상태 &mdash; 이게 의도된 설계입니다.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 왜 판단을 비워뒀나: 세 가지 이유</h2>
+
+<p><b>① 파사드는 중립이어야 하니까.</b> 백엔드마다 관례가 달라요. 태그를 아예 지원 안 하는 계층형 백엔드(Graphite, JMX)도 있어서 Micrometer는 태그를 이름에 접어넣는 변환까지 해줍니다. 특정 태그 체계를 표준으로 박는 순간 특정 생태계에 종속돼요 &mdash; 파사드의 자격 상실이죠.</p>
+
+<p><b>② 카디널리티 예산은 조직마다 다르니까.</b> 태그 정책의 본질은 결국 돈 문제예요. <code>pod_name</code>을 공용 태그로 넣을지는 "클러스터에 파드가 몇 개고, 백엔드 과금이 어떤가"에 따라 답이 달라요. 라이브러리가 일괄로 정해줄 수 있는 문제가 아니에요.</p>
+
+<p><b>③ 공용 태그는 배포 컨텍스트 정보니까.</b> <code>env</code>, <code>region</code> 같은 건 코드가 아는 정보가 아니라 <b>배포 환경이 아는 정보</b>예요. 계측 코드를 쓰는 사람(라이브러리 제작자)과 어디에 배포될지 아는 사람(플랫폼 운영자)은 다른 사람이죠. 그래서 라이브러리는 <code>orders.created</code>만 계측하게 두고, 컨텍스트 태그는 registry 설정 계층에서 주입하도록 분리한 거예요 &mdash; OTel의 API/SDK 분리와 같은 철학이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <!-- toolbox -->
+    <path d="M40 60 C 130 57, 230 62, 320 59 C 323 130, 322 180, 321 230 C 230 233, 130 229, 42 231 C 39 180, 40 110, 40 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+    <text x="76" y="46" font-size="25" fill="#4a7fb5">Micrometer의 몫 🧰</text>
+    <text x="66" y="100" font-size="21" fill="#3d3a34">메커니즘 (도구상자)</text>
+    <g font-size="17" fill="#6b6558">
+      <text x="66" y="135">&bull; commonTags (부착)</text>
+      <text x="66" y="163">&bull; MeterFilter (거부&middot;변형)</text>
+      <text x="66" y="191">&bull; 카디널리티 상한</text>
+      <text x="66" y="219">&bull; NamingConvention (번역)</text>
+    </g>
+    <!-- plus sign -->
+    <text x="338" y="155" font-size="34" fill="#8a8272">+</text>
+    <!-- policy -->
+    <path d="M380 60 C 470 58, 570 62, 660 59 C 663 130, 662 180, 661 230 C 570 233, 470 230, 382 231 C 379 180, 380 110, 380 60 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.6" stroke-dasharray="12 7"/>
+    <text x="424" y="46" font-size="25" fill="#b3502f">플랫폼 팀의 몫 📜</text>
+    <text x="406" y="100" font-size="21" fill="#3d3a34">정책 (일부러 비운 자리)</text>
+    <g font-size="17" fill="#6b6558">
+      <text x="406" y="135">&bull; 필수 태그: service, env...</text>
+      <text x="406" y="163">&bull; 금지: user_id, session_id</text>
+      <text x="406" y="191">&bull; uri 상한 200, status 접기</text>
+      <text x="406" y="219">&bull; SLO 경계 100ms/300ms/1s</text>
+    </g>
+    <text x="120" y="285" font-size="22" fill="#3d3a34">범용 도구는 판단을 비워두고, 그 조직의 판단이 채운다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 도구상자는 가득, 작업 지시서는 공란 &mdash; 의도된 빈자리</div>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 빈자리를 채우는 사람: 플랫폼 엔지니어</h2>
+
+<p>그래서 이 이야기의 결론은 채용 공고처럼 들려요. <span class="obsv-mark">정책의 빈자리를 채우는 것이 플랫폼 팀의 존재 이유</span>거든요. 실무에서는 사내 공용 스타터(라이브러리)를 만들어 필터 체인으로 정책을 코드화합니다:</p>
+
+<div class="obsv-code">// 사내 observability-starter의 자동 구성 (모든 서비스에 자동 적용)
+① commonTags(service, env, team)          ← 부착부터
+② renameTag(...)                           ← 표기 정규화
+③ deny(user_id, session_id ...)            ← 지뢰 차단
+④ maximumAllowableTags(uri, 200, deny)     ← 최후의 안전벨트
+⑤ SLO 경계 주입                             ← 미래의 SLI를 위해</div>
+
+<p>순서 자체가 정책이에요(정규화 후에 거부해야 구멍이 없어요). 그리고 좋은 정책 시스템의 품질 기준은 내용보다 운영이에요 &mdash; <b>조용히 죽이지 말 것</b>(거부당한 메트릭은 개발자가 알 수 있게 메타 메트릭으로 노출), <b>탈출구를 둘 것</b>(정당한 예외를 위한 프로퍼티 스위치 &mdash; 탈출구 없는 정책은 포크되거나 버려져요), <b>테스트할 것</b>(필터 체인은 순수 함수라 CI로 보증 가능).</p>
+
+<p>보너스로 이 정책은 돈도 벌어요. 데이터독 과금은 시계열 수 기준이라, 앱 안에서 자른 태그는 수집료&middot;인덱싱료를 둘 다 아낍니다. user_id 차단 필터 하나가 사고 한 번 막으면 스타터 개발 공수가 그 달에 회수되는 일, 실제로 흔해요.</p>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약, 번외편 완결</div>
+  <b>Micrometer가 태그 표준을 안 만든 건 게으름이 아니라 "메커니즘을 제공하되 정책을 강요하지 마라"의 실천이다.</b> 파사드는 중립이어야 하고, 카디널리티 예산은 조직마다 다르고, 공용 태그는 코드가 아니라 배포 환경의 지식이니까.<br><br>
+  도구는 판단을 비워두고, 그 빈자리는 각 조직의 플랫폼 팀이 스타터와 필터 체인으로 채운다 &mdash; 라이브러리 설계의 겸손과 플랫폼 엔지니어링의 존재 이유는 같은 동전의 양면이다.
+</div>
+
+</div>
