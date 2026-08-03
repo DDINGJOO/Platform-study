@@ -1,0 +1,106 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 관찰 가능성과 디버깅 번외 — 2편</div>
+  번외 1편. user_id는 금지가 아니라 이사다 : 태그 정책의 완성<br>
+  <b>번외 2편. 히스토그램 위의 점을 클릭하면 : exemplar와 샘플링</b> &larr; 지금 이 글<br>
+  번외 3편. 카오스 엔지니어링은 관측 배관 위에 올라간다
+</div>
+
+<p>p99 알람이 울립니다. latency 히스토그램을 열어보니 3초 이상 버킷에 7건이 들어와 있어요. 자, 다음 질문 — <b>그 7건이 누구죠?</b> 히스토그램은 대답하지 못합니다. "3초 버킷에 7건"이 그가 아는 전부예요. 집계는 개별을 버리는 대가로 싸다고 했죠. 그 청구서가 바로 지금 도착한 겁니다.</p>
+
+<p>이번 편은 집계에서 개별로 되돌아가는 다리(exemplar), 그리고 그 다리 건너편의 트레이스를 <b>얼마나 버려도 되는가</b>(샘플링)에 대한 이야기예요.</p>
+
+<h2>1. exemplar: 버킷에 견본을 매달아두기</h2>
+
+<p>아이디어는 소박해요. 히스토그램의 각 버킷에 <b>"이 버킷에 떨어진 요청 중 하나의 traceId"를 견본(exemplar)으로 같이 저장</b>하는 겁니다. 개별을 전부 남기는 건 아니고 — 그러면 다시 비싸지니까 — 버킷당 최근 것 하나면 충분해요.</p>
+
+<p>이게 대시보드에서 어떻게 보이냐면, Grafana의 latency 히트맵 위에 작은 점들이 찍힙니다. 3초 버킷의 점을 클릭하면 → 그 느렸던 실제 요청의 트레이스가 열려요. <span class="obsv-mark">1편에서 말한 디버깅 릴레이(메트릭이 소리치고 → 트레이스가 위치를 찍는다)가 클릭 한 번으로 압축되는 거죠.</span> 메트릭과 트레이스라는 두 세계를 잇는 공식 통로라서, "메트릭과 추적의 상관관계"라고 부르는 게 바로 이 장치입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrH6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M55 40 C 54 95, 56 175, 55 235 C 130 237, 240 234, 330 236" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M75 235 C 76 195, 74 150, 75 100 C 96 99, 112 101, 128 100 C 129 148, 127 192, 128 235 Z" fill="#4a7fb5" fill-opacity="0.55" stroke="#4a7fb5" stroke-width="2"/>
+  <path d="M145 235 C 146 205, 144 175, 145 150 C 166 149, 182 151, 198 150 C 199 180, 197 210, 198 235 Z" fill="#4a7fb5" fill-opacity="0.55" stroke="#4a7fb5" stroke-width="2"/>
+  <path d="M215 235 C 216 220, 214 208, 215 196 C 236 195, 252 197, 268 196 C 269 210, 267 224, 268 235 Z" fill="#e5533c" fill-opacity="0.5" stroke="#e5533c" stroke-width="2"/>
+  <text x="101" y="255" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">~100ms</text>
+  <text x="171" y="255" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">~500ms</text>
+  <text x="241" y="255" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">3s+ (7건)</text>
+  <text x="180" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f2c26">latency 히스토그램 (메트릭)</text>
+
+  <path d="M236 190 C 234 187, 238 186, 239 189 C 240 192, 235 193, 236 190 Z" fill="#ffd54d" stroke="#c07f18" stroke-width="2.4"/>
+  <text x="255" y="180" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18">← 점(exemplar) 👆 클릭!</text>
+
+  <path d="M280 150 C 340 125, 400 105, 455 95" fill="none" stroke="#c07f18" stroke-width="2.4" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arrH6)"/>
+
+  <path d="M465 55 C 530 52, 610 56, 672 53 C 675 105, 674 155, 673 205 C 610 208, 530 204, 467 207 C 464 155, 465 104, 465 55 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="568" y="85" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">🧵 그 요청의 트레이스</text>
+  <path d="M485 110 C 530 108, 580 112, 620 109" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M500 140 C 545 138, 600 142, 648 139" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M515 170 C 550 168, 590 172, 655 169" fill="none" stroke="#e5533c" stroke-width="6" stroke-linecap="round"/>
+  <text x="568" y="196" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">← 여기서 2.8s</text>
+
+  <text x="350" y="285" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 집계에서 개별로 건너가는 다리</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. "3초 버킷에 7건" 옆에 그중 한 건의 신분증을 붙여둔다</div>
+
+<h2>2. 샘플링: 트레이스는 다 남기지 않는다</h2>
+
+<p>그런데 이 다리가 성립하려면 건너편에 트레이스가 <b>남아 있어야</b> 하죠. 문제는 트레이스가 요청마다 생기는 비싼 데이터라서, 대량 트래픽에선 전부 저장할 수 없다는 거예요. 그래서 샘플링을 합니다 — 일부만 남기고 버려요. 그러면 당연히 불안해집니다. "버렸는데 장애 대응이 되나?"</p>
+
+<p>된다고 말하는 쪽의 논리는 세 줄기예요. 첫째, <b>감지는 어차피 메트릭 담당입니다.</b> 트레이스를 1%만 남겨도 카운터는 모든 요청에서 +1이라 전수 집계고, "장애가 났다/에러율 5%다"라는 판단은 샘플링과 무관하게 정확해요. 둘째, <b>시스템 장애는 반복됩니다.</b> 같은 실패가 분당 수백 번 일어나는 상황이면 1% 샘플링으로도 1분에 실패 사례 수 개가 잡히고, 디버깅에 필요한 건 부러진 여정의 <b>대표 사례 몇 개</b>지 전부가 아니에요 — 어차피 다 같은 곳에서 부러져 있으니까. 셋째, <b>버릴 걸 골라서 버릴 수 있습니다.</b> 에러 트레이스와 느린 트레이스는 100% 보관하고, 빠르고 성공한 지루한 것들만 깎는 거죠.</p>
+
+<h2>3. 주사위를 언제 굴리는가: head vs tail</h2>
+
+<p>셋째 논리가 성립하려면 조건이 있어요. "끝나보니 에러였던 것"을 남기려면 <b>요청이 끝난 뒤에 보관을 결정</b>해야 하죠. 이게 <b>tail-based sampling</b>입니다 — 일단 다 모았다가 출구에서 "흥미로운가?"를 보고 선별해요. 반대로 <b>head-based</b>는 요청이 시작되는 입구에서 주사위를 굴립니다. 구현이 싸고 단순하지만, <span class="obsv-mark">그 요청이 실패할지 모르는 채로 버리는 결정을 내려요.</span></p>
+
+<div class="obsv-code">head-based   요청 시작 → 🎲 1% 당첨?     → 끝까지 기록 / 꽝이면 즉시 버림
+             (실패할 요청인지 모르고 결정)
+
+tail-based   요청 종료 → 결과를 보고 결정 → 에러·느림 100%, 지루한 성공만 깎음
+             (다 모아야 해서 수집 인프라 비용 ↑)</div>
+
+<h2>4. 논리가 무너지는 순간</h2>
+
+<p>이제 반례를 만나볼 차례예요. 이런 문의가 옵니다 — <b>"어제 오후 3시에 제 결제가 안 됐어요."</b> 시스템 전체는 멀쩡했고 이 실패는 딱 한 번 일어났어요. head-based 1% 샘플링이었다면? 그 요청의 트레이스는 <b>99% 확률로 이미 버려졌습니다.</b> "장애는 반복된다"는 둘째 논리가 집계적 장애에만 성립하고, 단발성·특정 사용자 문제에서는 무너지는 거예요. VIP 고객의 한 번뿐인 실패, 이상한 엣지 케이스, 공격자가 딱 한 번 찔러본 정찰 — 전부 이 부류입니다.</p>
+
+<p>참고로 AWS X-Ray의 기본이 head-based(초당 1건 + 초과분의 5%)예요. 기본 설정만 믿고 있다가 "그 요청 트레이스 주세요"라는 요구를 받으면 빈손이 될 수 있다는 뜻이죠. 단발 실패까지 대응 범위에 넣으려면 tail-based(OTel Collector의 tail sampling processor 등)나, 최소한 에러 요청에 대한 샘플링 우대 규칙이 필요합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🎯 샘플링 설계 질문 세 개</div>
+  &bull; 알람의 근거가 전부 메트릭인가? (트레이스 기반 알람은 샘플링 때문에 위험)<br>
+  &bull; 에러·느린 요청은 몇 %가 남는가? — 100%가 아니라면 그 이유를 설명할 수 있어야<br>
+  &bull; "특정 고객의 단발 실패"가 SLA에 있는 비즈니스인가? 그렇다면 tail-based는 선택이 아니라 필수
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>exemplar는 집계(히스토그램)에서 개별(트레이스)로 건너가는 다리고, 샘플링은 그 건너편을 얼마나 남길지의 결정이다.</b> "세는 건 메트릭이 전수로, 트레이스는 아픈 놈만 골라 보관"이라는 논리는 장애가 반복될 때만 성립한다 — 단발 실패는 head-based 주사위 앞에서 증발한다.<br><br>
+  샘플링의 안전망은 "흥미로운 것은 남긴다"는 조건 위에서만 존재한다 — 무엇이 흥미로운지 보기 전에 버리면(head) 그 조건은 없다.
+</div>
+
+</div>
