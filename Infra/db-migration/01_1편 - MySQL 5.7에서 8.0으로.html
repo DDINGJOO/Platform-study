@@ -1,0 +1,262 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 dev DB 메이저 버전 이관 — 1편</div>
+  <b>dev MySQL 5.7 을 8.0.42 로 옮긴 5단계</b> &larr; 지금 이 글<br>
+  롤백 수단을 보관했다는 착각<br>
+  검증표가 전부 ✅ 였는데 폭탄이 3개 남아있었다
+</div>
+
+<p>새로 만든 테이블 DDL 을 dev 에 올리는데 이런 에러가 떴어요.</p>
+
+<div class="obsv-code">ERROR 1273 (HY000): Unknown collation: 'utf8mb4_0900_ai_ci'</div>
+
+<p>전사 표준으로 쓰기로 한 콜레이션인데, dev DB 가 그런 건 모른다고 합니다. 이유는 허무했어요. <b>dev 는 MySQL 5.7 이었고, 그 콜레이션은 8.0 부터 생긴 것</b>이거든요. 그리고 prod 는 Aurora MySQL 3.10.3 — MySQL 8.0.42 호환 버전이었습니다.</p>
+
+<p>즉 <span class="obsv-mark">dev 에서 통과한 DDL 이 prod 에서 통과할지, dev 에서 막힌 게 prod 에서도 막힐지 아무것도 보장되지 않는 상태</span>로 몇 달을 쓰고 있었던 거예요. 그래서 dev DB 를 5.7 에서 8.0.42 로 옮겼습니다. 5단계로 나눠서, 매 단계마다 되돌릴 수 있는 상태를 유지하면서요.</p>
+
+<h2>1. 메이저 버전이 다르면 뭐가 보장되지 않나</h2>
+
+<p>"dev 랑 prod 버전이 좀 다른데 뭐 어때"라고 넘기기 쉬운데, 안 되는 이유가 생각보다 많아요. 콜레이션 하나만 봐도 그렇습니다.</p>
+
+<p>5.7 에서는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_general_ci</code> 나 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_unicode_ci</code> 만 쓸 수 있어요. 8.0 에서 기본값이 된 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_0900_ai_ci</code> 는 아예 존재하지 않습니다. 그러니까 신규 테이블에 전사 표준을 적용하고 싶어도 <b>dev 에서 그 DDL 을 테스트할 방법 자체가 없었어요.</b> 검증 없이 prod 에 올리는 수밖에요.</p>
+
+<p>예약어도 늘었습니다. 8.0 에서 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">rank</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">groups</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">system</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">lead</code> 같은 단어가 예약어가 됐어요. 5.7 에서 잘 돌던 쿼리가 8.0 에서 문법 에러로 죽을 수 있다는 뜻입니다. 이런 건 dev 가 5.7 인 채로는 절대 못 잡아요.</p>
+
+<p>그래서 목표를 <b>dev · CI · prod 세 곳의 버전을 8.0.42 하나로 통일</b>하는 것으로 잡았습니다. CI 는 testcontainers 를 쓰고 있었으니 이미지 태그만 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code> 로 고정하면 되고, 문제는 dev 였어요.</p>
+
+<h2>2. 백업은 만드는 게 아니라 검증하는 것</h2>
+
+<p>제일 먼저 논리 백업을 떴습니다. 여기서 옵션 하나가 중요했어요.</p>
+
+<div class="obsv-code"># --all-databases 가 아니라 --databases
+mysqldump --databases app_db --single-transaction &gt; backup.sql
+
+# 검증 1) 중간에 끊기지 않았나
+tail -1 backup.sql          # -- Dump completed on ... 이 나와야 정상
+
+# 검증 2) 테이블이 다 들어왔나
+grep -c 'CREATE TABLE' backup.sql</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 --databases 와 --all-databases 는 다른 명령이에요</div>
+  <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--all-databases</code> 는 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql</code> 시스템 DB 까지 같이 덤프</b>해요. 그걸 8.0 에 복원하면 5.7 구조의 권한 테이블이 8.0 시스템 테이블 위에 덮여요. 8.0 은 시스템 테이블 구조가 바뀌었기 때문에 여기서 사고가 납니다.<br>
+  메이저 버전을 넘어갈 때는 <b>내 데이터만</b> 옮기고, 시스템 DB 는 새 버전이 자기가 만든 걸 쓰게 두세요.
+</div>
+
+<p>그리고 백업은 <b>떴다고 끝이 아니에요.</b> 44MB 파일이 생겼다는 사실이 그 안에 데이터가 온전히 들어있다는 뜻은 아니거든요. 디스크가 차서 중간에 끊겼을 수도 있고요. 그래서 덤프 말미에 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">-- Dump completed on</code> 이 찍혔는지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">CREATE TABLE</code> 개수가 원본 테이블 수와 같은지를 확인했습니다. 이 두 개가 <span class="obsv-mark">"파일이 있다"를 "복원할 수 있다"로 바꿔주는 최소 조건</span>이에요.</p>
+
+<h2>3. 블루그린으로 옮기면 되돌릴 수 있다</h2>
+
+<p>제일 무서운 방식은 5.7 컨테이너를 내리고 그 자리에 8.0 을 올리는 거예요. 복원이 실패하면 그때부터 서비스도 없고 검증할 대상도 없습니다.</p>
+
+<p>그래서 <b>8.0 을 3307 포트에 따로 띄웠어요.</b> 3306 의 5.7 은 계속 서비스 중인 상태로요. 복원하고, 검증하고, 통과했을 때만 포트를 바꿨습니다.</p>
+
+<div class="obsv-code"># 8.0 을 3307 에 띄운다 — 3306 의 5.7 은 그대로 서비스 중
+docker run -d --name app-dev-mysql8 -p 3307:3306 mysql:8.0.42
+
+# "ready for connections" 로그를 믿지 말고 실제 쿼리로 확인
+until docker exec app-dev-mysql8 mysql -uroot -p"$PW" -e 'SELECT 1' &amp;&gt; /dev/null; do
+  sleep 2
+done</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ "ready for connections" 는 준비 완료가 아니에요</div>
+  MySQL 컨테이너 로그에 이 문장이 <b>두 번</b> 나와요. 하나는 X Plugin(33060) 것이고 하나는 실제 SQL 포트 것입니다. 앞의 걸 보고 복원을 시작하면 커넥션이 거부돼요.<br>
+  로그 문자열을 grep 하지 말고, 위처럼 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SELECT 1</code> 이 실제로 응답할 때까지 도는 루프</b>를 쓰는 게 안전합니다. 로그는 상태를 말해주지만 응답은 상태를 증명해요.
+</div>
+
+<p>검증 항목은 세 개였어요. 전 테이블 행수 diff 가 0인지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql.user</code> 의 계정이 그대로 넘어왔는지, 그리고 앱이 붙어서 API 가 200 을 주는지. 특히 계정은 5.7 → 8.0 에서 인증 플러그인 기본값이 바뀌기 때문에 꼭 봐야 했습니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M40 48 C 110 45, 180 50, 250 46 C 253 70, 252 92, 251 115 C 180 118, 110 114, 42 116 C 39 92, 40 70, 40 48 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="145" y="79" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#c07f18">MySQL 5.7</text>
+      <text x="145" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">:3306 서비스 중</text>
+
+      <path d="M450 48 C 520 45, 590 50, 660 46 C 663 70, 662 92, 661 115 C 590 118, 520 114, 452 116 C 449 92, 450 70, 450 48 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="555" y="79" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">MySQL 8.0.42</text>
+      <text x="555" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">:3307 병행 기동</text>
+
+      <path d="M258 82 C 312 76, 388 88, 442 81" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr1)"/>
+      <text x="350" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">덤프 복원</text>
+
+      <text x="350" y="157" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">검증을 통과해야만 전환한다</text>
+      <text x="350" y="181" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">행수 diff = 0  ·  mysql.user 대조  ·  SELECT 1 응답</text>
+
+      <path d="M350 194 C 352 205, 348 216, 350 228" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr1)"/>
+
+      <path d="M150 238 C 250 235, 450 241, 550 237 C 553 260, 552 278, 551 295 C 450 298, 250 294, 152 296 C 149 278, 150 258, 150 238 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="350" y="263" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">5.7 중지 → 8.0 을 :3306 으로</text>
+      <text x="350" y="285" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">앱 재기동 후 API 200 확인</text>
+
+      <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 검증 끝나기 전까지 5.7 은 손대지 않는다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 병행 기동해두면 "복원 실패"가 "장애"로 번지지 않아요</div>
+
+<h2>4. 진짜 어려운 건 5.7 이 되살아나지 못하게 만드는 것</h2>
+
+<p>포트를 바꾸고 API 가 200 을 주는 걸 확인했을 때, 솔직히 다 끝났다고 생각했어요. 그런데 여기가 이 작업에서 가장 많이 놓치는 지점이었습니다.</p>
+
+<p>dev 서버에는 컨테이너를 띄우는 경로가 여러 겹으로 쌓여 있었어요. systemd 유닛이 헬스체크 스크립트를 부르고, 그게 start 스크립트를 부르고, 그게 compose 를 실행하는 구조였습니다. <span class="obsv-mark">그리고 그 층 중 두 곳에 5.7 이 문자열로 박혀 있었어요.</span></p>
+
+<p>지금은 8.0 이 잘 돌고 있지만, <b>다음 재부팅 때 systemd 가 그 경로를 타면 5.7 컨테이너가 다시 올라옵니다.</b> 그러면 3306 을 누가 먼저 잡느냐 싸움이 되거나, 최악의 경우 예전 볼륨을 붙인 5.7 이 서비스를 받게 돼요. 며칠 뒤 "데이터가 사라졌다"는 제보를 받고 원인을 못 찾는 상황이 이렇게 만들어집니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M55 30 C 165 27, 300 33, 420 29 C 423 50, 422 66, 421 82 C 300 85, 165 81, 57 83 C 54 66, 55 47, 55 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="238" y="55" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">dev-startup.service</text>
+      <text x="238" y="74" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">systemd oneshot — 부팅 시 1회</text>
+
+      <path d="M238 85 C 241 92, 235 99, 238 105" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#arr2)"/>
+
+      <path d="M55 110 C 165 107, 300 113, 420 109 C 423 130, 422 146, 421 162 C 300 165, 165 161, 57 163 C 54 146, 55 127, 55 110 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="238" y="135" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">cron-health-check-and-start.sh</text>
+      <text x="238" y="154" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">🔥 컨테이너명에 5.7 하드코딩</text>
+
+      <path d="M238 165 C 241 172, 235 179, 238 185" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#arr2)"/>
+
+      <path d="M55 190 C 165 187, 300 193, 420 189 C 423 210, 422 226, 421 242 C 300 245, 165 241, 57 243 C 54 226, 55 207, 55 190 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="238" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">start.sh</text>
+      <text x="238" y="234" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">compose up 래퍼</text>
+
+      <path d="M238 245 C 241 252, 235 259, 238 265" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#arr2)"/>
+
+      <path d="M55 270 C 165 267, 300 273, 420 269 C 423 290, 422 306, 421 322 C 300 325, 165 321, 57 323 C 54 306, 55 287, 55 270 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="238" y="295" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">docker-compose.yaml</text>
+      <text x="238" y="314" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">🔥 db 서비스 = mysql:5.7</text>
+
+      <path d="M462 105 C 535 102, 605 108, 675 104 C 678 145, 677 195, 676 248 C 605 251, 535 247, 464 249 C 461 195, 462 148, 462 105 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.4" stroke-dasharray="8 6"/>
+      <text x="569" y="130" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">🕳️ 전수 조사 대상</text>
+      <text x="484" y="156" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">systemd unit</text>
+      <text x="484" y="176" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">헬스체크 스크립트</text>
+      <text x="484" y="196" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">start 래퍼</text>
+      <text x="484" y="216" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">compose 파일</text>
+      <text x="484" y="236" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">exec / 유틸 스크립트</text>
+
+      <text x="350" y="366" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 한 곳만 놓치면 다음 재부팅에 5.7 이 되살아난다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 이관은 데이터를 옮기는 일이 아니라 "옛 버전으로 가는 길"을 끊는 일이에요</div>
+
+<p>그래서 부팅 경로를 전부 따라가면서 5.7 참조를 지웠어요. compose 의 db 서비스는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code> + 새 볼륨 + 표준 기동 플래그로 갈아엎고, 헬스체크·유틸 스크립트의 컨테이너명도 일괄 교체했습니다. crontab 이 따로 없다는 것까지 확인해서 <b>실행 경로가 systemd 하나뿐임을 증명</b>하고 끝냈어요.</p>
+
+<p>그런데 이 작업, 정작 <b>검증은 못 했습니다.</b> "지금 재부팅하면 8.0 이 뜬다"를 증명하는 방법은 실제로 재부팅해보는 것뿐인데, 그걸 안 했으니까요. 코드를 다 고쳤다는 것과 부팅이 실제로 그 코드를 탄다는 건 다른 이야기예요.</p>
+
+<h2>5. 인플레이스 업그레이드는 되돌아갈 수 없어요</h2>
+
+<p>여기서 성격이 완전히 다른 위험이 하나 등장합니다. MySQL 8.0 은 컨테이너를 새 이미지로 올리면 데이터 디렉터리를 <b>자동으로 업그레이드</b>해줘요. 편한데, <span class="obsv-mark">이 변환은 단방향이라 다시 내려갈 수 없습니다.</span></p>
+
+<p>8.0 이 한 번 손댄 데이터 디렉터리는 5.7 이 못 읽어요. 그래서 <b>물리 볼륨을 따로 보존</b>하는 게 필수였습니다. 논리 백업(44MB SQL 파일)도 있었지만, 그건 복원에 시간이 걸리는 수단이고, 볼륨은 붙이면 바로 뜨는 수단이니까요. 성격이 다른 두 개를 다 들고 있어야 했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🕳️ 놓친 것 — 목표 버전을 처음부터 핀하지 않았어요</div>
+  Phase 2 에서 "8.0" 컨테이너에 복원하고, Phase 4 에서 이미지를 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">8.0.42</code> 로 교체하는 <b>2단계</b>로 진행했어요. 그런데 만약 Phase 2 가 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0</code> 태그였다면 8.0.43 이상을 받았을 수 있고, 그러면 Phase 4 는 업그레이드가 아니라 <b>다운그레이드</b>예요. InnoDB 는 그걸 지원하지 않습니다.<br>
+  결과적으로는 무사히 지나갔지만, 애초에 <b>첫 컨테이너부터 prod 와 똑같은 패치 버전으로 핀했으면 Phase 4 자체가 필요 없었어요.</b> 2단계로 나눈 대가가 리스크뿐이었던 거죠.
+</div>
+
+<h2>6. 스키마 표준화, 그리고 남겨둔 미봉책</h2>
+
+<p>버전이 맞았으니 이제 처음에 하려던 걸 할 수 있게 됐어요. 이미 데이터가 들어있는 테이블 6개를, 데이터를 보존하면서 표준 규격으로 바꿨습니다.</p>
+
+<div class="obsv-code">-- ① 콜레이션 — 테이블을 재구성해요 (데이터는 보존)
+ALTER TABLE landing_page CONVERT TO CHARACTER SET utf8mb4
+  COLLATE utf8mb4_0900_ai_ci;
+
+-- ② 시간 컬럼 정밀도 — 초 단위로는 이벤트 순서가 깨져요
+ALTER TABLE landing_page MODIFY created_at DATETIME(6) NOT NULL
+  DEFAULT CURRENT_TIMESTAMP(6);
+
+-- ③ 인덱스 명명 — 메타데이터만 바뀌어서 즉시 끝나요
+ALTER TABLE landing_page RENAME INDEX uq_lp_slug TO uk_lp_slug;</div>
+
+<p>세 개의 성격이 완전히 달라요. ①은 테이블을 통째로 다시 쓰는 작업이라 데이터가 크면 오래 걸리고, ③은 이름만 바꾸는 거라 메타데이터 수정으로 끝납니다. <b>같은 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">ALTER TABLE</code> 이라고 비용이 같지 않아요.</b> prod 에 적용할 때 이 차이를 모르면 예상 시간이 크게 틀립니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🕳️ 놓친 것 — 콜레이션은 신규 테이블만 바꿨어요</div>
+  Phase 2 가 <b>5.7 덤프를 논리 복원</b>했기 때문에, 나머지 수십 개 테이블은 5.7 시절 콜레이션(<code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">general_ci</code>)을 그대로 들고 왔어요. 표준으로 바꾼 건 신규 6개뿐입니다.<br>
+  즉 <b>한 DB 안에 콜레이션이 두 종류 섞인 상태</b>가 됐고, 저는 이걸 "표준화 완료"라고 기록했어요. 정확하지 않은 기록이었습니다.
+</div>
+
+<p>이 혼재가 왜 문제인지가 재미있어요. <b>콜레이션은 저장되는 바이트를 바꾸지 않습니다.</b> 같은 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">'한글'</code> 을 넣으면 두 테이블에 완전히 같은 바이트가 들어가요. 콜레이션이 바꾸는 건 <b>비교와 정렬 규칙</b>이거든요.</p>
+
+<p>그래서 저장은 안전한데, 경계를 넘어 문자열을 비교하는 순간 쿼리가 죽습니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M30 42 C 115 39, 205 45, 290 41 C 293 75, 292 112, 291 142 C 205 145, 115 141, 32 143 C 29 112, 30 72, 30 42 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="160" y="72" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">신규 6개 테이블</text>
+      <text x="160" y="98" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">landing_page, _version, _study,</text>
+      <text x="160" y="114" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">_image, _version_image, ...</text>
+      <text x="160" y="135" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">utf8mb4_0900_ai_ci ✅</text>
+
+      <path d="M410 42 C 495 39, 585 45, 670 41 C 673 75, 672 112, 671 142 C 585 145, 495 141, 412 143 C 409 112, 410 72, 410 42 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="540" y="72" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">legacy 테이블 수십 개</text>
+      <text x="540" y="102" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">5.7 덤프에서 그대로 복원됨</text>
+      <text x="540" y="135" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">utf8mb4_general_ci</text>
+
+      <text x="350" y="72" text-anchor="middle" font-size="24">💥</text>
+      <path d="M298 96 C 322 90, 378 102, 402 95" fill="none" stroke="#e5533c" stroke-width="2.2" marker-start="url(#arr3)" marker-end="url(#arr3)"/>
+      <text x="350" y="118" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">JOIN</text>
+
+      <text x="350" y="192" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">저장은 같은 바이트, 비교는 다른 규칙</text>
+      <text x="350" y="219" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f">ERROR 1267: Illegal mix of collations</text>
+      <text x="350" y="238" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">(utf8mb4_0900_ai_ci,IMPLICIT) and (utf8mb4_general_ci,IMPLICIT)</text>
+
+      <text x="350" y="278" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 지금 안 터지는 건 숫자로만 조인하고 있어서다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 3. 콜레이션은 저장을 바꾸지 않고 비교를 바꿔요 — 그래서 배포 후에 터집니다</div>
+
+<p>다행히 지금은 안 터져요. 신규 테이블이 legacy 를 참조하는 컬럼이 전부 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">BIGINT</code> 라서 숫자 비교만 하고 있거든요. 숫자에는 콜레이션이 개입하지 않습니다. 그런데 이건 설계를 잘해서가 아니라 <b>아직 지뢰를 안 밟았을 뿐</b>이에요. 문자열로 경계를 넘는 쿼리가 하나 추가되는 날 터집니다. 에러가 안 나도 인덱스를 못 타서 조용히 느려지는 경로가 먼저 생기고요.</p>
+
+<p>그래서 이건 "완료"가 아니라 <b>"혼재 상태 — 경계를 넘는 문자열 비교 금지"</b> 로 문서에 남기고 별도 과제로 뺐어요. 전체 테이블 콜레이션 변환은 데이터 크기만큼 시간이 드는 작업이라 이관과 같이 할 일이 아니었습니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>메이저 버전 이관은 5단계로 쪼개면 매 단계마다 되돌릴 수 있어요.</b> 백업은 검증까지, 이관은 병행 기동으로, 그리고 옛 버전으로 가는 부팅 경로를 전부 끊어야 끝납니다.<br><br>
+  놓친 것도 남았습니다. 목표 버전을 처음부터 핀하지 않아 불필요한 다운그레이드 위험을 만들었고, 콜레이션은 신규 테이블만 바꿨는데 "표준화 완료"라고 적었어요.<br><br>
+  결국 데이터를 옮기는 게 어려운 일이 아니었습니다. <b>어려운 건 옛 버전으로 돌아가는 모든 길을 찾아서 끊는 일이었어요.</b>
+</div>
+
+</div>
