@@ -37,42 +37,7 @@
 <p>그런데 그 관례를 IaC에 이식하면 체인이 하나 생깁니다. 역머지 봇의 커밋이 develop에 꽂히고, 그 커밋이 dev apply를 트리거해요. <span class="obsv-mark">사람이 한 번도 보지 않은 커밋이 인프라를 바꾸는 경로</span>가 구조적으로 생기는 겁니다. 앱은 롤백이 멱등하니까 이게 견딜 만한 위험인데, Terraform의 롤백은 그 자체가 또 하나의 파괴적 변경이에요. 브랜치가 갈리면 state도 갈리고, prod plan이 dev에만 있는 리소스를 destroy로 계산하는 사고도 따라옵니다.</p>
 <p>그래서 브랜치 대신 디렉터리로 갈랐어요. 단일 트렁크 main에 <code style="font-family:Menlo,monospace;font-size:14px;">envs/dev</code>, <code style="font-family:Menlo,monospace;font-size:14px;">envs/prod</code>, 그리고 공유 <code style="font-family:Menlo,monospace;font-size:14px;">modules/</code>. 환경 차이는 모듈에 넘기는 값의 차이로만 표현되고, dev와 prod의 diff가 한 PR 안에서 보입니다. 승격이 "머지"라는 반사적 행위가 아니라 "값을 바꾸는 PR"이라는 명시적 행위가 돼요.</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <!-- 중앙 분리 점선 -->
-  <path d="M350 30 C 351 100, 349 200, 350 320" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8" stroke-linecap="round"/>
-  <!-- 왼쪽: 브랜치 분리 -->
-  <text x="90" y="48" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#b3502f">🔀 브랜치 분리 (관례)</text>
-  <path d="M40 70 C 110 67, 200 71, 310 68 C 313 88, 312 106, 311 128 C 200 131, 110 127, 42 129 C 39 106, 40 88, 40 70 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="60" y="105" font-family="Menlo, monospace" font-size="14" fill="#3d3a34">master → 운영 apply</text>
-  <path d="M40 165 C 110 162, 200 166, 310 163 C 313 183, 312 201, 311 223 C 200 226, 110 222, 42 224 C 39 201, 40 183, 40 165 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="60" y="200" font-family="Menlo, monospace" font-size="14" fill="#3d3a34">develop → dev apply</text>
-  <!-- 봇 역머지 화살표 -->
-  <path d="M320 128 C 345 140, 345 155, 322 166" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arr1)"/>
-  <text x="335" y="152" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">🤖</text>
-  <text x="45" y="255" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">봇의 역머지 커밋이 apply를 트리거</text>
-  <text x="45" y="280" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 아무도 안 본 인프라 변경</text>
-  <!-- 오른쪽: 디렉터리 분리 -->
-  <text x="400" y="48" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#2e6b41">📁 디렉터리 분리 (선택)</text>
-  <path d="M385 70 C 470 67, 570 71, 665 68 C 668 120, 667 170, 666 228 C 570 231, 470 227, 387 229 C 384 170, 385 120, 385 70 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="405" y="98" font-family="Menlo, monospace" font-size="14" fill="#3d3a34">main (단일 트렁크)</text>
-  <path d="M405 115 C 460 113, 510 116, 555 114 C 557 132, 556 144, 555 158 C 510 160, 460 157, 407 159 C 404 144, 405 132, 405 115 Z" fill="#fdf3dd" stroke="#3d3a34" stroke-width="1.8"/>
-  <text x="420" y="142" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">envs/dev</text>
-  <path d="M405 172 C 460 170, 510 173, 555 171 C 557 189, 556 201, 555 215 C 510 217, 460 214, 407 216 C 404 201, 405 189, 405 172 Z" fill="#fdf3dd" stroke="#3d3a34" stroke-width="1.8"/>
-  <text x="420" y="199" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">envs/prod</text>
-  <text x="575" y="145" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">차이가</text>
-  <text x="575" y="168" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">한 PR에</text>
-  <text x="575" y="191" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">보임</text>
-  <text x="390" y="262" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">승격 = 값을 바꾸는 명시적 PR</text>
-  <!-- 하단 결론 -->
-  <text x="130" y="322" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">관례를 따른다는 건, 그 봇까지 따라온다는 뜻이다</text>
-</svg>
-</div>
+<div class="obsv-fig" style="border:2px dashed #d8cfba;border-radius:10px;padding:28px 12px;color:#8a8272;font-family:'Nanum Pen Script',cursive;font-size:22px;">▼ 여기에 fig1.png 를 업로드해서 삽입하세요</div>
 <div class="obsv-figcap">그림 1. 브랜치 모델을 거절한 진짜 이유는 브랜치가 아니라 역머지 봇이었다</div>
 
 <h2>3. bootstrap — 닭과 달걀부터 풀기</h2>
@@ -110,45 +75,7 @@ gh api repos/&lt;org&gt;/&lt;repo&gt;/actions/oidc/customization/sub --jq .sub_c
   &bull; "Environment를 만들 수 있다" ≠ "보호 규칙을 걸 수 있다" — 플랜 문서는 끝까지 읽자
 </div>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <!-- PR 체크 상자 -->
-  <path d="M30 90 C 90 87, 150 91, 205 88 C 208 120, 207 150, 206 178 C 150 181, 90 177, 32 179 C 29 150, 30 120, 30 90 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="55" y="118" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2f2c26">📝 PR</text>
-  <text x="45" y="143" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">fmt·tflint·checkov</text>
-  <text x="45" y="162" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">plan 요약 코멘트</text>
-  <!-- 화살표 1 -->
-  <path d="M212 130 C 235 128, 250 132, 268 130" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
-  <text x="215" y="115" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">타인 승인 1</text>
-  <!-- main 머지 상자 -->
-  <path d="M275 90 C 330 87, 385 91, 435 88 C 438 120, 437 150, 436 178 C 385 181, 330 177, 277 179 C 274 150, 275 120, 275 90 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="298" y="122" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2f2c26">🔀 main 머지</text>
-  <text x="292" y="150" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">plan → artifact 고정</text>
-  <!-- dev 화살표 -->
-  <path d="M440 105 C 480 85, 500 75, 525 65" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arr2)"/>
-  <text x="455" y="70" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41">자동</text>
-  <!-- dev 상자 -->
-  <path d="M535 35 C 575 33, 630 36, 668 34 C 671 55, 670 74, 669 93 C 630 96, 575 92, 537 94 C 534 74, 535 55, 535 35 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="553" y="72" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">dev apply ✅</text>
-  <!-- prod 화살표 (점선) -->
-  <path d="M440 160 C 480 185, 500 200, 525 215" fill="none" stroke="#e5a33c" stroke-width="2.2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arr2)"/>
-  <text x="440" y="205" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18">사람이 버튼</text>
-  <!-- prod 상자 -->
-  <path d="M535 195 C 575 193, 630 196, 668 194 C 671 220, 670 245, 669 263 C 630 266, 575 262, 537 264 C 534 245, 535 220, 535 195 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="548" y="222" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">prod apply 🔘</text>
-  <text x="546" y="248" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">workflow_dispatch</text>
-  <!-- 승인 게이트 무산 메모 -->
-  <text x="40" y="240" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">원래 계획: Environment 승인 게이트</text>
-  <text x="40" y="265" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#e5533c">→ Team 플랜 422로 무산, 수동 dispatch로 대체</text>
-  <!-- 하단 결론 -->
-  <text x="170" y="300" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">머지는 배포가 아니다 — prod에는 버튼이 하나 더 있다</text>
-</svg>
-</div>
+<div class="obsv-fig" style="border:2px dashed #d8cfba;border-radius:10px;padding:28px 12px;color:#8a8272;font-family:'Nanum Pen Script',cursive;font-size:22px;">▼ 여기에 fig2.png 를 업로드해서 삽입하세요</div>
 <div class="obsv-figcap">그림 2. 최종 파이프라인 — 사람이 안 본 변경이 닿는 경로는 없다…고 이때는 믿었다</div>
 
 <h2>5. 설계 리뷰에서 네 발 맞았다</h2>
@@ -167,40 +94,7 @@ gh api repos/&lt;org&gt;/&lt;repo&gt;/actions/oidc/customization/sub --jq .sub_c
   &bull; 라벨 가드를 실행 시점 API 조회로 교체 + unlabeled 트리거 추가
 </div>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <!-- apply 역할 상자 -->
-  <path d="M30 100 C 85 97, 140 101, 195 98 C 198 130, 197 155, 196 183 C 140 186, 85 182, 32 184 C 29 155, 30 130, 30 100 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="50" y="130" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2f2c26">apply 역할</text>
-  <text x="48" y="158" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">iam:* 허용됨</text>
-  <!-- Deny 울타리 -->
-  <path d="M260 40 C 330 37, 400 41, 460 38 C 463 70, 462 95, 461 118 C 400 121, 330 117, 262 119 C 259 95, 260 70, 260 40 Z" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="9 7" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="278" y="68" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">🚧 Deny 울타리</text>
-  <text x="278" y="98" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">platform-iac-* 역할들</text>
-  <!-- 새 역할 상자 (울타리 밖) -->
-  <path d="M260 185 C 330 182, 420 186, 480 183 C 483 215, 482 240, 481 263 C 420 266, 330 262, 262 264 C 259 240, 260 215, 260 185 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="278" y="215" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">평범한-이름-역할</text>
-  <text x="278" y="245" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">+ AdministratorAccess</text>
-  <!-- 화살표: apply -> 새 역할 -->
-  <path d="M200 175 C 225 195, 235 205, 252 215" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arr3)"/>
-  <text x="120" y="225" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">CreateRole</text>
-  <text x="120" y="247" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">(울타리 밖 이름으로)</text>
-  <!-- 화살표: 새 역할 -> 폭발 -->
-  <path d="M487 225 C 520 222, 545 220, 570 218" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arr3)"/>
-  <text x="488" y="205" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">갈아타기</text>
-  <!-- 폭발 별 -->
-  <path d="M625 175 L 634 200 L 660 197 L 641 214 L 655 237 L 629 228 L 617 250 L 613 224 L 587 222 L 609 209 L 598 186 L 620 198 Z" fill="#ffd54d" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
-  <text x="606" y="222" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">💥</text>
-  <text x="530" y="285" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">태그 Deny 전부 무력화</text>
-  <!-- 하단 결론 -->
-  <text x="150" y="318" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">목록으로 막는 방어는, 목록 밖에서 뚫린다</text>
-</svg>
-</div>
+<div class="obsv-fig" style="border:2px dashed #d8cfba;border-radius:10px;padding:28px 12px;color:#8a8272;font-family:'Nanum Pen Script',cursive;font-size:22px;">▼ 여기에 fig3.png 를 업로드해서 삽입하세요</div>
 <div class="obsv-figcap">그림 3. 리뷰에서 가장 아팠던 지적 — iam:* 권한 승격 경로</div>
 
 <h2>6. 하루를 마치며 — 점수보다 남은 것</h2>

@@ -65,7 +65,21 @@ assert html.count('<div') == html.count('</div>')
 assert html.count('<path') == html.count('/>') + html.count('</path>')
 ```
 
-### 6. 전달한다
+### 6. SVG가 티스토리에서 깨지면 (비상 우회로)
+
+인라인 SVG가 사라지고 라벨 텍스트만 남는 사고가 나면, 먼저 `references/svg-sketch-guide.md`의
+"안전 문자" 절을 확인해 위험 문자를 제거한다. 그래도 안 되면 PNG로 내보낸다:
+
+```bash
+python3 .claude/skills/tistory-sketch-post/assets/svg2png.py <글.html> <출력디렉터리>
+```
+
+헤드리스 크롬으로 각 SVG를 2배 해상도 PNG로 뽑는다 (나눔손글씨 펜은 macOS에 기본 설치돼 있어 그대로 렌더된다).
+그 후 `<div class="obsv-fig">` 블록을 자리표시자로 바꾼 "이미지판" HTML을 만들고,
+티스토리 기본모드에서 각 자리에 PNG를 업로드해 삽입한다. **인라인 SVG가 되는 한 그게 우선이다** —
+PNG는 반응형·선명도를 잃으므로 최후의 수단.
+
+### 7. 전달한다
 
 파일을 사용자에게 공유하면서 티스토리 업로드 방법을 한 줄로 안내:
 "글쓰기 → HTML 모드 전환 → 전체 붙여넣기 → 기본모드에서 미리보기 확인"
