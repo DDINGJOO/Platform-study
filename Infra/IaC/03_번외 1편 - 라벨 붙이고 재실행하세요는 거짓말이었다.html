@@ -1,0 +1,137 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 platform-IaC 작업일지 &mdash; 번외 1편</div>
+  본편 1편. 빈 저장소에서 설계 리뷰까지<br>
+  본편 2편. 리뷰에서 맞은 네 발을 수리하다<br>
+  <b>번외 1편. 라벨 붙이고 재실행하세요는 거짓말이었다</b> &larr; 지금 이 글<br>
+  번외 2편. 문서를 믿었다가 두 번 막혔다<br>
+  번외 3편. plan 역할은 왜 읽기 전용이 될 수 없나<br>
+  번외 4편. AdministratorAccess를 붙여도 소용없게 만들기<br>
+  번외 5편. 드리프트는 이슈로, 고장은 실패로
+</div>
+
+<p>Terraform 코드를 관리하는 저장소 이야기예요. PR 을 올리면 dev/prod plan 을 떠서 요약을 코멘트로 남기고, 거기에 삭제나 재생성이 섞여 있으면 <code>allow-destroy</code> 라벨 없이는 체크를 실패시키는 가드를 달아뒀습니다. 어느 날 동료가 낡은 dev 리소스를 정리하는 PR 을 올렸어요. plan 요약 코멘트에 삭제 3건 &mdash; 의도한 변경입니다. 그 가드가 빨간불을 켜고 이렇게 안내했어요. <i>"의도한 변경이라면 PR 에 allow-destroy 라벨을 붙이고 다시 실행하세요."</i> 시키는 대로 라벨을 붙이고 Actions 에서 Re-run failed jobs 를 누릅니다. 또 실패해요. 다시 누릅니다. 또 실패합니다.</p>
+
+<p>세 번쯤 되면 사람은 이렇게 결론 내려요 &mdash; 파이프라인이 고장났구나. 그리고 자기 admin 권한으로 우회할 방법을 찾기 시작하죠. 그런데 고장난 건 파이프라인이 아니라 <b>제가 가드에 쓴 그 한 줄</b>이었습니다.</p>
+
+<h2>1. 문제의 한 줄</h2>
+
+<p>가드는 이렇게 생겼었어요. 읽으면 아무 문제가 없어 보이는 게 함정입니다.</p>
+
+<div class="obsv-code">- name: 파괴적 변경 가드
+  run: |
+    if [ "${{ contains(github.event.pull_request.labels.*.name,
+                       'allow-destroy') }}" != "true" ]; then
+      echo "::error::라벨을 붙이고 다시 실행하세요."
+      exit 1
+    fi</div>
+
+<p>로컬 감각으로 읽으면 "지금 이 PR 에 붙어 있는 라벨을 본다"로 읽히죠. 그래서 라벨을 붙이면 다음 실행은 통과할 거라 믿게 돼요. <span class="obsv-mark">그 믿음이 틀렸고, 그래서 에러 메시지가 안내하는 절차가 구조적으로 불가능했습니다.</span></p>
+
+<h2>2. github.event 는 박제된 payload 다</h2>
+
+<p><code>github.event</code> 는 실행 시점에 GitHub API 를 호출해 가져오는 살아있는 값이 아니에요. 이벤트가 발생한 그 순간의 <b>webhook payload JSON 이 run 에 통째로 박제된 것</b>입니다. 여기서 그 이벤트는 마지막 커밋 push, 즉 <code>synchronize</code> 였고, 그때 PR 에는 라벨이 없었죠.</p>
+
+<p>그리고 Re-run 은 새 이벤트를 발생시키는 버튼이 아니에요. <b>박제된 payload 를 그대로 들고 job 만 다시 돌리는 버튼</b>입니다. 라벨은 payload 가 찍힌 <b>뒤에</b> 붙였으니, 재실행이 읽는 <code>labels</code> 배열은 여전히 비어 있어요. 몇 번을 눌러도 결과가 같습니다.</p>
+
+<p>실제로 통과하려면 새 이벤트를 만들어야 해요 &mdash; 라벨을 붙인 뒤 빈 커밋이라도 push 해서 <code>synchronize</code> 를 일으키거나, PR 을 닫고 다시 열어 <code>reopened</code> 를 만드는 것. 어느 쪽도 에러 메시지에서는 유추할 수 없습니다. <span class="obsv-mark">가드가 우회 충동을 만들면 그 가드는 이미 실패한 겁니다.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrB1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrB2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round"/>
+    </marker>
+  </defs>
+
+  <path d="M40 196 C 200 193, 420 199, 664 195" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M52 118 C 110 115, 165 119, 182 117 C 185 138, 184 158, 183 176 C 130 179, 100 175, 54 178 C 51 158, 52 140, 52 118 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M117 190 C 116 193, 118 197, 117 202" fill="none" stroke="#4a7fb5" stroke-width="3"/>
+  <path d="M452 190 C 451 193, 453 197, 452 202" fill="none" stroke="#5a9e6f" stroke-width="3"/>
+  <path d="M284 190 C 283 193, 285 197, 284 202 M596 190 C 595 193, 597 197, 596 202" fill="none" stroke="#e5533c" stroke-width="3"/>
+  <path d="M594 178 C 540 90, 400 48, 262 70 C 222 78, 200 112, 190 146" fill="none" stroke="#e5533c" stroke-width="2.3" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arrB2)"/>
+
+  <g font-family="'Nanum Pen Script', cursive" font-size="17" text-anchor="middle">
+  <text x="646" y="220" font-size="16" fill="#8a8272">시간</text>
+  <text x="117" y="141" fill="#4a7fb5">📌 payload 박제</text>
+  <text x="117" y="103" fill="#2f2c26">t1 마지막 커밋 push</text>
+  <text x="284" y="238" fill="#b3502f">t2 가드 실패</text>
+  <text x="284" y="259" font-size="15" fill="#8a8272">"라벨 붙이고 재실행하세요"</text>
+  <text x="452" y="238" fill="#2e6b41">t3 라벨 붙임</text>
+  <text x="596" y="238" fill="#b3502f">t4 Re-run</text>
+  <text x="596" y="259" font-size="16" fill="#e5533c">또 실패 🔁</text>
+  <text x="392" y="36" font-size="18" fill="#e5533c">Re-run 은 t1 의 스냅샷을 다시 읽는다</text>
+  <text x="350" y="308" font-size="19" fill="#b3502f">= t3 의 라벨은 t1 의 payload 에 절대 나타나지 않는다</text>
+  </g>
+  <g font-family="Menlo, monospace" font-size="11" text-anchor="middle">
+  <text x="117" y="166" fill="#8a8272">labels: []</text>
+  <text x="452" y="259" fill="#5a9e6f">allow-destroy</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. Re-run 은 새 이벤트가 아니라 옛 스냅샷의 재생이다</div>
+
+<h2>3. 반대 방향도 뚫려 있었다</h2>
+
+<p>더 무서운 건 반대편이에요. 트리거는 <code>on: pull_request</code> 한 줄이었고, 이건 기본값 세 종류(<code>opened</code>, <code>synchronize</code>, <code>reopened</code>)만 잡습니다. <code>unlabeled</code> 가 없으니 체크가 초록불이 된 뒤에 라벨을 떼도 워크플로가 다시 돌지 않아요. 필수 상태 체크는 <b>그 커밋에 같은 이름으로 마지막에 보고된 결과</b>만 보고, 새 run 이 없으면 옛 초록불이 그대로 남습니다. 결과는 <span class="obsv-mark">라벨 없는 PR 이 머지 가능한 초록불로 방치되는 상태</span>입니다. 붙일 때는 안 통하고, 뗄 때는 그냥 통과하는 가드였어요.</p>
+
+<h2>4. 수리 두 가지와 트레이드오프</h2>
+
+<p><b>방법 A</b> &mdash; 트리거를 <code>types: [opened, synchronize, reopened, labeled, unlabeled]</code> 로 늘립니다. 라벨을 붙이거나 떼면 신선한 payload 로 워크플로가 재실행되죠. 단점은 값이에요. 라벨 하나 붙일 때마다 dev/prod plan 이 통째로 다시 돕니다. AWS 왕복 2회.</p>
+
+<p><b>방법 B</b> &mdash; 실행 시점에 API 로 조회합니다. 그러면 Re-run 버튼이 에러 메시지 그대로 동작해요.</p>
+
+<div class="obsv-code">env:
+  GH_TOKEN: ${{ github.token }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+run: |
+  labels=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+             --json labels --jq '.labels[].name')
+  if ! printf '%s\n' "$labels" | grep -qx 'allow-destroy'; then
+    exit 1
+  fi</div>
+
+<p>그래서 <b>B 를 쓰고 types 에는 <code>unlabeled</code> 만 추가</b>했어요. 붙일 때는 싼 Re-run 으로 해결하고, 뗄 때는 강제로 재검사를 걸어 초록불을 지웁니다. <code>labeled</code> 는 넣지 않아요 &mdash; B 가 있으니 굳이 plan 두 판을 더 돌릴 이유가 없죠.</p>
+
+<h2>5. 박제가 오히려 정확한 값도 있다</h2>
+
+<p>여기서 "그럼 <code>github.event</code> 를 쓰지 말라는 거냐"로 넘어가면 과잉 학습이에요. 위 코드에서도 PR 번호는 <code>github.event</code> 에서 읽고 있잖아요. 구분선은 딱 하나입니다 &mdash; <b>이 값이 이벤트 이후에 바뀔 수 있는가.</b></p>
+
+<p>커밋 SHA, PR 번호, 브랜치명은 그 이벤트에 고정된 값이라 박제가 오히려 정확해요. 실행 중에 PR 에 새 커밋이 올라와도 이 run 이 검사한 대상은 t1 의 SHA 여야 하니까요. 반면 라벨, 리뷰 승인 상태, 코멘트, assignee 는 이벤트 이후에 얼마든지 바뀝니다. <span class="obsv-mark">가변 상태를 payload 스냅샷으로 검사하는 모든 가드는 같은 박제 문제를 갖습니다.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔎 가드 코드 자체 점검 3문</div>
+  &bull; 이 조건이 보는 값은 이벤트 이후에 사람 손으로 바뀔 수 있는가?<br>
+  &bull; 에러 메시지가 안내하는 복구 절차를 <b>그대로 따라 하면 실제로 통과</b>하는가?<br>
+  &bull; 통과 조건을 되돌렸을 때(라벨 제거 등) 초록불도 함께 사라지는가?
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b><code>github.event</code> 는 이벤트 순간의 webhook payload 박제이고, Re-run 은 그 스냅샷을 다시 재생하는 버튼이다.</b> 그래서 라벨을 붙인 뒤 재실행하라는 안내는 구조적으로 실현 불가능한 절차였다. 가변 상태는 실행 시점에 조회하고, 되돌림을 잡으려면 <code>unlabeled</code> 를 트리거에 둔다.<br><br>
+  안내한 절차대로 따라 해도 통과하지 못하는 가드는, 안전장치가 아니라 우회 충동을 만드는 장치다.
+</div>
+
+</div>
