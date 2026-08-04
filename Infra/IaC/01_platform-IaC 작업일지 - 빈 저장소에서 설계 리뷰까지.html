@@ -86,16 +86,15 @@
 <p>여기부터는 커밋 로그에 fix가 줄줄이 남은 구간이에요. 첫 번째 지뢰는 허무했습니다. IAM 역할 description을 한글로 썼더니 CreateRole이 ValidationError로 거부돼요. AWS가 description에 허용하는 문자는 사실상 ASCII + Latin-1뿐이라, 한글은 물론이고 em-dash(—) 하나로도 죽습니다.</p>
 <p>두 번째는 꽤 오래 헤맸어요. OIDC 신뢰 정책을 문서 그대로 <code style="font-family:Menlo,monospace;font-size:14px;">repo:org/repo:...</code> 형식으로 썼는데 AssumeRole이 계속 거부됩니다. 알고 보니 우리 조직은 <b>불변 주체 클레임</b>이 켜져 있어서 sub가 다른 형식으로 발급되고 있었어요.</p>
 
-<div class="obsv-code">기대한 sub:  repo:green-ribbon/platform-IaC:ref:refs/heads/main
-실제 sub:    repo:green-ribbon@55527922/platform-IaC@1319177542:ref:refs/heads/main
-                              ^^^^^^^^^ 조직ID        ^^^^^^^^^^ 저장소ID
+<div class="obsv-code">기대한 sub:  repo:{조직}/{저장소}:ref:refs/heads/main
+실제 sub:    repo:{조직}@{조직ID}/{저장소}@{저장소ID}:ref:refs/heads/main
 
 확인 방법:
 gh api repos/&lt;org&gt;/&lt;repo&gt;/actions/oidc/customization/sub --jq .sub_claim_prefix</div>
 
 <p>세 번째가 이번 작업의 최대 반전입니다. 원래 설계는 prod apply를 GitHub Environment의 required reviewer로 막는 거였어요. "승인 전에는 job이 시작되지 않으니 OIDC 자격증명 자체가 발급되지 않는다" — 논리도 깔끔했죠. 그런데 구현하려고 API를 쏘니:</p>
 
-<div class="obsv-code">PUT /repos/green-ribbon/platform-IaC/environments/prod
+<div class="obsv-code">PUT /repos/{조직}/{저장소}/environments/prod
 {"reviewers": [{"type": "User", "id": ...}]}
 
 → 422 "Please ensure the billing plan supports
