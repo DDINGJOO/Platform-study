@@ -33,7 +33,7 @@
 
 <h2>2. develop 브랜치를 만들지 않기로 했다</h2>
 
-<p>우리 조직 서비스 저장소는 전부 <b>master + develop</b> 모델이에요. develop에 머지하면 dev 배포, master에 머지하면 운영 배포, 그리고 배포가 성공하면 봇이 master를 develop으로 자동 역머지합니다. 관례대로라면 IaC 저장소도 이 모델을 따라야 자연스럽죠.</p>
+<p>우리 조직 서비스 저장소는 전부 <b>master + develop</b> 모델이에요. develop에 머지하면 dev 배포, master에 머지하면 운영 배포, 그리고 배포가 성공하면 봇이 master를 develop으로 자동 역머지합니다 — 운영에 나간 코드와 개발 브랜치가 벌어지지 않게 기계가 맞춰주는 관행이죠. 관례대로라면 IaC 저장소도 이 모델을 따라야 자연스럽죠.</p>
 <p>그런데 그 관례를 IaC에 이식하면 체인이 하나 생깁니다. 역머지 봇의 커밋이 develop에 꽂히고, 그 커밋이 dev apply를 트리거해요. <span class="obsv-mark">사람이 한 번도 보지 않은 커밋이 인프라를 바꾸는 경로</span>가 구조적으로 생기는 겁니다. 앱은 롤백이 멱등하니까 이게 견딜 만한 위험인데, Terraform의 롤백은 그 자체가 또 하나의 파괴적 변경이에요. 브랜치가 갈리면 state도 갈리고, prod plan이 dev에만 있는 리소스를 destroy로 계산하는 사고도 따라옵니다.</p>
 <p>그래서 브랜치 대신 디렉터리로 갈랐어요. 단일 트렁크 main에 <code style="font-family:Menlo,monospace;font-size:14px;">envs/dev</code>, <code style="font-family:Menlo,monospace;font-size:14px;">envs/prod</code>, 그리고 공유 <code style="font-family:Menlo,monospace;font-size:14px;">modules/</code>. 환경 차이는 모듈에 넘기는 값의 차이로만 표현되고, dev와 prod의 diff가 한 PR 안에서 보입니다. 승격이 "머지"라는 반사적 행위가 아니라 "값을 바꾸는 PR"이라는 명시적 행위가 돼요.</p>
 
@@ -149,15 +149,15 @@ gh api repos/&lt;org&gt;/&lt;repo&gt;/actions/oidc/customization/sub --jq .sub_c
   <text x="170" y="300" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">머지 ≠ 배포 — prod에는 버튼이 하나 더 있다</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 2. 최종 파이프라인 — 사람이 안 본 변경이 인프라에 닿는 경로가 없다</div>
+<div class="obsv-figcap">그림 2. 최종 파이프라인 — 사람이 안 본 변경이 닿는 경로는 없다…고 이때는 믿었다</div>
 
 <h2>5. 설계 리뷰에서 네 발 맞았다</h2>
 
 <p>다 만들고 나서 설계 리뷰를 받았는데, 지적 4건이 전부 같은 부위였어요. <span class="obsv-mark">"만든 사람의 행복 경로"와 "실제 이벤트·권한 모델의 동작" 사이의 틈.</span></p>
-<p><b>① prod plan을 아무도 안 읽는다.</b> 수요일에 dispatch 버튼을 누르면, 월요일에 다른 사람이 머지해 둔 변경까지 함께 계산된 plan이 — 아무도 그 전체를 확인하지 않은 채 — 같은 run 안에서 바로 apply됩니다. 해법은 Terraform이 공짜로 주는 안전장치를 믿는 것이었어요. 저장된 plan은 그 사이 state가 변하면 apply가 stale 에러로 거부되니까, plan과 apply를 붙여둘 이유가 없습니다. dispatch를 plan 단계와 apply 단계로 쪼개고, 사람이 그 사이에서 plan 요약을 읽게 만들면 돼요.</p>
+<p><b>① prod plan을 아무도 안 읽는다.</b> 수요일에 dispatch 버튼을 누르면, 월요일에 다른 사람이 머지해 둔 변경까지 함께 계산된 plan이 — 아무도 그 전체를 확인하지 않은 채 — 같은 run 안에서 바로 apply됩니다. 자동 가드가 있긴 하지만 destroy만 잡아요. 삭제가 없는 변경은 무사통과입니다. 해법은 Terraform이 공짜로 주는 안전장치를 믿는 것이었어요. 저장된 plan은 그 사이 state가 변하면 apply가 stale 에러로 거부되니까, plan과 apply를 붙여둘 이유가 없습니다. dispatch를 plan 단계와 apply 단계로 쪼개고, 사람이 그 사이에서 plan 요약을 읽게 만들면 돼요.</p>
 <p><b>② iam:* 하나로 3중 방어가 우회된다.</b> apply 역할에 iam:*를 열어주면서 파이프라인 역할(platform-iac-*)만 Deny로 보호했는데, 그 목록 밖 이름으로 관리자 역할을 새로 만들어 갈아타면 태그 Deny까지 전부 무력화됩니다. 수리는 sts:AssumeRole 명시적 Deny + "permissions boundary 없이는 역할 생성 불가" 조건의 조합.</p>
 <p><b>③ 에러 메시지가 거짓말을 한다.</b> 파괴적 변경 가드가 "allow-destroy 라벨을 붙이고 다시 실행하세요"라고 안내하는데, github.event는 이벤트 발생 순간의 payload 박제라서 Re-run은 라벨을 붙이기 전 스냅샷을 다시 읽어요. 안내대로 하면 영원히 통과 못 합니다. 라벨은 실행 시점에 API로 조회해야 해요.</p>
-<p><b>④ dev 지우려고 누른 버튼이 prod까지 쏜다.</b> dispatch에 환경 선택 입력이 없어서, allow_destroy를 켜고 실행하면 dev와 prod가 함께 돌아요. env 입력 하나로 폭발 반경을 좁혔습니다.</p>
+<p><b>④ dev 지우려고 누른 버튼이 prod까지 쏜다.</b> dispatch에 환경 선택 입력이 없어서, allow_destroy를 켜고 실행하면 dev와 prod가 함께 돌아요. env 입력 하나를 추가해 폭발 반경을 좁히기로 했습니다.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🔧 리뷰 후 패치 목록 (PR 두 개 분량)</div>
