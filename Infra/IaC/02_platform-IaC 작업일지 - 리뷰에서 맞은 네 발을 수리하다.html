@@ -1,0 +1,232 @@
+<!-- ============================================================
+  platform-IaC 작업일지 2편 — 리뷰에서 맞은 네 발을 수리하다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 platform-IaC 작업일지</div>
+  1편 &mdash; 빈 저장소에서 설계 리뷰까지<br>
+  <b>2편 &mdash; 리뷰에서 맞은 네 발을 수리하다</b> &larr; 지금 이 글
+</div>
+
+<p>설계 리뷰에서 7.5점을 받고 나서 제일 먼저 한 일은 브랜치를 하나 파는 거였어요. 이름은 <code style="font-family:Menlo,monospace;font-size:14px;">IAC-0008/fix-apply-gate-and-label-guard</code>. 지적 4건 중 두 건이 같은 워크플로 파일에 있었으니까요.</p>
+<p>이 글은 그 브랜치에서 있었던 일의 기록입니다. 지적을 받는 것과 <b>실제로 고치는 것</b>은 전혀 다른 작업이었어요. 고치려고 파일을 열면 지적받지 않은 구멍이 하나 더 나오고, "이건 이렇게 막으면 되겠다" 싶은 해법이 알고 보면 같은 방식으로 또 뚫리고요. <b>"이벤트와 권한 모델의 실제 동작에 맞춰 파이프라인을 다시 짜면 무엇이 달라지는가"</b>가 오늘의 질문입니다.</p>
+
+<h2>1. prod apply 를 두 번 누르게 만들었다</h2>
+
+<p>첫 번째 지적은 이거였어요. 수요일에 dispatch 버튼을 누르면, 월요일에 누가 머지해 둔 변경까지 함께 계산된 plan 이 같은 run 안에서 곧바로 apply 됩니다. 버튼을 누른 사람은 자기가 아는 변경 하나만 생각하고 눌렀는데, <span class="obsv-mark">리뷰한 적 없는 변경이 그 버튼에 얹혀서 함께 나가는</span> 거죠.</p>
+<p>고치려니까 걸림돌이 하나 있었어요. plan 과 apply 를 떼어놓으면 그 사이에 state 가 변할 수 있잖아요. 검사한 시점과 사용한 시점이 어긋나는 전형적인 TOCTOU 인데, 그래서 원래는 둘을 한 run 에 붙여둔 거였습니다. 그런데 파고들다 보니 <b>Terraform 이 이미 그 가드를 갖고 있었어요.</b> <code style="font-family:Menlo,monospace;font-size:14px;">-out=tfplan</code> 으로 저장한 plan 은 lineage 와 serial 을 품고 있어서, apply 할 때 state 가 그 사이에 변했다면 <code style="font-family:Menlo,monospace;font-size:14px;">Saved plan is stale</code> 로 스스로 거부합니다.</p>
+<p>그러니까 붙여둘 이유가 애초에 없었던 거예요. 그리고 붙일 필요가 없다는 건, <span class="obsv-mark">그 사이에 사람이 읽는 시간을 얼마든지 넣어도 된다는 뜻</span>이고요. 그래서 dispatch 입력에 <code style="font-family:Menlo,monospace;font-size:14px;">stage</code> 를 넣고 재사용 워크플로에 <code style="font-family:Menlo,monospace;font-size:14px;">mode</code>(auto / plan / apply) 를 만들었습니다. dev 는 여전히 auto 로 한 번에 돌고, prod 만 두 번 눌러야 나가요.</p>
+
+<div class="obsv-code">workflow_dispatch:
+  inputs:
+    env:           [dev, prod]     # 선택한 환경 하나에만 적용된다
+    stage:         [plan, apply]   # prod 는 버튼을 두 번 눌러야 나간다
+    plan_run_id:   ''              # stage=apply 일 때 어느 plan 을 적용할지
+    allow_destroy: false</div>
+
+<p>재미있는 건 <code style="font-family:Menlo,monospace;font-size:14px;">plan_run_id</code> 예요. stage=plan 으로 돌린 run 이 Job Summary 에 "이 plan 을 적용하려면 plan_run_id = 12345 로 넣으세요"까지 써주는데, 그 숫자를 손으로 옮겨 적게 만든 게 핵심입니다. 자동으로 최신 plan 을 찾아 쓰게 하면 편하겠지만, <span class="obsv-mark">손으로 입력한 run ID 자체가 "그 요약 화면을 거쳤다"는 증거</span>가 돼요. 귀찮음이 여기서는 기능입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 370" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="30" y="42" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f">기존 — 한 run 안에서 plan 다음 바로 apply</text>
+  <path d="M175 60 C 260 57, 430 61, 515 58 C 518 85, 517 110, 516 132 C 430 135, 260 131, 177 133 C 174 110, 175 85, 175 60 Z" fill="none" stroke="#e5533c" stroke-width="2.1" stroke-dasharray="9 7" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="452" y="50" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">한 run</text>
+  <path d="M30 72 C 60 69, 120 73, 154 70 C 157 88, 156 104, 155 118 C 120 121, 60 117, 32 119 C 29 104, 30 88, 30 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="44" y="101" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f2c26">🔘 dispatch</text>
+  <path d="M158 95 C 172 93, 180 97, 192 95" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <path d="M200 72 C 230 69, 290 73, 319 70 C 322 88, 321 104, 320 118 C 290 121, 230 117, 202 119 C 199 104, 200 88, 200 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="238" y="102" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2f2c26">plan</text>
+  <path d="M323 95 C 337 93, 345 97, 357 95" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <path d="M365 72 C 400 69, 465 73, 499 70 C 502 88, 501 104, 500 118 C 465 121, 400 117, 367 119 C 364 104, 365 88, 365 72 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="404" y="102" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">apply</text>
+  <text x="530" y="88" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">그 plan 을</text>
+  <text x="530" y="110" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">아무도 안 읽음</text>
+  <text x="30" y="158" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">머지됐지만 dispatch 안 된 변경까지 함께 나간다</text>
+  <text x="30" y="208" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2e6b41">개선 — 두 번의 dispatch 로 쪼갬</text>
+  <path d="M30 227 C 70 224, 140 228, 174 225 C 177 250, 176 272, 175 288 C 140 291, 70 287, 32 289 C 29 272, 30 250, 30 227 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="44" y="252" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f2c26">1단계 🔘</text>
+  <text x="44" y="276" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">stage=plan</text>
+  <path d="M178 257 C 190 255, 196 259, 206 257" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <path d="M213 220 C 270 217, 340 221, 389 218 C 392 250, 391 278, 390 295 C 340 298, 270 294, 215 296 C 212 278, 213 250, 213 220 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="228" y="247" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">👀 사람이 읽는다</text>
+  <text x="228" y="270" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">Job Summary 요약</text>
+  <text x="228" y="288" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">run ID 가 여기 찍힌다</text>
+  <path d="M393 257 C 405 255, 411 259, 421 257" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <path d="M428 227 C 468 224, 540 228, 579 225 C 582 250, 581 272, 580 288 C 540 291, 468 287, 430 289 C 427 272, 428 250, 428 227 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="442" y="252" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f2c26">2단계 🔘</text>
+  <text x="442" y="276" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">stage=apply + run ID</text>
+  <path d="M583 257 C 594 255, 600 259, 609 257" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <text x="614" y="250" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">apply</text>
+  <text x="628" y="276" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">✅</text>
+  <text x="55" y="352" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">저장된 plan 은 state 가 변하면 스스로 거부한다 — 그래서 사이를 벌려도 된다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. plan 과 apply 를 붙여둘 이유가 없으니, 그 틈에 사람을 넣을 수 있다</div>
+
+<h2>2. 가드가 보는 대상을 숫자에서 파일로 바꿨다</h2>
+
+<p>이건 리뷰에서 맞은 게 아니라 1단계를 고치다가 스스로 발견한 구멍이에요. 기존 파괴적 변경 가드는 plan 잡이 삭제·재생성 건수를 세서 job output 으로 넘기고, apply 잡이 그 <b>숫자</b>를 보고 통과 여부를 정하는 구조였습니다. 평소엔 잘 돌아요.</p>
+<p>문제는 두 가지였어요. 첫째, 숫자와 실제 적용될 파일이 어긋날 수 있습니다. 숫자는 plan 잡의 메모지고, apply 가 실행하는 건 artifact 로 내려받은 tfplan 파일이니까요. 둘째가 치명적인데, <span class="obsv-mark">mode=apply 에서는 plan 잡이 아예 돌지 않으니 그 숫자가 존재하지 않습니다.</span> 2단계로 쪼개는 순간 가드가 빈손이 되는 거예요.</p>
+<p>그래서 가드를 apply 잡 안으로 옮기고, 내려받은 tfplan 을 직접 <code style="font-family:Menlo,monospace;font-size:14px;">terraform show -json</code> 으로 열어 세게 했습니다. 판단 근거가 "앞 잡이 말해준 숫자"에서 "지금 내 손에 있고 곧 실행할 이 파일"로 바뀐 거죠. 가드는 전언이 아니라 물증을 봐야 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 종료 코드도 전언이었다</div>
+  변경 유무 판정도 같은 함정을 밟았어요. <code style="font-family:Menlo,monospace;font-size:14px;">terraform plan -detailed-exitcode</code> 는 변경이 있으면 2 를 주는데, <code style="font-family:Menlo,monospace;font-size:14px;">setup-terraform</code> 액션의 래퍼를 거치면 그 코드가 그대로 오지 않습니다. 변경이 있는데 <code style="font-family:Menlo,monospace;font-size:14px;">has_changes=false</code> 가 되어 apply 가 조용히 스킵됐고요. <code style="font-family:Menlo,monospace;font-size:14px;">terraform_wrapper: false</code> 로 껐지만, 결론은 같아요 &mdash; <b>plan JSON 이 유일한 사실</b>입니다.
+</div>
+
+<h2>3. 에러 메시지가 거짓말을 하고 있었다</h2>
+
+<p>1편에서 제일 아팠던 지적을 이제 실제로 고칠 차례였어요. PR 의 파괴적 변경 가드는 이렇게 안내합니다. "의도한 변경이라면 PR 에 allow-destroy 라벨을 붙이고 다시 실행하세요."</p>
+<p>그런데 <code style="font-family:Menlo,monospace;font-size:14px;">github.event</code> 는 살아있는 값이 아니에요. <span class="obsv-mark">이벤트가 발생한 순간의 webhook payload 를 그대로 박제해 둔 것</span>입니다. 그래서 안내대로 라벨을 붙이고 Re-run 을 눌러도, 가드는 라벨이 없던 시절의 스냅샷을 다시 읽고 또 실패해요. 영원히요. 안내문이 구조적으로 불가능한 절차를 지시하고 있었던 거예요. 로그에 남는 문구가 사용자를 무한 루프에 집어넣는 건, 버그보다는 거짓말에 가깝습니다.</p>
+<p>반대 방향도 뚫려 있었어요. 라벨을 붙여 초록불을 받은 뒤 라벨을 <b>떼면</b>, 재검사가 안 일어나서 초록불이 그대로 남습니다. 승인 근거가 사라졌는데 승인 도장은 남아 있는 상태죠.</p>
+
+<div class="obsv-code">// before — 이벤트 발생 순간의 박제를 읽는다
+${{ contains(github.event.pull_request.labels.*.name, 'allow-destroy') }}
+
+// after — 실행 시점에 직접 조회한다
+gh pr view "$PR" --json labels --jq '.labels[].name' | grep -qx allow-destroy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]</div>
+
+<p>수리는 두 갈래예요. 라벨은 실행 시점에 API 로 조회해서 <b>지금 붙어 있는지</b>를 보고, <code style="font-family:Menlo,monospace;font-size:14px;">types</code> 에 <code style="font-family:Menlo,monospace;font-size:14px;">unlabeled</code> 를 추가해서 라벨을 뗄 때는 강제로 재검사가 돌게 합니다. 붙일 때는 Re-run 으로 싸게 통과하고, 뗄 때는 무조건 다시 계산하고요. 두 방향의 비용을 일부러 다르게 뒀습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 325" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M 30 153 C 200 150 450 156 670 152" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+  <text x="600" y="175" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">시간 →</text>
+  <path d="M 90 145 C 91 150 89 156 90 161" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 252 145 C 253 150 251 156 252 161" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 420 145 C 421 150 419 156 420 161" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 596 145 C 597 150 595 156 596 161" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 32 32 C 62 29 120 33 149 30 C 152 65 151 97 150 123 C 120 126 62 122 34 124 C 31 97 32 65 32 32 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="44" y="57" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f2c26">📸 이벤트</text>
+  <text x="44" y="79" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f2c26">발생</text>
+  <text x="44" y="102" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">payload 박제</text>
+  <text x="44" y="118" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">labels: 없음</text>
+  <path d="M 190 32 C 220 29 285 33 314 30 C 317 65 316 97 315 123 C 285 126 220 122 192 124 C 189 97 190 65 190 32 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="202" y="57" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">가드 실패</text>
+  <text x="202" y="83" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">라벨 붙이고</text>
+  <text x="202" y="105" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">다시 실행하세요</text>
+  <path d="M 358 32 C 388 29 452 33 481 30 C 484 65 483 97 482 123 C 452 126 388 122 360 124 C 357 97 358 65 358 32 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="370" y="57" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">사람이 라벨을</text>
+  <text x="370" y="79" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">붙인다</text>
+  <text x="370" y="107" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">PR 실제 상태 변경</text>
+  <path d="M 525 32 C 555 29 630 33 667 30 C 670 65 669 97 668 123 C 630 126 555 122 527 124 C 524 97 525 65 525 32 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="538" y="57" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f2c26">🔁 Re-run</text>
+  <text x="538" y="83" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">또 실패</text>
+  <text x="538" y="107" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">영원히</text>
+  <path d="M 90 126 C 91 132 89 137 90 141" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <path d="M 252 126 C 253 132 251 137 252 141" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <path d="M 420 126 C 421 132 419 137 420 141" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <path d="M 596 126 C 597 132 595 137 596 141" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <path d="M 594 167 C 540 217 300 227 108 175" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <text x="255" y="257" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">Re-run 은 옛 스냅샷을 다시 읽는다</text>
+  <text x="30" y="283" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">수리 → 실행 시점에 gh pr view 로 조회 + unlabeled 트리거 추가</text>
+  <text x="165" y="318" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">박제된 값은 다시 읽어도 어제의 값이다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 안내문이 지시한 절차는 애초에 성공할 수 없는 절차였다</div>
+
+<h2>4. dev 지우려고 누른 버튼이 prod 까지 쐈다</h2>
+
+<p>이건 고치는 데 십 분 걸렸는데, 위험도로는 제일 컸어요. 기존 dispatch 입력에는 <code style="font-family:Menlo,monospace;font-size:14px;">allow_destroy</code> 만 있고 <b>환경 선택이 없었습니다.</b> 워크플로는 dev 잡과 prod 잡을 나란히 갖고 있고, dispatch 입력은 두 잡에 똑같이 흘러가고요.</p>
+<p>결과가 뭐냐면, "dev 에서 뭘 좀 지우려고" allow_destroy 를 켜고 실행하면 <span class="obsv-mark">prod 의 파괴적 변경 가드도 같이 해제된 채로 prod apply 가 돌아갑니다.</span> 사용자가 머릿속에 그린 폭발 반경은 dev 하나인데, 실제 반경은 두 환경 전부였어요.</p>
+<p>수리는 <code style="font-family:Menlo,monospace;font-size:14px;">env</code> choice 입력 하나 추가입니다. 어느 환경에 대한 버튼인지 사람이 고르게 하고, allow_destroy 는 고른 그 하나에만 적용돼요. 입력값이 어디까지 전파되는지를 그려보지 않은 게 원인이었으니, 위험한 입력은 항상 대상을 명시하게 만드는 편이 안전합니다.</p>
+
+<h2>5. iam:* 승격 경로를 두 겹으로 막았다</h2>
+
+<p>가장 오래 붙잡은 건 이 건이었어요. apply 역할에는 PowerUserAccess 에 빠진 IAM 을 보충하려고 <code style="font-family:Menlo,monospace;font-size:14px;">iam:*</code> 를 열어줬고, 자기 권한 확대를 막으려고 파이프라인 역할 이름 패턴(<code style="font-family:Menlo,monospace;font-size:14px;">platform-iac-*</code>)에 Deny 를 걸어뒀습니다.</p>
+<p>그런데 공격자는 그 목록 안에서 놀 필요가 없어요. 아무 평범한 이름으로 AdministratorAccess 가 붙은 역할을 새로 만들고 거기로 갈아타면, dev/prod 태그 격리 3중 방어가 전부 무의미해집니다. 1편에서 적은 문장이 그대로 여기 적용돼요. <span class="obsv-mark">목록으로 막는 방어는 목록 밖에서 뚫립니다.</span></p>
+<p>그래서 두 겹으로 막았어요. 첫 겹은 <code style="font-family:Menlo,monospace;font-size:14px;">sts:AssumeRole</code> 명시적 Deny 입니다. 시나리오의 마지막 단계인 "갈아타기"를 끊는 거예요. 역할을 만드는 것까지는 막지 못하지만, 만든 역할을 쓸 수가 없으면 공격이 성립하지 않죠.</p>
+<p>둘째 겹이 더 중요합니다. permissions boundary 강제예요. 역할 생성과 정책 부착을 <code style="font-family:Menlo,monospace;font-size:14px;">iam:PermissionsBoundary</code> 조건이 붙었을 때만 허용하고, boundary 를 떼는 것과 boundary 정책 자체를 수정하는 것을 Deny 합니다.</p>
+
+<div class="obsv-code">statement {
+  sid     = "RoleWriteRequiresBoundary"
+  effect  = "Allow"
+  actions = ["iam:CreateRole", "iam:AttachRolePolicy", "iam:PutRolePolicy"]
+  condition {
+    test     = "StringEquals"
+    variable = "iam:PermissionsBoundary"
+    values   = [aws_iam_policy.tf_boundary.arn]
+  }
+}
+# + iam:DeleteRolePermissionsBoundary  Deny  (떼는 것 금지)
+# + boundary 정책의 iam:CreatePolicyVersion  Deny  (내용 수정 금지)
+# + sts:AssumeRole  Deny  (갈아타기 차단)</div>
+
+<p>이러면 Terraform 이 AdministratorAccess 를 붙인 역할을 만들어도, 그 역할의 실효 권한은 <b>붙인 정책과 boundary 의 교집합</b>입니다. Administrator 라고 적혀 있어도 boundary 가 허용하지 않는 건 실제로 되지 않아요. 그리고 그 역할이 또 역할을 만들려고 할 때도 같은 boundary 조건이 걸리니까, <span class="obsv-mark">승격 경로가 몇 단계를 거치든 재귀적으로 닫힙니다.</span> 목록을 세는 대신 상한선을 하나 두는 방식이라, 목록 밖이라는 개념 자체가 사라져요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 335" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="185" y="34" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2f2c26">Terraform 이 새로 만든 역할의 실효 권한</text>
+  <path d="M375 73 C 448 113, 448 187, 375 227 C 302 187, 302 113, 375 73 Z" fill="#ffd54d" fill-opacity="0.6" stroke="none"/>
+  <path d="M130 152 C 132 95, 195 50, 282 51 C 368 52, 428 96, 429 150 C 430 205, 368 250, 281 249 C 194 248, 128 208, 130 152 Z" fill="none" stroke="#4a7fb5" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M320 150 C 322 96, 385 51, 471 52 C 558 53, 618 97, 619 151 C 620 206, 557 250, 470 249 C 383 248, 318 206, 320 150 Z" fill="none" stroke="#5a9e6f" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="215" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2f2c26">붙인 정책</text>
+  <text x="215" y="140" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">AdministratorAccess</text>
+  <text x="215" y="172" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">문서상 권한</text>
+  <text x="522" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">permissions</text>
+  <text x="522" y="138" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">boundary</text>
+  <text x="522" y="170" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">권한 상한선</text>
+  <text x="375" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">실효</text>
+  <text x="375" y="170" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">권한</text>
+  <text x="45" y="292" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">AdministratorAccess 를 붙여도, boundary 밖은 실효되지 않는다</text>
+  <text x="45" y="320" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">boundary 제거와 boundary 정책 수정은 Deny — 그래서 재귀적으로 닫힌다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 목록을 세는 방어 대신 상한선 하나 — 교집합 밖은 애초에 존재하지 않는다</div>
+
+<h2>6. 네 발의 공통점 &mdash; 세 가지 질문</h2>
+
+<p>수리를 다 하고 diff 를 다시 읽어 보니, 네 건이 전부 같은 종류의 틈이었어요. 코드가 틀린 게 아니라, <span class="obsv-mark">"만든 사람의 행복 경로"와 "실제 이벤트·권한 모델의 동작"이 어긋나 있던 것</span>입니다. 각각의 코드는 제가 상상한 시나리오 안에서는 완벽하게 동작했고요. 문제는 상상 밖이었죠.</p>
+<p>그래서 이걸 세 가지 질문으로 정리해 뒀습니다. 다음에 워크플로나 IAM 정책을 쓸 때 초안 위에 그대로 얹어볼 체크리스트예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 초안에 얹는 세 가지 질문</div>
+  &bull; <b>이 버튼을 잘못 누르면 어디까지 가는가</b> &mdash; 패치 ①(안 읽은 plan 이 함께 나감), 패치 ④(dev 버튼이 prod 를 쏨)<br>
+  &bull; <b>이 입력은 어디까지 전파되는가</b> &mdash; 패치 ④(allow_destroy 가 두 잡에), 패치 ⑤(iam:* 가 새 역할로)<br>
+  &bull; <b>이 값은 언제 찍힌 스냅샷인가</b> &mdash; 패치 ②(앞 잡이 센 숫자), 패치 ③(박제된 payload)
+</div>
+
+<p>설계 단계에서 이 질문을 스스로 던졌다면 리뷰 전에 절반은 잡았을 거예요. 특히 세 번째 질문이요. 파이프라인 코드에는 "지금의 값"처럼 보이지만 실은 어느 시점에 찍힌 사진인 값들이 곳곳에 있는데, <code style="font-family:Menlo,monospace;font-size:14px;">github.event</code> 도 job output 도 종료 코드도 다 그런 값이었습니다.</p>
+<p>그리고 이번 수리에서 제일 만족스러웠던 건 새 안전장치를 발명한 대목이 아니라, 패치 ① 처럼 <b>이미 있던 안전장치를 발견한 대목</b>이었어요. Terraform 이 stale plan 을 거부한다는 사실 하나가 "plan 과 apply 를 붙여둬야 한다"는 제약을 없앴고, 그 제약이 사라지자 사람이 읽을 시간이 생겼습니다. 도구가 이미 보장하는 걸 모르면, 그걸 대신하려고 설계를 비틀게 되더라고요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>리뷰에서 맞은 네 발은 전부 "코드가 틀렸다"가 아니라 "내가 상상한 동작과 플랫폼의 실제 동작이 달랐다"였습니다.</b> 이벤트 payload 는 박제고, 앞 잡이 넘긴 숫자는 전언이고, 이름 목록으로 만든 울타리는 목록 밖에서 뚫려요.<br><br>
+  그래서 수리의 방향은 매번 같았습니다. 전언 대신 물증을 보고, 스냅샷 대신 실행 시점에 조회하고, 목록 대신 상한선을 두는 것. <b>가드는 "무엇을 세는가"가 아니라 "무엇을 보고 있는가"로 판정됩니다.</b>
+</div>
+
+</div>
