@@ -1,0 +1,286 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지 &mdash; 둘째 날 · 9편</div>
+  1~7편. 첫날 &mdash; 설계, 리뷰, 그리고 수리<br>
+  8편. 초록불 다 받고 머지했는데 Apply 가 통째로 사라졌다<br>
+  <b>9편. 어제 못 박았다고 썼는데, 오늘 버킷을 열었다</b> &larr; 지금 이 글<br>
+  10편. 태그 키를 바꿨더니 IAM 가드가 조용히 죽었다<br>
+  11편. 1단계를 끝냈는데 아무것도 안 바뀌었다
+</div>
+
+<p>어제 이 시리즈 5편에 이렇게 썼어요. <span class="obsv-mark">"파일 이름 한 개 차이로 계획만 세우는 역할과 바꿀 수 있는 역할이 갈려요."</span> 잠금 파일 이름을 IAM 정책에 통째로 박아두고, 이게 최종 형태라고 적었습니다.</p>
+
+<p>그 글을 올린 다음 날, 같은 정책을 두 번 넓혔어요. 낮 12시 54분에 프리픽스 단위로, 오후 3시 30분에 버킷 전체로. 두 커밋 사이는 두 시간 반입니다.</p>
+
+<p>변명부터 하지는 않을게요. 틀린 건 "이 경계가 안전하다"는 판단이 아니었어요. <b>틀린 건 "이 경계를 유지할 수 있다"는 판단이었습니다.</b> 이 글은 왜 그 좁은 경계를 하루도 못 지켰는지에 대한 기록이에요.</p>
+
+<h2>1. 어제 무엇을 자랑했나</h2>
+
+<p>5편의 주장은 이랬어요. <code>terraform plan</code> 은 이름이 읽기지만 실제로는 state 잠금 파일(<code>&lt;state 키&gt;.tflock</code>)을 만들었다가 지우기 때문에, plan 역할은 순수 ReadOnly 가 될 수 없다. 그러니 <code>ReadOnlyAccess</code> 한 장으로 막아두면 사람이 <code>-lock=false</code> 로 우회하고 그 우회가 영구화된다. 대신 비대칭으로 만들자 &mdash; 인프라 전반은 읽되, 쓰기는 잠금 파일에만.</p>
+
+<p>여기까지는 지금도 맞다고 생각해요. 문제는 그 다음에 붙인 자랑입니다. 저는 <b>쓰기 권한의 대상이 state 가 아니라 잠금 파일 "하나"</b>라는 점을 강조했어요. 프리픽스를 <code>env/{환경}/*</code> 로 열면 같은 프리픽스의 <code>terraform.tfstate</code> 까지 덮어쓸 수 있으니, 우리는 와일드카드가 아니라 <b>파일 이름</b>을 적었다고요.</p>
+
+<p>그러니까 5편이 팔았던 안심은 "이건 프리픽스 와일드카드와 다르다"였습니다. 다르긴 달랐어요. <span class="obsv-mark">다만 그 차이가 하루를 못 갔습니다.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 292" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="arr9a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="22" y="46" font-size="20" fill="#4a7fb5">1단계 · 어제 &mdash; 못 박았다</text>
+<text x="256" y="46" font-size="20" fill="#c07f18">2단계 · 오늘 12:54</text>
+<text x="490" y="46" font-size="20" fill="#2e6b41">3단계 · 오늘 15:30</text>
+
+<path d="M22 63 C 90 60, 150 66, 210 62 C 213 90, 212 122, 210 150 C 150 153, 90 147, 23 151 C 20 120, 23 90, 22 63 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+<path d="M256 62 C 320 59, 384 65, 444 61 C 447 90, 446 122, 444 150 C 384 153, 320 147, 257 151 C 254 120, 257 90, 256 62 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+<path d="M490 63 C 554 60, 618 66, 678 62 C 681 90, 680 122, 678 150 C 618 153, 554 147, 491 151 C 488 120, 491 90, 490 63 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+
+<text x="36" y="94" font-size="21" fill="#3d3a34">파일 이름 하나 🔒</text>
+<text x="270" y="94" font-size="21" fill="#3d3a34">프리픽스 안의 잠금</text>
+<text x="504" y="94" font-size="21" fill="#3d3a34">버킷 전체</text>
+
+<g font-family="Menlo, monospace" font-size="11" fill="#8a8272">
+<text x="36" y="118">env/{환경}/</text>
+<text x="36" y="134">terraform.tfstate.tflock</text>
+<text x="270" y="118">env/{환경}/*.tflock</text>
+<text x="504" y="118">{버킷}/*         읽기</text>
+<text x="504" y="134">{버킷}/*.tflock  잠금</text>
+</g>
+
+<path d="M214 106 C 228 104, 240 108, 252 106" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr9a)"/>
+<path d="M448 106 C 462 104, 474 108, 486 106" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr9a)"/>
+
+<g font-size="17" fill="#8a8272">
+<text x="22" y="180">깨뜨린 것 → 새 스택</text>
+<text x="256" y="180">깨뜨린 것 → 고치는 데</text>
+<text x="256" y="200">사람 한 명이 필요했다</text>
+<text x="490" y="180" fill="#2e6b41">남긴 제한 → 확장자 .tflock</text>
+<text x="490" y="200" fill="#2e6b41">apply 역할은 어제 그대로</text>
+</g>
+<text x="22" y="200" font-family="Menlo, monospace" font-size="10" fill="#8a8272">env/{환경}/alerting.tfstate</text>
+
+<path d="M22 222 C 240 219, 460 225, 678 221" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="22" y="250" font-size="20" fill="#b3502f">넓어진 건 plan 의 읽기와 잠금뿐 &mdash; apply 의 쓰기 경계는 안 건드렸다</text>
+<text x="22" y="276" font-size="17" fill="#8a8272">5편의 경고는 지금도 맞다. 무효가 된 건 "우리는 파일 이름으로 못 박아서 안전하다" 쪽이다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 하루 만에 두 번 넓어진 경계와, 각 단계를 깨뜨린 것</div>
+
+<h2>2. 첫 번째 균열 &mdash; 스택이 하나 늘었다</h2>
+
+<p>알럿 감지 체계를 새 스택으로 올렸어요. 스택이 늘면 state 도 늘어요. 새 state 키는 <code>env/{환경}/alerting.tfstate</code> 가 됐고, 그러면 잠금 파일 이름도 따라서 <code>alerting.tfstate.tflock</code> 이 됩니다. 정책에 못 박아둔 이름은 <code>terraform.tfstate.tflock</code> 이었고요. 안 맞죠.</p>
+
+<div class="obsv-code">Error acquiring the state lock
+  Error message: operation error S3: PutObject,
+  api error AccessDenied</div>
+
+<p>여기서 진단이 오래 걸렸어요. <b>읽기는 통과하는데 잠금만 막히기 때문</b>이에요. state 읽기는 <code>env/{환경}/*</code> 라 멀쩡히 되고, 정확히 잠금을 잡는 지점에서만 거부됩니다. 그래서 사람 눈에 먼저 들어오는 문구가 <code>Error acquiring the state lock</code> 이에요. <span class="obsv-mark">권한 문제인데 state 문제처럼 보입니다.</span> "누가 잠금을 물고 있나", "이전 실행이 죽으면서 잠금이 남았나"부터 뒤지게 되죠. 실제 원인은 두 줄 아래의 <code>PutObject AccessDenied</code> 인데, 그건 첫 줄에 가려서 잘 안 읽혀요.</p>
+
+<p>그리고 이 사고에는 <b>선행 오판</b>이 하나 더 있었어요. 원래 설계 문서는 알럿 state 키를 <code>alerting/terraform.tfstate</code> 로 잡고 있었는데, 그 프리픽스는 애초에 권한 밖이었어요. 그래서 <code>env/{환경}/</code> 아래로 옮겼습니다. 그때 제 판단은 "프리픽스가 같으니 기존 권한이 그대로 쓰인다"였어요.</p>
+
+<p>절반만 맞았죠. <b>프리픽스만 보고 파일명 고정을 못 본 겁니다.</b> 읽기 문은 프리픽스 단위였고 잠금 문만 파일명 단위였는데, 정책을 "프리픽스로 나뉘어 있다"고 뭉뚱그려 기억하고 있었어요. 알럿 스택 ADR 의 결정 2 에 이 오판이 그대로 적혀 있습니다 &mdash; <i>"프리픽스만 보고 권한 변경 없이 된다고 판단한 것이 틀렸다."</i></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 잠금 에러를 만나면 볼 순서</div>
+  <code>Error acquiring the state lock</code> 은 원인이 아니라 <b>증상 이름</b>이에요. 그 아래 실제 API 에러를 먼저 읽으세요.<br>
+  &bull; <code>ConditionalRequestConflict</code> / <code>Lock Info</code> 가 붙어 있다 → 진짜 잠금 경합. 남은 잠금 파일을 찾을 차례<br>
+  &bull; <code>PutObject AccessDenied</code> 가 붙어 있다 → 권한 문제. state 는 건드리지 말고 IAM 정책을 보세요<br>
+  &bull; 읽기는 되는데 잠금만 안 된다 → 십중팔구 잠금 파일 리소스 ARN 이 좁게 박혀 있는 경우예요
+</div>
+
+<h2>3. 두 번째 균열 &mdash; 고치는 데 사람이 한 명 필요했다</h2>
+
+<p>여기가 이 글의 핵심이에요. 첫 번째 균열은 그냥 버그예요. 정책 한 줄 고치면 끝이죠. <b>문제는 그 "한 줄 고치기"의 가격이었어요.</b></p>
+
+<p>이 저장소의 <code>bootstrap/</code> 은 CI 가 쓸 OIDC 역할과 그 IAM 정책을 담고 있어요. 그리고 설계상 <b>CI 의 apply 대상이 아닙니다.</b> 1편에서 정한 결정이에요 &mdash; 파이프라인이 자기 권한과 자기 state 버킷을 스스로 고칠 수 있는 경로를 만들지 않는다. 그 경로가 있으면 CI 를 장악한 쪽이 곧 계정을 장악하니까요.</p>
+
+<p>좋은 결정이라고 지금도 생각해요. 대신 이런 뜻이 됩니다. <span class="obsv-mark">IAM 정책 한 줄을 고치려면, 자격증명을 가진 사람이 로컬에서 apply 해야 해요.</span> PR 초록불로는 아무것도 안 바뀌어요. 그리고 이 저장소에서 그 자격증명을 가진 사람은 사실상 한 명입니다.</p>
+
+<p>그게 하루에 다섯 번 발생했어요.</p>
+
+<div class="obsv-code">1) 최초 생성                                        &mdash;
+2) IAM description 에 한글 → CreateRole 거부        작성 실수
+3) OIDC sub 가 불변 ID 형식이라 신뢰 정책 불일치    사전 확인 부족
+4) 잠금 파일 권한이 파일명으로 고정                 프리픽스를 좁게 박음
+5) 태그 키를 조직 스키마로 바꾸며 IAM Deny 도 교체  태그와 IAM 결합
+
+6) bootstrap 을 drift 감지에 넣으려면
+   plan 역할이 bootstrap/ 프리픽스를 읽어야 함      프리픽스를 좁게 박음  ← 오려던 참</div>
+
+<p><b>4번과 6번이 같은 원인이에요.</b> state 접근을 프리픽스·파일명 단위로 정확히 박아뒀기 때문에, 스택이 하나 늘 때마다 사람을 불러야 해요. 그리고 <code>stacks/network</code>, <code>stacks/data</code> 가 예정돼 있었으니 이 패턴은 계속될 예정이었고요.</p>
+
+<p>그런데 <b>실제 비용은 번거로움이 아니었어요.</b> ADR 원문에 이렇게 적었습니다.</p>
+
+<p style="border-left:4px solid #b3502f;padding-left:14px;color:#7a3a20;"><i>"오늘 실제로 옛 코드로 apply 해서 <b>0 changed</b> 가 나왔고, 그걸 알아채는 데 왕복 세 번이 걸렸다."</i></p>
+
+<p>같은 절차를 하루에 다섯 번 손으로 반복하면, 어느 순간 최신 브랜치를 안 당긴 채로 apply 를 때립니다. 그러면 <code>0 changed</code> 가 나와요. 그게 "고칠 게 없다"인지 "옛 코드를 보고 있다"인지는 화면에 안 적혀 있어요. 그래서 CI 로 올라가고, 또 막히고, 다시 로컬로 내려오고 &mdash; 그걸 세 번 왕복했습니다.</p>
+
+<p><span class="obsv-mark">수동 절차가 반복되면 그 안에서 실수가 납니다.</span> 좁은 경계가 실제로 청구한 값이 이거예요. 사람을 한 번 더 부르는 게 아니라, 사람이 반복 중에 틀리는 것.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 392" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="arr9b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="30" font-size="21" fill="#3d3a34">경계 한 줄을 고치려면 무엇이 필요한가 🧾</text>
+
+<path d="M24 48 C 100 45, 180 51, 250 47 C 253 68, 252 92, 250 112 C 180 115, 100 109, 24 113 C 21 92, 25 68, 24 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+<text x="38" y="80" font-size="21" fill="#3d3a34">IAM 정책 한 줄</text>
+<text x="38" y="102" font-family="Menlo, monospace" font-size="11" fill="#8a8272">bootstrap/iam.tf</text>
+
+<path d="M254 80 C 268 78, 284 82, 300 80" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr9b)"/>
+
+<path d="M306 49 C 390 46, 480 52, 560 48 C 563 70, 562 92, 559 112 C 480 115, 390 109, 307 113 C 304 90, 307 68, 306 49 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-dasharray="8 6"/>
+<text x="320" y="80" font-size="21" fill="#b3502f">CI 가 apply 🚫</text>
+<text x="320" y="102" font-size="16" fill="#8a8272">설계상 막아둔 경로 (1편)</text>
+<text x="566" y="74" font-size="16" fill="#8a8272">자기 권한을</text>
+<text x="566" y="94" font-size="16" fill="#8a8272">스스로 못 고친다</text>
+
+<path d="M137 117 C 135 127, 139 138, 137 147" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr9b)"/>
+
+<path d="M24 153 C 80 150, 140 156, 190 152 C 193 170, 192 190, 190 208 C 140 211, 80 205, 25 209 C 22 190, 25 170, 24 153 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.6"/>
+<text x="40" y="180" font-size="20" fill="#3d3a34">사람 1명 🧑</text>
+<text x="36" y="198" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">자격증명 보유자</text>
+
+<path d="M194 180 C 203 178, 211 182, 216 180" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr9b)"/>
+
+<path d="M220 152 C 280 149, 340 155, 400 151 C 403 170, 402 190, 400 208 C 340 211, 280 205, 221 209 C 218 190, 221 170, 220 152 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.6"/>
+<text x="236" y="180" font-size="20" fill="#3d3a34">로컬에서 apply</text>
+<text x="236" y="198" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">terraform apply</text>
+
+<path d="M404 180 C 413 178, 421 182, 426 180" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr9b)"/>
+
+<path d="M430 153 C 490 150, 550 156, 600 152 C 603 170, 602 190, 600 208 C 550 211, 490 205, 431 209 C 428 190, 431 170, 430 153 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.6"/>
+<text x="446" y="180" font-size="20" fill="#3d3a34">CI 재실행 확인</text>
+<text x="446" y="198" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">push · 재실행 대기</text>
+
+<text x="612" y="184" font-size="18" fill="#8a8272">= 왕복 1회</text>
+
+<text x="24" y="248" font-size="20" fill="#3d3a34">이 왕복이 하루에 다섯 번</text>
+<g stroke="#b3502f" stroke-width="2.6" fill="none">
+<path d="M240 230 C 242 238, 239 246, 241 254"/>
+<path d="M254 230 C 256 238, 253 246, 255 254"/>
+<path d="M268 230 C 270 238, 267 246, 269 254"/>
+<path d="M282 230 C 284 238, 281 246, 283 254"/>
+<path d="M234 254 C 254 246, 274 238, 292 229"/>
+</g>
+<text x="24" y="272" font-family="Menlo, monospace" font-size="11" fill="#8a8272">최초 생성 · description 문자 제한 · OIDC sub 형식 · 잠금 파일 이름 · 태그 키</text>
+<text x="24" y="294" font-size="18" fill="#c07f18">그리고 여섯 번째가 오려던 참이었다 &mdash; bootstrap 을 drift 감지에 넣기</text>
+
+<path d="M24 306 C 200 303, 450 309, 676 305 C 679 325, 678 346, 675 364 C 450 367, 200 361, 25 365 C 22 344, 26 325, 24 306 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="40" y="332" font-size="20" fill="#b3502f">다섯 번 중 한 번 &mdash; 옛 코드로 apply → 0 changed → 알아채는 데 왕복 세 번</text>
+<text x="40" y="354" font-size="16" fill="#8a8272">수동 절차가 반복되면 그 안에서 실수가 난다. 이게 좁은 경계의 진짜 청구서다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 경계를 고칠 수 있는 사람이 하나면, 좁을수록 자주 부르고 자주 틀린다</div>
+
+<h2>4. 무엇을 열었고, 무엇을 안 열었나</h2>
+
+<p>여기는 정확하게 쓸게요. 넓힌 건 <b>plan 역할뿐</b>이에요.</p>
+
+<div class="obsv-code"># plan 역할 &mdash; 넓힘
+s3:GetObject                  env/{환경}/*        →  {버킷}/*
+s3:PutObject + s3:DeleteObject env/{환경}/*.tflock →  {버킷}/*.tflock
+s3:ListBucket                 prefix 조건         →  조건 없음
+
+# apply 역할 &mdash; 그대로
+s3:PutObject + s3:DeleteObject env/{환경}/*        (안 건드림)</div>
+
+<p>정책 문 이름이 바뀐 게 이 변화를 제일 정직하게 보여줘요. <code>ReadOwnState</code> 는 <code>ReadAnyState</code> 가 됐고, <code>WriteOwnLockfile</code> 은 <code>WriteLockfiles</code> 가 됐고, <code>ListOwnPrefix</code> 는 그냥 <code>ListBucket</code> 이 됐어요. <b>Own 이 전부 사라졌습니다.</b> 자기 것만 본다는 성질을 버린 거예요.</p>
+
+<p>그런데 안 넓힌 것도 분명해요.</p>
+
+<p><b>첫째, apply 역할의 쓰기 경계는 그대로입니다.</b> 여전히 <code>env/{환경}/*</code> 안이에요. dev apply 역할이 prod state 를 덮어쓰는 건 지금도 막혀 있어요. 넓어진 건 계획만 세우는 쪽의 <b>읽기</b>지, 바꾸는 쪽의 쓰기가 아니에요.</p>
+
+<p><b>둘째, plan 의 잠금 쓰기도 여전히 확장자로 제한돼 있어요.</b> <code>{버킷}/*.tflock</code> 이지 <code>{버킷}/*</code> 가 아닙니다. <code>.tflock</code> 으로 끝나지 않는 객체 &mdash; 즉 state 본문 &mdash; 는 plan 역할이 못 씁니다. 그러니까 <span class="obsv-mark">5편이 경고했던 "프리픽스를 통째로 열면 plan 이 apply 가 된다"는 상황은 만들지 않았어요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📌 5편에서 무효가 된 문장, 안 무효가 된 문장</div>
+  <b>무효</b> &bull; "쓰기 권한의 대상이 잠금 파일 <u>하나</u>다" &rarr; 이제 버킷 안의 모든 <code>.tflock</code> 이에요<br>
+  <b>무효</b> &bull; "자기 프리픽스 안에서만 읽는다" &rarr; plan 은 이제 버킷 전체를 읽어요<br>
+  <b>무효</b> &bull; "최종 형태는 …입니다" &rarr; 최종이 아니었어요. 하루를 못 갔습니다<br>
+  <b>유효</b> &bull; "프리픽스를 통째로 열면 plan 이 apply 가 된다" &rarr; 그래서 확장자 제한을 남겼어요<br>
+  <b>유효</b> &bull; "plan 은 순수 ReadOnly 가 될 수 없다" &rarr; 이건 Terraform 의 성질이라 안 바뀌어요
+</div>
+
+<p>구분을 분명히 할게요. <b>5편의 경고는 지금도 맞습니다. 무효가 된 건 "우리는 파일 이름으로 못 박아뒀으니 안전하다"는 자랑이에요.</b> 원리가 틀린 게 아니라, 그 원리를 지키려고 고른 구현이 유지 불가능했던 거죠.</p>
+
+<p>물론 대가는 있어요. 이제 plan 역할이 전 환경 state 를 읽을 수 있으니, 누군가 시크릿이 담긴 리소스를 state 에 넣으면 노출 범위가 그만큼 넓어집니다. "state 에 시크릿을 넣지 않는다"는 전제에만 기대고 있고 <b>강제 수단은 없어요.</b> 그래서 이건 ADR 로 남겼습니다 &mdash; 커밋 메시지에 묻어두면 안 되는 종류의 결정이니까요.</p>
+
+<h2>5. 좁은 경계의 값은 누가 치르나</h2>
+
+<p>여기서 일반화를 해볼게요. 저는 경계를 그릴 때 좁기만 봤어요. 좁을수록 좋은 설계라고 생각했고, 파일 이름까지 박은 건 그 사고의 끝판이었죠.</p>
+
+<p>실제 비용은 이렇게 계산해야 했어요.</p>
+
+<div class="obsv-code">경계의 실제 비용 = 그 경계를 유지하는 데 드는 수정 횟수
+                   ×
+                   그 수정을 할 수 있는 사람의 수의 역수
+
+  수정 횟수  : 스택이 늘 때마다 1회 (앞으로 network, data 예정)
+  고칠 수 있는 사람 : 1명 (bootstrap 은 CI apply 대상이 아님)
+  1회당 비용 : 로컬 apply 왕복 + 그 안에서 실수할 확률</div>
+
+<p>고칠 수 있는 사람이 하나뿐인 경계는, <span class="obsv-mark">좁을수록 자주 그 사람을 부르고, 자주 부를수록 그 절차 안에서 실수가 납니다.</span> 그 실수는 보안 사고가 아니라 그냥 "옛 코드로 apply" 같은 시시한 것이지만, 시시한 실수가 자동화 없는 경로에서 반복되면 결국 누군가 절차를 건너뛰게 돼요. 5편에서 <code>-lock=false</code> 를 두고 했던 얘기와 정확히 같은 구조예요 &mdash; <b>정책이 도구를 방해하면 사람이 우회로를 만든다.</b></p>
+
+<p>그러니 보안 경계를 그릴 때는 두 가지를 같이 세야 해요. <b>"누가 이걸 고칠 수 있나"</b> 그리고 <b>"얼마나 자주 고쳐야 하나."</b> 이 둘을 안 세면 좁은 경계는 설계가 아니라 미래의 자기 자신에게 보내는 청구서가 됩니다.</p>
+
+<p>반대로, 고칠 수 있는 사람이 많고 자동화된 경로가 있다면 경계는 얼마든지 좁게 가도 돼요. apply 역할의 <code>env/{환경}/*</code> 를 안 건드린 이유도 이거예요. 그건 스택이 늘어도 안 고쳐도 되는 경계거든요. <b>유지 비용이 0 인 경계는 최대한 좁게, 유지 비용이 사람인 경계는 넓게.</b></p>
+
+<h2>6. "최종 형태"라고 쓴 문장은 대체로 최종이 아니다</h2>
+
+<p>마지막으로 글쓰기 얘기를 하나 할게요. 5편에서 저는 "그래서 최종 형태는 …입니다"라고 썼어요. 하루를 못 갔죠.</p>
+
+<p>설계 글의 문제는 <b>결정을 스냅샷으로 적는다</b>는 거예요. 그 시점에 맞는 결정을 적고, 왜 그렇게 했는지를 적어요. 그런데 결정에는 전제가 붙어 있고, 전제는 조용히 바뀝니다. 제 경우엔 "이 환경에 스택은 하나다"라는 전제였고, 그건 제가 명시적으로 세운 적도 없는 전제였어요. 그냥 그때 스택이 하나였을 뿐이죠.</p>
+
+<p>그래서 ADR 을 쓸 때 <b>"재검토해야 할 조건"</b> 절을 반드시 넣기로 했어요. 이번 결정에는 이렇게 적었습니다.</p>
+
+<div class="obsv-code">재검토해야 할 조건
+  - state 에 시크릿을 넣어야 하는 요구가 생길 때
+      → 되돌리거나 해당 스택만 별도 버킷으로 분리
+  - 저장소 기여자가 admin 5명을 넘어설 때
+      → plan artifact 노출 범위를 다시 계산
+  - bootstrap 변경 빈도가 월 1회 이하로 안정될 때
+      → 굳이 넓게 둘 이유가 줄어든다</div>
+
+<p><span class="obsv-mark">"이게 최종입니다" 대신 "무엇이 바뀌면 이게 무효가 되는지"를 적는 거예요.</span> 그러면 다음에 이 결정을 뒤집는 사람이 &mdash; 대체로 그건 미래의 나예요 &mdash; 왜 뒤집는지를 처음부터 다시 논증하지 않아도 돼요. 목록에서 해당 줄을 짚고 "이 조건이 발생했습니다" 하면 되니까요.</p>
+
+<p>블로그 글도 마찬가지예요. 이 글에도 유효기간을 하나 붙여둘게요. <b>계정을 dev/prod 로 분리하면, 이 글의 3장(고칠 수 있는 사람이 한 명)이 통째로 무효가 됩니다.</b> 그때는 경계를 다시 좁힐 수 있어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>어제 "파일 이름으로 못 박아서 안전하다"고 쓴 경계를, 오늘 두 번 넓혀 버킷 전체로 열었다.</b> 스택이 하나 늘자 잠금 파일 이름이 안 맞아 깨졌고(읽기는 되고 잠금만 막혀서 권한 문제가 state 문제처럼 보였다), 그걸 고치려면 <code>bootstrap</code> 을 사람이 로컬에서 apply 해야 했다. 하루에 다섯 번 그랬고, 그중 한 번은 옛 코드로 apply 해서 <code>0 changed</code> 를 보고 왕복 세 번을 더 썼다.<br><br>
+  다만 넓힌 건 plan 의 읽기와 <code>.tflock</code> 잠금뿐이고, apply 의 쓰기 경계는 그대로다. 5편의 경고("프리픽스를 통째로 열면 plan 이 apply 가 된다")는 여전히 유효하고, 무효가 된 건 그 자랑이다.<br><br>
+  경계의 값은 좁기가 아니라 <b>좁기 × 그걸 고칠 수 있는 사람의 수</b>로 계산해야 한다. 고칠 사람이 하나뿐인 경계는, 좁을수록 자주 그 사람을 부르고 자주 부를수록 그 안에서 실수가 난다.
+</div>
+
+</div>
