@@ -1,0 +1,99 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지</div>
+  1편 &mdash; 빈 저장소에서 설계 리뷰까지<br>
+  2편 &mdash; 리뷰에서 맞은 네 발을 수리하다<br>
+  3편 &mdash; 라벨 붙이고 재실행하세요는 거짓말이었다<br>
+  4편 &mdash; 문서를 믿었다가 두 번 막혔다<br>
+  5편 &mdash; plan 역할은 왜 읽기 전용이 될 수 없나<br>
+  6편 &mdash; AdministratorAccess를 붙여도 소용없게 만들기<br>
+  <b>7편 &mdash; 드리프트는 이슈로, 고장은 실패로</b> &larr; 지금 이 글
+</div>
+
+<p>테라폼으로 AWS 인프라를 관리하는 저장소에 매일 아침 도는 점검 워크플로를 붙였어요. 흔한 방식대로 짰다면 아침 슬랙에 뜨는 건 빨간불 하나예요. <code>Terraform Drift Detection</code> 실패. 자, 지금 뭘 해야 하나요? 누가 콘솔에서 손댄 걸 되돌려야 하는 상황일 수도 있고, 읽기 전용 plan 역할의 자격증명이 만료돼서 점검 자체가 멈춘 것일 수도 있어요.</p>
+
+<p><b>둘은 완전히 다른 일인데 알림이 똑같습니다.</b> 알림 하나가 서로 다른 두 행동을 가리키면 그건 알림이 아니라 "로그를 열어보세요"라는 안내문이에요. 이 글은 그 빨간불을 어떻게 갈랐는지에 대한 이야기입니다.</p>
+
+<h2>1. 콘솔에서 손댄 변경은 조용히 사라진다</h2>
+
+<p>먼저 <b>드리프트</b> &mdash; 코드에 적힌 인프라와 실제로 돌아가는 인프라가 벌어진 상태 &mdash; 가 왜 매일 확인할 만한 일인지부터요. 장애 대응 중에 급해서 콘솔에서 보안그룹 규칙 하나를 열어뒀다고 해봐요. 코드에는 그 규칙이 없죠. 그러면 <span class="obsv-mark">다음 apply 가 그 규칙을 조용히 되돌립니다.</span> 예고도 없고, 되돌렸다는 기록도 사람이 읽는 곳에는 남지 않아요.</p>
+
+<p>그 다음에 벌어지는 일이 고약해요. "어제까지 되던 게 오늘 안 되는데 아무도 배포한 게 없다"는 상황에서 원인 규명에만 몇 시간이 듭니다. 그냥 두면 벌어진 폭만큼 나중에 청구서로 돌아와요. 그래서 매일 한 번 확인합니다.</p>
+
+<h2>2. exit code 2 를 실패로 만들지 않는다</h2>
+
+<p>확인 수단은 <code>terraform plan</code> 이고, 열쇠는 <code>-detailed-exitcode</code> 플래그예요. 이 플래그를 붙이면 종료 코드가 두 값이 아니라 세 값이 됩니다.</p>
+
+<div class="obsv-code">terraform plan -detailed-exitcode
+
+  0  변경 없음      코드 == 실제 인프라
+  2  변경 있음      드리프트 (또는 아직 반영 안 된 코드)
+  1  오류           plan 자체가 실패 (state 잠금, 문법, 권한 부족)</div>
+
+<p>여기서 <b>plan 의 종료 코드로는 잡을 실패시키지 않는 것</b>이 이번 설계의 전부예요. 2가 나오면 <b>이슈</b>를 만들고, 1이 나와도 같은 제목·같은 <code>drift</code> 라벨로 이슈를 만들되 본문을 바꿔요 &mdash; "파이프라인 자체가 깨져 있을 수 있습니다".</p>
+
+<p>그럼 이 글 제목의 <b>"고장은 실패로"</b> 는 뭘까요. plan 까지 가보지도 못한 경우예요. 체크아웃, 역할 위임, <code>init</code> 이 깨지면 잡이 그냥 실패하고, 그건 이슈가 아니라 슬랙의 <code>workflows</code> 구독이 받습니다. <span class="obsv-mark">plan 이 돌았으면 결과는 이슈로, plan 이 못 돌았으면 실패로</span> &mdash; 이게 세 갈래를 가르는 기준이에요. 필요한 행동이 다르니까 도착점도 다르게 만든 거예요.</p>
+
+<div class="obsv-fig"><img src="images/07/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 종료 코드 하나를 어디로 보내느냐가 받는 사람의 행동을 정한다</div>
+
+<h2>3. 알림 배관을 새로 만들지 않았다</h2>
+
+<p>도착점을 나눈다니까 알림 워크플로를 하나 더 만들 것 같지만, 정반대로 갔어요. 웹훅 시크릿도 없고 알림 전용 워크플로도 없습니다. GitHub Slack 앱의 <b>구독</b>만으로 신호를 갈라 받아요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📮 구독 하나가 곧 "할 일" 하나</div>
+  &bull; <code>issues</code> &mdash; 드리프트 이슈가 생겼다 → 콘솔 변경을 코드에 반영하거나 되돌리는 PR 을 올린다<br>
+  &bull; <code>workflows</code> &mdash; 워크플로 실행이 실패했다 → 러너·자격증명·apply 같은 배관을 고친다<br>
+  &bull; <code>pulls</code> / <code>reviews</code> &mdash; 리뷰 요청이 왔다 → 머지에 승인 1인이 필요하니 막힌 PR 을 푼다
+</div>
+
+<p>배관을 새로 깔지 않은 이유는 단순해요. <span class="obsv-mark">알림 자체가 고장날 수 있는 부품을 늘리지 않으려고요.</span> 웹훅 시크릿은 만료되고 알림 전용 워크플로는 조용히 실패해요. 그런데 알림이 조용히 실패하면 아무도 모르죠 &mdash; 알림이 없는 상태와 문제가 없는 상태가 구분되지 않으니까요.</p>
+
+<h2>4. 새벽에는 울리지 않는다</h2>
+
+<p>cron 은 <code>0 0 * * *</code> 이에요. UTC 00:00, 그러니까 KST 09:00. 야간 배치라면 흔히 새벽 3시인데, 그렇게 하지 않은 건 의도한 선택이었어요.</p>
+
+<p>드리프트는 즉시 대응해야 하는 사고가 아니라 <b>"오늘 확인할 것"</b>입니다. 그러니 업무 시작 직전에 돌려서, 출근해서 슬랙을 열면 오늘 처리할 목록이 이미 놓여 있게 만드는 게 맞아요. 대응할 수 없는 시간에 오는 알림은 신호가 아니라 소음이고, <span class="obsv-mark">더 나쁘게는 사람이 알림을 무시하는 습관을 만듭니다.</span> 한 번 그 습관이 생기면 진짜 급한 알림도 같이 묻혀요.</p>
+
+<h2>5. 열린 이슈는 "지금 할 일"만 의미해야 한다</h2>
+
+<p>알림을 이슈로 받기로 하면 새 책임이 하나 생겨요. <b>이슈를 닫는 책임</b>이요. 이 저장소는 main 머지 시 dev 만 자동 반영하고, prod 는 사람이 plan 요약을 읽고 손으로 실행해요 &mdash; 그래서 머지와 prod 반영 사이에 시차가 생기죠. 그 시차를 알리는 게 apply 워크플로의 <code>prod-pending</code> 잡입니다. main 에 머지됐는데 prod 에 아직 반영되지 않은 변경이 있으면 이슈를 열고, <b>다음 머지에서 반영이 확인되면 코멘트를 남기고 자동으로 닫아요.</b></p>
+
+<p>닫지 않으면 이슈가 배경 소음이 되고, 열려 있다는 사실 자체가 아무 의미도 갖지 않게 되거든요. 드리프트 이슈도 같은 제목의 열린 이슈가 있으면 새로 만들지 않고 코멘트만 덧붙여요. 같은 사실이 이슈 30개로 늘어나면 아무도 안 보니까요. 다만 이쪽은 자동으로 닫히지 않습니다 &mdash; PR 로 처리한 사람이 직접 닫아요. <span class="obsv-mark">열린 이슈 목록이 곧 지금 할 일 목록</span>이라는 걸 유지하는 게 알림 설계의 절반이에요.</p>
+
+<h2>6. 알림의 단위는 이벤트가 아니라 행동이다</h2>
+
+<p>여기까지가 결국 한 문장으로 모여요. 알림을 설계하는 단위는 "무슨 일이 일어났는가"가 아니라 <b>"받은 사람이 무엇을 해야 하는가"</b>입니다. 두 사건에 필요한 행동이 다르면 알림 채널도 달라야 하고, 필요한 행동이 아예 없으면 알림을 만들지 말아야 해요(그래서 exit 0 은 어디에도 알리지 않습니다).</p>
+
+<div class="obsv-fig"><img src="images/07/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 사건 셋을 한 신호로 합치면 받은 사람 자리에 물음표가 남는다</div>
+
+<p>관찰 가능성이 "무엇이 일어났는지 알 수 있는 상태"라면, 알림 설계는 <b>"무엇을 해야 하는지 알 수 있는 상태"</b>예요. 이 저장소에서는 종료 코드 하나를 어디로 보내느냐가 그 차이를 만들었어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>plan 이 돌았다면 결과는 이슈로(exit 2 는 드리프트, exit 1 은 plan 오류 &mdash; 본문이 다르다), plan 까지 가지 못했다면 잡 실패로 보낸다.</b> 도착점을 나눈 대신 배관은 늘리지 않았다 &mdash; GitHub Slack 앱 구독만 쓰고, 웹훅 시크릿이나 알림 전용 워크플로를 새 단일 장애점으로 만들지 않는다. 정기 점검은 KST 09시에만 울리고, prod 미반영 이슈는 반영이 확인되면 자동으로 닫힌다.<br><br>
+  알림의 단위는 일어난 사건이 아니라 받은 사람이 해야 할 행동이다. 행동이 다르면 채널을 가르고, 할 행동이 없으면 알리지 마라.
+</div>
+
+</div>

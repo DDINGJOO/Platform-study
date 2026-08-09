@@ -1,0 +1,241 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 crm-backend 작업일지 &mdash; 3편</div>
+  1편. 메일을 커밋 뒤로 보내기로 한 순간<br>
+  2편. 나중에 갈아끼울 어댑터를 코드로 강제하기<br>
+  <b>3편. 메일 붙이며 밟은 기본값 여섯 개</b> &larr; 지금 이 글<br>
+  4편. 조용히 건너뛰는 안전망은 자기 자신도 건너뛴다
+</div>
+
+<p>멤버 초대 API 에 메일 발송을 붙이는 작업이었어요. 스타터 의존성 한 줄 넣고, <code>spring.mail.*</code> 에 호스트랑 포트 쓰고, 템플릿 문자열 하나 만들면 끝날 줄 알았습니다. 실제로 그렇게 했더니 <b>됐어요.</b> 로컬 메일함에 초대 메일이 도착했고, 링크를 누르니 수락 페이지로 넘어갔습니다. 커밋해도 될 것 같은 상태였죠.</p>
+
+<p>문제는 "됐다"가 "맞다"는 뜻이 아니었다는 겁니다. 그 세 줄짜리 설정의 <b>기본값</b>들이, 전부 조용히 잘못 동작하는 쪽으로 맞춰져 있었어요. 타임아웃은 무한이고, TLS 는 안 되면 평문으로 내려가고, 예외 메시지에는 수신자 이메일이 실려 있고, 통과한 테스트는 실제로 아무것도 인코딩하지 않았습니다. <span class="obsv-mark">전부 에러를 내지 않는 문제들이었습니다.</span></p>
+
+<p>밟은 지뢰 여섯 개를 하나씩 풀어놓을게요. 각각 <b>기본값이 뭔가 &rarr; 왜 위험한가 &rarr; 어떻게 막았나</b> 순서입니다. 메일이 아니라 다른 걸 붙이고 있어도 그대로 옮겨 쓸 수 있는 형태로 적어봤어요.</p>
+
+<h2>1. JavaMail 타임아웃 기본값은 아직도 "무한"이다</h2>
+
+<p>이게 제일 먼저 나왔고, 제일 무서웠어요. JavaMail 의 SMTP 타임아웃 세 종류 &mdash; <code>mail.smtp.connectiontimeout</code>(연결), <code>mail.smtp.timeout</code>(응답 대기), <code>mail.smtp.writetimeout</code>(본문 업로드) &mdash; 는 <b>아무것도 안 쓰면 전부 무한 대기</b>입니다. 스프링 부트가 대신 채워주지도 않아요. SMTP 서버가 TCP 연결만 받아놓고 응답을 안 주면, 그 스레드는 영원히 거기 서 있습니다.</p>
+
+<p>보통은 이게 "요청 하나가 좀 느려지는" 정도로 끝나는데, 우리 상황에서는 그렇지 않았어요. 1편에서 <b>발송을 커밋 이후 리스너로 옮겼거든요.</b> 초대가 DB 에 커밋된 다음 <code>@TransactionalEventListener(AFTER_COMMIT)</code> 가 메일을 보냅니다. 이 리스너는 기본적으로 동기 실행이라 <span class="obsv-mark">호출한 요청 스레드가 그대로 SMTP 를 기다립니다.</span> 무한 타임아웃 + 응답 없는 SMTP = 그 톰캣 스레드는 재기동 전까지 돌아오지 않아요. 몇 개만 물려도 풀이 말라버립니다.</p>
+
+<div class="obsv-code">spring:
+  mail:
+    # JavaMail 기본 타임아웃은 '무한'이다. SMTP 가 응답하지 않으면
+    # 커밋 후 발송 스레드가 영구 대기한다.
+    # (Lettuce 기본 60s 와 같은 종류의 함정 - 기본값에 의존하지 않고 명시 선언한다.)
+    properties:
+      mail.smtp.connectiontimeout: 5000   # 연결
+      mail.smtp.timeout: 5000             # 응답 대기(read)
+      mail.smtp.writetimeout: 5000        # 본문 업로드(write)</div>
+
+<p>세 개를 다 박은 이유가 있어요. 연결은 됐는데 서버가 <code>220</code> 인사를 안 보내면 read 에서 물리고, 인사까지 잘 왔는데 HTML 멀티파트 본문을 올리는 중에 서버가 먹통이 되면 write 에서 물립니다. 하나만 걸어두면 나머지 두 구멍은 그대로예요.</p>
+
+<p>주석에 <b>Lettuce</b> 를 같이 적어둔 건 의도적이었습니다. 같은 저장소에서 Redis 클라이언트도 기본 command timeout 이 60초라 짧게 잘라둔 상태였거든요. 이걸 각각 "메일 이슈", "레디스 이슈"로 기억하면 다음 클라이언트에서 또 밟습니다. 같은 이름표를 붙여두면 <span class="obsv-mark">널리 쓰이는 클라이언트일수록 기본값이 무한이거나 과대하다</span>는 패턴으로 남아요. 라이브러리 저자 입장에선 합리적인 선택이에요 &mdash; 기본값의 최적화 대상은 "내 운영환경의 안전"이 아니라 "처음 써보는 사람의 첫 실행이 성공하는 것"이니까요.</p>
+
+<h2>2. starttls.enable 만 켜면 평문으로 조용히 내려간다</h2>
+
+<p>dev 는 관리형 SMTP 로 나가니까 TLS 를 켜야 합니다. 검색하면 다들 <code>mail.smtp.starttls.enable: true</code> 를 알려줘요. 이름만 보면 "STARTTLS 를 켠다"로 읽히죠. 그런데 이 플래그의 실제 의미는 <b>"서버가 STARTTLS 를 지원한다고 광고하면 쓴다"</b> 입니다. 안 하면요? 그냥 평문으로 계속 진행해요.</p>
+
+<p>이게 왜 나쁘냐면, 결과가 <b>성공</b>이기 때문입니다. 메일은 잘 도착하고, 로그는 초록불이고, 다만 SMTP 인증 자격증명과 수신자 주소와 초대 링크가 평문으로 흘러갔을 뿐이에요. 중간자가 있었는지 없었는지는 사후에 알 방법도 없습니다.</p>
+
+<div class="obsv-code">spring:
+  mail:
+    host: {관리형 SMTP 엔드포인트}
+    port: 587
+    username: ${SES_SMTP_USERNAME}
+    password: ${SES_SMTP_PASSWORD}
+    properties:
+      mail.smtp.auth: true
+      # required 까지 둔다 - enable 만 두면 서버가 STARTTLS 를
+      # 거부할 때 평문으로 조용히 폴백한다.
+      mail.smtp.starttls.enable: true
+      mail.smtp.starttls.required: true</div>
+
+<p><code>required: true</code> 를 더하면 협상이 실패했을 때 예외로 끝납니다. 그리고 어댑터에서 이 예외는 <b>영구 실패</b>로 분류돼요 &mdash; TLS 협상 실패는 재시도해서 나아질 종류가 아니라 설정을 고쳐야 하는 문제니까요.</p>
+
+<p>여기서 건진 일반 교훈이 하나 있어요. <span class="obsv-mark">"켜기"와 "요구하기"는 다른 설정입니다.</span> 이름에 <code>enable</code> 이 붙은 보안 플래그를 볼 때마다 물어야 할 질문은 "이걸 켰나"가 아니라 <b>"이게 실패하면 어떻게 되나"</b> 예요. 실패했을 때 덜 안전한 경로로 계속 가는 스위치는, 켜져 있어도 안전장치가 아닙니다.</p>
+
+<h2>3. SMTP 예외 메시지에는 수신자 주소가 실려 온다</h2>
+
+<p>발송 실패를 로그로 남기려고 습관대로 <code>log.error("발송 실패", e)</code> 를 썼다가 멈췄어요. SMTP 예외 메시지에는 서버 응답이 거의 그대로 들어 있고, 그 응답에는 <b>수신자 주소가 들어 있습니다.</b> 없는 주소로 보내면 서버가 "그 주소 없다"고 알려주는 게 당연하잖아요. 그 문자열이 예외 메시지가 되고, 스택 트레이스가 되고, 로그 수집기로 올라가서 검색 인덱스에 들어가고, 보존 기간 내내 남습니다.</p>
+
+<p>초대 메일은 정의상 <b>아직 우리 서비스에 가입하지 않은 사람</b>의 이메일로 나가요. 그 주소가 로그로 새는 건 개인정보 유출입니다. 그래서 세 가지를 걸었어요.</p>
+
+<div class="obsv-code">/** 로그·실패사유에서 이메일을 마스킹한다. 예) s***@example.com */
+private static final Pattern EMAIL =
+        Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+");
+
+private static final int MAX_REASON_LENGTH = 300;
+
+/*
+ * 스택 트레이스를 그대로 로그에 남기지 않는다 - SMTP 예외 메시지에 수신자
+ * 주소가 실려 오므로 트레이스를 남기면 PII 가 로그에 퍼진다.
+ * 타입 체인과 마스킹된 메시지로 진단한다.
+ */
+private static String reason(Throwable e) {
+    String message = mask(e.getMessage());
+    String text = e.getClass().getSimpleName()
+            + (message == null ? "" : ": " + message);
+    return text.length() &gt; MAX_REASON_LENGTH
+            ? text.substring(0, MAX_REASON_LENGTH) : text;
+}</div>
+
+<p>첫째, <b>스택 트레이스를 로거에 넘기지 않습니다.</b> 예외 객체를 인자로 주는 순간 트레이스 전체가 찍히니까요. 둘째, 남기는 메시지는 정규식으로 이메일을 찾아 <code>s***@example.com</code> 형태로 <b>마스킹</b>합니다. 셋째, 사유 문자열을 300자에서 자릅니다 &mdash; SMTP 예외는 서버 응답 전문을 통째로 물고 오는 경우가 있어서, 안 자르면 로그 한 줄이 수 KB 가 돼요.</p>
+
+<p>대신 잃은 게 있죠. 스택 트레이스가 없으면 원인 추적이 어려워집니다. 그래서 두 가지로 벌충했어요. 하나는 <b>예외 타입 이름을 문자열로 남기는 것</b>(<code>getClass().getSimpleName()</code>), 다른 하나는 실패를 세 갈래로 분류해서 <b>분류 자체가 진단 정보</b>가 되게 한 것입니다.</p>
+
+<div class="obsv-code">} catch (MailAuthenticationException e) {
+    // 자격증명·STARTTLS 설정 문제 - 재시도해도 같다. 설정을 고쳐야 한다.
+    log.error("메일 인증 실패 messageId={} reason={}", request.messageId(), reason(e));
+    return DispatchOutcome.permanentFailure(request.messageId(), reason(e));
+
+} catch (MailParseException | MailPreparationException | MessagingException e) {
+    // 메시지 구성 오류 - 영구.
+    log.error("메일 구성 실패 messageId={} reason={}", request.messageId(), reason(e));
+    return DispatchOutcome.permanentFailure(request.messageId(), reason(e));
+
+} catch (MailException e) {
+    // 전송 계층 오류(연결·타임아웃·SMTP 4xx) - 재시도 가치가 있다.
+    log.warn("메일 전송 실패(재시도 가능) messageId={} reason={}",
+            request.messageId(), reason(e));
+    return DispatchOutcome.retryableFailure(request.messageId(), reason(e));
+}</div>
+
+<p>세 분기의 순서가 곧 규칙이에요. 좁은 것부터 잡고 <code>MailException</code> 을 맨 아래 두면, 앞 두 개는 "고쳐야 하는 문제"고 마지막 하나는 "다시 걸어보면 되는 문제"가 됩니다. 나중에 재시도 루프를 붙일 때 이 경계를 그대로 씁니다.</p>
+
+<p>그리고 마스킹은 <b>테스트로 못박았어요.</b> 닫힌 포트로 실제 발송을 시도해 진짜 전송 실패를 만든 다음, 돌아온 실패 사유 문자열에 수신자 주소가 없는지 확인합니다. 주석으로 "PII 조심"이라고 적어두는 것과, 어기면 빨간불이 뜨는 것은 완전히 다른 물건이니까요.</p>
+
+<h2>4. HTML 본문에 style 블록을 쓸 수 없었다</h2>
+
+<p>HTML 메일을 만들면서 <code>&lt;style&gt;</code> 블록에 클래스를 정의하려다 렌더가 통째로 실패했어요. 원인은 우리가 고른 <b>치환 규약</b>이었습니다. 템플릿의 변수는 <code>{조직명}</code>, <code>{초대링크}</code> 처럼 중괄호로 감싸고, 치환이 끝난 뒤에 <b>남은 자리표시자가 있는지 검사</b>합니다. 변수명 오타를 발송 전에 잡으려고 넣은 안전장치예요 &mdash; 빈 값이 들어간 메일이 나가는 것보다 렌더에서 죽는 게 낫습니다.</p>
+
+<div class="obsv-code">// 치환 후 남은 자리표시자 탐지용. 변수명 오타를 발송 전에 잡는다.
+private static final Pattern PLACEHOLDER = Pattern.compile("\\{[^{}]+}");
+
+// 그래서 본문에 CSS 를 넣으면 렌더가 실패한다.
+//   .btn { color: #ffffff }
+//          ^^^^^^^^^^^^^^^^  자리표시자로 오인 -&gt; IllegalArgumentException
+//          "치환되지 않은 자리표시자가 남았다 (htmlBody)"</div>
+
+<p>CSS 선언 블록의 중괄호가 자리표시자 문법과 정확히 겹칩니다. 다행히 이건 <b>조용히 깨지는 부류가 아니라 시끄럽게 깨지는 부류</b>였어요. 렌더 단계에서 예외가 나고 영구 실패로 분류되니까 바로 보입니다. 그래서 결론은 간단했어요 &mdash; <b>인라인 <code>style</code> 속성만 쓴다.</b> 덤으로 메일 클라이언트 호환성도 좋아졌습니다. 어차피 상당수 메일 클라이언트가 <code>&lt;style&gt;</code> 블록을 제한적으로만 지원하니까요.</p>
+
+<p>여기서 나온 교훈은 문법 선택에 관한 거예요. <span class="obsv-mark">치환 문법을 고를 때는 본문에 자연히 등장할 문자와 충돌하는지를 먼저 봐야 합니다.</span> HTML 메일 본문에 중괄호가 나올 일이 없다고 생각했는데, CSS 가 바로 그거였죠. 그럼 왜 <code>{key}</code> 를 고집했냐면, 이 템플릿 문자열을 나중에 사내 메시징 플랫폼의 템플릿 테이블로 <b>손대지 않고 그대로 옮기기</b> 위해서였습니다. 규약이 외부에서 정해져 있었고, 그 대가로 CSS 블록을 포기한 거예요. 트레이드오프를 알고 낸 값이면 괜찮습니다.</p>
+
+<h2>5. 한글 제목·본문의 인코딩은 목(mock)으로 안 잡힌다</h2>
+
+<p>어댑터 단위 테스트는 발송기를 목으로 갈아끼우고 씁니다. 제목에 조직명이 치환됐는지, 실패가 올바른 분류로 돌아오는지, 실패 사유에 이메일이 안 남는지 &mdash; 여기까지는 목으로 충분히 잡혀요. 그런데 <b>한 가지 부류는 원리적으로 못 잡습니다.</b></p>
+
+<p>메일 제목의 한글은 그대로 나가지 않아요. RFC 2047 에 따라 <code>=?UTF-8?B?...?=</code> 같은 형태로 인코딩돼서 전송되고, 수신 측이 디코드합니다. 그런데 목을 쓰면 이 왕복이 일어나지 않아요. 내가 <code>setSubject("...")</code> 로 넣은 문자열을 <code>getSubject()</code> 로 꺼내는 것뿐이니까요. <span class="obsv-mark">목이 통과시키는 건 내가 넣은 문자열이지, 수신함에 도착한 문자열이 아닙니다.</span> 인코딩 설정을 빠뜨려도 이 테스트는 초록불이에요.</p>
+
+<div class="obsv-fig"><img src="images/03/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 목은 경계를 지우고, 경계에서만 나는 버그도 같이 지운다</div>
+
+<p>그래서 컨테이너로 진짜 메일 sink 를 띄우고, <b>실제 SMTP 로 보낸 뒤 받은 쪽에서 디코드된 값을 읽어</b> 검증하는 테스트를 따로 만들었어요. 한글 제목, 치환된 초대 링크, text 와 HTML 두 본문이 다 실렸는지까지 봅니다.</p>
+
+<div class="obsv-code">@Testcontainers
+class SmtpMessageDispatcherMailpitIntegrationTest {   // Spring 컨텍스트를 띄우지 않는다
+
+    @Container
+    static final GenericContainer&lt;?&gt; MAILPIT =
+            new GenericContainer&lt;&gt;("axllent/mailpit:v1.21")
+                    .withExposedPorts(1025, 8025);
+
+    @Test
+    void 초대_메일이_실제로_발송되고_한글과_링크가_온전하다() throws Exception {
+        ...
+        String list = get("/api/v1/messages");
+        // sink 가 디코드해서 돌려주는 값 - MIME 인코딩된 한글이 안 깨졌는지 본다
+        assertThat(list).contains("ACME 손해사정 계정 초대");
+
+        String detail = get("/api/v1/message/" + firstMessageId(list));
+        assertThat(detail).contains("\"Text\"").contains("\"HTML\"");  // 멀티파트
+        assertThat(detail).contains("accept?token=Tok3nAbc");          // 링크 치환
+    }
+}</div>
+
+<p>여기서 작지만 중요한 설계 결정이 하나 있었어요. <b>이 테스트는 Spring 컨텍스트를 일부러 띄우지 않습니다.</b> 부팅 비용 때문이기도 하지만 진짜 이유는 따로 있어요. 다른 통합 테스트들이 진짜 메일을 보내지 않도록, 발송기를 대신하는 <code>@Primary</code> 더블을 테스트 설정에 등록해뒀거든요. 컨텍스트를 띄우는 순간 그 더블이 진짜 어댑터를 가려버립니다.</p>
+
+<p><span class="obsv-mark">실제 발송을 막으려고 넣은 안전장치가, 실제 발송을 검증하려는 테스트를 막는 구조였어요.</span> 그래서 이 테스트만 컨텍스트 밖에서 어댑터를 직접 <code>new</code> 로 만들어 씁니다. 검증 대상이 어댑터와 SMTP 경계뿐이라 애초에 컨텍스트가 필요 없기도 했고요. 4편에서 다룰 "안전망이 자기 자신도 건너뛴다" 이야기의 예고편 같은 사건이었습니다.</p>
+
+<h2>6. 로컬 메일 sink 는 눈으로 볼 수 있어야 한다</h2>
+
+<p>로컬에서 메일을 어떻게 받을지도 결정이 필요했어요. 이게 없으면 개발하다가 <b>초대 메일이 진짜 사람에게 나갑니다.</b> 세 안을 놓고 봤습니다.</p>
+
+<p><b>A안 &mdash; 표준 SMTP + OSS 메일 sink.</b> <code>JavaMailSender</code> 를 쓰고, 로컬에는 SMTP 를 받아 삼킨 뒤 웹 UI 로 보여주는 컨테이너를 띄웁니다. dev/prod 는 관리형 SMTP 엔드포인트로 <b>설정만 바꾸면</b> 됩니다.</p>
+
+<p><b>B안 &mdash; 클라우드 SDK + 로컬 AWS 에뮬레이터의 메일 기능.</b> IAM 역할로 인증하니 관리할 시크릿이 0건이라 매력적이었어요. 그런데 막혔습니다. 이미 S3 와 큐 때문에 그 에뮬레이터를 띄워 쓰고 있었는데, <span class="obsv-mark">메일 서비스는 그 에뮬레이터의 유료 플랜 항목이었어요.</span> 무료판을 쓰고 있으니 확장이 불가능했습니다.</p>
+
+<p><b>C안 &mdash; 클라우드 SDK + 로컬은 no-op(로깅) 어댑터.</b> 시크릿도 0건이고 로컬 인프라도 안 늘어납니다. 가장 가벼워 보였지만 이걸 기각했어요. 이유는 하나예요 &mdash; <b>로컬에서 메일 렌더링을 눈으로 확인할 수 없습니다.</b> 버튼이 잘렸는지, 링크가 줄바꿈에 잘려 안 눌리는지, 다크 모드에서 글자가 안 보이는지는 로그로 알 수 없어요. 메일은 눈으로 봐야 검증되는 산출물입니다.</p>
+
+<p>그래서 A안. 관리형 SMTP 자격증명 1건을 시크릿 저장소에 추가하는 비용이, 유료 플랜 비용이나 로컬 검증 불가 비용보다 쌌어요. 2편에서 만든 포트 뒤에 있으니 나중에 SDK 로 바꾸는 비용도 낮고요.</p>
+
+<p>덤이 하나 있었습니다. <b>같은 컨테이너 이미지를 개발용 compose 와 통합 테스트 양쪽에서 씁니다.</b> 개발자가 로컬에서 눈으로 보는 대상과, CI 가 자동으로 검증하는 대상이 같아졌어요. 로컬에서 예쁘게 보이는데 CI 에선 다른 걸 검사하는 상황이 안 생깁니다.</p>
+
+<h2>7. 보너스 &mdash; 트랜잭션 메일과 광고 메일은 법적으로 다른 물건이다</h2>
+
+<p>이건 기본값 이야기는 아닌데, 한국에서 메일을 붙인다면 반드시 알아야 하는 갈림길이라 같이 적어요.</p>
+
+<p>초대 메일, 비밀번호 재설정, 결제 영수증 같은 건 <b>트랜잭션 메일</b>입니다. 사용자의 행동에 대한 응답이에요. 반면 광고성 정보를 담은 메일은 정보통신망법상 별도 의무가 붙습니다 &mdash; 제목 앞 <code>(광고)</code> 표기, 본문의 수신거부 방법 명시, 사전 수신동의 같은 것들이요. <span class="obsv-mark">같은 SMTP 로 같은 코드를 타고 나가지만 법적으로는 다른 물건입니다.</span></p>
+
+<p>우리 초대 메일은 트랜잭션 메일이라 그 의무 대상이 아니에요. 문제는 <b>재사용</b>입니다. 잘 만든 HTML 템플릿이 저장소에 하나 있으면, 반년 뒤 마케팅 발송을 붙이는 사람이 그걸 복사해 갑니다. 그 순간 위법이 돼요. 그래서 템플릿 레지스트리 클래스 주석에 이걸 못박아뒀습니다.</p>
+
+<div class="obsv-code">/**
+ * 템플릿 레지스트리. 코드 -&gt; MailTemplate 를 찾는다.
+ *
+ * 초대 메일은 &lt;b&gt;트랜잭션 메일&lt;/b&gt;이라 정보통신망법상 광고 표기
+ * (제목 (광고) · 수신거부 안내) 대상이 아니다.
+ * 광고성 발송은 delivery 모듈이 다룬다 - 이 템플릿을 그쪽에 재사용하지 않는다.
+ *
+ * HTML 본문에 style 블록을 쓰지 않는다 - CSS 중괄호가 {key} 치환 규약과
+ * 충돌한다. 스타일은 인라인 속성으로만 넣는다.
+ */</div>
+
+<p>왜 위키가 아니라 코드에 적었냐면요. <b>재사용은 악의가 아니라 선의로 일어나기 때문입니다.</b> "이미 있는 거 쓰자"는 좋은 습관이잖아요. 그러니 금지는 나쁜 마음을 먹은 사람이 찾아보는 자리가 아니라, <span class="obsv-mark">재사용하려는 사람이 반드시 여는 파일</span>에 있어야 합니다. 그 파일이 바로 템플릿 클래스예요. 위키 문서는 아무도 안 엽니다.</p>
+
+<h2>8. 여섯 개의 공통점 &mdash; 전부 "동작하지만 틀린 상태"였다</h2>
+
+<p>여섯 개를 다 적고 나서 보니 공통점이 하나 있었어요. <b>전부 에러를 내지 않습니다.</b></p>
+
+<p>타임아웃이 무한이어도 SMTP 가 정상일 때는 아무 일 없어요. 평문 폴백은 메일이 잘 도착하니까 성공입니다. 스택 트레이스를 남기는 건 그냥 평범한 에러 로그로 보이고요. 목 테스트는 초록불이고, no-op 어댑터도 성공을 반환합니다. 어느 것 하나 "여기 문제 있다"고 말해주지 않아요. 문제는 <b>평소에는 안 나고, 하필 안 좋을 때만 납니다.</b></p>
+
+<div class="obsv-fig"><img src="images/03/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 기본값은 첫 실행의 성공에 맞춰져 있고, 운영은 그 반대를 원한다</div>
+
+<p>구조를 보면 이유가 명확해요. 기본값은 <b>"가장 많은 환경에서 일단 돌아가게"</b> 맞춰집니다. 타임아웃을 짧게 잡아두면 느린 네트워크의 첫 사용자가 막히고, TLS 를 강제하면 오래된 서버에 못 붙고, 목을 정직하게 만들면 테스트가 무거워지죠. 라이브러리 저자 입장에서는 전부 합리적인 선택이에요. 다만 그 최적화의 수혜자가 <b>운영 중인 우리가 아닐 뿐</b>입니다.</p>
+
+<p>그래서 결론은 시점에 관한 거예요. <span class="obsv-mark">기본값을 점검하는 시점은 "안 될 때"가 아니라 "되는 것처럼 보일 때"입니다.</span> 안 될 때는 어차피 봅니다. 문제는 잘 되는 것처럼 보이는 순간에 아무도 안 본다는 거예요. 붙인 게 처음 동작한 그 순간이, 사실 기본값을 뒤져야 하는 유일한 타이밍입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔎 새 클라이언트를 붙였을 때 던질 3문</div>
+  &bull; <b>이 설정을 안 쓰면 값이 뭐가 되나?</b> 문서에 "기본값: 없음 / 무한 / 0" 이 적혀 있진 않나?<br>
+  &bull; <b>이 안전장치가 실패하면 실패로 끝나나?</b> 아니면 덜 안전한 경로로 계속 가나?<br>
+  &bull; <b>이 테스트가 초록불일 때, 실제 경계를 넘어본 적이 있나?</b> 아니면 내가 넣은 값을 다시 꺼내 본 것뿐인가?
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>메일 하나 붙이며 밟은 여섯 개는 전부 "동작하지만 틀린 상태"였다.</b> 무한 타임아웃도, 평문 폴백도, 주소가 실린 스택 트레이스도, 경계를 안 넘는 목 테스트도, 눈으로 볼 수 없는 no-op 어댑터도 에러를 내지 않는다.<br><br>
+  기본값은 "처음 써보는 사람의 첫 실행이 성공하는 것"에 맞춰져 있고, 운영은 정확히 그 반대 &mdash; "이상하면 시끄럽게 멈추는 것"을 원한다. 그래서 기본값을 점검하는 시점은 안 될 때가 아니라, 되는 것처럼 보일 때다.
+</div>
+
+</div>

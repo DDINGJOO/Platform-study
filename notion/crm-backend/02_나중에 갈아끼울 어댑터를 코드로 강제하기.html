@@ -1,0 +1,212 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 crm-backend 작업일지 &mdash; 2편</div>
+  1편. 메일을 커밋 뒤로 보내기로 한 순간<br>
+  <b>2편. 나중에 갈아끼울 어댑터를 코드로 강제하기</b> &larr; 지금 이 글<br>
+  3편. 메일 붙이며 밟은 기본값 여섯 개<br>
+  4편. 조용히 건너뛰는 안전망은 자기 자신도 건너뛴다
+</div>
+
+<p>1편에서는 초대 메일을 커밋 뒤로 보내기로 한 이야기를 했어요. 그런데 그 결정 앞에 사실 더 큰 갈림길이 하나 있었습니다. <b>이 메일을 누가 보내느냐</b> 였어요.</p>
+
+<p>정답은 처음부터 명확했습니다. 사내에는 이미 공용 메시징 서비스가 있고, 메시지 발송은 거기에 맡기는 게 맞아요. 템플릿 관리도, 발송 이력도, 재시도와 데드레터도, 중복 발송 판정도 전부 그쪽에 있으니까요. 문제는 딱 하나였습니다. <b>그 시스템에 이메일 채널이 아직 준비되지 않았어요.</b> 채널 자리는 열려 있는데 실제로 보내는 구현이 없는 상태였고요.</p>
+
+<p>그래서 임시로 우리가 직접 붙이기로 합니다. 그리고 이 지점에서 누구나 하는 말이 있죠. <b>"나중에 갈아끼우면 돼요."</b> 그 말은 대개 지켜지지 않습니다. 게을러서가 아니에요. 임시 구현이 자기 모양대로 주변을 물들여버리기 때문입니다.</p>
+
+<p>그래서 오늘의 질문은 이겁니다. <b>"나중에 갈아끼운다"를 말이 아니라 코드로 만들려면 무엇을 해야 하는가.</b></p>
+
+<h2>1. 권고는 A 였고, 선택은 C 였다</h2>
+
+<p>설계 문서의 첫 결정 지점(D0)은 "발송 소유 주체"였어요. 옵션은 셋이었습니다.</p>
+
+<p><b>A. 이 서비스가 직접 발송하고 계속 소유한다.</b> 계정 온보딩이 외부 서비스 가용성에 묶이지 않고, 다른 저장소에 의존할 일도 없어요. 대신 SMTP 호출 코드와 템플릿 한 장이 조직 안에 중복으로 존재하게 됩니다.</p>
+
+<p><b>B. 공용 메시징 서비스에 이메일 채널을 만들고 거기로 위임한다.</b> 템플릿·이력·재시도·중복 판정·관측성을 통째로 재사용할 수 있고, 덤으로 조직 전체가 메일 채널을 얻어요. 대신 <b>초대는 인증 경로</b>라서, 그 서비스가 죽으면 신규 업체 온보딩이 같이 죽습니다. 다른 저장소의 PR·리뷰·배포도 기다려야 하고요.</p>
+
+<p><b>C. 임시로 직접 붙이되, 이관을 전제한다.</b> 지금 되고 나중에 옮긴다는 얘기죠. 문서의 "잃는 것" 칸에는 이렇게 적혀 있었어요. <span class="obsv-mark">"이관이 실제로 일어나지 않으면 A 와 같아진다 &mdash; '임시'라는 라벨만 남는다."</span></p>
+
+<p>제가 표를 채우면서 권고로 표시한 건 <b>A</b> 였어요. 중복되는 양(SMTP 호출 한 덩이 + 템플릿 한 장)이 결합 비용(가용성·크로스 저장소·수신동의 정책)보다 작다고 봤거든요. 그런데 <b>실제 선택은 C 였습니다.</b> 발송 실행 지점이 조직 안에 두 곳 생기는 걸 원하지 않았고, 소유 범위를 최소로 두고 싶었어요. 조직 일관성을 우선하고 운영 단순성을 내준 겁니다.</p>
+
+<p>권고와 선택이 갈렸을 때 할 수 있는 건 두 가지예요. 하나는 갈렸다는 사실을 문서에서 지우는 것. 다른 하나는 갈렸다고 적고, <b>선택된 쪽이 요구하는 대가를 그 자리에서 청구하는 것</b>이고요. 문서에는 그래서 소제목이 하나 더 붙었습니다.</p>
+
+<p style="font-family:'Nanum Pen Script',cursive;font-size:26px;color:#b3502f;text-align:center;margin:26px 0">"C 선택이 강제하는 설계 요구 (말이 아니라 코드로)"</p>
+
+<p>이 괄호가 이 글의 전부예요. C 를 고른 사람은 "나중에 갈아끼울게요"라고 말할 자격을 얻은 게 아니라, <b>갈아끼울 수 있는 상태를 지금 코드로 만들어둘 의무</b>를 진 겁니다.</p>
+
+<h2>2. 목표 계약을 먼저 읽고, 포트를 거기에 맞췄다</h2>
+
+<p>그래서 코드를 쓰기 전에 한 일이 있어요. <b>이관 대상 시스템의 실제 API 계약을 먼저 읽었습니다.</b> 요청 타입, 응답 타입, 그리고 중복 발송 판정 규칙이 적힌 문서까지요.</p>
+
+<p>이게 순서상 이상해 보일 수 있어요. 지금 붙일 건 SMTP 인데 왜 다른 시스템의 HTTP 계약을 읽느냐고요. 이유는 간단합니다. <span class="obsv-mark">포트의 모양을 결정하는 건 지금의 구현이 아니라 미래의 구현이어야 하거든요.</span> 지금 것에 맞춰 포트를 만들면 그 포트는 SMTP 모양이 되고, 이관하는 날 포트부터 바꿔야 합니다. 포트를 바꾸면 그걸 쓰는 호출부가 전부 따라 바뀌고요. 그 순간 "어댑터 교체"는 "리팩터링"이 됩니다.</p>
+
+<p>계약을 읽고 나서 포트 세 조각을 이렇게 고정했어요.</p>
+
+<div class="obsv-code">// 포트 — 발송 수단이 바뀌어도 이 인터페이스를 쓰는 코드는 고치지 않는다
+public interface MessageDispatcher {
+    DispatchOutcome dispatch(DispatchRequest request);
+}
+
+// 요청 — 목표 API 의 요청 바디와 1:1. channel 이 없다(템플릿 코드가 결정한다)
+public record DispatchRequest(
+        String messageId,               // 결정적 멱등키. 랜덤 UUID 금지
+        String templateCode,            // 채널·제목·본문·필수변수를 이 코드가 결정
+        String recipient,               // 수신자 주소
+        Map&lt;String, String&gt; variables   // 치환 변수 (키는 한글)
+) { ... }
+
+// 결과 — 예외가 아니라 3분류로 돌려준다 (목표 시스템의 응답과 같은 모양)
+DispatchOutcome.success(messageId, providerMessageId);
+DispatchOutcome.permanentFailure(messageId, reason);   // retryable = false
+DispatchOutcome.retryableFailure(messageId, reason);   // retryable = true</div>
+
+<p>여기서 제일 의외였던 게 첫 줄이에요. <b>포트가 채널을 인자로 받지 않습니다.</b> 메일을 보내는 포트인데 "이메일로 보내라"는 정보가 어디에도 없어요.</p>
+
+<p>목표 시스템의 규칙이 그렇기 때문입니다. 거기서는 <b>템플릿이 채널을 결정</b>해요. 호출하는 쪽이 "이건 문자로", "이건 알림톡으로"를 지정하는 게 아니라, 템플릿 코드를 넘기면 그 템플릿에 묶인 채널로 나갑니다. 그런데 우리가 지금 편하다고 <code>dispatch(EMAIL, ...)</code> 같은 시그니처를 만들어두면, 이관하는 날 그 인자를 받아줄 곳이 없어요. 시그니처가 깨지고, 호출부가 전부 따라 바뀝니다.</p>
+
+<p>그래서 편의를 하나 포기했어요. 대신 <code>templateCode</code> 하나가 채널·제목·본문·필수 변수를 전부 결정하게 뒀습니다. 지금은 템플릿이 한 장뿐이라 이 구조가 과해 보이는데, <b>과해 보이는 게 목적</b>이에요. 이 포트는 지금 편하려고 만든 게 아니라 나중에 안 바뀌려고 만든 거니까요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📋 C 를 고르면 따라오는 제약 여덟 개</div>
+  설계 문서에 번호를 붙여 표로 박아둔 것들이에요. 근거 칸에는 전부 <b>목표 시스템 계약의 어느 줄인지</b>를 적었습니다. "이렇게 하는 게 좋아 보여서"가 아니라 "저기가 이래서"여야 나중에 검증이 되니까요.<br><br>
+  &bull; <b>C1</b> 포트는 <code>channel</code> 을 받지 않는다 &mdash; 채널은 템플릿이 결정한다<br>
+  &bull; <b>C2</b> 요청 필드는 정확히 네 개 &mdash; 목표 API 바디와 1:1<br>
+  &bull; <b>C3</b> <code>messageId</code> 는 호출자가 <b>결정적으로</b> 만든다 (랜덤 UUID 금지)<br>
+  &bull; <b>C4</b> 재발송은 <b>회차가 달라야</b> 새 발송이 된다 &mdash; 발송 횟수 컬럼이 필요하다<br>
+  &bull; <b>C5</b> 본문 템플릿은 <code>{key}</code> 치환 규약을 쓴다<br>
+  &bull; <b>C6</b> 변수명은 한글 키 &mdash; 이관 시 무변환<br>
+  &bull; <b>C7</b> 결과는 성공 / 영구실패 / 일시실패 3분류<br>
+  &bull; <b>C8</b> <code>Reply-To</code> 헤더를 쓰지 않는다 &mdash; 목표 계약에 그 필드가 없다
+</div>
+
+<div class="obsv-fig"><img src="images/02/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 포트는 지금의 구현이 아니라 미래의 계약을 보고 있어야 한다</div>
+
+<h2>3. 제일 값어치를 한 제약 두 개</h2>
+
+<p>여덟 개 중에 둘이 특히 좋았어요. 둘 다 "지금 하면 편한데 안 한" 것들입니다.</p>
+
+<h3>3-1. messageId 를 호출자가 결정적으로 만든다</h3>
+
+<p>발송 요청에는 <code>messageId</code> 라는 필드가 있어요. 이름만 보면 그냥 식별자니까 <code>UUID.randomUUID()</code> 를 박고 싶어집니다. 한 줄이고, 유일성도 보장되고, 로그 상관관계 추적에도 아무 문제가 없거든요.</p>
+
+<p>그런데 목표 시스템의 문서에 이런 문장이 있었어요. 이 값은 <b>호출자가 공급한다</b>고요. 발송 서비스가 스스로 만들지 않습니다. 왜냐하면 그 값이 <b>중복 발송을 판정하는 기준</b>이기 때문이에요. 같은 <code>messageId</code> 로 들어온 요청이 이미 성공한 이력에 있으면 다시 보내지 않습니다.</p>
+
+<p>여기서 랜덤 UUID 의 문제가 드러나요. <span class="obsv-mark">랜덤이면 같은 발송을 두 번 요청해도 값이 달라서, 중복 판정이 원천적으로 불가능해집니다.</span> 멱등 키 자리에 매번 새 값을 넣는 건 멱등을 끄는 것과 같아요.</p>
+
+<p>그래서 형식을 <code>{용도}:{대상 식별자}:{회차}</code> 로 잡았습니다. 같은 입력이면 언제 계산해도 같은 값이 나와요.</p>
+
+<div class="obsv-code">// 결정적 멱등키 — 같은 초대의 같은 회차는 언제 계산해도 같은 값이다
+// 형식: {용도}:{대상 식별자}:{회차}
+private static String messageId(InvitationIssuedEvent event) {
+    return "INVITE:" + event.invitationId() + ":" + event.sendCount();
+}
+
+// INVITE:42:0       최초 발송
+// INVITE:42:1       재발송 1회차 — 회차가 달라야 "새 발송"으로 인정된다
+// UUID.randomUUID() — 매번 다른 값. 중복 판정 자체가 성립하지 않는다</div>
+
+<p>회차가 왜 들어가는지도 같은 규칙에서 나와요. 관리자가 "메일 못 받았대요"라며 재발송을 누르면, 그건 <b>같은 초대에 대한 다른 발송</b>입니다. 회차를 빼면 재발송이 중복으로 걸러져서 영원히 안 나가요. 그래서 초대 레코드에 발송 횟수 컬럼이 필요해집니다(C4). 지금은 안 쓰는 값 하나를 미리 들고 있는 셈인데, 그 컬럼이 없으면 이관하는 날 재발송 기능이 조용히 죽어요.</p>
+
+<p>재밌는 건 이 제약이 <b>지금 당장은 아무 효과가 없다</b>는 거예요. 오늘의 SMTP 어댑터는 <code>messageId</code> 를 로그에 찍는 것 말고는 아무 데도 안 씁니다. 그런데 이건 낭비가 아니라 <b>보험</b>이에요. 이관 후에 중복을 판정할 주체는 우리가 아니라 목표 시스템이고, 그때 기준이 되는 게 이 값이니까요. 지금 랜덤으로 만들어두면 그날 코드를 고쳐야 하고, 고치려면 이 값이 어디서 어떻게 만들어지는지 다시 추적해야 합니다.</p>
+
+<h3>3-2. Reply-To 를 쓰지 않는다</h3>
+
+<p>초대 메일에는 "문의는 여기로" 같은 안내가 들어가는 게 자연스러워요. 받는 사람이 회신 버튼을 누르면 초대한 관리자에게 바로 가면 좋겠고요. SMTP 로는 이게 아주 쉽습니다. <code>Reply-To</code> 헤더 한 줄이면 끝이에요.</p>
+
+<p>그런데 목표 시스템의 요청 바디에 그 필드가 없었어요. 필드가 네 개(<code>messageId</code>, <code>templateCode</code>, <code>recipient</code>, <code>variables</code>)뿐이라 회신 주소를 실을 자리가 아예 없습니다.</p>
+
+<p>여기서 선택지는 둘이에요. 지금 되니까 쓰고 이관할 때 고민한다. 아니면 지금부터 안 쓴다. <b>후자를 골랐습니다.</b> 이유는 이관하는 날의 그림을 그려보면 명확해져요 &mdash; 어댑터를 교체했더니 <b>기능이 하나 사라져 있는</b> 겁니다. 회신이 안 되게 된 거죠. 그럼 이관은 개선이 아니라 후퇴가 되고, 그 후퇴를 설명해야 하는 사람은 이관을 미루고 싶어집니다.</p>
+
+<p>그래서 원칙을 이렇게 세웠어요. <span class="obsv-mark">지금 할 수 있는 것과 나중에도 할 수 있는 것의 교집합만 쓴다.</span> 문의처는 헤더에서 빼고 <b>본문 변수</b>로 옮겼습니다. 본문 변수는 양쪽 다 있는 기능이니까요.</p>
+
+<div class="obsv-code">문의: {초대자}
+
+본 메일은 발신 전용입니다. 회신 대신 위 문의처로 연락해 주세요.</div>
+
+<p>기능적으로는 살짝 후퇴예요. 회신 버튼을 누르면 발신 전용 주소로 갑니다. 대신 <b>이관하는 날 아무것도 잃지 않아요.</b> 이 문구는 지금 그대로 목표 시스템의 템플릿 행으로 옮겨갑니다.</p>
+
+<div class="obsv-fig"><img src="images/02/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 겹치는 영역만 쓰기로 하면 이관이 무손실이 된다</div>
+
+<h2>4. 치환 규약도 이관을 본다</h2>
+
+<p>메일 본문은 문자열 템플릿이에요. 의존성을 하나도 안 늘리려고 템플릿 엔진 없이 <code>{key}</code> 치환으로 만들었습니다. 그런데 이 규약을 고른 이유가 "간단해서"가 아니었어요.</p>
+
+<p>목표 시스템이 자체 렌더링하는 채널에서 쓰는 표기가 <code>{key}</code> 였고, 변수명 예시가 한글이었거든요. 그래서 저희도 똑같이 맞췄습니다. 변수는 <code>{조직명}</code>, <code>{초대링크}</code>, <code>{만료일}</code>, <code>{초대자}</code> 네 개고요.</p>
+
+<p>이렇게 해두면 이관 작업의 절반이 <b>복사 붙여넣기</b>가 됩니다. 지금 코드 안에 있는 제목·본문 문자열을 목표 시스템의 템플릿 테이블에 한 행으로 그대로 넣으면 끝이에요. 변환 코드도, 변수명 매핑표도 필요 없습니다. <span class="obsv-mark">이관 비용의 상당 부분은 기능 차이가 아니라 표기 차이에서 나와요.</span></p>
+
+<p>대가도 하나 생겼어요. <code>{key}</code> 치환을 쓰기로 한 순간 <b>HTML 본문에 <code>&lt;style&gt;</code> 블록을 쓸 수 없게 됐습니다.</b> CSS 의 중괄호가 치환 자리표시자와 구분이 안 되거든요. 이 얘기와, 렌더 후에 남은 자리표시자를 잡아내는 장치는 3편에서 다룰게요.</p>
+
+<h2>5. 하지 않기로 한 것도 적는다</h2>
+
+<p>제약을 여덟 개 박았다고 하면 뭐든 다 대비한 것처럼 들리는데, 그렇지 않아요. <b>일부러 안 한 것</b>이 세 가지 있고, 그걸 적어두는 게 제약을 박는 것만큼 중요했습니다.</p>
+
+<p><b>첫째, 멱등 자체는 구현하지 않았어요.</b> <code>messageId</code> 를 결정적으로 만들어서 실어 보내기만 하고, 그 값으로 중복을 막는 로직은 안 넣었습니다. 발송 이력 테이블도 없고, 같은 키로 두 번 들어오면 두 번 나가요. 지금은 커밋 후 리스너가 딱 한 번 호출되는 구조라 중복 위험이 낮고, 무엇보다 <b>그 판정은 이관 후 목표 시스템의 몫</b>이거든요. 우리가 만들면 이관하는 날 지워야 하는 코드가 됩니다. 키는 만들고 판정은 안 만든다 &mdash; 어색해 보이지만 이게 C 선택에 맞는 분업이에요.</p>
+
+<p><b>둘째, 타임아웃과 서킷브레이커의 필요성은 사라지지 않고 이월됐습니다.</b> 지금은 SMTP 라 타임아웃만 명시로 박아뒀어요(3편에서 다룰 지뢰 중 하나입니다). 그런데 이관하면 이게 HTTP 호출이 돼요. 초대는 인증 경로인데 외부 서비스에 동기 호출을 거는 구조가 되는 거라, 타임아웃·서킷브레이커·실패 시 재발송 경로를 <b>그때 다시 설계해야</b> 합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ "지금 안 함"과 "영영 안 함"은 다르다</div>
+  설계 문서에 이 항목을 별도 문단으로 떼어 적었어요. "이관 시점에 반드시 해결할 것(지금은 미해결로 남긴다)" 이라고요. 직접 소유안(A)을 기각한 순간 <b>이 위험은 사라진 게 아니라 미래로 옮겨진 것</b>이기 때문입니다.<br><br>
+  그리고 이월은 저절로 되지 않아요. <b>적어두지 않은 이월 항목은 이월된 게 아니라 잊힌 겁니다.</b> 기각 결정의 부작용은 기각한 그 자리에, 언제 다시 꺼내야 하는지와 함께 적어야 이월이 됩니다.
+</div>
+
+<p><b>셋째, 실 어댑터를 조건부 등록으로 뒀어요.</b> 설정 값이 맞을 때만 빈으로 올라옵니다. 이게 교체 지점이 설정 한 줄이라는 증거예요.</p>
+
+<div class="obsv-code">// 실 어댑터 — 설정이 켜진 환경에서만 빈이 된다
+@Component
+@ConditionalOnProperty(name = "account.mail.dispatcher", havingValue = "smtp")
+class SmtpMessageDispatcher implements MessageDispatcher { ... }</div>
+
+<div class="obsv-code"># application-develop.yml
+account:
+  mail:
+    # 발송 전략(MessageDispatcher 구현체 선택). 현재 유효값: smtp
+    # 이관 후보: messaging-rest(공용 메시징 서비스 호출) · ses-api · sqs
+    dispatcher: smtp</div>
+
+<p>주석에 후보를 적어둔 건 장식이 아니에요. 이 파일을 여는 사람에게 <b>"여기가 갈아끼우는 자리다"</b>를 알려주는 표지판입니다. 새 어댑터를 만들고 이 값을 바꾸면 교체가 끝나요. 옛 어댑터는 지우지 않아도 되고요 &mdash; 롤백이 설정 한 줄이 됩니다.</p>
+
+<p>덤으로 얻은 것도 있었어요. 조건부 등록이라 테스트 컨텍스트에는 실 어댑터가 애초에 안 뜹니다. 그 자리는 테스트 더블로 채우면 되고요. 이 얘기는 1편에서 fail-fast 청구서로 다뤘던 그 구조예요.</p>
+
+<h2>6. 임시 구현이 영구화되는 진짜 이유</h2>
+
+<p>"나중에 갈아끼우면 돼요"가 안 지켜지는 이유를 보통 의지 문제로 설명해요. 급해서, 우선순위에서 밀려서, 다들 잊어버려서. 물론 그것도 있는데, 제 생각엔 더 구조적인 이유가 있습니다.</p>
+
+<p><span class="obsv-mark">임시 구현은 가만히 있지 않고 자기 모양대로 호출부를 물들여요.</span> SMTP 어댑터를 먼저 만들고 그 위에 포트를 씌우면, 포트에 <code>Reply-To</code> 가 생기고 <code>subject</code> 와 <code>htmlBody</code> 가 생기고 <code>channel</code> 인자가 생깁니다. 전부 지금 편한 것들이에요. 그리고 그 포트를 쓰는 코드가 열 군데로 늘어나고요.</p>
+
+<p>여섯 달 뒤에 이관을 시도하면, 바꿔야 하는 게 어댑터 하나가 아니라 <b>포트와 그 포트를 쓰는 열 군데</b>입니다. 그러면 견적이 "하루"에서 "스프린트 하나"로 뜁니다. 그렇게 이관은 계속 다음 분기로 밀리고, 임시 구현은 임시라는 라벨을 붙인 채로 영구가 돼요.</p>
+
+<p>그래서 "나중에 갈아끼운다"를 지키려면 필요한 건 의지가 아니라 구조예요. <b>교체 비용을 어댑터 안에 가둬야 합니다.</b> 어댑터 밖으로 새어 나간 만큼이 그대로 교체 비용이 되거든요. 그리고 비용을 가두려면 포트가 <b>지금의 구현이 아니라 목표 계약을 미리 닮아 있어야</b> 하고요.</p>
+
+<p>정리하면, 임시 구현을 만들 때 진짜로 설계해야 하는 건 임시 구현이 아니에요. <b>그 경계입니다.</b> 안쪽은 대충 만들어도 괜찮아요 &mdash; 어차피 버릴 거니까요. 경계가 목표 계약과 다르게 생긴 순간, 버릴 수 없게 되는 겁니다.</p>
+
+<p>마지막으로 하나. 이 글의 제약 여덟 개는 전부 <b>지금은 아무 효과가 없는</b> 것들이에요. 결정적 키는 아무도 안 보고, 안 쓴 <code>Reply-To</code> 는 존재하지 않고, 한글 변수명은 SMTP 에게 아무 의미가 없습니다. 오늘 실행되는 동작은 이 여덟 개를 다 지우고 짜도 똑같아요. <span class="obsv-mark">그게 임시 구현에 제약을 박는다는 일의 성질이에요 &mdash; 오늘의 동작에 안 나타나는 것에 시간을 쓰는 일입니다.</span> 값을 치르는 시점과 값어치를 받는 시점이 다르니까, 그 사이를 이어주는 건 문서와 주석뿐이고요. 그래서 근거 칸에 "저기가 이래서"를 적어두는 겁니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>"나중에 갈아끼우면 돼요"는 계획이 아니라 부채 선언이다.</b> 계획으로 만들려면 목표 계약을 먼저 읽고 포트를 거기에 맞춰야 해요. 채널 인자를 받지 않고, 필드를 목표 API 와 1:1 로 고정하고, 멱등 키를 결정적으로 만들고, 목표 계약에 없는 <code>Reply-To</code> 는 지금 쓸 수 있어도 안 씁니다. 대신 하지 않기로 한 것 &mdash; 멱등 판정, 서킷브레이커 &mdash; 은 이월 항목으로 적어둬요. 적어두지 않은 이월은 이월이 아니라 망각이니까요.<br><br>
+  임시 구현이 영구화되는 건 게을러서가 아니라 <b>임시 구현이 자기 모양대로 호출부를 물들이기 때문</b>이다. 그래서 임시 구현을 만들 때 진짜 설계해야 하는 건 구현이 아니라 그 경계다.
+</div>
+
+</div>

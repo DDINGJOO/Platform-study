@@ -1,0 +1,100 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지</div>
+  1편 &mdash; 빈 저장소에서 설계 리뷰까지<br>
+  2편 &mdash; 리뷰에서 맞은 네 발을 수리하다<br>
+  3편 &mdash; 라벨 붙이고 재실행하세요는 거짓말이었다<br>
+  <b>4편 &mdash; 문서를 믿었다가 두 번 막혔다</b> &larr; 지금 이 글<br>
+  5편 &mdash; plan 역할은 왜 읽기 전용이 될 수 없나<br>
+  6편 &mdash; AdministratorAccess를 붙여도 소용없게 만들기<br>
+  7편 &mdash; 드리프트는 이슈로, 고장은 실패로
+</div>
+
+<p>같은 워크플로를 세 번 돌렸는데 세 번 다 같은 빨간 줄이었어요. <code>Not authorized to perform sts:AssumeRoleWithWebIdentity</code>. GitHub Actions 가 AWS 액세스 키 없이 일하려면 OIDC 를 쓰고, 그러려면 AWS 역할에 <b>신뢰 정책</b>(이 역할을 누구에게 빌려줄지 적는 문서)이 필요해요. 그 정책은 공식 문서 예제를 그대로 옮겼고, 오타도 없고, OIDC 프로바이더(AWS 가 GitHub 토큰을 믿도록 등록해두는 항목)도 계정에 이미 있어요. 그런데 거부됩니다.</p>
+<p>이 글은 Terraform 저장소에 CI/CD 를 붙이며 하루 사이 두 번, 똑같은 방식으로 막힌 이야기예요. 한 번은 이 신뢰 정책에서, 한 번은 GitHub Environment 에서요. 두 사건의 원인은 서로 다른데 <b>내가 틀린 방식은 같았습니다.</b> 문서가 된다고 말한 범위와, 내가 된다고 읽은 범위가 달랐어요.</p>
+
+<h2>1. 오타도 권한도 아니었다</h2>
+
+<p>신뢰 정책은 GitHub 토큰의 <code>sub</code>(주체) 클레임이 내가 적어둔 문자열과 같은지를 봐요. 문서 예제의 조건은 <code>repo:&lt;org&gt;/&lt;repo&gt;:ref:refs/heads/main</code> 이렇게 생겼어요. 저장소 이름과 브랜치로 주체를 고정하는 거죠. 그대로 썼는데 거부됐으니 남은 가능성은 하나였어요 &mdash; 내가 비교된다고 믿은 두 문자열이 애초에 다른 것. 그래서 실제 발급값을 직접 물어봤습니다.</p>
+
+<div class="obsv-code">$ gh api repos/&lt;org&gt;/&lt;repo&gt;/actions/oidc/customization/sub --jq .sub_claim_prefix
+
+기대한 sub:  repo:{조직}/{저장소}:ref:refs/heads/main
+실제 sub:    repo:{조직}@{조직ID}/{저장소}@{저장소ID}:ref:refs/heads/main
+             (@ 뒤 숫자 ID 두 개가 끼어든다 &mdash; 실제 값은 가렸어요)</div>
+
+<p>프리픽스에 숫자 ID 가 들어가는 이 형식을 <b>불변 주체 클레임(immutable subject claim)</b>이라고 불러요. 이름은 바뀔 수 있지만 숫자 ID 는 안 바뀌니까, 저장소를 지우고 같은 이름으로 다시 만든 사람이 옛 역할을 물려받지 못하게 막아주죠. 보안상 더 나은 형식인데, <span class="obsv-mark">그래서 문서 예제와 실제 발급값의 형식이 어긋납니다.</span> 문서는 이 옵션이 꺼진 기본 조직을 가정하고 쓰여 있었고요.</p>
+
+<p>한 가지 덧붙이면, 위 명령의 응답에는 <code>use_immutable_subject</code> 라는 필드도 같이 옵니다. 그런데 제 저장소는 <b>그 값이 <code>false</code> 인데도</b> 프리픽스에는 ID 가 들어 있었어요. 설정 이름으로 형식을 추론하면 또 틀리는 거죠. <span class="obsv-mark">옵션이 켜졌는지 따지지 말고, 프리픽스 값을 그대로 읽어서 쓰세요.</span></p>
+
+<h2>2. 도피로가 하나 보였는데, 그게 함정이었다</h2>
+
+<p>형식이 다른 걸 알자 제일 먼저 떠오른 건 와일드카드였어요. <code>repo:{조직}/{저장소}:*</code> 로 두면 형식 고민이 사라지죠. 그런데 이건 <b>이 저장소의 아무 브랜치에서나 이 역할을 가져갈 수 있다</b>는 뜻이에요. 저장소 이름 자리까지 넓히면 조직의 다른 저장소도 들어와요. apply 역할(실제로 인프라를 바꾸는 쪽)이라면 계정을 그대로 넘겨주는 셈이죠. 그래서 이 도피로는 기억이 아니라 코드로 막아뒀어요.</p>
+
+<p>좁히는 쪽으로 가면 또 하나 걸립니다. plan 역할(변경을 미리 계산만 하는 쪽)을 쓰는 곳은 세 군데(PR, main push, 코드와 실제 인프라가 어긋났는지 보는 야간 점검)인데 발급되는 sub 는 세 가지가 아니라 두 가지예요. 호출 지점 수와 sub 개수가 1:1 이 아닌 거죠. 한쪽만 허용해두면 나머지가 거부되는데 그 실패는 첫 PR 이 아니라 며칠 뒤 새벽 스케줄에서 나타나기도 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💣 sub 를 좁힐 때 밟은 지뢰</div>
+  &bull; 와일드카드 금지를 <code>!strcontains(var.github_subject_prefix, "*")</code> validation 으로 변수에 박았다<br>
+  &bull; plan 역할은 <code>:pull_request</code> 와 <code>:ref:refs/heads/main</code> 두 개를 함께 허용해야 한다 (스케줄 실행은 main ref 로 발급된다)<br>
+  &bull; apply 역할은 <code>:environment:&lt;env&gt;</code> 하나만 허용한다
+</div>
+
+<h2>3. 두 번째 벽, 422</h2>
+
+<p>OIDC 를 뚫고 나서 승인 게이트를 붙일 차례였어요. 설계는 깔끔했어요. GitHub Environment 는 배포 대상마다 보호 규칙을 거는 기능이에요. prod apply 를 여기 required reviewer(필수 승인자)로 막으면, 승인 전에는 job 이 시작조차 하지 않으니 <b>OIDC 자격증명 자체가 발급되지 않아요.</b> 권한을 뺏는 게 아니라 발급을 막는 구조라 마음에 들었죠. API 를 한 번 쏘고 무너졌습니다.</p>
+
+<div class="obsv-code">PUT /repos/{조직}/{저장소}/environments/prod
+{"reviewers": [{"type": "User", "id": ...}]}
+
+422 Failed to create the environment protection rule.
+    Please ensure the billing plan supports the required reviewers protection rule.</div>
+
+<p><code>wait_timer</code> 도 같은 422 였어요. 조직 플랜은 GitHub <b>Team</b> 이었습니다.</p>
+
+<h2>4. 구성할 수 있다가 어디까지인가</h2>
+
+<p>문서에는 이렇게 적혀 있어요. <i>Organizations with GitHub Team can configure environments for private repositories.</i> 저는 이 문장을 "보호 규칙까지 쓸 수 있다"로 읽었는데, 실제 범위는 <b>Environment 객체를 만들 수 있다</b>까지였어요. 보호 규칙은 별개였고요.</p>
+
+<p>무서운 건 실패가 조용하다는 점이에요. dev 와 prod Environment 는 정상 생성되고, 워크플로에 <code>environment: prod</code> 를 써도 에러가 나지 않아요. 다만 <code>protection_rules</code> 가 빈 배열이라 <span class="obsv-mark">아무 게이트도 걸리지 않은 채 그냥 통과합니다.</span> 그대로 뒀다면 main 머지가 곧 무승인 prod apply 였어요.</p>
+
+<p>그래서 설계를 바꿨어요. prod 트리거를 <code>workflow_dispatch</code> 수동 실행으로 내리고, 두 사람의 관여는 브랜치 보호의 필수 승인이 담당하게 했어요. 관리자 예외는 두지 않아요 &mdash; 기여자가 전원 admin 인 조직에서 예외를 두면 보호가 없는 것과 같으니까요. GitHub 은 작성자의 자기 승인을 허용하지 않으니, 작성자와 승인자는 자동으로 갈라집니다. 다만 수동 실행 버튼은 혼자 누를 수 있으니, apply 단계에서 두 사람의 손을 강제하는 건 포기한 값이에요.</p>
+
+<div class="obsv-fig"><img src="images/04/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 두 번 다 문서는 거짓말을 하지 않았고, 내가 넓게 읽었다</div>
+
+<h2>5. 같은 곳에서 두 번 넘어졌다</h2>
+
+<p>두 사건의 공통점은 문서를 안 읽은 게 아니라 <b>넓게 읽은</b> 거예요. 첫 번째는 기본 설정을 가정한 예제를 만능 형식으로 읽었고, 두 번째는 "구성할 수 있다"를 보호 규칙까지로 읽었어요. 둘 다 문서가 한 말보다 한 칸 넓게 읽은 거고, 그 한 칸이 설계를 갈랐어요.</p>
+
+<p>그리고 두 건 다 문서를 다시 읽어서 알아낸 게 아니에요. <code>gh api</code> 한 줄과 <code>PUT</code> 한 번을 쏴 보고 실패 로그에서 알았어요. <span class="obsv-mark">가정은 문서로 확인되지 않고 실행으로 확인됩니다.</span> 그러니 플랫폼 제약은 설계 초기에 가장 싸게 먼저 찔러봐야 해요. 이 두 건은 명령 한 줄씩이었는데, 구현이 끝난 뒤에 알았다면 파이프라인을 다시 짜야 했어요.</p>
+
+<p>마지막은 기록이에요. 전제가 틀렸을 때 고칠 것은 설계만이 아니었어요. 결정을 남겨두는 문서인 ADR 을 새로 쓰면서, 원래 설계를 담은 ADR-0001 을 지우지 않고 "이 부분은 ADR-0002 로 대체됐다"로 남겼고, 재검토 조건에 "Enterprise 로 올라가면 원래 설계로 복귀"를 적어 뒀어요. 왜 그 설계였는지가 남아 있어야 다음 사람이 같은 벽을 다시 밟지 않아요.</p>
+
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>문서의 "된다"는 항상 범위가 있는 말이고, 그 범위는 읽어서가 아니라 쏴 봐야 알게 된다.</b> sub 의 실제 형식도, Environment 보호 규칙의 한계도 문서가 아니라 실패 응답이 알려줬어요.<br><br>
+  제약은 설계를 비켜가지 않으니 가장 싼 명령 한 줄로 초기에 만나고, 틀린 전제는 지우지 말고 대체됐다고 남기자 &mdash; 문서를 믿는 것까지가 아니라 문서를 검증하는 것까지가 설계다.
+</div>
+
+</div>
