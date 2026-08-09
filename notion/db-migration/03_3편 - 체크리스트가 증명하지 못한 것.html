@@ -1,0 +1,164 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 dev DB 메이저 버전 이관 — 3편</div>
+  dev MySQL 5.7 을 8.0.42 로 옮긴 5단계<br>
+  롤백 수단을 보관했다는 착각<br>
+  <b>검증표가 전부 ✅ 였는데 폭탄이 3개 남아있었다</b> &larr; 지금 이 글
+</div>
+
+<p>이관을 마치고 마지막으로 검증표를 만들었어요. 항목마다 기대값을 적고, 실제로 쿼리를 돌려서 확인하고, 체크를 찍었습니다.</p>
+
+<div class="obsv-code">| 검증 항목            | 기대값                | 결과      |
+|----------------------|-----------------------|-----------|
+| 서버 버전            | 8.0.42                | ✅        |
+| 테이블 콜레이션      | utf8mb4_0900_ai_ci    | ✅ 6/6    |
+| _at 시간 컬럼        | datetime(6)           | ✅ 9/9    |
+| 인덱스 프리픽스      | uk_ 6개 / idx_ 5개    | ✅ 11/11  |
+| 데이터 보존          | 변동 없음             | ✅        |
+| 앱 기동 · API        | HTTP 200              | ✅        |</div>
+
+<p>그리고 아래에 이렇게 적었어요. <b>"dev 스키마 = 레포 마이그레이션 파일 = prod 상신본, 3자 일치."</b></p>
+
+<p>전부 초록불이었으니까요. 그런데 이 표는 안전을 증명하지 못했습니다. <span class="obsv-mark">✅ 여섯 개 아래에 폭탄이 세 개 남아 있었어요.</span> 그리고 세 개 다, 표 안의 어떤 항목으로도 잡히지 않는 종류였습니다.</p>
+
+<div class="obsv-fig"><img src="images/03/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 검증표가 덮는 범위는 내가 상상한 실패 모드까지예요</div>
+
+<h2>1. 폭탄 ① 버전은 맞췄는데 파라미터는 안 맞췄다</h2>
+
+<p>검증표 첫 줄이 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SELECT VERSION()</code> = 8.0.42 였어요. 이걸로 "dev 와 prod 의 DB 규격이 같아졌다"고 적었습니다. 그런데 <b>버전 숫자는 DB 를 동등하게 만드는 여러 요소 중 하나일 뿐</b>이에요.</p>
+
+<p>제일 위험했던 건 타임존이었습니다. 신규 테이블 컬럼에 이렇게 주석을 달아뒀거든요.</p>
+
+<div class="obsv-code">published_at DATETIME(6) NULL     COMMENT '최근 publish 시각(KST 벽시계)',
+created_at   DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),</div>
+
+<p><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">DATETIME</code> 은 타임존 정보를 안 가지는 타입이에요. 그래서 <b>어떤 값이 들어가느냐는 순전히 그 값을 만든 쪽의 타임존에 달려 있습니다.</b> 그리고 여기서 두 가지를 놓쳤어요.</p>
+
+<p>첫째, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">DEFAULT CURRENT_TIMESTAMP(6)</code> 을 계산하는 건 <b>앱이 아니라 DB 서버</b>입니다. 정확히는 그 INSERT 를 처리하는 세션의 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">time_zone</code> 이고, 기본값이 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SYSTEM</code> 이라 결국 서버 설정을 따라가요. <span class="obsv-mark">앱에서 타임존을 아무리 잡아도 DEFAULT 절에는 닿지 않습니다.</span></p>
+
+<p>둘째, dev 는 compose 에 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">TZ=Asia/Seoul</code> 을 넣어뒀는데 <b>prod 는 Aurora 라 그 방법 자체가 없어요.</b> SSH 도 없고 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">my.cnf</code> 도 못 만집니다. 남는 건 파라미터 그룹뿐이고, 그건 확인한 적이 없었습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🌩️ 관리형 서비스에는 "서버에 들어가서 설정"이 없어요</div>
+  dev 에서 통한 방법이 prod 에 존재하지 않는다 — 이게 "dev·prod 동일하게 맞추기"의 진짜 어려운 부분이에요. <b>버전 숫자는 맞출 수 있는데 조작 수단이 다릅니다.</b><br>
+  Aurora 는 파라미터 그룹도 <b>클러스터 스코프 / 인스턴스 스코프</b>로 나뉘고, 값에 따라 재시작이 필요한 것과 아닌 것이 갈려요. "설정하면 되지"로 넘기면 배포 당일에 막힙니다.
+</div>
+
+<p>이 둘이 겹치면 최악의 그림이 나와요. 앱이 채우는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">published_at</code> 은 KST, 서버 DEFAULT 가 채우는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">created_at</code> 은 UTC 가 됩니다.</p>
+
+<div class="obsv-fig"><img src="images/03/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 한 테이블 안에서 두 타임존이 섞이면 자명한 불변식이 깨져요</div>
+
+<p>같은 행 안에서 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">created_at</code> 이 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">published_at</code> 보다 뒤에 있게 됩니다. 어드민 화면에 "생성되기 전에 발행된 페이지"가 뜨는 거예요. <b>이런 건 디버깅하는 데 하루 걸립니다.</b> 데이터가 깨진 것도 아니고 코드가 틀린 것도 아니니까요.</p>
+
+<p>검증표에 한 줄만 더 있었으면 됐어요.</p>
+
+<div class="obsv-code">-- dev / prod 양쪽에서 각각 돌려서 대조한다
+SELECT @@global.time_zone, @@session.time_zone,
+       NOW(6), UTC_TIMESTAMP(6);</div>
+
+<p>그리고 타임존만 문제가 아니었어요. 같이 대조했어야 하는 게 더 있습니다. <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">sql_mode</code> 는 8.0 에서 기본 구성이 달라졌고, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">lower_case_table_names</code> 는 Aurora 에서 인스턴스를 만들 때 정하면 나중에 못 바꿔요. <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">wait_timeout</code> 은 커넥션 풀의 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">max-lifetime</code> 을 정하는 근거값이고요.</p>
+
+<p>이 중에 검증표에 있던 건 <b>하나도 없었습니다.</b> 버전 한 줄로 "규격 일치"를 선언한 거예요.</p>
+
+<h2>2. 폭탄 ② 행수는 행만 셉니다</h2>
+
+<p>이관 검증에서 제일 자신 있었던 항목이 <b>"전 테이블 행수 diff = 0"</b> 이었어요. 원본과 복원본의 행수가 완벽히 같으니 데이터가 온전하다고 생각했습니다.</p>
+
+<p>그런데 5.7 에서 8.0 으로 넘어갈 때 제일 흔한 사고 유형이 <b>이중 인코딩(double encoding)</b> 이에요. 컬럼이 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">latin1</code> 인데 애플리케이션이 UTF-8 바이트를 그냥 밀어넣은 경우입니다.</p>
+
+<p><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">한</code> 이라는 글자는 UTF-8 로 3바이트예요. 이걸 latin1 컬럼에 넣으면 DB 는 <b>latin1 문자 3개</b>로 받아들입니다. 저장은 됩니다. 에러도 안 나요. 그리고 덤프를 뜨면 그 바이트가 그대로 옮겨가고, 복원해도 그대로 들어갑니다.</p>
+
+<div class="obsv-fig"><img src="images/03/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 3. 행수는 "몇 개인가"만 대답해요. "무엇인가"는 대답하지 않습니다</div>
+
+<p><span class="obsv-mark">행은 하나도 안 잃었어요. 글자만 잃은 거예요.</span> 그리고 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">COUNT(*)</code> 는 이걸 절대 못 잡습니다. 검증표에 ✅ 가 찍히고, 몇 주 뒤에 어드민 목록에서 깨진 글자를 발견하게 되죠.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 "무결성 검증"이라고 부르려면 내용을 봐야 해요</div>
+  최소한 이 정도는 있어야 합니다.<br>
+  &bull; 주요 텍스트 컬럼의 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SUM(CRC32(col))</code> 대조 — 버전이 달라도 결정적인 값<br>
+  &bull; <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--single-transaction</code> 은 InnoDB 만 보장 — MyISAM 테이블이 있는지 먼저 확인<br>
+  &bull; <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--source-data</code> 없이 뜨면 binlog 좌표가 없어서 <b>시점 복구(PITR)가 불가능</b>합니다
+</div>
+
+<h2>3. 폭탄 ③ 검증 기준이 이미 구버전이었다</h2>
+
+<p>세 번째가 제일 뼈아팠어요. 이건 항목을 빠뜨린 게 아니라, <b>✅ 자체가 오답</b>이었던 경우거든요.</p>
+
+<p>인덱스 항목에 "uk_ 6개 / idx_ 5개 = 11/11 ✅" 라고 적었어요. 실제로 dev DB 를 조회해서 11개를 세고 찍은 체크였습니다. <b>그런데 정답은 10개였어요.</b></p>
+
+<p>작업 도중에 상신본을 한 번 더 다듬으면서 중복 인덱스를 하나 뺐거든요. 유니크 키 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">uk_lpv_page_version (page_id, version)</code> 이 있는데 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">idx_lpv_page (page_id, id)</code> 를 또 둘 이유가 없었습니다. InnoDB 는 세컨더리 인덱스에 PK 를 암묵적으로 붙이기 때문에, 앞의 인덱스가 물리적으로 이미 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">(page_id, version, id)</code> 라서 뒤엣것을 완전히 흡수하거든요. 읽기 이득은 0이고 쓰기 비용만 늘어요.</p>
+
+<p>그래서 <b>상신본과 레포 마이그레이션 파일에서는 뺐는데, dev DB 에서는 DROP 을 안 했습니다.</b> 그리고 검증할 때 제가 기준으로 삼은 작업 문서는 <b>인덱스를 빼기 전 버전</b>이었어요.</p>
+
+<div class="obsv-code">-- 작업 문서 기준 (구버전): uk_ 6 + idx_ 5 = 11  → dev 는 11개 → ✅
+-- 실제 최종본     (r6):     uk_ 6 + idx_ 4 = 10  → dev 는 11개 → ❌
+
+SHOW INDEX FROM landing_page_version;   -- idx_lpv_page 가 남아있음
+ALTER TABLE landing_page_version DROP INDEX idx_lpv_page;</div>
+
+<p>즉 <span class="obsv-mark">검증은 정상 작동했고, 기준이 틀렸습니다.</span> 그래서 "3자 일치"라는 결론도 그 순간 이미 거짓이었어요. 문서만 믿고 배포했으면 dev 에만 잉여 인덱스가 남은 채로 갔을 겁니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🕳️ 검증은 기준이 최신일 때만 검증이에요</div>
+  작업 문서를 오전에 쓰고, 스키마를 오후에 한 번 더 고쳤어요. 문서를 다시 안 열었을 뿐입니다. 한 시간 차이였고요.<br>
+  <b>기준 문서에 버전을 박고, 검증할 때 그 버전이 최신인지부터 확인하는 것</b> — 이게 항목 하나 추가하는 것보다 중요했습니다. 틀린 기준으로 하는 검증은 검증이 아니라 <b>확신 생산기</b>예요.
+</div>
+
+<p>그리고 이건 제가 덤벙댔다기보다 구조 문제에 가까워요. <b>문서와 스키마가 각자 따로 움직이는 한, 둘이 어긋나는 순간은 반드시 옵니다.</b> 한 시간이든 하루든요.</p>
+
+<p>그래서 검증 스크립트가 문서가 아니라 <b>실제 최종본(레포의 마이그레이션 파일)을 읽게</b> 만들어야 해요. 사람이 눈으로 두 문서를 대조하는 단계가 남아 있으면, 그 단계는 언젠가 틀립니다. 오늘은 인덱스 하나였지만 다음엔 컬럼 타입일 수도 있고요.</p>
+
+<h2>4. 세 폭탄의 공통점</h2>
+
+<p>다 정리하고 보니 셋이 같은 모양이었어요.</p>
+
+<p><b>① 버전은 맞췄는데 파라미터는 안 봤다</b> — Docker 에서 되던 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">TZ</code> 설정이 Aurora 에도 있을 거라고 가정했어요.<br>
+<b>② 행수가 같으면 데이터도 같다고 봤다</b> — 제가 아는 손상 방식(행이 사라짐)만 실패 모드로 상상했어요.<br>
+<b>③ 문서가 최신일 거라고 봤다</b> — 한 시간 전의 나를 믿었고요.</p>
+
+<p>세 개 다 <b>"내가 아는 방식이 저쪽에도 통할 것"</b> 이라는 가정이었습니다. 그리고 검증표는 이런 걸 못 잡아요. <span class="obsv-mark">검증 항목은 내가 상상할 수 있는 실패 모드까지만 덮으니까요.</span> 상상 못 한 실패는 애초에 항목이 안 만들어집니다.</p>
+
+<p>그래서 요즘은 검증표를 쓸 때 칸을 하나 더 둡니다. <b>"이 항목이 ✅ 여도 남는 위험"</b> 이라는 칸이요.</p>
+
+<div class="obsv-code">| 검증 항목   | 결과 | 이 항목이 ✅ 여도 남는 위험        |
+|-------------|------|-----------------------------------|
+| 서버 버전   | ✅   | 파라미터(time_zone, sql_mode) 미대조 |
+| 행수 diff 0 | ✅   | 내용 손상(인코딩)은 못 잡음        |
+| 인덱스 11개 | ✅   | 기준 문서가 최신인지 미확인        |</div>
+
+<p>이 칸을 채우려면 <b>"이게 통과해도 뭐가 무섭지?"</b> 를 한 번 더 물어야 해요. 그 질문이 다음 검증 항목을 만들어줍니다. 그리고 채우다 보면 몇 칸은 <b>"모르겠음"</b> 으로 남는데, 그 칸이 사실 제일 정직한 기록이에요.</p>
+
+<p>부수 효과도 하나 있어요. 이 칸을 채우려고 앉아 있으면 <span class="obsv-mark">내가 그 시스템에 대해 뭘 모르는지가 드러납니다.</span> Aurora 파라미터 그룹이 클러스터 스코프인지 인스턴스 스코프인지 모른다는 사실은, 그 칸을 채우기 전까지 저한테도 안 보였거든요.</p>
+
+<p>검증표는 시스템을 검증하는 도구이기도 하지만, <b>내 이해도를 검증하는 도구이기도 해요.</b> ✅ 만 늘어놓은 표는 후자를 절대 안 해줍니다. 오히려 반대로, 다 안다는 느낌만 만들어주죠.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>검증표의 ✅ 는 "안전하다"가 아니라 "내가 이걸 봤다"는 뜻이에요.</b> 버전은 맞추고 파라미터는 안 봤고, 행수는 셌지만 내용은 안 봤고, 인덱스는 셌지만 기준이 구버전이었습니다.<br><br>
+  세 개 다 "내가 아는 방식이 저쪽에도 통할 것"이라는 가정에서 나왔어요. 검증 항목은 내가 상상할 수 있는 실패 모드까지만 덮습니다.<br><br>
+  <b>그래서 검증표 옆에는 "이게 ✅ 여도 남는 위험" 칸이 있어야 해요. 초록불의 개수보다, 그 칸에 뭘 적을 수 있느냐가 실력입니다.</b>
+</div>
+
+</div>

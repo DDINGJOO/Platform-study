@@ -1,0 +1,100 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 관찰 가능성과 디버깅 — 2편</div>
+  1편. 관찰 가능성은 로그를 쌓는 일이 아니다<br>
+  <b>2편. 모든 대시보드가 초록불인데, 주문은 실패하고 있었다</b> &larr; 지금 이 글<br>
+  3편. 트레이스는 큐를 어떻게 건너는가<br>
+  4편. 주문이 두 번 결제됐어요
+</div>
+
+<p>고객사에서 문의가 옵니다. "주문이 가끔 안 돼요." 대시보드를 봅니다. CPU 평온, 메모리 여유, HTTP 5xx 없음, 에러 로그 없음. 트레이스를 몇 개 열어봐도 전 구간 정상 latency예요. 그래서 답장을 보냅니다 — "저희 쪽은 이상 없습니다. 네트워크 문제 아닐까요?"</p>
+
+<p>그리고 일주일 뒤, 같은 문의가 세 번째로 도착합니다. 이번엔 건수까지 붙어서요. <b>모든 지표가 초록불인데 실제로는 실패하고 있다 — 이게 어떻게 가능한 걸까요?</b></p>
+
+<h2>1. 200은 성공의 증명이 아니었다</h2>
+
+<p>범인 찾기의 시작은 주문 API의 구조였어요. 이 API는 주문 요청을 받으면 검증만 하고 <b>메시지 큐에 넣은 다음 바로 200을 반환</b>합니다. 실제 주문 처리 — 재고 차감, 결제, 알림 — 는 그 뒤 컨슈머가 큐에서 꺼내서 하고요. 장애가 클라이언트한테 전파되지 않게 하고, 트래픽 스파이크를 큐가 흡수하게 하는 좋은 설계죠.</p>
+
+<p>그런데 이 설계의 대가가 있어요. <span class="obsv-mark">동기 응답 코드는 비동기 처리의 성공을 증명하지 못합니다.</span> 200은 "접수했다"는 뜻이지 "처리했다"는 뜻이 아니에요. HTTP 5xx율이라는 지표는 접수 창구만 지켜보고 있었고, 실패는 창구 뒤편에서 나고 있었던 겁니다.</p>
+
+<h2>2. 대시보드는 보고 있는 곳에만 불이 켜진다</h2>
+
+<p>그럼 왜 대시보드는 몰랐을까요? 그 대시보드에 있던 지표를 나열해보면 — CPU, 메모리, 디스크, HTTP 응답 코드, 응답 시간. 전부 <b>시스템 메트릭</b>이에요. 인프라가 건강한지는 말해주지만, <b>비즈니스가 굴러가는지는 모르는</b> 지표들이죠. 서버는 아주 건강한 상태로 주문을 버리고 있었으니까요.</p>
+
+<p>그래서 "잘 설계된 애플리케이션 메트릭이 가장 유용한 메트릭 신호"라는 말이 나옵니다. 애플리케이션 메트릭은 도메인의 언어로 세는 지표예요 — 주문이 몇 건 접수됐고, 몇 건 완료됐는가. 이 두 숫자만 있었어도 이 장애는 초록불 뒤에 숨지 못했을 겁니다.</p>
+
+<div class="obsv-fig"><img src="images/02/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 서버는 아주 건강한 상태로 주문을 버리고 있었다</div>
+
+<h2>3. 예외를 삼킨 컨슈머, 텅 빈 DLQ</h2>
+
+<p>실패 지점은 컨슈머였습니다. 그런데 여기서 두 번째 반전 — 실패한 메시지가 모이도록 만들어둔 DLQ(Dead Letter Queue)도 <b>끝까지 0이었어요.</b> 컨슈머 코드가 이렇게 생겼었거든요:</p>
+
+<div class="obsv-code">try {
+    processOrder(message);
+} catch (Exception e) {
+    log.error("주문 처리 실패", e);   // 로그만 남기고...
+}
+// ack — 브로커에겐 "정상 처리 완료"로 보고됨</div>
+
+<p>예외를 잡아서 로그만 남기고 정상적으로 ack 해버리니, 브로커 입장에선 실패한 메시지가 아니에요. 재시도도 없고 DLQ로 갈 일도 없죠. 그럼 에러 로그에는 남지 않았냐고요? 남았습니다 — 다만 <b>아무도 그 로그에 알람을 걸어두지 않았고</b>, 초록불 대시보드를 믿는 동안 아무도 검색하지 않았을 뿐이에요. <span class="obsv-mark">장애는 요란한 에러가 아니라 조용한 증발로 옵니다.</span></p>
+
+<h2>4. 성공을 세면, 실패는 뺄셈으로 잡힌다</h2>
+
+<p>이제 이 장애를 못 숨게 만드는 메트릭을 설계해보죠. 파이프라인을 공장 컨베이어 벨트라고 생각하면 답이 보여요. 벨트에 올린 상자 수와 포장 완료된 상자 수 — 딱 두 군데만 세면 됩니다.</p>
+
+<div class="obsv-code">orders.enqueued    큐에 넣는 순간 +1     "일이 시작됐다"
+orders.processed   처리 성공 마지막 줄 +1  "일이 끝났다"
+
+최근 10분        enqueued   processed   차이
+정상             1,000      997         3   (아직 벨트 위, 정상)
+그 장애          1,000      412         588 ← 어딘가에서 증발 중!</div>
+
+<p>중요한 건 <b>왜 실패 카운트가 아니라 성공 카운트냐</b>는 거예요. 예외 카운터는 실패 모드를 미리 예측한 곳에만 심을 수 있어요. catch 블록마다 넣어야 하고, 예외 없이 조용히 리턴해버리는 버그는 영원히 못 잡죠. 반면 성공 카운트는 어떻게 죽었는지 몰라도 "안 나왔다"는 걸 알려줍니다. <span class="obsv-mark">실패는 열거할 수 없지만, 성공은 정의할 수 있어요.</span> 그래서 성공을 세고 실패는 뺄셈으로 잡는 겁니다.</p>
+
+<div class="obsv-fig"><img src="images/02/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 원인이 뭐든 "안 나왔다"는 것은 숨길 수 없다</div>
+
+<h2>5. 알람 한 줄로 완성하기</h2>
+
+<p>이 설계를 알람으로 완성하면 한 줄이에요:</p>
+
+<div class="obsv-code">increase(orders_enqueued_total[10m])
+  - increase(orders_processed_total[10m]) > 50</div>
+
+<p>두 가지 실무 디테일이 있어요. 첫째, 절대값이 아니라 <b>최근 N분 창의 증가량</b>으로 비교합니다. 카운터는 앱이 재시작하면 0으로 리셋되니까요. 둘째, 임계치가 0이 아닌 이유 — 벨트 위를 아직 굴러가는 중인(in-flight) 상자가 항상 몇 개는 있어서, 차이가 "조금 있는" 건 정상이고 "계속 벌어지는" 게 장애 신호이기 때문이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧯 이 패턴이 잡아주는 장애들</div>
+  &bull; 예외를 삼키고 ack 하는 컨슈머 (이번 사건의 범인)<br>
+  &bull; 예외조차 없이 조용히 skip 하는 검증 로직 버그<br>
+  &bull; 컨슈머 프로세스가 통째로 죽어 있는 경우 (processed가 0이 됨)<br>
+  &bull; 공통점: 원인을 하나도 몰라도 전부 같은 알람 하나에 걸린다
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>200은 "접수했다"지 "처리했다"가 아니다 — 동기 응답은 비동기 처리의 성공을 증명하지 못한다.</b> 시스템 메트릭은 인프라의 건강만 말하므로, 도메인의 언어로 세는 애플리케이션 메트릭이 있어야 비즈니스의 실패가 보인다.<br><br>
+  실패는 열거할 수 없지만 성공은 정의할 수 있다 — 성공을 세고, 실패는 뺄셈으로 잡아라.
+</div>
+
+</div>

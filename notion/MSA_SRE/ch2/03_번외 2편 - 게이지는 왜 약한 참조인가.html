@@ -1,0 +1,114 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 관측성 번외편 &mdash; 2편</div>
+  번외 1편. 프로메테우스는 왜 긁어가는가 : Pull vs Push<br>
+  <b>번외 2편. 게이지는 왜 약한 참조인가 : 자바 참조 4단계</b> &larr; 지금 이 글<br>
+  번외 3편. StatsD : UDP로 쏘고 잊어라<br>
+  번외 4편. 태그에는 왜 표준이 없는가 : Mechanism vs Policy
+</div>
+
+<p>Micrometer 시리즈에서 이상한 버그를 하나 만났었죠. 게이지로 큐 길이를 쟀는데 어느 날부터 <b>메트릭이 조용히 NaN</b>이 되는 것. 원인은 게이지가 관측 대상을 "약한 참조"로 쥐기 때문이었어요. 그런데... <span class="obsv-mark">참조에 강하고 약한 게 있다고요?</span></p>
+
+<p>있어요. 자바의 참조는 사실 4단계고, 이건 GC와 대화하는 언어예요. 게이지의 각주에서 시작해서 JVM의 방 하나를 여는 게 이번 편입니다.</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 강한 참조: 이름 없는 기본값</h2>
+
+<p>먼저 놀라운 사실부터 &mdash; <b>여러분이 지금까지 쓴 모든 참조가 강한 참조예요.</b></p>
+
+<div class="obsv-code">Order order = new Order();     // ← 이게 강한 참조
+this.repository = repo;        // ← 이것도
+list.add(item);                // ← 이것도 (리스트가 item을 강하게 쥠)</div>
+
+<p><code>StrongReference</code>라는 클래스는 없어요. 강한 참조가 <b>기본값</b>이고, 나머지 셋만 이름이 붙은 거죠. "일반 볼펜"이라는 특수 볼펜이 없는 것과 같아요 &mdash; 특이한 것들(지워지는 펜, 형광펜)만 이름을 얻는 법이니까.</p>
+
+<p>GC의 규칙은 이래요. <b>GC 루트</b>(스택의 지역변수, static 필드, 활성 스레드)에서 출발해 강한 참조 사슬을 따라가서, <b>도달 가능하면 생존, 아니면 수거.</b> 그래서 자바의 메모리 누수란 "안 쓰는 객체를 누군가 강한 참조로 계속 쥐고 있는 상태"예요 &mdash; static 컬렉션에 넣고 안 빼는 게 전형이죠.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 약한 참조: 투표권 없는 구경꾼</h2>
+
+<p>이제 게이지의 그 "약한 참조(WeakReference)"예요. 계약이 명확합니다: <span class="obsv-mark">"나는 이 객체를 가리키지만, 살릴지 말지 투표에서 나를 세지 마."</span></p>
+
+<div class="obsv-code">Object obj = new Object();
+WeakReference&lt;Object&gt; ref = new WeakReference&lt;&gt;(obj);
+
+ref.get();   // → 객체 (아직 obj라는 강한 참조가 있으니까)
+obj = null;  // 강한 참조 소멸. 이제 약한 참조"만" 남음
+System.gc();
+ref.get();   // → null (수거됨)</div>
+
+<p>약한 참조만 남은 객체는 다음 GC에서 무조건 수거돼요. Micrometer 게이지의 실제 구현이 정확히 이 구조예요:</p>
+
+<div class="obsv-code">public class DefaultGauge&lt;T&gt; implements Gauge {
+    private final WeakReference&lt;T&gt; ref;      // ← 약하게만 쥔다
+
+    public double value() {                   // 발행 시점마다 호출
+        T obj = ref.get();
+        if (obj != null) return f.applyAsDouble(obj);
+        return Double.NaN;                     // ← 그 NaN의 출처!
+    }
+}</div>
+
+<p>왜 이렇게 설계했을까요? <b>관측 도구가 관측 대상의 수명을 연장하면 안 되니까요.</b> 감시 카메라가 피사체를 못 떠나게 붙잡으면 이상하잖아요. 앱이 버린 객체는 게이지가 있든 말든 GC가 치울 수 있어야 해요. 그 대가가 바로 그 버그예요 &mdash; 게이지"만" 아는 객체는 수거되고, 메트릭은 조용히 NaN이 되죠. 해법은 관측 대상을 비즈니스 코드가 필드로(강하게) 소유하는 것이고요.</p>
+
+<p>같은 철학의 대표 사용처가 <b>WeakHashMap</b>이에요. 키를 약하게 쥐는 맵인데, 주 객체(키)가 앱 어디에서도 안 쓰이게 되면 엔트리가 <b>자동으로</b> 사라져요. "본체가 죽으면 부가 정보도 따라 죽는" 구조 &mdash; 수동 remove() 없이 누수를 막죠. 여기서 파생된 유명한 함정이 <b>ThreadLocal 누수</b>예요: 내부 맵의 키(ThreadLocal)는 약한데 값은 강해서, 키만 수거되고 값이 좀비로 남을 수 있어요. 스레드풀처럼 스레드가 안 죽는 환경에서 <code>remove()</code>를 부르라는 잔소리의 근원이 이 비대칭이에요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 소프트 참조: 메모리가 궁할 때만 버려라</h2>
+
+<p>강함과 약함 사이에 <b>SoftReference</b>가 있어요. 계약: "GC가 돌아도 살려두되, <b>메모리가 부족해지면</b> 버려도 좋다." JVM은 OutOfMemoryError를 던지기 전에 소프트 참조를 전부 수거하는 걸 보장해요. "남는 메모리를 캐시로 쓰다가 필요하면 반납" &mdash; 이론상 캐시에 완벽해 보이죠.</p>
+
+<p>그런데 실무 반전: <span class="obsv-mark">요즘 캐시 라이브러리들은 소프트 참조를 안 써요.</span> 수거 시점을 JVM 힙 사정이 정하니 캐시 동작이 <b>비결정적</b>이 되거든요. 힙 크기를 바꾸면 히트율이 변하고, GC 정책을 바꾸면 캐시가 죽고. Guava와 Caffeine의 결론은 "제어할 수 없는 자동보다 제어 가능한 수동" &mdash; 명시적 크기 제한 + LRU 계열이에요. 좋아 보이는 메커니즘도 <b>예측 가능성이 없으면 운영 도구로는 실격</b>이라는, 꽤 보편적인 교훈이에요.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 팬텀 참조: 장례식 알림 서비스</h2>
+
+<p>마지막 놈은 기괴해요. <b>PhantomReference는 get()이 항상 null이에요.</b> 객체에 접근하는 용도가 아예 아니라는 뜻이죠. 그럼 뭐에 쓰나 &mdash; <b>"그 객체, 수거됐어요"라는 통지를 받는 용도</b>예요.</p>
+
+<div class="obsv-code">ReferenceQueue&lt;Resource&gt; queue = new ReferenceQueue&lt;&gt;();
+PhantomReference&lt;Resource&gt; ref = new PhantomReference&lt;&gt;(resource, queue);
+
+// 별도 스레드에서
+Reference&lt;?&gt; dead = queue.remove();   // 수거가 일어나면 깨어남 ⚰️
+// → "죽었어요" 통지 수신 → 연관 네이티브 메모리 해제 등 뒷정리</div>
+
+<p>참조가 수거되면 그 껍데기가 <b>ReferenceQueue</b>에 들어와요 &mdash; 장례식 알림이죠. 용도는 finalize()의 대체품이에요. finalize는 부활 가능(안에서 this를 어딘가 담으면 되살아남!), 실행 보장 없음, 성능 재앙으로 퇴출됐는데, 팬텀은 get()이 null이라 <b>부활이 원천 불가능</b>해서 안전해요. JDK 9+의 <code>Cleaner</code> API가 이걸로 구현돼 있고, DirectByteBuffer의 네이티브 메모리 해제가 대표 사용처예요. 직접 쓸 일은 드물지만 "자바가 finalize를 어떻게 버렸나"의 답이 이거예요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 한 장으로 정리</h2>
+
+<div class="obsv-fig"><img src="images/03/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 참조 4단계 스펙트럼 &mdash; GC에게 보내는 네 가지 신호</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧠 기억법</div>
+  강 = <b>소유</b>("내 거야, 치우지 마") / 소프트 = <b>여유</b>("공간 남으면 놔둬") / 약 = <b>구경</b>("보고만 있을게, 치워도 돼") / 팬텀 = <b>조문</b>("가면 알려만 줘")
+</div>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>자바 참조는 GC에게 보내는 4가지 신호다.</b> 강한 참조는 이름조차 없는 기본값(도달 가능 = 생존)이고, 약한 참조는 "관찰하되 수명에 개입하지 않겠다"는 선언이라 게이지와 WeakHashMap의 재료가 되며, 소프트는 이론상 캐시용이지만 비결정성 때문에 밀려났고, 팬텀은 부활 불가능한 finalize의 후계자다.<br><br>
+  게이지의 NaN 버그 하나를 따라왔을 뿐인데 GC의 방까지 왔다 &mdash; 좋은 도구의 설계 결정은 이렇게 그 아래 층의 문을 열어주는 법이다.
+</div>
+
+</div>
