@@ -1,0 +1,185 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 어느 백엔드 저장소의 기록 &mdash; 1편</div>
+  <b>1편. 9건이 전부 21시 3분에서 9분 사이였다</b> &larr; 지금 이 글
+</div>
+
+<p>같은 증상을 넉 달 반 동안 아홉 번 봤어요. 파일이 하나만 있어야 하는 자리에 똑같은 파일이 두 벌 저장돼 있었습니다. 재현은 안 됐고요. 특정 사용자에게 몰리지도 않았고, 특정 브라우저도 아니었고, 요청 본문에서도 이상한 걸 못 찾았어요. 아홉 건을 나란히 놓고 공통점을 찾는데 정말 아무것도 안 겹쳤습니다.</p>
+
+<p>딱 하나 빼고요. <b>발생 시각을 늘어놓자 아홉 건이 전부 21시 3분에서 9분 사이였어요.</b></p>
+
+<p>오늘은 이야기가 둘이에요. 하나는 설정 파일의 <b>실행 시간 한 줄</b>이 어떻게 데이터 중복까지 이어졌는가. 다른 하나는 그걸 급하게 되돌리다가 밟은 <b>git 함정</b>이고요. 앞엣것은 원인 사슬 이야기고, 뒤엣것은 5분짜리 실수인데 둘 다 같은 얼굴을 하고 있습니다 &mdash; 급할 때는 구분해야 할 것을 구분하지 않게 된다는 얼굴이요.</p>
+
+<h2>1. 시각 분포가 원인을 지목한다</h2>
+
+<p>간헐적이고 재현이 안 되는 버그를 만나면 보통 <b>"무엇을 했을 때"</b>부터 찾아요. 어떤 입력이었나, 어떤 순서로 눌렀나, 어떤 환경이었나. 이번엔 그 축에서 아무것도 안 나왔습니다. 그래서 축을 바꿔서 <b>"언제"</b>를 봤어요.</p>
+
+<p>발생 시각 아홉 개를 시간축에 찍었더니 그림이 한눈에 들어왔습니다. 24시간 어디에도 없고 <span class="obsv-mark">전부 6분 폭 안에 모여 있었어요.</span> 이건 사람의 행동 패턴이 만들 수 있는 모양이 아니에요. 사람이 원인이면 점은 활동 시간대 전체에 퍼지고, 아무리 몰려도 몇 시간 단위로 뭉치지 6분 안으로 뭉치진 않습니다.</p>
+
+<p>6분 폭은 <b>기계의 스케줄</b>이 만드는 모양이에요. 그래서 그 시간대에 도는 배치가 있는지부터 봤고, 있었습니다. 매일 21시에 오래된 파일을 정리하는 배치요.</p>
+
+<p>확증은 커밋 로그에서 나왔어요. 그 배치는 원래 다른 시간에 돌고 있었는데, 어느 날 실행 시간을 21시로 옮긴 커밋이 하나 있었습니다. <b>그 커밋의 날짜와 첫 발생 날짜가 일주일 차이였어요.</b> 넉 달 반 전이고요. 이쯤 되면 상관관계가 아니라 지목입니다.</p>
+
+<div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 무엇을 했나로 안 나오면, 언제 했나로 축을 바꿔본다</div>
+
+<h2>2. 배치가 한 일 &mdash; 네 단계</h2>
+
+<p>여기서부터가 본론이에요. "배치가 도는 시간에 사용자가 파일을 올리면 중복이 쌓인다"는 문장은 한 줄이지만, 그 사이에 네 단계가 있습니다. 한 단계씩 볼게요.</p>
+
+<h3>단계 1 &mdash; 배치가 트랜잭션 안에서 외부 파일을 지운다</h3>
+
+<p>이 배치는 스프링 배치의 태스크릿 스텝 하나예요. 그리고 <b>태스크릿 스텝은 기본이 트랜잭션 하나</b>입니다. 스텝이 끝날 때까지 트랜잭션이 하나 열려 있고, 커넥션도 하나 잡혀 있어요. 그 안에서 대상 수백 건을 순회하면서, 건마다 외부 스토리지의 파일을 하나씩 지웁니다.</p>
+
+<div class="obsv-code">// {정리 배치} 의 스텝. 태스크릿 스텝은 기본이 트랜잭션 하나다.
+//   = 이 블록이 끝날 때까지 커넥션 하나가 반납되지 않는다.
+tasklet { _, _ -&gt;
+    val targets = findExpired().take(dailyLimit)   // 수백 건
+    targets.forEach { t -&gt;
+        cleanupService.destroy(t)   // @Transactional 이지만 REQUIRED 라 바깥에 합류한다
+    }
+    RepeatStatus.FINISHED
+}
+
+@Transactional
+fun destroy(t: Target) {
+    // 건마다, 파일마다, 네트워크 왕복 하나씩. 전부 트랜잭션 안이다.
+    filesOf(t).forEach { storage.remove(it.path) }
+    fileRepository.deleteByOwner(t.key)
+    // ... 나머지 정리
+}</div>
+
+<p>여기서 눈여겨볼 건 <code>destroy</code> 에 붙은 <code>@Transactional</code> 이에요. 이게 붙어 있으니 "건별로 짧은 트랜잭션이 돌겠구나" 싶은데, 기본 전파 속성은 <code>REQUIRED</code> 라서 <b>이미 열려 있는 바깥 트랜잭션에 합류합니다.</b> 건마다 커밋되는 게 아니라, 스텝 전체가 끝나야 커밋돼요. <span class="obsv-mark">애너테이션이 붙어 있다고 트랜잭션이 짧아지는 게 아니에요.</span></p>
+
+<h3>단계 2 &mdash; 그 구간 약 9분 동안 커넥션이 압박받는다</h3>
+
+<p>외부 스토리지 삭제는 네트워크 왕복이에요. 한 번에 수십 밀리초라 해도, 수백 건에 건마다 파일이 여러 개면 왕복이 수천 번입니다. 실제로 그 구간이 <b>약 9분</b> 걸렸어요.</p>
+
+<p>그 9분 동안 배치는 커넥션 하나를 붙잡고 놓지 않습니다. 문제는 이게 단순히 "한 개 줄어든다"로 끝나지 않는다는 거예요. 이 배치가 도는 인스턴스의 풀은 그만큼 여유가 줄고, 배치 중간에 실패가 나면 그 트랜잭션은 롤백 표시가 붙은 채로 스텝이 끝날 때까지 살아 있습니다. <b>느린 외부 I/O 를 트랜잭션 안에 넣으면, 트랜잭션의 길이가 외부 시스템의 응답 속도로 결정돼요.</b></p>
+
+<h3>단계 3 &mdash; 하필 그 시간에 사용자가 파일을 올린다</h3>
+
+<p>21시는 사용자 활동이 살아 있는 시간이에요. 그 9분 창 안에 파일 업로드 요청이 들어오면, 커넥션을 얻지 못하거나 얻어도 느려서 타임아웃이 납니다. 사용자 화면에는 그냥 "실패"라고 뜨고요.</p>
+
+<h3>단계 4 &mdash; 재시도가 delete-then-insert 를 반쪽만 실행시킨다</h3>
+
+<p>여기가 중복이 태어나는 지점이에요. 파일 저장 로직은 이런 모양이었습니다.</p>
+
+<div class="obsv-code">@Transactional
+fun saveFiles(ownerKey: String, files: List&lt;UploadedFile&gt;) {
+    val prev = fileRepository.findByOwner(ownerKey)   // 1) 지금 있는 것을 찾고
+    storage.removeAll(prev.map { it.path })           // 2) 스토리지에서 지우고
+    fileRepository.deleteAll(prev)                    // 3) 테이블에서 지우고
+
+    files.forEach {
+        val path = storage.upload(it)                 // 4) 새로 올리고
+        fileRepository.save(FileRow(ownerKey, it.slot, path))  // 5) 새로 넣는다
+    }
+}
+// 3) 이 아무것도 못 지운 채로 5) 만 실행되면 행이 두 개가 된다.</div>
+
+<p>이 코드가 하고 있는 말은 <b>"이 사용자의 이 슬롯에는 행이 하나만 있어야 한다"</b> 예요. 지우고 넣으니까 항상 하나라는 거죠. 그런데 그 논리는 <b>1번에서 읽은 결과가 진실일 때만</b> 성립합니다.</p>
+
+<p>실패한 요청이 남긴 상태 위에서 사용자가 재시도하면 1번이 거짓말을 해요. 앞 요청의 트랜잭션이 롤백됐거나 아직 커밋되지 않았으면, 재시도 트랜잭션에서 그 행은 <b>보이지 않습니다.</b> 안 보이니 지울 것도 없고요. 3번은 아무 행도 지우지 않고 <span class="obsv-mark">5번만 실행돼서, insert 가 그대로 하나 더 쌓입니다.</span></p>
+
+<div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 원인은 하나가 아니라, 여섯 칸이 순서대로 맞아떨어진 결과다</div>
+
+<h2>3. 그리고 DB 가 막아주지 않았다</h2>
+
+<p>2장 마지막 문장을 다시 읽어볼게요. "3번이 아무 행도 지우지 않고 5번만 실행돼서 insert 가 하나 더 쌓입니다." 여기서 이상하지 않나요? <b>왜 그게 그냥 성공하죠?</b></p>
+
+<p>"이 사용자의 이 슬롯에는 행이 하나만 있어야 한다"는 건 명백한 불변식이에요. 그런데 그 불변식은 <span class="obsv-mark">애플리케이션 코드에만 있었고, 테이블에는 없었습니다.</span> 유니크 제약이 없었어요. 그러니 DB 는 두 번째 행을 아무 불평 없이 받아줍니다. DB 입장에선 그냥 평범한 insert 니까요.</p>
+
+<p>여기서 얻은 문장이 이거예요. <b>애플리케이션이 지키려는 불변식은 DB 에도 적어야 한다.</b> 코드가 지키는 규칙은 코드가 실패하는 순간 같이 실패해요. 재시도, 동시 요청, 롤백, 배포 중 인스턴스 두 대가 다르게 도는 순간 &mdash; 코드의 약속은 전부 이런 상황에서 깨집니다. <b>제약은 코드가 실패해도 남아요.</b></p>
+
+<p>그래서 제약이 있었으면 어떻게 됐을까요. 중복이 조용히 쌓이는 대신 그 자리에서 에러가 났을 겁니다. 사용자는 실패 화면을 한 번 더 봤겠지만, <b>우리는 첫날 알았을 거예요.</b> 넉 달 반이 아니라요. 제약의 진짜 값어치는 데이터를 지키는 것보다 <span class="obsv-mark">문제를 조용하지 않게 만드는 데</span> 있는 것 같아요.</p>
+
+<p>더 뼈아픈 건, 같은 스키마의 옆 테이블에는 그 제약이 있었다는 거예요. 다른 테이블에는 소유자와 유형을 묶은 유니크 키가 멀쩡히 붙어 있었습니다. 몰라서 안 넣은 게 아니라, 이 테이블은 컬럼을 하나씩 덧붙여 오는 동안 <b>제약을 다시 검토하는 순간이 없었던</b> 거죠.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 뒤늦게 유니크 제약을 넣을 때 확인할 것</div>
+  이미 데이터가 쌓인 테이블에 제약을 붙이는 건 별도 작업이에요. &bull; <b>기존 중복부터 정리</b> &mdash; 중복이 남아 있으면 제약 추가 자체가 실패합니다. 어느 행을 남길지 규칙을 먼저 정해야 해요. &bull; <b>소프트 삭제 칼럼을 확인</b> &mdash; 지워진 행을 <code>deleted</code> 플래그로만 남기고 조회에서 걸러내는 구조라면, 지워진 행까지 유니크 제약에 걸립니다. 이럴 땐 하드 삭제인지 확인하거나, 제약 컬럼에 삭제 플래그를 포함시키는 식으로 설계를 맞춰야 해요. &bull; <b>NULL 취급</b> &mdash; 유니크 컬럼에 NULL 이 들어가면 대부분의 DB 가 중복으로 안 봅니다. 슬롯 구분 컬럼이 nullable 이면 제약이 통과만 하고 아무것도 못 막을 수 있어요.
+</div>
+
+<h2>4. 고친 것과, 고치지 않은 것</h2>
+
+<p>당장 한 일은 하나예요. <b>배치 실행 시간을 사용자 활동이 없는 새벽으로 옮겼습니다.</b> 설정 한 줄이고, 배포하면 그날 밤부터 증상이 사라져요.</p>
+
+<p>그런데 이건 근본 수정이 아니에요. 여기서 멈추면 안 되는 이유를 적어둘게요.</p>
+
+<p>시간을 옮긴 건 <b>충돌 창을 옮긴 것</b>이지 없앤 게 아닙니다. 새벽에 쓰는 사용자가 한 명이라도 생기면 같은 일이 납니다. 해외 사용자, 야간 작업자, 다른 배치, 새벽 배포 &mdash; 새벽이 영원히 비어 있다는 보장은 아무 데도 없어요. <span class="obsv-mark">"지금은 그 시간에 아무도 안 쓴다"는 코드가 아니라 가정입니다.</span></p>
+
+<p>근본 수정은 세 갈래고, 셋 다 각각으로 사슬을 끊어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔧 세 갈래 &mdash; 아무거나 하나만 해도 사슬이 끊긴다</div>
+  <b>가. 외부 I/O 를 트랜잭션 밖으로</b> &mdash; 지울 대상 목록만 트랜잭션 안에서 뽑고, 실제 파일 삭제는 커밋 뒤에 한다. 트랜잭션 길이가 외부 시스템 속도에 묶이지 않게 되는 게 핵심이에요.<br><br>
+  <b>나. 배치를 건 단위로 쪼갠다</b> &mdash; 스텝 하나가 전체를 감싸지 않게 하고 건마다 짧게 커밋한다. 커넥션을 오래 붙잡지 않고, 덤으로 중간에 실패해도 앞의 성공이 살아남아요.<br><br>
+  <b>다. 유니크 제약을 넣는다</b> &mdash; 앞의 둘을 다 놓쳐도 중복은 안 생긴다. 그리고 실패가 보이니까 다음 원인을 찾을 기회가 생겨요.
+</div>
+
+<p>기록할 때 <b>임시 조치와 근본 수정을 나눠서 적는 게 중요해요.</b> 증상이 사라지면 "해결"이라고 적고 싶어지거든요. 시간을 옮긴 다음 날부터 리포트가 안 들어오면, 그게 고쳐진 것과 구분이 안 갑니다. 그래서 배포 문서에 <b>"남은 후속 과제"</b> 항목을 따로 두고 세 갈래를 그대로 옮겨 적었어요. 증상이 사라졌다는 사실이 남은 과제를 지우지 못하게요.</p>
+
+<h2>5. 되돌리다 한 번 더 걸렸다</h2>
+
+<p>여기서부터 두 번째 이야기예요. 운영 영향이 있는 변경이라 배포 직후에 확인할 게 있었고, 확인 과정에서 일단 되돌리기로 했습니다. 그리고 되돌린 대상이 <b>머지 커밋</b>이었어요.</p>
+
+<p>머지 커밋을 되돌리는 건 됩니다. <code>git revert -m 1</code> 로 부모를 지정하면 코드는 깔끔하게 원래대로 돌아와요. 여기까지는 아무 문제가 없었습니다. 문제는 <b>그다음에 다시 넣으려고 했을 때</b> 생겼어요.</p>
+
+<div class="obsv-code">$ git log --oneline --graph main
+*   R   Revert "Merge ..."      &lt;- 머지 커밋을 revert 했다
+*   M   Merge (원래 변경)
+|\
+| * C2  ...                     &lt;- 이 커밋들은 여전히 main 의 조상이다
+| * C1  ...
+
+# 그래서 같은 브랜치를 다시 머지하면
+$ git merge feature-branch
+Already up to date.             # git 은 "이미 다 들어와 있다" 고 본다. 코드에는 없는데.</div>
+
+<p>이게 왜 이러냐면, git 이 머지에서 보는 건 <b>커밋의 조상 관계</b>지 파일 내용이 아니기 때문이에요. 머지 커밋을 revert 해도 그 브랜치의 커밋들은 여전히 main 의 조상입니다. 다시 머지하면 git 은 "이 커밋들은 이미 처리했다"고 판단하고 아무것도 안 가져와요. 코드에는 그 변경이 없는데도요. <span class="obsv-mark">되돌린 건 내용이지 이력이 아니에요.</span></p>
+
+<p>그래서 복원하는 방법은 하나였습니다. <b>revert 를 revert 하는 것</b>이요. 되돌리기를 되돌리면 코드는 머지 직후와 완전히 동일해집니다. 실제로 그렇게 했고, 결과물은 처음 머지했던 그 상태 그대로예요. 다만 이력에는 머지 &rarr; 되돌리기 &rarr; 되돌리기의 되돌리기, 세 커밋이 남습니다.</p>
+
+<p>정리하면 이래요. <b>머지 커밋을 revert 하는 건 "없던 일로 하기"가 아니라 "취소했다는 사실을 이력에 새기기"</b> 예요. 새겨진 사실은 지워지지 않고, 이후의 머지 판단에 계속 영향을 줍니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 되돌리기 전에 30초만</div>
+  <b>다시 넣을 계획이 있나요?</b> &bull; 없다 &mdash; 머지 커밋 revert 로 충분해요. 간단하고 이력도 정직합니다. &bull; 있다 &mdash; 머지 커밋 말고 <b>변경 자체를 되돌리세요.</b> 문제가 설정 한 줄이면 그 한 줄만 새 커밋으로 되돌리는 게 제일 안전해요. 브랜치 단위로 되돌려야 하면 개별 커밋들을 revert 하거나, 되돌린 뒤 새 브랜치로 다시 올릴 계획을 미리 세워두고요.<br><br>
+  그리고 이게 진짜 함정인 지점 &mdash; <b>급할수록 이 30초를 안 씁니다.</b> 운영에 영향이 있으니까 일단 되돌리자는 판단은 옳아요. 옳은 판단이 옳은 명령을 보장하지 않을 뿐이죠.
+</div>
+
+<h2>6. 남는 건 두 줄이에요</h2>
+
+<p>첫째, <b>재현이 안 되는 버그는 시각 분포부터 봅니다.</b> 입력과 환경에서 공통점이 안 나오면 축을 시간으로 바꿔보세요. 점들이 몰려 있으면 그건 사람이 아니라 스케줄이에요. 사람은 그렇게 정확하게 뭉치지 못합니다. 그리고 스케줄이라는 걸 알면 후보가 갑자기 몇 개로 줄어들어요 &mdash; 그 시간에 도는 배치는 대개 손에 꼽거든요.</p>
+
+<p>둘째, <b>불변식은 코드와 스키마 양쪽에 적습니다.</b> "delete 하고 insert 하니까 항상 하나"라는 코드를 쓰고 있다면, 그건 이미 불변식을 선언한 거예요. 그 선언을 테이블에도 옮겨 적으세요. 한쪽에만 있으면, 그 한쪽이 무너지는 날 <b>아무도 모릅니다.</b> 이번엔 그 "아무도 모르는" 기간이 넉 달 반이었어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>재현이 안 되는 버그는 시각 분포부터 봐요. 6분 폭 안에 아홉 건이 몰려 있으면, 그건 사람이 아니라 스케줄입니다.</b><br><br>
+  트랜잭션 안에서 느린 외부 I/O 를 돌리면 트랜잭션 길이가 외부 시스템 속도로 정해지고, 그 창에 걸린 사용자 요청이 실패하고, 재시도가 delete-then-insert 의 반쪽만 실행시켜 중복을 만듭니다. 그리고 되돌릴 때 머지 커밋을 revert 하면 코드는 돌아오지만 이력은 "이미 처리함"으로 남아, 다시 머지해도 아무것도 안 들어와요.<br><br>
+  결국 두 이야기가 같은 말을 해요 &mdash; <b>코드에만 적힌 약속은 코드가 실패하는 날 같이 실패합니다. 지켜져야 하는 건 코드 밖에도 적어두세요.</b>
+</div>
+
+</div>
