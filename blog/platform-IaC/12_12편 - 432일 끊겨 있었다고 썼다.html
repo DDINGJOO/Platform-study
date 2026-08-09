@@ -1,0 +1,307 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지 &mdash; 셋째 날 · 12편</div>
+  1~7편. 첫날 &mdash; 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날 &mdash; 같은 사실이 두 군데 적혀 있을 때<br>
+  <b>12편. 432일 끊겨 있었다고 썼다</b> &larr; 지금 이 글<br>
+  13편. 자기 자신을 감시하는 알람은 어디로 보내야 하나<br>
+  14편. 전수에 걸었다가 전수가 아닌 이유<br>
+  15편. 가드를 만들었는데 다음 사고를 못 잡았다
+</div>
+
+<p>VPN 터널 단절 알람을 만들면서 임계값을 정하려고 지표를 훑고 있었어요. 계정에 붙은 VPN 연결이 여덟 개고 각 연결마다 터널이 두 개씩이니, 화면에 선이 열여섯 줄이에요. 대부분은 위쪽에 붙어 평평했는데 하나가 바닥에 눌려 있었습니다. 양쪽 터널이 다 내려간 상태였어요.</p>
+
+<p>언제부터인지 궁금해서 조회 창을 늘렸어요. 한 달, 석 달, 1년. 계속 바닥이에요. 창을 더 늘리자 드디어 선이 <b>시작되는 지점</b>이 나왔고, 거기서 오늘까지를 세니 <b>432일</b>이었습니다. 1년 하고도 두 달 넘게 끊겨 있었고 아무도 모르고 있었다는 뜻이죠.</p>
+
+<p>그 숫자를 PR 본문에 적었고, ADR 에도 적었어요. 그리고 그게 틀렸습니다. 실제 단절은 <b>42일</b>이었어요. 10배 넘게 틀렸는데, 진짜 문제는 자릿수가 아니에요. <span class="obsv-mark">그 숫자는 사실 기술이 아니라 결정의 근거였거든요.</span></p>
+
+<h2>1. 그 숫자가 무엇을 정당화했나</h2>
+
+<p>먼저 이 알람이 어떤 물건인지부터 말할게요. VPN 은 터널을 두 개 놓아 이중화합니다. CloudWatch 의 <code>TunnelState</code> 를 연결 단위로 <code>Average</code> 로 보면 그 값이 <b>UP 인 터널의 비율</b>이 돼요. 둘 다 살아 있으면 1.0, 한쪽만이면 0.5, 둘 다 죽으면 0.0 이죠. 그래서 임계값 0.5 이하면 "이중화가 소진됐다", 0 이하면 "완전 단절"입니다.</p>
+
+<div class="obsv-code">module "vpn_degraded" {          # 이중화 소진 &mdash; P2
+  metric_name  = "TunnelState"
+  dimensions   = { VpnId = "{VPN 연결 A}" }
+  statistic    = "Average"       # 2/2 UP = 1.0, 1/2 = 0.5, 0/2 = 0.0
+  threshold    = 0.5
+  comparison   = "LessThanOrEqualToThreshold"
+  eval_periods = 3
+  datapoints   = 3
+  missing_data = "breaching"     # 상태 게이지 &mdash; 값이 사라지는 것 자체가 이상
+}
+
+# 배포 시점에 이미 이 조건인 연결이 3개.
+# 즉시 ALARM 으로 들어가고, 회선이 복구될 때까지 계속 ALARM 이다.</div>
+
+<p>여기서 문제가 생겨요. 이 알람은 <b>걸면 즉시 ALARM 이 되고 회복되지 않습니다.</b> 회선을 고치기 전까지는 영원히 빨간불이에요. 보통은 그런 알람을 만들지 않아요. 항상 빨간 알람은 사람이 무시하게 되고, 무시하는 습관은 그 알람 하나에서 끝나지 않거든요. 옆에 있는 멀쩡한 알람까지 같이 안 보게 돼요.</p>
+
+<p>그런데도 만들기로 했어요. 근거는 딱 하나였습니다. <b>"1년 넘게 아무도 몰랐다."</b> 1년 넘게 모르고 있었던 상태라면 노이즈를 감수하고서라도 드러내는 편이 낫다, 숨기는 것보다 보이는 게 낫다 &mdash; 이 논리로 ADR 에 적었어요.</p>
+
+<p><span class="obsv-mark">알림 피로를 감수하기로 한 결정의 유일한 근거가 그 숫자였습니다.</span> 432일이 아니었다면 같은 문장을 쓸 수 없었어요. "한 달쯤 끊겨 있었으니 상시 빨간불을 감수하자"는 설득력이 전혀 다르니까요.</p>
+
+<h2>2. CloudWatch 는 나이에 따라 해상도를 버린다</h2>
+
+<p>이제 왜 틀렸는지로 갑니다. CloudWatch 의 지표 보존은 한 덩어리가 아니라 <b>해상도별 3단</b>이에요.</p>
+
+<div class="obsv-code">CloudWatch 지표 보존 &mdash; 나이가 들면 해상도를 버린다
+
+  해상도            보존 기간      그 뒤
+  1초(고해상도)      3시간         사라진다
+  1분               15일          사라진다
+  5분               63일          사라진다
+  1시간             455일         사라진다
+
+조회 창이 길어지면 콘솔은 자동으로 더 거친 해상도를 고른다.
+15일을 넘겨 보면 1분 데이터는 이미 없고,
+63일을 넘기면 5분도 없다.
+1년 넘는 창은 사실상 1시간 해상도 하나로만 그려진다.</div>
+
+<p>중요한 건 이게 <b>압축이 아니라 폐기</b>라는 점이에요. 1분짜리 원본은 15일이 지나면 그냥 없어져요. 5분·1시간 롤업은 원본과 별개로 따로 쌓여 있다가 각자의 기한에 사라지고요. 그러니까 오래된 구간을 볼 때 우리가 보는 건 "흐릿해진 원본"이 아니라 <b>애초에 다른 시리즈</b>입니다.</p>
+
+<p>그래서 조회 창을 길게 잡으면 반드시 <b>데이터가 시작되는 지점</b>이 생겨요. 그 지점은 사건이 시작된 곳이 아니라 <span class="obsv-mark">보존 창의 왼쪽 가장자리</span>예요. 화면상으로는 둘이 똑같이 생겼습니다. 선이 어느 날부터 나타나거든요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 394" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="arr12a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+<marker id="arr12b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round"/>
+</marker>
+<marker id="arr12c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round"/>
+</marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="34" font-size="21" fill="#4a7fb5">CloudWatch 지표 보존 3단 &mdash; 나이가 들면 해상도를 버린다</text>
+
+<path d="M95 61 C 240 58, 480 63, 660 60 C 663 68, 662 77, 660 84 C 480 87, 240 82, 96 85 C 92 77, 94 68, 95 61 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="106" y="79" font-size="17" fill="#3d3a34">1시간 해상도 &middot; 455일</text>
+
+<path d="M400 101 C 480 98, 590 103, 660 100 C 663 109, 662 117, 660 124 C 590 127, 480 122, 401 125 C 397 117, 399 109, 400 101 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="411" y="118" font-size="16" fill="#3d3a34">5분 해상도 &middot; 63일</text>
+
+<path d="M570 141 C 600 138, 635 143, 660 140 C 663 149, 662 157, 660 164 C 635 167, 600 162, 571 165 C 567 157, 569 149, 570 141 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.4"/>
+<text x="580" y="159" font-size="15" fill="#3d3a34">1분 &middot; 15일</text>
+
+<path d="M60 190 C 220 188, 460 192, 672 190" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr12a)"/>
+<path d="M95 184 C 94 188, 96 192, 95 196" fill="none" stroke="#3d3a34" stroke-width="1.8"/>
+<path d="M460 184 C 459 188, 461 192, 460 196" fill="none" stroke="#3d3a34" stroke-width="1.8"/>
+<path d="M570 184 C 569 188, 571 192, 570 196" fill="none" stroke="#3d3a34" stroke-width="1.8"/>
+<path d="M660 184 C 659 188, 661 192, 660 196" fill="none" stroke="#3d3a34" stroke-width="1.8"/>
+
+<g font-size="15" fill="#8a8272">
+<text x="105" y="212">455일 전</text>
+<text x="470" y="212">42일 전</text>
+<text x="580" y="212">15일 전</text>
+<text x="648" y="212">지금</text>
+</g>
+
+<path d="M95 62 C 93 110, 97 170, 95 238" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="1 7" marker-end="url(#arr12b)"/>
+<path d="M460 130 C 458 165, 462 200, 460 238" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-dasharray="1 7" marker-end="url(#arr12c)"/>
+
+<text x="30" y="266" font-size="19" fill="#b3502f">여기를 사건 시작으로 읽었다</text>
+<text x="30" y="288" font-size="19" fill="#b3502f">&rarr; "432일 끊겨 있었다"</text>
+<text x="30" y="310" font-size="17" fill="#2e6b41">그런데 이 지점의 값은 UP 이었다</text>
+
+<text x="392" y="266" font-size="19" fill="#2e6b41">실제 전이 UP &rarr; DOWN</text>
+<text x="392" y="288" font-size="17" fill="#2e6b41">5분 창(63일) 안쪽 &mdash; 데이터포인트로 보인다</text>
+<text x="392" y="310" font-size="17" fill="#8a8272">가장자리 아티팩트가 아니다</text>
+
+<path d="M24 332 C 240 329, 460 335, 676 331" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="358" font-size="20" fill="#b3502f">보존 창의 왼쪽 가장자리는 사건의 시작이 아니다</text>
+<text x="24" y="380" font-size="15" fill="#8a8272">가로축은 눈금이 아니라 순서다 &mdash; 오른쪽이 지금</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 긴 창을 열면 선이 시작되는 곳이 생긴다 &mdash; 그건 사건이 아니라 창의 끝이다</div>
+
+<h2>3. 무엇을 잘못 읽었나</h2>
+
+<p>정정하려고 다시 쟀어요. 세 가지가 나왔습니다.</p>
+
+<div class="obsv-code"># 처음 적은 것 (PR 본문 · ADR)
+  "{VPN 연결 A} 는 432일째 양쪽 터널이 끊겨 있고 아무도 모르고 있었다"
+
+# 다시 재고 나서
+  데이터가 시작되는 지점    조회 시점에서 정확히 455일 전   = 1시간 해상도 보존 한계
+  그 지점의 값              UP                             = 끊긴 상태가 아니었다
+  UP &rarr; DOWN 전이            조회 시점에서 42일 전           = 5분 해상도 창(63일) 안쪽</div>
+
+<p><b>첫째, 455라는 숫자.</b> 데이터가 시작되는 날은 조회 시점으로부터 정확히 455일 전이었어요. 이건 사건이 만들 수 있는 숫자가 아니에요. 회선이 하필 보존 한계와 같은 날 끊길 이유가 없잖아요. 이 값이 나오는 순간 "내가 본 건 사건이 아니라 창의 끝"이라는 게 거의 확정됩니다.</p>
+
+<p><b>둘째, 그 가장자리의 값.</b> 이게 결정타예요. <span class="obsv-mark">데이터가 시작되는 지점의 값은 UP 이었습니다.</span> 끊긴 상태로 시작한 게 아니라 멀쩡한 상태로 시작했어요. 그러니까 그 날은 단절이 시작된 날일 수가 없어요. 저는 "여기서부터 바닥"이라고 봤는데, 실제로는 "여기서부터 정상이었다가 어느 시점에 떨어진" 그래프였던 거죠. 창이 너무 길어서 앞부분의 UP 구간이 눈에 안 들어왔던 겁니다.</p>
+
+<p><b>셋째, 실제 전이 지점.</b> 창을 좁혀 5분 해상도로 훑으니 UP 에서 DOWN 으로 바뀌는 지점이 나왔어요. 42일 전이었습니다. 그리고 이 값이 안전한 이유가 있어요. <b>42일은 5분 해상도의 보존 창인 63일 안쪽</b>이거든요. 즉 전이 자체를 실제 데이터포인트로 볼 수 있어요 &mdash; UP 인 점이 있고, 그 다음에 DOWN 인 점이 있습니다. 창의 가장자리에서 추측한 게 아니라 관측한 값이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔍 긴 창을 열었을 때 확인할 세 가지</div>
+  &bull; <b>데이터가 시작되는 지점이 조회 시점에서 며칠 전인가</b> &mdash; 15 / 63 / 455 에 가깝다면 사건이 아니라 보존 경계예요<br>
+  &bull; <b>그 가장자리의 값이 무엇인가</b> &mdash; 정상값이면 그 날은 사건 시작일이 아닙니다<br>
+  &bull; <b>주장하려는 기간이 어느 해상도 창 안에 들어오나</b> &mdash; 창 밖의 기간은 관측이 아니라 추정이에요
+</div>
+
+<h2>4. "데이터가 없다"와 "값이 정상이었다"는 다른 말이다</h2>
+
+<p>여기가 이 글의 중심이에요. 제가 저지른 실수를 한 줄로 줄이면 이렇습니다. <b>빈 구간을 값으로 읽었다.</b></p>
+
+<p>그래프는 두 경우에 똑같이 생겨요. 지표가 발행되지 않아서 선이 없는 것과, 애초에 그 시각의 데이터가 보존 밖이라 선이 없는 것. 화면에는 둘 다 그냥 <b>아무것도 없음</b>으로 나옵니다. 그런데 사람은 없는 구간을 비워두지 못해요. 자동으로 "그 전에는 이랬겠지"로 채웁니다. 저는 바닥에 붙은 선 왼쪽의 빈 구간을 "여기도 바닥이었겠지"로 채운 거예요.</p>
+
+<p>재미있는 건, <span class="obsv-mark">알람을 설계할 때도 똑같은 질문에 답해야 한다</span>는 점이에요. CloudWatch 알람의 <code>treat_missing_data</code> 가 바로 그겁니다. "데이터가 없을 때 이걸 위반으로 볼 것인가, 정상으로 볼 것인가."</p>
+
+<div class="obsv-code">variable "missing_data" {
+  description = &lt;&lt;-EOT
+    데이터가 없을 때의 처리. **기본값이 없다. 매번 판단해야 한다.**
+
+    - breaching     상태 게이지 &mdash; 값이 계속 보고되는 메트릭. 없어지면 진짜 이상이다
+                    (TunnelState, HealthyHostCount, DatabaseConnections)
+    - notBreaching  이벤트 카운터 &mdash; 일이 없으면 데이터포인트 자체가 없다
+                    (Throttles, Errors, HTTPCode_5XX, Evictions)
+  EOT
+}
+
+# 기본값을 주지 않는다 &mdash; 알람을 추가할 때마다 판단을 강제하기 위해서다.</div>
+
+<p>이 모듈은 <code>missing_data</code> 에 <b>기본값을 주지 않아요.</b> 알람을 하나 추가할 때마다 사람이 골라야 합니다. 이유는 일괄 적용이 양쪽 다 사고를 내기 때문이에요.</p>
+
+<p><b>전부 <code>breaching</code> 으로 두면</b> 새벽에 오탐이 나요. 트래픽이 0인 시간대에 Lambda 호출이 없으면 <code>Throttles</code> 는 데이터포인트 자체가 없어요. 그걸 위반으로 보면 ALARM 이 되고 전화가 갑니다. <b>장애가 없어서 알람이 울리는</b> 상황이 되는 거죠. 실제로 이 저장소에서도 라이터가 발행하지 않는 복제 지연 지표를 <code>breaching</code> 으로 뒀다면 인스턴스 여러 대가 배포 즉시 영구 ALARM 이 될 뻔했어요.</p>
+
+<p><b>반대로 전부 <code>notBreaching</code> 으로 두면</b> 대상이 통째로 사라져도 조용합니다. VPN 터널 상태는 살아 있는 한 계속 보고돼요. 값이 없어졌다는 건 보고할 주체가 없어졌다는 뜻이고, 그건 그 자체로 이상 신호예요. 그래서 이 알람은 <code>breaching</code> 입니다.</p>
+
+<p>정리하면 이래요. <b>상태 게이지처럼 항상 발행되는 지표는 무데이터 자체가 이상 신호이므로 <code>breaching</code> 이 맞고, 조건부로만 발행되는 지표는 <code>notBreaching</code> 이어야 합니다.</b> 그리고 이건 제가 그래프를 볼 때 던졌어야 할 질문과 <span class="obsv-mark">완전히 같은 질문</span>이에요. 선이 없는 구간을 만났을 때 "관측이 없었나, 사건이 없었나"를 구분하는 것.</p>
+
+<p>알람 코드에서는 이 질문에 답을 안 하면 <code>terraform plan</code> 이 막혀요. 그런데 콘솔에서 그래프를 볼 때는 아무도 막아주지 않죠. 그래서 대충 채우고 넘어갔던 겁니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="arr12d" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="32" font-size="21" fill="#4a7fb5">선이 없는 구간 &mdash; 그래프는 두 경우에 똑같이 생겼다</text>
+
+<path d="M278 54 C 340 52, 400 56, 444 54 C 447 84, 446 114, 444 142 C 400 145, 340 141, 279 143 C 275 114, 278 84, 278 54 Z" fill="#fdf3dd" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="6 6"/>
+
+<path d="M96 52 C 94 84, 98 116, 96 148" fill="none" stroke="#3d3a34" stroke-width="2"/>
+<path d="M96 148 C 250 146, 480 150, 646 148" fill="none" stroke="#3d3a34" stroke-width="2"/>
+<text x="56" y="70" font-size="16" fill="#8a8272">UP</text>
+<text x="40" y="146" font-size="16" fill="#8a8272">DOWN</text>
+
+<path d="M104 65 C 160 63, 220 66, 276 64" fill="none" stroke="#4a7fb5" stroke-width="2.6"/>
+<path d="M446 65 C 500 63, 560 66, 628 64" fill="none" stroke="#4a7fb5" stroke-width="2.6"/>
+
+<text x="345" y="110" font-size="42" fill="#b3502f">?</text>
+<text x="325" y="130" font-size="16" fill="#8a8272">선이 없다</text>
+
+<path d="M330 152 C 290 168, 240 178, 198 190" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr12d)"/>
+<path d="M392 152 C 432 168, 482 178, 524 190" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr12d)"/>
+
+<path d="M40 197 C 140 194, 240 200, 338 196 C 341 235, 340 275, 338 310 C 240 313, 140 307, 42 311 C 38 275, 41 235, 40 197 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="58" y="224" font-size="21" fill="#b3502f">읽기 1 &middot; 데이터가 없다</text>
+<text x="58" y="250" font-size="17" fill="#3d3a34">관측이 끊겼다는 뜻</text>
+<text x="58" y="272" font-size="17" fill="#3d3a34">상태 게이지면 결측 자체가 이상</text>
+<text x="58" y="298" font-family="Menlo, monospace" font-size="12" fill="#b3502f">treat_missing_data = breaching</text>
+
+<path d="M360 197 C 460 194, 560 200, 658 196 C 661 235, 660 275, 658 310 C 560 313, 460 307, 362 311 C 358 275, 361 235, 360 197 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="378" y="224" font-size="21" fill="#2e6b41">읽기 2 &middot; 값이 정상이었다</text>
+<text x="378" y="250" font-size="17" fill="#3d3a34">셀 일이 없어서 안 찍혔다</text>
+<text x="378" y="272" font-size="17" fill="#3d3a34">조건부 발행 지표면 평시다</text>
+<text x="378" y="298" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">treat_missing_data = notBreaching</text>
+
+<path d="M24 328 C 240 325, 460 331, 676 327" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="352" font-size="20" fill="#b3502f">조회하며 저지른 실수와 알람에서 정해야 하는 것이 같은 질문이다</text>
+<text x="24" y="376" font-size="15" fill="#8a8272">사람은 빈 구간을 자동으로 "그 전에는 이랬겠지" 로 채운다 &mdash; 그 순간 둘은 구분되지 않는다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 같은 공백을 두 가지로 읽을 수 있다 &mdash; 알람 설정은 그 선택을 코드로 적는 자리다</div>
+
+<h2>5. 근거가 10배 틀렸으면 결론도 다시 봐야 한다</h2>
+
+<p>정정은 했어요. 커밋 하나로 ADR 의 문장을 고쳤습니다.</p>
+
+<div class="obsv-code">- 이것도 노이즈가 될 수 있다. 그럼에도 올리는 이유는 1년 넘게 아무도 몰랐던
++ 이것도 노이즈가 될 수 있다. 그럼에도 올리는 이유는 아무도 모르고 있던
+  상태이기 때문이다 &mdash; 숨기는 것보다 보이는 편이 낫다.
+
++ {VPN 연결 A} 는 42일 전부터 단절이다. 처음에는 "432일" 로 적었는데
++ 근거가 없었다 &mdash; 지표가 남아 있는 시작일을 단절일로 잘못 읽은 것이다.
++ 그 시점 값은 UP 이었다. 측정으로 정정했다.</div>
+
+<p>사실관계는 깨끗하게 고쳐졌어요. 틀린 숫자를 지웠고, 왜 틀렸는지도 적었고, 정정 근거도 남겼습니다. 여기까지는 잘했다고 생각해요.</p>
+
+<p>그런데 <b>결정 자체는 재검토하지 않았습니다.</b> "그럼에도 올리는 이유는"으로 시작하는 문장이 그대로 살아 있어요. 근거만 슬쩍 빠진 채로요. "1년 넘게 아무도 몰랐던"이 "아무도 모르고 있던"으로 바뀌었는데, 이건 근거를 고친 게 아니라 <span class="obsv-mark">근거를 흐릿하게 만든 거예요.</span></p>
+
+<p>물어봤어야 할 질문은 이겁니다. <b>42일이었어도 같은 결론이 나왔을까?</b></p>
+
+<p>432일이면 "이건 관측 체계가 통째로 없었다는 증거고, 상시 빨간불이라도 켜두는 게 낫다"가 자연스러워요. 그런데 42일이면 얘기가 좀 달라져요. 42일은 짧지 않지만, 애초에 이 알람 자체가 없던 기간이기도 해요. 즉 "1년 넘게 방치된 심각한 상태"가 아니라 "알람을 만드는 중에 발견한, 최근에 생긴 장애"에 가까워집니다. 그러면 선택지가 늘어나요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🤔 근거가 바뀌었을 때 다시 폈어야 할 선택지</div>
+  &bull; 회선 조치 이슈를 먼저 닫고 그 다음에 알람을 켠다 &mdash; 상시 ALARM 기간이 0 이 된다<br>
+  &bull; 알람은 지금 켜되 조치 완료까지 한시적으로 억제한다 &mdash; 대신 억제를 걷는 걸 잊으면 조용한 실패<br>
+  &bull; 그대로 켠다 &mdash; 억제 장치를 새로 만드는 비용보다 낫다면 여전히 유효<br>
+  <b>결론은 셋 중 어느 쪽이어도 괜찮아요. 문제는 이 세 줄을 아무도 안 폈다는 겁니다.</b>
+</div>
+
+<p>사실 저는 지금도 "그대로 켠다"가 맞다고 봐요. 억제 장치는 그 자체로 조용한 실패의 통로가 되고, 이 저장소는 이미 그런 사고를 여러 번 겪었거든요. 하지만 <b>그건 재논증을 거친 유지여야 해요.</b> 근거가 사라졌는데 결론만 자리를 지키고 있는 건 다릅니다.</p>
+
+<p>그래서 이 글의 두 번째 교훈은 이거예요. <span class="obsv-mark">정정의 범위를 사실에만 두면, 그 사실 위에 서 있던 판단은 검증 없이 살아남습니다.</span> 문서에서 틀린 숫자를 고칠 때는 항상 한 칸 더 가야 해요 &mdash; "이 숫자를 근거로 내린 결정이 어디 있나" 그리고 "그 결정이 새 숫자로도 서 있나."</p>
+
+<h2>6. 숫자에는 그 숫자가 나온 창을 같이 적는다</h2>
+
+<p>마지막으로 일반화를 해볼게요.</p>
+
+<p>이 저장소의 알람은 대부분 실측으로 임계를 잡았어요. 로컬 스토리지는 14일 실측으로 남은 용량과 하루 감소량을 재서 임계를 정했고, 커넥션 알람은 실측이 평탄하다는 이유로 아예 만들지 않기로 했어요. 문서에 "이론상 이쯤"이 아니라 "재보니 이렇다"를 적는 건 좋은 습관이라고 생각해요.</p>
+
+<p>그런데 이번 일이 알려준 건, <b>실측 자체가 관측 시스템의 한계 안에서 나온다</b>는 거예요. 네 가지가 데이터의 모양을 만듭니다.</p>
+
+<div class="obsv-code">숫자를 만들어내는 네 가지 &mdash; 데이터가 아니라 관측 시스템의 성질
+
+  보존 기간      그보다 오래된 것은 애초에 볼 수 없다
+  해상도 강등    오래된 구간은 더 거친 통계로만 남는다
+  결측 처리      빈 구간을 무엇으로 볼지가 결론을 바꾼다
+  조회 창        창을 바꾸면 같은 사건이 다른 모양으로 보인다
+
+&rarr; "42일" 은 데이터가 아니라 "5분 해상도 63일 창에서 관측한 42일" 이다.</div>
+
+<p>그래서 지금은 이렇게 적으려고 해요. "42일 전부터 단절" 대신 <b>"5분 해상도 보존 창(63일) 안에서 UP 에서 DOWN 으로의 전이를 관측했고, 그게 42일 전이다"</b>로요. 길죠. 그런데 이렇게 적으면 두 가지가 따라와요.</p>
+
+<p><b>첫째, 다음 사람이 재현할 수 있어요.</b> 어떤 해상도로 어떤 창을 열면 같은 걸 볼 수 있는지가 문장 안에 들어 있으니까요. 그리고 63일이 지나면 그 관측을 더는 재현할 수 없다는 것까지 알 수 있죠.</p>
+
+<p><b>둘째, 창 밖의 숫자가 자동으로 의심돼요.</b> 만약 제가 처음부터 이 형식으로 적으려고 했다면 "432일"을 쓸 때 손이 멈췄을 거예요. 432일을 담을 수 있는 창은 1시간 해상도(455일)뿐인데, 432와 455가 이렇게 가까우면 뭔가 이상하잖아요. <span class="obsv-mark">형식이 검산을 강제합니다.</span></p>
+
+<p>측정으로 결정하는 건 여전히 옳아요. 다만 측정값을 근거로 쓸 때는 <b>그 값이 어느 창에서 나왔는지</b>를 같이 적어야 해요. 창을 안 적은 숫자는 사실처럼 보이지만, 실은 그 사람이 그날 열어둔 화면의 모양일 뿐이거든요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>터널이 432일 끊겨 있었다고 PR 과 ADR 에 적었는데, 그건 사건이 아니라 CloudWatch 1시간 해상도의 보존 한계(455일)였다.</b> 지표가 시작되는 날을 단절이 시작된 날로 읽었고, 정작 그 가장자리의 값은 UP 이었다. 실제 단절은 42일 &mdash; 5분 해상도 창(63일) 안쪽이라 UP 에서 DOWN 으로의 전이를 데이터포인트로 관측할 수 있는 값이다.<br><br>
+  "데이터가 없다"와 "값이 정상이었다"는 그래프에서 똑같이 생겼다. 알람의 <code>treat_missing_data</code> 가 답해야 하는 질문이 바로 그것이고 &mdash; 상태 게이지는 <code>breaching</code>, 조건부 발행 지표는 <code>notBreaching</code> &mdash; 그래프를 읽을 때도 같은 질문을 던졌어야 했다.<br><br>
+  그리고 정정은 문장에서 멈췄다. 432일이 정당화하던 "상시 빨간불을 감수한다"는 결정은 42일에서도 유효한지 다시 묻지 않았다. <b>실측으로 임계를 잡는 건 옳지만, 실측 자체가 관측 시스템의 한계 안에서 나온다. 숫자를 근거로 쓸 때는 그 숫자가 어느 창에서 나왔는지를 함께 적어야 한다.</b>
+</div>
+
+</div>

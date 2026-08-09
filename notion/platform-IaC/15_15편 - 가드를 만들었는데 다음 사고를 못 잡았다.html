@@ -1,0 +1,250 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지 &mdash; 셋째 날 · 15편</div>
+  1~7편. 첫날 &mdash; 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날 &mdash; 같은 사실이 두 군데 적혀 있을 때<br>
+  12편. 432일 끊겨 있었다고 썼다<br>
+  13편. 자기 자신을 감시하는 알람은 어디로 보내야 하나<br>
+  14편. 전수에 걸었다가 전수가 아닌 이유<br>
+  <b>15편. 가드를 만들었는데 다음 사고를 못 잡았다</b> &larr; 지금 이 글
+</div>
+
+<p>이틀 전에 워크플로 파일이 통째로 무효가 되는 사고를 냈어요. 잡이 하나도 안 태어나고, 로그도 없고, 인프라 반영 경로가 통째로 사라진 그 사고요. 그래서 그날 같은 결함을 파일만 읽고 잡아내는 검사기를 하나 써서 PR 체크에 매달았습니다. 다시는 안 겪겠다는 마음이었죠.</p>
+
+<p>그리고 오늘, <b>같은 증상이 다시 났어요.</b> 화면에 뜬 문장까지 똑같았습니다. 잡 0 개, <code>This run likely failed because of a workflow file issue.</code></p>
+
+<p>그 사이에 PR 은 초록불이었고, 어제 만든 그 검사기도 정상적으로 통과했습니다. 고장 난 게 아니었어요. <span class="obsv-mark">검사기는 자기가 보라고 시킨 것만 정확히 보고 통과시킨 겁니다.</span> 이 글은 그래서 "가드를 어떻게 만드느냐"가 아니라 <b>"가드의 사각지대를 어떻게 설계하느냐"</b>에 대한 이야기예요.</p>
+
+<h2>1. 어제 만든 검사기가 무엇을 봤나</h2>
+
+<p>먼저 첫 사고를 한 문단으로 요약할게요. 이 저장소의 apply 파이프라인은 환경별 절차를 <code>_apply-env.yml</code> 이라는 재사용 워크플로 하나로 빼두고, 호출부가 <code>uses:</code> 한 줄로 부릅니다. 그런데 재사용 워크플로가 선언한 <code>permissions</code> 는 <b>호출 잡이 준 것의 부분집합이어야 하고</b>, 초과하면 GitHub 은 그 잡 하나를 실패시키는 게 아니라 워크플로 파일 전체를 무효로 처리해요. 호출부 두 곳 중 한 곳에 <code>issues: write</code> 를 빠뜨린 탓에, 아무 잘못 없는 dispatch 잡까지 같이 죽었습니다. (자세한 건 8편에)</p>
+
+<p>수리하면서 검사기를 만들었어요. 이름이 <code>check-workflow-permissions.py</code> 였습니다. <b>이름이 곧 범위였죠.</b> 하는 일은 이게 전부예요.</p>
+
+<div class="obsv-code">1. 워크플로 디렉터리의 모든 .yml 을 연다
+2. `uses: ./.github/workflows/...` 로 로컬 재사용 워크플로를 부르는 잡을 찾는다
+3. 불려가는 파일의 permissions 각 scope 를
+   호출 잡이 준 것과 none &lt; read &lt; write 순위로 비교한다
+4. 하나라도 모자라면 종료 코드 1</div>
+
+<p>여기서 오늘의 핵심을 미리 하나 짚고 갈게요. 이 검사기는 워크플로 파일을 <b>전부 열고, 전부 파싱하고, 모든 잡을 순회합니다.</b> 그러니까 필요한 정보는 이미 손에 다 쥐고 있었어요. 그런데 <code>needs</code> 라는 키는 <span class="obsv-mark">읽지도 않았습니다.</span> 몰라서가 아니라, 그날 난 사고가 권한 사고였기 때문이에요.</p>
+
+<h2>2. 문법은 맞고 의미가 틀렸다</h2>
+
+<p>이틀 뒤의 작업은 이거였어요. 스택을 하나 추가할 때마다 워크플로 다섯 곳에 이름을 등록해야 했는데, 빠뜨려도 아무 신호가 없었습니다. plan 매트릭스에 등록을 빠뜨리면 validate·tflint·plan 이 아예 안 도는데 PR 은 초록불이에요. 그래서 <b>스택 목록을 워크플로에서 없애고</b> 디렉터리 스캔으로 바꿨습니다. backend 가 있는 디렉터리를 찾아 매트릭스를 만드는 스크립트를 하나 두고, 디렉터리를 만드는 것만으로 등록되게요.</p>
+
+<p>이 변경은 워크플로 세 파일에 각각 <b>두 조각씩</b> 들어가야 했어요. 하나는 스캔을 돌리는 <code>discover</code> 잡을 새로 정의하는 조각, 다른 하나는 하드코딩된 매트릭스를 <code>needs.discover</code> 의 출력으로 갈아끼우는 조각입니다. 세 파일 곱하기 두 조각, 여섯 군데죠.</p>
+
+<p>다섯 군데는 들어갔습니다. 한 군데가 안 들어갔어요.</p>
+
+<div class="obsv-code">커밋 메시지에 적어둔 계획          실제로 커밋에 들어간 것
+  terraform-plan.yml    discover 잡 + 매트릭스     잡 O   참조 O
+  terraform-drift.yml   discover 잡 + 매트릭스     잡 O   참조 O
+  terraform-apply.yml   discover 잡 + 매트릭스     잡 X   참조 O    &lt;-- 여기</div>
+
+<p>세 파일 중 두 파일에는 정확히 들어가고, 한 파일에서만 <b>절반만 적용됐습니다.</b> 그것도 하필 나중에 오는 절반, 그러니까 <b>참조하는 쪽만</b> 들어갔어요. 결과는 이렇게 생긴 파일입니다.</p>
+
+<div class="obsv-code"># terraform-apply.yml — 이 커밋이 남긴 상태
+jobs:
+  # discover 잡의 정의가 여기 있어야 했다. 없다.
+
+  prod-pending:
+    needs: discover                 # 참조는 들어갔고
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.prod) }}   # 여기도 들어갔다</div>
+
+<p>커밋 메시지에는 세 파일 모두 "discover 잡 +" 라고 또박또박 적혀 있었어요. <span class="obsv-mark">커밋 메시지는 의도를 적은 것이지 결과를 적은 게 아닙니다.</span> 저는 그걸 스스로 검산한 셈 치고 넘어갔고요.</p>
+
+<h3>왜 아무도 부분 적용을 몰랐나</h3>
+
+<p>여기가 중요한 대목이에요. 이 파일은 세 겹의 그물을 그냥 통과했습니다.</p>
+
+<p><b>첫째, YAML 파서는 통과합니다.</b> <code>needs: discover</code> 는 완벽하게 유효한 YAML 이에요. 문자열 하나짜리 값이니까요. 파서 입장에서 이 파일은 흠잡을 데가 없습니다. <b>문법은 맞고 의미가 틀린</b> 상태고, 파서는 의미를 모릅니다.</p>
+
+<p><b>둘째, 어제 만든 검사기도 통과합니다.</b> 앞에서 말했듯 <code>needs</code> 를 안 읽으니까요. 권한 관계는 이 커밋에서 아무것도 안 바뀌었고, 검사기는 정직하게 "권한 검사 통과"를 찍었습니다.</p>
+
+<p><b>셋째, GitHub 도 PR 에서는 검증하지 않습니다.</b> 8편에서 이미 판 그 구멍이에요. GitHub 은 워크플로 파일을 <b>그 파일로 run 을 만들려고 할 때만</b> 파싱하고 잡 그래프를 만듭니다. Terraform Apply 의 트리거는 <code>push</code> 와 <code>workflow_dispatch</code> 뿐이라 pull_request 이벤트에서는 단 한 번도 실행되지 않아요. 그러니 검증 횟수도 0 회입니다.</p>
+
+<p>그래서 머지 뒤 첫 push 에서야 드러났습니다. 없는 잡을 <code>needs</code> 로 가리키는 건 잡 그래프를 만들 수 없다는 뜻이고, 잡 그래프를 못 만들면 <b>그 파일의 잡이 전부 태어나지 못해요.</b> 원인은 완전히 다른데 <span class="obsv-mark">피해 범위와 화면에 뜨는 문장은 이틀 전과 글자 하나까지 똑같았습니다.</span></p>
+
+<h2>3. 사고마다 규칙 하나씩 붙이면 어떻게 되나</h2>
+
+<p>수리는 두 줄기였어요. <code>discover</code> 잡을 제자리에 넣고, 검사기에 <code>needs</code> 참조 검사를 붙였습니다. 검사기 이름도 <code>check-workflow-permissions.py</code> 에서 <code>check-workflows.py</code> 로 바꿨어요. 권한 부분집합과 <code>needs</code> 참조는 둘 다 "파일 전체를 무효로 만드는 조건"이라는 같은 가족이니까, 한 검사기에 두는 게 맞다고 판단했습니다.</p>
+
+<div class="obsv-code"># check-workflows.py 에 추가한 부분
+for path in sorted(WF_DIR.glob("*.y*ml")):
+    jobs = (load(path).get("jobs") or {})
+    for job_name, job in jobs.items():
+        needs = job.get("needs") or []
+        if isinstance(needs, str):
+            needs = [needs]
+        for dep in needs:
+            if dep not in jobs:
+                problems.append(f"{path} 의 `{job_name}` 잡이 없는 잡 `{dep}` 을 참조합니다.")</div>
+
+<p>커밋을 찍기 직전까지는 기분이 좋았어요. 이제 안전하니까요. 그런데 커밋 메시지에 "파일 전체를 무효로 만드는 조건"이라고 쓰는 순간 손이 멈췄습니다. <b>그 조건이 몇 개인지 세어본 적이 없었거든요.</b></p>
+
+<p>세어봤더니 최소 일곱 개였습니다.</p>
+
+<div class="obsv-code">워크플로 파일 하나를 통째로 무효로 만드는 조건
+
+  [검사됨]  재사용 워크플로의 permissions 가 호출자가 준 것을 초과한다   (사고 1)
+  [검사됨]  needs 가 존재하지 않는 잡을 가리킨다                        (사고 2)
+  [ 열림 ]  needs 가 순환한다 (A 가 B 를, B 가 A 를 기다린다)
+  [ 열림 ]  재사용 워크플로가 요구하는 필수 입력을 호출부가 안 준다
+  [ 열림 ]  표현식 문법이 깨졌다 (닫는 중괄호 누락, 없는 함수 호출)
+  [ 열림 ]  같은 파일 안에 잡 ID 가 중복된다
+  [ 열림 ]  needs 에 없는 잡의 출력을 표현식에서 참조한다</div>
+
+<p>일곱 중 둘. 그리고 그 둘은 <b>정확히 제가 겪은 사고 두 개</b>였어요. 하나도 더 있지 않고, 하나도 덜하지 않고, 딱 겪은 만큼만 막혀 있었습니다.</p>
+
+<p>제일 뼈아픈 건 네 번째 줄이에요. <b>재사용 워크플로가 요구하는 필수 입력을 호출부가 안 주는 것</b> &mdash; 이건 첫 사고와 <span class="obsv-mark">완전히 같은 가족입니다.</span> 둘 다 "호출부와 피호출부 사이의 계약 위반"이고, 둘 다 파일을 정적으로 읽으면 5초 만에 보이고, 둘 다 파일 전체를 무효로 만들어요. 심지어 제 검사기는 그 계약을 검사하려고 <b>이미 두 파일을 나란히 열어둔 상태</b>였습니다. <code>permissions</code> 딕셔너리를 비교하는 그 자리에서 <code>inputs</code> 딕셔너리를 비교하는 데 필요한 건 열 줄이었어요.</p>
+
+<p>안 했습니다. 그 사고를 안 겪었으니까요. <b>첫 사고를 겪고도 바로 옆자리를 안 본 겁니다.</b></p>
+
+<p>여기서 나오는 결론이 이 글의 본론이에요. <span class="obsv-mark">N 번째 사고마다 규칙 N 개를 붙이는 방식은 N+1 번째 사고를 절대 막지 못합니다.</span> 규칙은 사고를 따라가고, 사고는 항상 규칙보다 앞서 있어요. 그리고 이 방식의 진짜 문제는 못 막는다는 게 아니라, <b>막을 때마다 안전해졌다는 느낌이 정확히 한 칸씩 늘어난다</b>는 겁니다.</p>
+
+<div class="obsv-fig"><img src="images/15/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 사고 하나에 규칙 하나를 붙이면, 막히는 것은 정확히 겪은 만큼이다</div>
+
+<h2>4. 순서가 틀렸다</h2>
+
+<p>여기서 자연스러운 반응은 "그럼 나머지 다섯 개도 마저 짜자"예요. 저도 잠깐 그랬습니다. 그런데 그건 여전히 <b>같은 방식으로 조금 더 부지런한 것</b>일 뿐이에요. 순환 참조 검사를 짜려면 그래프 탐색을 붙여야 하고, 표현식 문법 검사를 짜려면 파서를 써야 합니다. 그러다 보면 어느새 <span class="obsv-mark">우리 저장소에 워크플로 린터를 하나 새로 만들고 있게 돼요.</span></p>
+
+<p>제가 밟은 순서가 틀렸다는 걸 이 지점에서 알았습니다. 옳은 순서는 이거였어요.</p>
+
+<div class="obsv-code">1. 이 실패가 어떤 "클래스"인지 이름을 붙인다
+     -> "워크플로 파일이 통째로 무효가 되는 것"
+
+2. 그 클래스의 원인 집합을 먼저 열거한다
+     -> 한 번 겪은 것 하나가 아니라, 알려진 것 전부
+
+3. 그 집합을 이미 아는 도구가 있는지 찾는다
+     -> 대개 있다. 이건 우리만 겪는 문제가 아니다
+
+4. 도구가 모르는 "우리만의 규칙"에만 자체 검사기를 남긴다</div>
+
+<p>저는 1번을 건너뛰고 <b>4번부터 시작했습니다.</b> 사고 하나를 겪고 그 사고의 이름으로 검사기 파일을 하나 만들었으니까요. 파일 이름이 <code>check-workflow-permissions.py</code> 였다는 게 그 증거예요. 클래스가 아니라 <b>증상 하나의 이름</b>이었습니다.</p>
+
+<p>2번과 3번을 제대로 했으면 어떻게 됐을까요. 이 클래스는 세상에서 아주 잘 알려진 문제고, <code>actionlint</code> 라는 공개 린터가 있습니다. 문서에 적힌 검사 목록을 위의 일곱 개와 대조해봤어요.</p>
+
+<div class="obsv-code">actionlint 문서에 명시된 검사 vs 우리가 센 7 개
+
+  needs 가 없는 잡을 가리킴          -> 있다  ("undefined jobs in needs")
+  needs 순환 참조                    -> 있다  ("cyclic dependencies")
+  잡 ID 중복                         -> 있다  (job/step ID 유일성)
+  표현식 문법 오류                    -> 있다  (${{ }} 렉싱·파싱·타입 검사)
+  재사용 워크플로 필수 입력 누락       -> 있다  (uses 의 inputs/secrets 검사)
+  없는 잡의 출력 참조                 -> 있다  (컨텍스트 프로퍼티 검사)
+
+  재사용 워크플로 permissions 부분집합 -> 문서화된 목록에 없다</div>
+
+<p>일곱 중 여섯입니다. 그리고 그 여섯 안에 <b>제 두 번째 사고가 통째로 들어 있어요.</b> 설치 한 줄이면 닫혔을 구멍이었습니다. 저는 그걸 직접 짜느라 코드를 열 줄 더 썼고, 그러고도 나머지 다섯 개는 그대로 열어뒀고요.</p>
+
+<p>더 흥미로운 건 마지막 줄이에요. <span class="obsv-mark">일곱 개 중 표준 린터가 모르는 건 정확히 하나, 첫 사고의 그 규칙입니다.</span> 그러니까 제 자체 검사기가 정당하게 남길 것은 <b>제일 처음 짠 그 부분뿐</b>이고, 이틀에 걸쳐 덧붙인 부분은 전부 남의 도구가 이미 아는 것이었어요. 우연히 절반은 맞은 셈인데, 맞은 이유가 설계가 아니라 순서였습니다.</p>
+
+<p>그럼 자체 검사기는 언제 정당할까요. <b>세상 어느 린터도 알 수 없는, 우리 저장소에만 있는 규칙</b>일 때예요. 이 저장소에는 그런 게 실제로 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔧 이 저장소가 직접 짤 수밖에 없었던 규칙들</div>
+  &bull; <b>환경 태그 키 정합성</b> &mdash; IAM 조건이 참조하는 태그 키와 provider 의 <code>default_tags</code> 키가 같아야 한다. 다르면 그 Deny 는 에러 없이 조용히 영원히 안 걸린다. (10편)<br>
+  &bull; <b>알람 모듈 경계</b> &mdash; 알람은 raw 리소스로 만들 수 없고 모듈을 통해서만 만든다. 모듈이 강제하는 설계 결정이 raw 하나로 새어나가면 그 알람에는 규칙이 하나도 안 걸린다.<br>
+  &bull; <b>OIDC 토큰의 top-level 금지</b> &mdash; <code>id-token: write</code> 를 파일 최상단에 두면 서드파티 코드를 돌리는 잡까지 토큰을 받는다.<br>
+  <br>
+  셋 다 이 저장소의 ADR 을 읽어야만 알 수 있는 규칙이에요. <b>여기가 자체 검사기가 있어야 할 자리입니다.</b>
+</div>
+
+<div class="obsv-fig"><img src="images/15/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 자체 검사기는 남이 모르는 규칙에만 쓴다 &mdash; 남이 아는 것을 직접 짜면 유지비만 는다</div>
+
+<h2>5. 그리고 검사기를 지키는 검사기는 없다</h2>
+
+<p>그림 2 의 마지막 줄이 이 장의 주제예요. 자체 검사기를 하나 더 짤 때마다 <b>테스트 없는 코드가 한 덩어리 늘어납니다.</b> "테스트 없는"이 과장이 아니라, 이 저장소를 전부 훑어보고 확인한 사실이에요.</p>
+
+<div class="obsv-code">$ ls scripts/
+check-alarm-module-boundary.py
+check-tag-key-consistency.py
+check-workflows.py
+discover-stacks.sh
+verify-iam-boundaries.py
+
+$ find . -iname "*test*" -o -iname "*fixture*"
+(아무것도 없다)</div>
+
+<p>자체 검사기가 넷인데 <span class="obsv-mark">그중 어느 것에도 테스트가 없습니다.</span> 그럼 이 검사기들이 실제로 잡는지는 어떻게 확인했을까요. 커밋 메시지에 문장으로 남아 있어요. <b>"일부러 없는 잡을 참조하게 만들어 잡히는 것을 확인했다."</b></p>
+
+<p>이건 좋은 습관이에요. 8편에서도 검사기를 만들면 반드시 일부러 고장 내보라고 썼고, 실제로 그렇게 했습니다. 그런데 <b>그 확인은 1회성이고, 사람 손이고, 흔적이 문장 하나뿐이에요.</b> 다음 사람이 이 검사기를 리팩터링하다가 안쪽 루프 하나를 망가뜨려도 &mdash; 예를 들어 <code>jobs</code> 를 순회하는 대신 빈 딕셔너리를 순회하게 되어도 &mdash; 검사기는 에러 없이 종료 코드 0 을 뱉습니다. 화면에는 "워크플로 검사 통과"가 찍히고요.</p>
+
+<p>이게 이 시리즈에서 계속 반복된 그 실패 모드예요. <b>가드가 조용히 죽는 것.</b> 태그 키를 바꿨더니 IAM Deny 가 조용히 죽었고(10편), 알람 파이프라인이 432일 끊겨 있었는데 아무 신호가 없었고(12편), 이제는 <span class="obsv-mark">그 사고들을 막으라고 만든 검사기가 조용히 죽을 차례</span>입니다. 한 층 위로 올라왔을 뿐 구조가 똑같아요.</p>
+
+<h3>고치는 법은 싱겁다</h3>
+
+<p>이미 만들어놨거든요. <b>일부러 깨뜨린 그 입력을 버리지 말고 파일로 남기면 그게 테스트입니다.</b></p>
+
+<div class="obsv-code">tests/
+  fixtures/
+    needs-undefined-job.yml      # 없는 잡을 needs 로 참조하는 파일
+    permissions-superset.yml     # 호출자보다 큰 권한을 요구하는 재사용 워크플로
+    ok.yml                       # 정상 파일 (거짓 양성 방지)
+  test_check_workflows.sh        # 깨진 픽스처엔 종료 코드 1, 정상엔 0 을 요구한다
+
+# static 잡에 스텝 한 줄
+- name: 검사기 자체 검사
+  run: bash tests/test_check_workflows.sh</div>
+
+<p>그런데 지금 검사기로는 이게 안 됩니다. 이유가 재밌어요.</p>
+
+<div class="obsv-code">WF_DIR = Path(".github/workflows")   # 상수다</div>
+
+<p>검사 대상 디렉터리가 코드에 박혀 있어서 <b>픽스처 디렉터리를 겨눌 수가 없어요.</b> 다른 검사기들도 똑같이 저장소 루트를 상수로 물고 있습니다. <span class="obsv-mark">테스트 가능성이 코드에서 빠진 게 아니라 설계에서 빠진 거예요.</span> 경로를 인자로 받는 한 줄짜리 변경이 "이 검사기를 테스트할 수 있느냐"를 가릅니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧪 검사기를 만들 때 같이 커밋할 것</div>
+  &bull; <b>깨진 입력 픽스처</b> &mdash; 수동으로 한 번 확인한 그 입력. 버리지 말고 파일로 남긴다<br>
+  &bull; <b>정상 입력 픽스처</b> &mdash; 항상 실패하는 검사기도 항상 통과하는 검사기만큼 쓸모없다<br>
+  &bull; <b>검사 대상 경로를 인자로</b> &mdash; 상수로 박으면 픽스처를 겨눌 수 없어서 테스트 자체가 불가능해진다<br>
+  <br>
+  세 개 다 검사기를 만드는 그 자리에서 하면 5분이고, 나중에 하려면 영영 안 해요. <b>확인은 이미 했으니 남기기만 하면 됩니다.</b>
+</div>
+
+<h2>6. 물어야 할 질문이 바뀐다</h2>
+
+<p>이번 일에서 제가 바꾼 건 검사기가 아니라 질문이에요.</p>
+
+<p>검사기를 만들 때 저는 늘 <b>"이걸로 그 사고를 막을 수 있나?"</b>를 물었습니다. 답은 항상 "예"였어요. 방금 겪은 사고를 보고 만든 거니까 당연히 그 사고는 막습니다. 그리고 이 질문은 <span class="obsv-mark">한 번도 "아니오"가 나오지 않기 때문에 아무것도 걸러내지 못해요.</span> 통과하는 게 보장된 시험이었던 겁니다.</p>
+
+<p>바꾼 질문은 이거예요. <b>"이 사고가 속한 클래스의 나머지는 무엇인가?"</b></p>
+
+<p>이 질문은 답하기가 훨씬 불편합니다. 답하려면 겪지 않은 것들을 세어봐야 하고, 세어보면 대부분 <b>내가 막은 건 하나고 열려 있는 게 여섯</b>이라는 걸 알게 되거든요. 대신 세어보는 순간 두 가지가 따라옵니다. 그 클래스를 이미 아는 도구가 세상에 있는지 찾아보게 되고, 그 도구가 모르는 나머지가 무엇인지도 명확해져요. 그게 자체 검사기가 있어야 할 자리고요.</p>
+
+<p>마지막으로, 하나를 겪고 하나를 막았을 때 진짜로 위험한 건 남은 여섯 개가 아니에요. <b>막았다는 믿음입니다.</b> 여섯 개가 열려 있는 건 원래도 그랬어요. 달라진 건 이제 우리가 그 위에 "가드 있음"이라고 써 붙였다는 거고, 그 다음부터는 아무도 세어보지 않는다는 거죠. <span class="obsv-mark">가드의 가장 위험한 부작용은 안심입니다.</span></p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>사고 하나를 겪고 규칙 하나를 붙이면, 막히는 것은 정확히 겪은 만큼이다.</b> 워크플로 파일을 통째로 무효로 만드는 조건은 최소 일곱 가지인데 우리 검사기가 보는 것은 둘 &mdash; 그 둘은 하필 우리가 겪은 사고 두 개였고, 나머지 다섯 중 하나는 첫 사고와 같은 가족이었다.<br><br>
+  옳은 순서는 <b>클래스에 이름을 붙이고, 원인 집합을 열거하고, 이미 아는 도구를 찾고, 도구가 모르는 것만 직접 짜는</b> 것이다. 일곱 개 중 여섯 개는 표준 린터가 이미 알고 있었다. 직접 짠 검사기는 태그 키 정합성이나 알람 모듈 경계처럼 <b>이 저장소의 ADR 을 읽어야만 알 수 있는 규칙</b>에만 남겨야 한다.<br><br>
+  그리고 자체 검사기가 늘 때마다 테스트 없는 코드가 는다. 일부러 깨뜨려서 확인한 그 입력을 픽스처로 커밋하면 그게 테스트다.<br><br>
+  가드를 하나 세울 때 물어야 할 것은 "이 사고를 막았나"가 아니라 <b>"이 사고가 속한 클래스의 나머지는 무엇인가"</b>다. 막았다는 믿음이 가드의 가장 위험한 부작용이다.
+</div>
+
+</div>
