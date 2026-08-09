@@ -43,39 +43,7 @@ implementation 'io.micrometer:micrometer-registry-datadog'     // 데이터독�
 implementation 'io.micrometer:micrometer-registry-prometheus'  // 프로메테우스든
 // → 계측 코드는 한 글자도 안 바뀜</div>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="marr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <g font-family="'Nanum Pen Script', cursive">
-    <!-- LEFT: lock-in -->
-    <text x="40" y="36" font-size="25" fill="#b3502f">락인 : 벤더가 코드에 스며듦</text>
-    <path d="M30 52 C 120 49, 220 54, 310 51 C 313 130, 311 190, 312 250 C 220 253, 120 249, 32 251 C 29 190, 30 120, 30 52 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.6"/>
-    <g font-family="Menlo, monospace" font-size="11.5" fill="#6b6558">
-      <text x="50" y="85">class OrderService {</text>
-      <text x="62" y="110">ddTrace.count(...)  🔴</text>
-      <text x="50" y="135">class PayService {</text>
-      <text x="62" y="160">ddTrace.count(...)  🔴</text>
-      <text x="50" y="185">class ClaimService {</text>
-      <text x="62" y="210">ddTrace.count(...)  🔴</text>
-    </g>
-    <text x="50" y="242" font-size="19" fill="#b3502f">벤더 교체 = 전부 재수술 😱</text>
-    <!-- RIGHT: facade -->
-    <text x="420" y="36" font-size="25" fill="#2e6b41">파사드 : 벤더가 설정에 격리됨</text>
-    <path d="M390 52 C 480 50, 580 54, 672 51 C 675 105, 673 130, 674 160 C 580 163, 480 159, 392 161 C 389 130, 390 90, 390 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
-    <text x="415" y="90" font-size="21" fill="#4a7fb5">코드 → Micrometer API</text>
-    <text x="415" y="122" font-size="17" fill="#8a8272">counter() / timer() 중립 정면만</text>
-    <path d="M530 168 C 531 185, 530 194, 531 205" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#marr1)"/>
-    <path d="M395 215 C 460 213, 530 216, 600 214 C 603 245, 602 260, 601 280 C 530 283, 460 280, 397 281 C 394 260, 395 235, 395 215 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-dasharray="10 6"/>
-    <text x="418" y="245" font-size="19" fill="#c07f18">registry 구현체 (교체 가능)</text>
-    <text x="418" y="272" font-size="17" fill="#8a8272">datadog ↔ prometheus ↔ otlp</text>
-    <text x="400" y="315" font-size="19" fill="#2e6b41">벤더 교체 = 의존성 한 줄 ✅</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/02/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 락인은 코드에 스며들고, 파사드는 벤더를 설정에 가둔다</div>
 
 <p>로깅의 SLF4J가 정확히 같은 구조예요. 코드는 <code>log.info()</code>만 알고, 뒤에 Logback이 오든 Log4j가 오든 신경 안 쓰죠. Micrometer는 그 아이디어를 메트릭에 적용한 겁니다. 파사드가 뒤에서 흡수하는 차이는 생각보다 많아요 &mdash; 메트릭 이름 관례(<code>http.server.requests</code>를 프로메테우스에는 <code>http_server_requests</code>로 번역), 히스토그램 포맷(일반 vs 누적), 전송 방식(push vs pull)까지 전부요.</p>
@@ -112,38 +80,7 @@ implementation 'io.micrometer:micrometer-registry-prometheus'  // 프로메테�
 
 <p>파사드의 심장은 <code>MeterRegistry</code>예요. "우편함"이라고 부르기 쉬운데, 실제로는 네 가지 일을 합니다. 카운터 호출 하나의 여정을 따라가 보면:</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="marr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <g font-family="'Nanum Pen Script', cursive">
-    <text x="30" y="36" font-size="20" fill="#6b6558" font-family="Menlo, monospace">registry.counter("orders.created", "region", "seoul").increment()</text>
-    <path d="M90 48 C 91 62, 90 68, 91 78" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#marr2)"/>
-    <!-- step 1: filter -->
-    <path d="M40 88 C 190 85, 380 90, 550 87 C 553 118, 552 130, 551 148 C 380 151, 190 147, 42 149 C 39 130, 40 108, 40 88 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
-    <text x="60" y="115" font-size="21" fill="#c07f18">① 정책 검문 (MeterFilter 체인)</text>
-    <text x="60" y="140" font-size="16" fill="#8a8272">공통 태그 부착 → 금지 태그 거부 → 카디널리티 상한</text>
-    <path d="M295 155 C 296 168, 295 173, 296 181" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#marr2)"/>
-    <!-- step 2: ledger -->
-    <path d="M40 190 C 190 187, 380 192, 550 189 C 553 220, 552 232, 551 250 C 380 253, 190 249, 42 251 C 39 232, 40 210, 40 190 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
-    <text x="60" y="217" font-size="21" fill="#4a7fb5">② 장부 조회 (이름+태그 = ID)</text>
-    <text x="60" y="242" font-size="16" fill="#8a8272">있으면 재사용, 없으면 생성 — 태그 조합 하나 = 시계열 하나</text>
-    <path d="M295 257 C 296 270, 295 275, 296 283" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#marr2)"/>
-    <!-- step 3: aggregate -->
-    <path d="M40 292 C 140 289, 240 294, 330 291 C 333 320, 332 330, 331 348 C 240 351, 140 347, 42 349 C 39 330, 40 312, 40 292 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
-    <text x="60" y="319" font-size="21" fill="#2e6b41">③ 메모리 집계 +1</text>
-    <text x="60" y="343" font-size="16" fill="#8a8272">요청마다 전송 안 함</text>
-    <!-- step 4: export -->
-    <path d="M370 305 C 400 305, 420 305, 445 305" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-dasharray="1 7" marker-end="url(#marr2)"/>
-    <path d="M455 292 C 530 290, 600 294, 672 291 C 675 320, 673 330, 674 348 C 600 351, 530 348, 457 349 C 454 330, 455 312, 455 292 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.4"/>
-    <text x="475" y="319" font-size="21" fill="#b3502f">④ 수출 (step마다)</text>
-    <text x="475" y="343" font-size="16" fill="#8a8272">백엔드 포맷 번역·발송</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/02/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 호출 한 번의 여정 &mdash; 검문, 장부, 집계, 수출</div>
 
 <p>①에서 조직의 태그 정책이 집행되고(2편에서 자세히), ②의 장부가 "태그 조합 = 시계열 = 과금 단위"의 실체이고, ③ 덕분에 요청량만큼 네트워크가 터지지 않고, ④에서 push(60초마다 발사)냐 pull(긁힐 때까지 대기)이냐가 구현체에 따라 갈려요. 그리고 명확히 할 것 하나 &mdash; <span class="obsv-mark">registry는 측정하지 않아요.</span> 언제 뭘 잴지는 계측 코드(Actuator 필터, 여러분의 코드)가 정하고, registry는 받은 것을 관리&middot;집계&middot;수출할 뿐입니다.</p>
@@ -169,27 +106,7 @@ ServerRequestObservationConvention myConvention() { ... }</div>
 
 <p>③이 재밌는 지점이에요. Actuator의 자동 구성 빈들은 전부 <code>@ConditionalOnMissingBean</code>으로 선언돼 있어요 &mdash; "사용자가 같은 타입 빈을 안 만들었을 때만 내 기본값을 쓴다." 그래서 여러분이 빈을 등록하는 순간 <b>스프링이 조용히 물러납니다.</b> 오버라이드라기보다 "기본값이 스스로 비켜주는 자리"에 가까워요.</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <g font-family="'Nanum Pen Script', cursive">
-    <!-- staircase: 3 steps, invasiveness rises -->
-    <path d="M40 200 C 150 197, 200 201, 250 199 C 252 220, 251 232, 251 248 C 200 251, 150 247, 42 249 C 39 232, 40 216, 40 200 Z" fill="#e8f2e9" stroke="#5a9e6f" stroke-width="2.4"/>
-    <text x="62" y="228" font-size="22" fill="#2e6b41">① 프로퍼티</text>
-    <text x="62" y="266" font-size="16" fill="#8a8272" font-family="Menlo, monospace">application.yml</text>
-    <path d="M250 130 C 330 127, 400 131, 460 129 C 462 168, 461 205, 461 248 C 400 251, 330 247, 252 249 C 249 205, 250 165, 250 130 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
-    <text x="285" y="165" font-size="22" fill="#c07f18">② 훅</text>
-    <text x="272" y="195" font-size="16" fill="#8a8272">Customizer,</text>
-    <text x="272" y="218" font-size="16" fill="#8a8272">MeterFilter</text>
-    <path d="M460 60 C 530 57, 600 61, 668 59 C 671 120, 669 185, 670 248 C 600 251, 530 247, 462 249 C 459 185, 460 120, 460 60 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.4"/>
-    <text x="486" y="97" font-size="22" fill="#b3502f">③ 빈 교체</text>
-    <text x="480" y="127" font-size="16" fill="#8a8272">@Bean 등록 →</text>
-    <text x="480" y="150" font-size="16" fill="#8a8272">기본값이 비켜줌</text>
-    <!-- arrow of invasiveness -->
-    <path d="M60 100 C 180 80, 320 55, 430 38" stroke="#3d3a34" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" fill="none"/>
-    <text x="70" y="70" font-size="20" fill="#8a8272">침습도 &uarr; (여기서부터 시도 →)</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/02/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 3. 커스터마이징 3단계 &mdash; 낮은 계단부터 밟는다</div>
 
 <p>순서도 ① → ② → ③으로 시도하는 게 좋아요. 프로퍼티로 되면 그게 최선이고, 빈 교체는 강력하지만 스프링 업그레이드 때 기본 구현이 바뀌면 따라가야 하는 유지보수 비용이 생기거든요. 셋의 공통점은 하나 &mdash; <span class="obsv-mark">프레임워크 코드는 한 줄도 안 고치고, 앱이 조립되는 구성 정보만 수정한다.</span> "동작은 코드에, 선택은 구성에" &mdash; 파사드 철학이 커스터마이징에도 그대로 흐르는 거예요.</p>

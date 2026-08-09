@@ -36,41 +36,7 @@
 
 <p>그런데 주문 처리가 40초 걸리면? 30초 시점에 타임아웃이 만료되고 메시지가 도로 나타나서, 두 번째 컨슈머가 집어갑니다. 첫 번째는 아직 열심히 처리 중인데요. <span class="obsv-mark">유실을 막는 안전장치가, 처리가 느려지는 순간 중복 처리 제조기로 변합니다.</span></p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="arrE4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <path d="M50 60 C 200 58, 420 62, 650 59" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrE4)"/>
-  <text x="672" y="64" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">t</text>
-  <path d="M90 48 C 89 58, 91 66, 90 74" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
-  <text x="90" y="38" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">t=0</text>
-  <path d="M370 48 C 369 58, 371 66, 370 74" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round"/>
-  <text x="370" y="38" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">t=30s ⏰</text>
-  <path d="M560 48 C 559 58, 561 66, 560 74" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
-  <text x="560" y="38" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">t=40s</text>
-
-  <path d="M90 105 C 240 103, 420 107, 553 104" fill="none" stroke="#4a7fb5" stroke-width="5" stroke-linecap="round"/>
-  <text x="80" y="110" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">컨슈머 A</text>
-  <text x="230" y="94" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272">메시지 집음 → 40초짜리 처리 중...</text>
-  <text x="575" y="110" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5">완료 ✓</text>
-
-  <text x="80" y="170" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">큐 (메시지)</text>
-  <path d="M90 165 C 185 163, 275 167, 363 164" fill="none" stroke="#8a8272" stroke-width="3" stroke-dasharray="2 8" stroke-linecap="round"/>
-  <text x="225" y="152" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272">🙈 안 보임 (30초)</text>
-  <path d="M370 165 C 460 163, 550 167, 640 164" fill="none" stroke="#e5533c" stroke-width="4" stroke-linecap="round"/>
-  <text x="470" y="152" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#e5533c">👀 다시 보임!</text>
-
-  <path d="M385 225 C 470 223, 555 227, 638 224" fill="none" stroke="#e5533c" stroke-width="5" stroke-linecap="round"/>
-  <text x="80" y="230" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">컨슈머 B</text>
-  <path d="M373 168 C 376 185, 380 202, 384 219" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrE4)"/>
-  <text x="500" y="213" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#b3502f">같은 메시지 또 처리 💥💳</text>
-
-  <text x="350" y="282" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 처리 40초 &gt; 타임아웃 30초, 그 10초가 중복 결제를 만든다</text>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/04/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 지워진 게 아니라 숨겨졌던 것뿐이다</div>
 
 <h2>2. at-least-once: 큐는 약속한 적이 없다</h2>
@@ -99,32 +65,7 @@ INSERT INTO processed (order_id) VALUES (1234)  -- A: 성공
 
 <p>그래서 완성형은 <b>인박스(Inbox) 패턴</b>입니다. 메시지 ID의 insert(unique 제약)와 주문 처리를 <b>같은 DB의 같은 로컬 트랜잭션</b>에 묶는 거예요. 둘 다 커밋되거나 둘 다 롤백되거나 — "처리됐는데 기록 안 됨"이라는 상태 자체가 존재할 수 없게 됩니다. 그리고 이건 어디서 본 구조죠? <span class="obsv-mark">아웃박스 패턴의 거울상입니다.</span> 아웃박스는 프로듀서 쪽에서 "DB 커밋과 메시지 발행"을 원자로 묶고, 인박스는 컨슈머 쪽에서 "메시지 소비와 DB 커밋"을 원자로 묶어요. 양쪽에 다 깔면 at-least-once 큐 위에서 exactly-once <b>효과</b>가 완성됩니다.</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="arrF4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <path d="M30 55 C 100 52, 190 56, 255 53 C 258 105, 257 150, 256 195 C 190 198, 100 194, 32 197 C 29 150, 30 104, 30 55 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="142" y="85" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5">📤 아웃박스 (프로듀서)</text>
-  <text x="142" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34">주문 상태 변경</text>
-  <text x="142" y="145" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34">+ 발행할 메시지 기록</text>
-  <text x="142" y="178" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41">= 한 트랜잭션 🔒</text>
-
-  <path d="M300 118 C 320 116, 340 119, 358 117" fill="none" stroke="#c07f18" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrF4)"/>
-  <text x="329" y="105" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18">📮 큐</text>
-
-  <path d="M400 55 C 470 52, 600 56, 668 53 C 671 105, 670 150, 669 195 C 600 198, 470 194, 402 197 C 399 150, 400 104, 400 55 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="534" y="85" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">📥 인박스 (컨슈머)</text>
-  <text x="534" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34">메시지 ID insert (unique)</text>
-  <text x="534" y="145" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34">+ 주문 처리</text>
-  <text x="534" y="178" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41">= 한 트랜잭션 🔒</text>
-
-  <text x="350" y="240" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">"처리됐는데 기록 안 됨"이라는 상태가 존재할 수 없다</text>
-  <text x="350" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= at-least-once 위에 exactly-once 효과를 쌓는 거울상 한 쌍</text>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/04/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 아웃박스는 발행을, 인박스는 소비를 트랜잭션에 묶는다</div>
 
 <div class="obsv-callout">

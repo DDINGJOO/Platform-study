@@ -46,7 +46,36 @@ traceparent: 00-abc123...-s04-01
 
 <p>"로그에 MDC로 traceId를 심어뒀는데요?"라고 할 수 있지만, MDC는 ThreadLocal — 즉 <b>한 프로세스 안, 한 스레드에 붙은 저장소</b>예요. 한 머신의 ThreadLocal이 네트워크 건너 다른 머신의 스레드로 순간이동할 수는 없죠. 운반체였던 HTTP 헤더는 사라졌고, 새 운반체를 아무도 준비하지 않았으니 — 트레이스는 큐 앞에서 끊깁니다.</p>
 
-<div class="obsv-fig"><img src="images/03/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrC3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="60" y="45" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">HTTP 구간: 헤더가 나른다</text>
+  <path d="M40 62 C 90 60, 140 63, 185 61 C 188 85, 187 105, 186 126 C 140 129, 90 125, 42 128 C 39 105, 40 84, 40 62 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="113" y="100" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">서비스 A</text>
+  <path d="M255 62 C 305 60, 355 63, 400 61 C 403 85, 402 105, 401 126 C 355 129, 305 125, 257 128 C 254 105, 255 84, 255 62 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="328" y="100" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">서비스 B</text>
+  <path d="M190 93 C 212 94, 230 93, 250 94" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrC3)"/>
+  <text x="220" y="82" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#2e6b41">traceparent</text>
+  <text x="220" y="145" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">✓ 이어진다</text>
+
+  <text x="60" y="205" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">큐 구간: 운반체가 없다</text>
+  <path d="M40 222 C 85 220, 130 223, 170 221 C 173 245, 172 265, 171 286 C 130 289, 85 285, 42 288 C 39 265, 40 244, 40 222 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="105" y="260" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5">API</text>
+  <path d="M240 222 C 285 220, 330 223, 370 221 C 373 245, 372 265, 371 286 C 330 289, 285 285, 242 288 C 239 265, 240 244, 240 222 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="305" y="260" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">📮 큐</text>
+  <path d="M440 222 C 495 220, 550 223, 600 221 C 603 245, 602 265, 601 286 C 550 289, 495 285, 442 288 C 439 265, 440 244, 440 222 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="520" y="253" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5">컨슈머</text>
+  <text x="520" y="276" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">다른 JVM, 다른 머신</text>
+  <path d="M175 253 C 197 254, 215 253, 235 254" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrC3)"/>
+  <path d="M375 253 C 397 254, 415 253, 435 254" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrC3)"/>
+  <text x="405" y="240" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#e5533c">❓</text>
+  <text x="350" y="312" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">= HTTP는 200에서 끝났고, MDC(ThreadLocal)는 머신을 못 건넌다</text>
+</svg>
+</div>
 <div class="obsv-figcap">그림 1. 운반체가 사라지는 지점에서 트레이스도 끊긴다</div>
 
 <h2>3. 우회로의 유혹: 메시지 ID로 이으면 안 되나?</h2>
@@ -83,7 +112,32 @@ executor.submit(() -&gt; {
   작업이 끝난 뒤 MDC를 지우지 않으면, 그 풀 스레드가 다음에 집는 <b>남의 작업 로그에 내 traceId가 찍힙니다.</b> "결제 실패를 트레이스로 따라갔더니 엉뚱한 사용자의 주문이 나오더라" — 온콜을 미치게 하는 오염 버그예요. 다행히 이 캡처-복원-정리를 대신해주는 도구가 있습니다: Spring의 TaskDecorator, Brave의 currentTraceContext.executor(), Micrometer context-propagation. 단, <b>감싸지 않은 풀</b>(예: CompletableFuture의 기본 commonPool)로 새는 코드 하나면 그 구간의 traceId가 조용히 증발합니다 — 원리를 알아야 증상을 보고 원인을 짚을 수 있어요.
 </div>
 
-<div class="obsv-fig"><img src="images/03/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrD3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M35 55 C 90 52, 150 56, 205 53 C 208 90, 207 122, 206 155 C 150 158, 90 154, 37 157 C 34 122, 35 89, 35 55 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="120" y="85" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5">호출자 스레드</text>
+  <text x="120" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">① MDC 캡처</text>
+  <text x="120" y="136" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">submit() 시점</text>
+
+  <path d="M212 100 C 250 98, 285 102, 320 99" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrD3)"/>
+  <text x="266" y="86" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">작업에 실어서 📦</text>
+
+  <path d="M330 55 C 400 52, 480 56, 545 53 C 548 90, 547 122, 546 155 C 480 158, 400 154, 332 157 C 329 122, 330 89, 330 55 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="438" y="82" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">워커 스레드</text>
+  <text x="438" y="109" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">② 실행 직전 복원 → 작업</text>
+  <text x="438" y="135" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">③ finally에서 clear!</text>
+
+  <path d="M552 130 C 590 140, 620 158, 645 180" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrD3)"/>
+  <text x="560" y="210" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#e5533c">안 지우면 다음 작업 오염 🧨</text>
+
+  <text x="350" y="245" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 컨텍스트는 스레드가 아니라 작업에 실려 다닌다</text>
+</svg>
+</div>
 <div class="obsv-figcap">그림 2. 캡처 → 복원 → 정리, 세 박자가 다 있어야 한다</div>
 
 <div class="obsv-summary">

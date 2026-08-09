@@ -42,45 +42,7 @@
 
 <h3>왜 빠른가: hot path에서 하는 일의 차이</h3>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="earr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <g font-family="'Nanum Pen Script', cursive">
-    <!-- APM path -->
-    <text x="24" y="38" font-size="26" fill="#3d3a34">APM 라이브러리 : 앱 스레드 안에서 전부 처리</text>
-    <path d="M24 58 C 200 55, 450 60, 676 57 C 678 100, 677 120, 677 142 C 450 145, 200 141, 26 143 C 23 120, 24 84, 24 58 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.6"/>
-    <g font-size="18" fill="#6b6558">
-      <text x="44" y="90">요청 처리 →</text>
-      <text x="150" y="90">span 할당</text>
-      <text x="152" y="112" font-size="15" fill="#b3502f">(GC 부담)</text>
-      <text x="262" y="90">+ 직렬화</text>
-      <text x="264" y="112" font-size="15" fill="#b3502f">(CPU&middot;복사)</text>
-      <text x="368" y="90">+ 소켓 전송</text>
-      <text x="370" y="112" font-size="15" fill="#b3502f">(시스템 콜+락)</text>
-      <text x="510" y="90">→ 응답 지연 ⏱️</text>
-      <text x="512" y="112" font-size="15" fill="#b3502f">전부 hot path!</text>
-    </g>
-    <!-- eBPF path -->
-    <text x="24" y="196" font-size="26" fill="#3d3a34">eBPF : 어차피 지나가는 길목에서 메모만</text>
-    <path d="M24 216 C 200 213, 450 218, 676 215 C 678 258, 677 278, 677 300 C 450 303, 200 299, 26 301 C 23 278, 24 242, 24 216 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
-    <g font-size="18" fill="#6b6558">
-      <text x="44" y="248">요청 처리 →</text>
-      <text x="150" y="248">write() 시스템 콜</text>
-      <text x="152" y="270" font-size="15" fill="#5a9e6f">(어차피 발생)</text>
-      <text x="330" y="248">→ 후크: map에 몇 바이트</text>
-      <text x="332" y="270" font-size="15" fill="#5a9e6f">(나노초, 락 없음)</text>
-      <text x="560" y="248">→ 끝! ✅</text>
-    </g>
-    <!-- async daemon -->
-    <path d="M420 305 C 422 318, 421 325, 422 334" stroke="#3d3a34" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" fill="none" marker-end="url(#earr)"/>
-    <text x="440" y="350" font-size="19" fill="#8a8272">별도 데몬이 비동기&middot;배치로 수거 → 파싱&middot;전송 (앱과 무관)</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 비싼 일을 hot path 밖으로 밀어낸 것이 eBPF의 속도 비결</div>
 
 <p>APM 라이브러리는 span 객체 생성(GC 부담), 직렬화, 소켓 전송을 <b>요청을 처리해야 할 앱의 스레드</b>에서 합니다. eBPF는 어차피 발생하는 시스템 콜에 붙어서, JIT 컴파일된 네이티브 코드가 고정 메모리에 몇 바이트 적는 게 전부예요. 무거운 일(파싱, 전송)은 전부 별도 데몬이 비동기로 처리하고요. 오버헤드가 보통 1% 미만이라 <b>프로덕션 상시 가동</b>이 성립합니다.</p>
@@ -99,49 +61,7 @@
 
 <p>OpenTelemetry(OTel)의 제안: <b>계측은 벤더 중립 표준으로 한 번만 하고, 데이터를 어디로 보낼지는 설정으로 바꾸자.</b> OpenTracing과 OpenCensus가 2019년 합쳐진 프로젝트로, 지금은 사실상 업계 표준이에요.</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="oarr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <g font-family="'Nanum Pen Script', cursive">
-    <!-- API layer -->
-    <path d="M40 40 C 140 37, 250 42, 340 39 C 343 70, 342 85, 341 105 C 250 108, 140 104, 42 106 C 39 85, 40 62, 40 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
-    <text x="60" y="72" font-size="24" fill="#4a7fb5">API : 코드가 만지는 껍데기</text>
-    <text x="60" y="97" font-size="17" fill="#8a8272">SDK 없으면 no-op → 라이브러리들이 부담없이 내장</text>
-    <!-- SDK layer -->
-    <path d="M40 130 C 140 127, 250 132, 340 129 C 343 160, 342 175, 341 195 C 250 198, 140 194, 42 196 C 39 175, 40 152, 40 130 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
-    <text x="60" y="162" font-size="24" fill="#5a9e6f">SDK : 실제 엔진</text>
-    <text x="60" y="187" font-size="17" fill="#8a8272">span 생성&middot;샘플링&middot;내보내기 (벤더는 여기 설정만)</text>
-    <!-- arrow to collector -->
-    <path d="M350 118 C 400 120, 440 135, 478 160" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#oarr)"/>
-    <text x="400" y="118" font-size="18" fill="#8a8272">OTLP</text>
-    <!-- Collector -->
-    <path d="M420 180 C 500 177, 590 182, 668 179 C 671 250, 669 290, 670 330 C 590 333, 500 329, 422 331 C 419 290, 420 230, 420 180 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.8"/>
-    <text x="450" y="212" font-size="25" fill="#c07f18">Collector 🏭</text>
-    <g font-family="Menlo, monospace" font-size="12" fill="#6b6558">
-      <text x="442" y="242">receivers:  [otlp, ...]</text>
-      <text x="442" y="266">processors: [batch,</text>
-      <text x="442" y="284">   tail_sampling ← 1편!]</text>
-      <text x="442" y="308">exporters:  [datadog,</text>
-      <text x="442" y="326">   jaeger, s3, ...]</text>
-    </g>
-    <!-- exports -->
-    <path d="M672 220 C 690 221, 695 222, 698 222" stroke="#3d3a34" stroke-width="0" fill="none"/>
-    <path d="M545 340 C 500 360, 430 372, 350 376" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#oarr)"/>
-    <path d="M600 340 C 590 358, 580 368, 570 378" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#oarr)"/>
-    <text x="240" y="390" font-size="20" fill="#3d3a34">데이터독 🐶</text>
-    <text x="545" y="398" font-size="20" fill="#3d3a34">자체 저장소 🗄️</text>
-    <!-- key message -->
-    <text x="40" y="250" font-size="21" fill="#b3502f">코드는 API만 알고,</text>
-    <text x="40" y="280" font-size="21" fill="#b3502f">벤더는 설정에만 존재</text>
-    <text x="40" y="315" font-size="19" fill="#8a8272">→ 백엔드 교체 = 코드 수정 0줄,</text>
-    <text x="52" y="342" font-size="19" fill="#8a8272">exporter 설정 한 줄</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. OTel 3층 구조 &mdash; 락인을 설정 파일 안에 가둔다</div>
 
 <p>구조의 백미는 <b>API와 SDK의 분리</b>입니다. API는 껍데기뿐이라 SDK가 없으면 아무것도 안 해요(no-op). 덕분에 DB 드라이버 같은 오픈소스 라이브러리들이 부담 없이 OTel 계측을 미리 내장하기 시작했고, 이게 생태계 승리의 비결이에요. <b>Collector</b>는 receiver &rarr; processor &rarr; exporter로 조립하는 파이프라인인데, 1편의 tail 샘플링(<code>tailsampling</code> 프로세서)이 바로 여기서 돌아갑니다.</p>
@@ -177,35 +97,7 @@ main() → handleCheckout() → calcDiscount() → parseJSON()  ← 지금 실�
 
 <p>결과는 <b>플레임 그래프</b>로 봅니다. 가로 폭 = CPU 시간 점유율, 세로 = 콜스택 깊이.</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <g font-family="'Nanum Pen Script', cursive">
-    <!-- flame graph: bottom-up -->
-    <!-- main -->
-    <path d="M50 240 C 250 237, 450 242, 650 239 C 652 258, 651 266, 651 276 C 450 279, 250 275, 52 277 C 49 266, 50 252, 50 240 Z" fill="#f6d8a8" stroke="#c07f18" stroke-width="2"/>
-    <text x="320" y="264" font-size="19" fill="#6b4a08">main</text>
-    <!-- handleCheckout -->
-    <path d="M60 198 C 240 195, 420 200, 600 197 C 602 216, 601 224, 601 233 C 420 236, 240 232, 62 234 C 59 224, 60 210, 60 198 Z" fill="#f3c98a" stroke="#c07f18" stroke-width="2"/>
-    <text x="255" y="222" font-size="19" fill="#6b4a08">handleCheckout</text>
-    <!-- calcDiscount + saveOrder -->
-    <path d="M70 156 C 190 153, 300 158, 400 155 C 402 174, 401 182, 401 191 C 300 194, 190 190, 72 192 C 69 182, 70 168, 70 156 Z" fill="#f0ba6e" stroke="#c07f18" stroke-width="2"/>
-    <text x="170" y="180" font-size="19" fill="#6b4a08">calcDiscount</text>
-    <path d="M412 156 C 470 154, 530 158, 588 156 C 590 174, 589 182, 589 191 C 530 193, 470 190, 414 192 C 411 182, 412 168, 412 156 Z" fill="#f0ba6e" stroke="#c07f18" stroke-width="2"/>
-    <text x="458" y="180" font-size="19" fill="#6b4a08">saveOrder</text>
-    <!-- parseJSON: wide flat top = culprit -->
-    <path d="M80 114 C 160 111, 230 116, 300 113 C 302 132, 301 140, 301 149 C 230 152, 160 148, 82 150 C 79 140, 80 126, 80 114 Z" fill="#ef9f8a" stroke="#b3502f" stroke-width="2.6"/>
-    <text x="140" y="138" font-size="19" fill="#7a2c12">parseJSON</text>
-    <!-- small others -->
-    <path d="M312 114 C 340 113, 365 115, 390 114 C 391 132, 390 140, 390 149 C 365 151, 340 149, 314 150 C 311 140, 312 126, 312 114 Z" fill="#f0ba6e" stroke="#c07f18" stroke-width="2"/>
-    <text x="322" y="138" font-size="15" fill="#6b4a08">valid..</text>
-    <!-- annotation -->
-    <path d="M190 106 C 188 88, 186 74, 184 60" stroke="#b3502f" stroke-width="2.2" stroke-dasharray="1 7" stroke-linecap="round" fill="none"/>
-    <text x="130" y="48" font-size="23" fill="#b3502f">넓은데 위에 자식이 없다 = 진범! 🔍</text>
-    <text x="430" y="60" font-size="19" fill="#8a8272">가로 폭 = CPU 점유율</text>
-    <text x="430" y="88" font-size="19" fill="#8a8272">세로 = 콜스택 깊이</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/01/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 3. 플레임 그래프 읽는 법 &mdash; 넓고 평평한 꼭대기를 찾아라</div>
 
 <p>읽는 요령은 하나예요. <b>넓은데 그 위에 자식이 없는 블록</b> = 실제로 CPU를 태우는 지점. 성능 최적화가 "감으로 찔러보기"에서 "제일 넓은 블록부터 공략"으로 바뀝니다.</p>
@@ -219,33 +111,7 @@ main() → handleCheckout() → calcDiscount() → parseJSON()  ← 지금 실�
 
 <p>3부작의 조각들이 여기서 하나로 이어집니다.</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 170" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="farr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <g font-family="'Nanum Pen Script', cursive">
-    <path d="M20 45 C 55 43, 90 46, 120 44 C 123 72, 122 86, 121 104 C 90 107, 55 104, 22 106 C 19 86, 20 64, 20 45 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.4"/>
-    <text x="34" y="72" font-size="21" fill="#b3502f">SLO 알람</text>
-    <text x="34" y="96" font-size="15" fill="#8a8272">2편 📟</text>
-    <path d="M128 74 C 145 74, 152 74, 163 74" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#farr)"/>
-    <path d="M172 45 C 210 43, 245 46, 278 44 C 281 72, 280 86, 279 104 C 245 107, 210 104, 174 106 C 171 86, 172 64, 172 45 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
-    <text x="188" y="72" font-size="21" fill="#4a7fb5">트레이스</text>
-    <text x="188" y="96" font-size="15" fill="#8a8272">1편&middot;3편 🧵</text>
-    <path d="M286 74 C 303 74, 310 74, 321 74" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#farr)"/>
-    <path d="M330 45 C 375 43, 420 46, 460 44 C 463 72, 462 86, 461 104 C 420 107, 375 104, 332 106 C 329 86, 330 64, 330 45 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.4"/>
-    <text x="344" y="72" font-size="21" fill="#c07f18">span 프로파일</text>
-    <text x="344" y="96" font-size="15" fill="#8a8272">3편 🔥</text>
-    <path d="M468 74 C 485 74, 492 74, 503 74" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#farr)"/>
-    <path d="M512 45 C 565 43, 620 46, 672 44 C 675 72, 674 86, 673 104 C 620 107, 565 104, 514 106 C 511 86, 512 64, 512 45 Z" fill="#e8f2e9" stroke="#5a9e6f" stroke-width="2.4"/>
-    <text x="528" y="72" font-size="21" fill="#2e6b41">코드 한 줄 ✏️</text>
-    <text x="528" y="96" font-size="15" fill="#8a8272">수정하러 가기</text>
-    <text x="90" y="150" font-size="22" fill="#3d3a34">"사용자가 아프다" → "이 서비스" → "이 함수" → "이 줄" 까지 끊김 없이</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/01/fig4.png" alt="그림 4" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 4. 대시보드에서 소스코드 한 줄까지, 조사 경로의 완성</div>
 
 <p>2편의 SLO 알람이 "사용자가 아프다"를 알리면, 1편에서 tail 샘플링으로 남겨둔 에러 트레이스가 "이 서비스의 이 span"을 찾아주고, span에 연결된 프로파일이 "이 함수의 이 줄"을 가리킵니다. 관측성 스택 전체가 하나의 조사 경로예요.</p>

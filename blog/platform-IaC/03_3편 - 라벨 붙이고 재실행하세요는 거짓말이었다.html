@@ -55,42 +55,7 @@
 
 <p>실제로 통과하려면 새 이벤트를 만들어야 해요 &mdash; 라벨을 붙인 뒤 빈 커밋이라도 push 해서 <code>synchronize</code> 를 일으키거나, PR 을 닫고 다시 열어 <code>reopened</code> 를 만드는 것. 어느 쪽도 에러 메시지에서는 유추할 수 없습니다. <span class="obsv-mark">가드가 우회 충동을 만들면 그 가드는 이미 실패한 겁니다.</span></p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="arrB1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-    <marker id="arrB2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round"/>
-    </marker>
-  </defs>
-
-  <path d="M40 196 C 200 193, 420 199, 664 195" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrB1)"/>
-  <path d="M52 118 C 110 115, 165 119, 182 117 C 185 138, 184 158, 183 176 C 130 179, 100 175, 54 178 C 51 158, 52 140, 52 118 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5" stroke-linejoin="round"/>
-  <path d="M117 190 C 116 193, 118 197, 117 202" fill="none" stroke="#4a7fb5" stroke-width="3"/>
-  <path d="M452 190 C 451 193, 453 197, 452 202" fill="none" stroke="#5a9e6f" stroke-width="3"/>
-  <path d="M284 190 C 283 193, 285 197, 284 202 M596 190 C 595 193, 597 197, 596 202" fill="none" stroke="#e5533c" stroke-width="3"/>
-  <path d="M594 178 C 540 90, 400 48, 262 70 C 222 78, 200 112, 190 146" fill="none" stroke="#e5533c" stroke-width="2.3" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arrB2)"/>
-
-  <g font-family="'Nanum Pen Script', cursive" font-size="17" text-anchor="middle">
-  <text x="646" y="220" font-size="16" fill="#8a8272">시간</text>
-  <text x="117" y="141" fill="#4a7fb5">📌 payload 박제</text>
-  <text x="117" y="103" fill="#2f2c26">t1 마지막 커밋 push</text>
-  <text x="284" y="238" fill="#b3502f">t2 가드 실패</text>
-  <text x="284" y="259" font-size="15" fill="#8a8272">"라벨 붙이고 재실행하세요"</text>
-  <text x="452" y="238" fill="#2e6b41">t3 라벨 붙임</text>
-  <text x="596" y="238" fill="#b3502f">t4 Re-run</text>
-  <text x="596" y="259" font-size="16" fill="#e5533c">또 실패 🔁</text>
-  <text x="392" y="36" font-size="18" fill="#e5533c">Re-run 은 t1 의 스냅샷을 다시 읽는다</text>
-  <text x="350" y="308" font-size="19" fill="#b3502f">= t3 의 라벨은 t1 의 payload 에 절대 나타나지 않는다</text>
-  </g>
-  <g font-family="Menlo, monospace" font-size="11" text-anchor="middle">
-  <text x="117" y="166" fill="#8a8272">labels: []</text>
-  <text x="452" y="259" fill="#5a9e6f">allow-destroy</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/03/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. Re-run 은 새 이벤트가 아니라 옛 스냅샷의 재생이다</div>
 
 <h2>3. 반대 방향도 뚫려 있었다</h2>
@@ -121,56 +86,7 @@ run: |
 
 <p>커밋 SHA, PR 번호, 브랜치명은 그 이벤트에 고정된 값이라 박제가 오히려 정확해요. 실행 중에 PR 에 새 커밋이 올라와도 이 run 이 검사한 대상은 t1 의 SHA 여야 하니까요. 반면 라벨, 리뷰 승인 상태, 코멘트, assignee, PR 제목은 이벤트 이후에 얼마든지 바뀝니다. <span class="obsv-mark">가변 상태를 payload 스냅샷으로 검사하는 모든 가드는 같은 박제 문제를 갖습니다.</span></p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 348" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="arrB3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-
-  <path d="M300 40 C 252 48, 208 55, 186 64" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB3)"/>
-  <path d="M400 40 C 448 48, 492 55, 514 63" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB3)"/>
-  <path d="M350 56 C 349 130, 351 224, 350 300" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
-
-  <path d="M40 72 C 120 69, 240 74, 330 70 C 333 120, 331 208, 330 288 C 240 291, 120 286, 41 289 C 38 208, 40 130, 40 72 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5" stroke-linejoin="round"/>
-  <path d="M370 70 C 450 73, 570 68, 660 71 C 663 130, 661 208, 660 289 C 570 286, 450 292, 371 288 C 368 208, 370 130, 370 70 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.5" stroke-linejoin="round"/>
-
-  <path d="M48 130 C 52 129, 56 131, 60 130 M48 154 C 52 153, 56 155, 60 154 M48 178 C 52 177, 56 179, 60 178 M48 202 C 52 201, 56 203, 60 202" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round"/>
-  <path d="M378 124 C 382 123, 386 125, 390 124 M378 148 C 382 147, 386 149, 390 148 M378 172 C 382 171, 386 173, 390 172 M378 196 C 382 195, 386 197, 390 196 M378 220 C 382 219, 386 221, 390 220" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
-
-  <g font-family="'Nanum Pen Script', cursive" font-size="17">
-  <text x="350" y="26" font-size="18" fill="#3d3a34" text-anchor="middle">가드가 조건에 쓸 값을 고를 때</text>
-  <text x="185" y="102" font-size="20" fill="#2e6b41" text-anchor="middle">✅ 박제해도 안전한 값</text>
-  <text x="515" y="102" font-size="20" fill="#b3502f" text-anchor="middle">⚠️ 실행 시점에 조회할 값</text>
-  <text x="214" y="134" font-size="15" fill="#8a8272">커밋 SHA</text>
-  <text x="214" y="158" font-size="15" fill="#8a8272">PR 번호</text>
-  <text x="214" y="182" font-size="15" fill="#8a8272">브랜치명</text>
-  <text x="214" y="206" font-size="15" fill="#8a8272">이벤트 종류</text>
-  <text x="482" y="128" font-size="15" fill="#8a8272">라벨</text>
-  <text x="482" y="152" font-size="15" fill="#8a8272">리뷰 승인 상태</text>
-  <text x="482" y="176" font-size="15" fill="#8a8272">코멘트</text>
-  <text x="482" y="200" font-size="15" fill="#8a8272">담당자</text>
-  <text x="482" y="224" font-size="15" fill="#8a8272">PR 제목</text>
-  <text x="185" y="252" font-size="16" fill="#2e6b41" text-anchor="middle">그 이벤트에 고정된 값이라</text>
-  <text x="185" y="272" font-size="16" fill="#2e6b41" text-anchor="middle">다시 읽어도 같다</text>
-  <text x="515" y="252" font-size="16" fill="#e5533c" text-anchor="middle">이벤트 이후에 바뀔 수 있으니</text>
-  <text x="515" y="272" font-size="16" fill="#e5533c" text-anchor="middle">박제하면 거짓이 된다</text>
-  <text x="350" y="326" font-size="19" fill="#b3502f" text-anchor="middle">= 구분선은 하나다 · 이 값이 이벤트 이후에 바뀔 수 있는가</text>
-  </g>
-  <g font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34">
-  <text x="68" y="134">github.sha</text>
-  <text x="68" y="158">pull_request.number</text>
-  <text x="68" y="182">head.ref</text>
-  <text x="68" y="206">github.event_name</text>
-  <text x="398" y="128">labels</text>
-  <text x="398" y="152">reviews</text>
-  <text x="398" y="176">comments</text>
-  <text x="398" y="200">assignees</text>
-  <text x="398" y="224">title</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/03/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 같은 payload 안에서도 어떤 값은 진실이고 어떤 값은 이미 과거다</div>
 
 <div class="obsv-callout">

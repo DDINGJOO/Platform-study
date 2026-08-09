@@ -68,50 +68,7 @@ docker run -d -v app-mysql57-data:/var/lib/mysql mysql:5.7</div>
 
 <p>그런데 5.7 볼륨 안의 테이블은 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">general_ci</code> 에 초 단위 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">DATETIME</code> 이에요. 그러면 <span class="obsv-mark">과거의 데이터와 현재의 코드가 만나는, 한 번도 존재한 적 없는 조합</span>이 만들어집니다.</p>
 
-<div class="obsv-fig">
-  <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-    <defs>
-      <marker id="b1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-      </marker>
-    </defs>
-    <g stroke-linecap="round" stroke-linejoin="round">
-      <text x="45" y="38" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#8a8272">🙂 이렇게 생각했다</text>
-      <path d="M80 100 C 250 97, 450 103, 620 99" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
-      <path d="M160 92 C 162 96, 158 104, 160 108" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
-      <path d="M560 92 C 562 96, 558 104, 560 108" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
-      <text x="160" y="124" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">이관 전</text>
-      <text x="560" y="124" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">지금</text>
-      <path d="M552 86 C 450 56, 262 56, 170 84" fill="none" stroke="#4a7fb5" stroke-width="2.2" marker-end="url(#b1)"/>
-      <text x="360" y="52" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">볼륨만 되돌리면 끝</text>
-
-      <path d="M40 147 C 240 145, 460 149, 660 147" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
-
-      <text x="45" y="181" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">😨 실제로 일어나는 일</text>
-
-      <path d="M60 200 C 120 197, 190 203, 250 199 C 253 222, 252 248, 251 268 C 190 271, 120 267, 62 269 C 59 248, 60 220, 60 200 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
-      <text x="155" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">과거 데이터</text>
-      <text x="155" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">general_ci · DATETIME(초)</text>
-      <text x="155" y="261" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">5.7 볼륨</text>
-
-      <text x="268" y="241" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#3d3a34">×</text>
-
-      <path d="M286 200 C 346 197, 416 203, 476 199 C 479 222, 478 248, 477 268 C 416 271, 346 267, 288 269 C 285 248, 286 220, 286 200 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
-      <text x="381" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">현재 코드</text>
-      <text x="381" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">ddl-auto=validate</text>
-      <text x="381" y="261" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">8.0 스키마를 기대</text>
-
-      <path d="M484 234 C 494 229, 504 239, 512 234" fill="none" stroke="#e5533c" stroke-width="2.2" marker-end="url(#b1)"/>
-
-      <path d="M518 200 C 560 197, 622 203, 676 199 C 679 222, 678 248, 677 268 C 622 271, 560 267, 520 269 C 517 248, 518 220, 518 200 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
-      <text x="597" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">처음 보는 조합</text>
-      <text x="597" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">💥 validate 반려</text>
-      <text x="597" y="261" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">앱이 안 뜬다</text>
-
-      <text x="350" y="318" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 롤백 수단은 있는데 롤백이 안 된다</text>
-    </g>
-  </svg>
-</div>
+<div class="obsv-fig"><img src="images/02/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 롤백은 과거로 돌아가는 게 아니라, 처음 보는 조합을 만드는 일이에요</div>
 
 <div class="obsv-callout">
@@ -159,44 +116,7 @@ docker run --rm -v app-mysql8-data:/from -v app-mysql8-preRollback:/to \
 
 <p>안정화되면 정리하려고 "1주 후 청소"라고 적어뒀는데, 그 시점에 볼륨 목록을 보고 어느 게 그건지 확신할 수 있을까요. 옆에 비슷한 볼륨이 서너 개 더 있을 텐데요. <span class="obsv-mark">롤백 자산은 이름을 붙여두거나, 최소한 볼륨 ID 를 문서에 박아둬야 해요.</span> 지울 때 헷갈리는 순간, 그건 롤백 수단이 아니라 사고 원인이 됩니다.</p>
 
-<div class="obsv-fig">
-  <svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-    <defs>
-      <marker id="b2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-      </marker>
-    </defs>
-    <g stroke-linecap="round" stroke-linejoin="round">
-      <path d="M350 25 C 352 100, 348 200, 350 272" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
-
-      <text x="180" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">❌ 봉인 안 하면</text>
-      <path d="M40 92 C 75 89, 130 95, 163 91 C 166 112, 165 140, 164 160 C 130 163, 75 159, 42 161 C 39 140, 40 112, 40 92 Z" fill="#fdfaf3" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="6 6"/>
-      <text x="102" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">8.0 볼륨</text>
-      <text x="102" y="142" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">덮임 / 소실</text>
-      <text x="179" y="133" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#e5533c">✕</text>
-      <path d="M196 92 C 231 89, 286 95, 319 91 C 322 112, 321 140, 320 160 C 286 163, 231 159, 198 161 C 195 140, 196 112, 196 92 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
-      <text x="258" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">5.7 볼륨</text>
-      <text x="258" y="142" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">복원됨</text>
-      <text x="180" y="203" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">비교 대상이 없다</text>
-      <text x="180" y="228" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">행수도 체크섬도 댈 곳이 없음</text>
-      <text x="180" y="252" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">→ 잃었는지조차 모른다</text>
-
-      <text x="520" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">✅ 먼저 봉인하면</text>
-      <path d="M375 92 C 410 89, 462 95, 495 91 C 498 112, 497 140, 496 160 C 462 163, 410 159, 377 161 C 374 140, 375 112, 375 92 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
-      <text x="435" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">8.0 봉인본</text>
-      <text x="435" y="142" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">preRollback</text>
-      <path d="M501 126 C 513 121, 529 131, 541 126" fill="none" stroke="#3d3a34" stroke-width="2" marker-start="url(#b2)" marker-end="url(#b2)"/>
-      <path d="M547 92 C 582 89, 634 95, 667 91 C 670 112, 669 140, 668 160 C 634 163, 582 159, 549 161 C 546 140, 547 112, 547 92 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
-      <text x="607" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">5.7 볼륨</text>
-      <text x="607" y="142" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">복원됨</text>
-      <text x="520" y="203" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">diff 가능</text>
-      <text x="520" y="228" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">SUM(CRC32()) 로 대조</text>
-      <text x="520" y="252" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#2e6b41">→ 무엇을 잃었는지 말할 수 있다</text>
-
-      <text x="350" y="296" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 롤백 절차의 첫 줄은 "지금 것을 봉인한다"</text>
-    </g>
-  </svg>
-</div>
+<div class="obsv-fig"><img src="images/02/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 봉인 세 줄이 "운"을 "관측 가능한 사실"로 바꿔줘요</div>
 
 <h2>5. 그런데 두 볼륨을 어떻게 비교하죠</h2>
@@ -211,37 +131,7 @@ docker run --rm -v app-mysql8-data:/from -v app-mysql8-preRollback:/to \
   제 상황은 <b>복제 관계가 없는 두 개의 볼륨</b>이었어요. 전파될 경로가 없으니 도구가 아예 안 붙습니다.
 </div>
 
-<div class="obsv-fig">
-  <svg viewBox="0 0 700 265" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-    <defs>
-      <marker id="b3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-      </marker>
-    </defs>
-    <g stroke-linecap="round" stroke-linejoin="round">
-      <text x="45" y="28" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">pt-table-checksum 이 전제하는 구조</text>
-      <path d="M80 42 C 135 39, 200 45, 250 41 C 253 62, 252 82, 251 100 C 200 103, 135 99, 82 101 C 79 82, 80 60, 80 42 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5"/>
-      <text x="165" y="78" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">master</text>
-      <path d="M258 71 C 310 65, 390 77, 442 70" fill="none" stroke="#4a7fb5" stroke-width="2.2" marker-end="url(#b3)"/>
-      <text x="350" y="56" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">binlog</text>
-      <path d="M450 42 C 505 39, 570 45, 620 41 C 623 62, 622 82, 621 100 C 570 103, 505 99, 452 101 C 449 82, 450 60, 450 42 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5"/>
-      <text x="535" y="78" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">replica</text>
-      <text x="350" y="120" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">체크섬 쿼리가 복제로 전파되어 각자 계산 → 결과 대조</text>
-
-      <path d="M40 142 C 240 140, 460 144, 660 142" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
-
-      <text x="45" y="170" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">내 상황 — 남남인 두 볼륨</text>
-      <path d="M80 184 C 135 181, 200 187, 250 183 C 253 202, 252 220, 251 236 C 200 239, 135 235, 82 237 C 79 220, 80 200, 80 184 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5"/>
-      <text x="165" y="216" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">5.7 볼륨</text>
-      <path d="M258 210 C 300 206, 400 214, 442 209" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="7 7"/>
-      <text x="350" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#e5533c">✕</text>
-      <path d="M450 184 C 505 181, 570 187, 620 183 C 623 202, 622 220, 621 236 C 570 239, 505 235, 452 237 C 449 220, 450 200, 450 184 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5"/>
-      <text x="535" y="216" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">8.0 봉인본</text>
-
-      <text x="350" y="259" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 복제 관계가 없으면 그 도구는 안 붙는다</text>
-    </g>
-  </svg>
-</div>
+<div class="obsv-fig"><img src="images/02/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 3. 도구를 고를 때는 기능보다 "이 도구가 뭘 전제하는가"를 먼저 봐야 해요</div>
 
 <p>그럼 뭘 쓰냐. 여기가 이 시리즈에서 제일 허무했던 지점인데 — <span class="obsv-mark">크로스 메이저 버전 대조에는 딱 맞는 표준 도구가 없어요.</span> <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">CHECKSUM TABLE</code> 도 row format 에 의존해서 5.7 과 8.0 사이의 값 비교를 보장하지 않습니다.</p>

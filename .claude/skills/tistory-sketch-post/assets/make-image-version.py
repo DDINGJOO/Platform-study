@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""blog/ 의 글을 notion/ 으로 미러링한다 — 그림을 파일로 뽑아 밖으로 뺀 버전.
+"""단일 파일 글에서 그림을 뽑아 이미지 분리 버전을 만든다.
 
-blog/  : 인라인 SVG 버전. 티스토리 HTML 모드에 그대로 붙여넣는 용도
-notion/: 외부 이미지 버전. SVG 를 PNG 로 뽑아 images/ 에 두고 <img> 로 참조한다
-         (노션·깃허브·로컬 미리보기에서 그대로 보이고, 노션에는 PNG 를 끌어다 넣으면 된다)
+notion/: **단일 파일 버전.** 인라인 SVG 라 파일 하나에 그림까지 다 들어 있다.
+         통째로 복사해 한 번에 옮기는 용도. 이쪽이 원본이다.
+blog/  : **이미지 분리 버전.** SVG 를 2배 해상도 PNG 로 뽑아 images/<글번호>/ 에
+         두고 <img> 로 참조한다. 그림을 따로 올려야 하는 곳에 쓴다.
 
-    python3 make-notion-mirror.py <blog루트> <notion루트>
+    python3 make-image-version.py <원본루트> <출력루트>
 
-원본(blog)은 건드리지 않는다. notion 쪽은 매번 새로 만든다.
+원본은 건드리지 않는다. 출력 쪽은 매번 새로 만든다.
 """
 import os
 import re

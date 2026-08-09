@@ -40,48 +40,7 @@
 
 <p>여기까지는 평범한 트레이드오프였어요. 얻는 것은 "커밋된 초대만 발송된다"와 "트랜잭션이 외부 I/O 를 잡지 않는다". 잃는 것은 "발송이 그 인스턴스에서만 실행되므로, 보내기 전에 인스턴스가 내려가면 메일이 유실된다". 유실은 재발송 API 로 보상하기로 했고요. <span class="obsv-mark">이상한 건 이 표가 아니라 그다음 표들이었습니다.</span></p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 382" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-<defs>
-  <marker id="arrA1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-  </marker>
-</defs>
-<g font-family="'Nanum Pen Script', cursive" fill="#3d3a34" stroke-linecap="round" stroke-linejoin="round">
-<text x="28" y="140" font-size="19" fill="#8a8272">고른 것 하나</text>
-<text x="300" y="18" font-size="19" fill="#8a8272">따라온 결정 네 개 &mdash; 고른 게 아니라 확정된 것</text>
-
-<path d="M26 152 C 100 149, 175 154, 250 150 C 253 172, 252 196, 251 216 C 175 219, 100 214, 28 218 C 25 196, 26 172, 26 152 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
-<text x="46" y="181" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5">AFTER_COMMIT</text>
-<text x="46" y="206" font-size="20">커밋이 끝난 뒤에 보낸다</text>
-
-<path d="M300 28 C 420 25, 550 30, 672 26 C 675 48, 674 68, 673 90 C 550 93, 420 88, 302 92 C 299 68, 300 48, 300 28 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
-<text x="318" y="57" font-size="20" fill="#b3502f">롤백이 선택지에서 사라진다</text>
-<text x="318" y="79" font-size="15.5" fill="#8a8272">되돌릴 대상이 이미 없다 &rarr; fail-open 이 유일</text>
-
-<path d="M300 108 C 420 105, 550 110, 672 106 C 675 128, 674 148, 673 170 C 550 173, 420 168, 302 172 C 299 148, 300 128, 300 108 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
-<text x="318" y="137" font-size="20" fill="#3d3a34">예외를 던질 이유가 없어진다</text>
-<text x="318" y="159" font-size="15.5" fill="#8a8272">결과 객체 3분류 &mdash; 성공 · 영구실패 · 일시실패</text>
-
-<path d="M300 188 C 420 185, 550 190, 672 186 C 675 208, 674 228, 673 250 C 550 253, 420 248, 302 252 C 299 228, 300 208, 300 188 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
-<text x="318" y="217" font-size="20" fill="#3d3a34">응답에 발송 상태를 실을 수 없다</text>
-<text x="318" y="239" font-size="15.5" fill="#8a8272">관리자는 이미 201 을 받고 떠났다</text>
-
-<path d="M300 268 C 420 265, 550 270, 672 266 C 675 288, 674 308, 673 330 C 550 333, 420 328, 302 332 C 299 308, 300 288, 300 268 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
-<text x="318" y="297" font-size="20" fill="#2e6b41">조회를 0 으로 만들어야 한다</text>
-<text x="318" y="319" font-size="15.5" fill="#8a8272">토큰 · 만료 · 조직명 · 초대자를 payload 에</text>
-
-<g fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA1)">
-<path d="M252 168 C 268 140, 278 90, 294 62"/>
-<path d="M252 174 C 270 160, 278 148, 294 140"/>
-<path d="M252 190 C 270 200, 278 210, 294 218"/>
-<path d="M252 198 C 270 240, 280 280, 294 298"/>
-</g>
-
-<text x="30" y="366" font-size="20" fill="#b3502f">= 고른 건 하나인데 딸려 온 결정이 네 개다 &mdash; 전부 앞 결정에 종속이다</text>
-</g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 결정 하나가 네 개의 결정을 대신 내려준다</div>
 
 <h2>2. 롤백이 선택지에서 사라진다</h2>
@@ -150,51 +109,7 @@ public Invitation invite(...) {
             saved.email(), saved.token(), saved.expiresAt(), inviterEmail, sendCount));
 }</div>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-<defs>
-  <marker id="arrB1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/>
-  </marker>
-  <marker id="arrB2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round"/>
-  </marker>
-</defs>
-<g font-family="'Nanum Pen Script', cursive" fill="#3d3a34" stroke-linecap="round" stroke-linejoin="round">
-<text x="28" y="28" font-size="18" fill="#8a8272">시간</text>
-<path d="M72 22 C 250 20, 460 25, 660 22" fill="none" stroke="#8a8272" stroke-width="1.8" marker-end="url(#arrB1)"/>
-
-<path d="M28 58 C 120 55, 230 60, 326 56 C 329 90, 328 150, 327 188 C 230 191, 120 186, 30 190 C 27 150, 28 90, 28 58 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
-<text x="44" y="86" font-size="20" fill="#4a7fb5">트랜잭션 안 · writer 🖊</text>
-<g font-family="Menlo, monospace" font-size="12" fill="#3d3a34">
-<text x="44" y="114">1. 초대 저장 (토큰 · 만료)</text>
-<text x="44" y="138">2. 조직명 · 초대자 읽기</text>
-<text x="44" y="162">3. payload 에 담아 발행</text>
-</g>
-
-<path d="M350 48 C 352 90, 348 150, 350 214" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-dasharray="7 7"/>
-<text x="336" y="234" font-size="21">커밋</text>
-
-<path d="M374 58 C 460 55, 570 60, 672 56 C 675 90, 674 150, 673 188 C 570 191, 460 186, 376 190 C 373 150, 374 90, 374 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
-<text x="390" y="86" font-size="20" fill="#2e6b41">AFTER_COMMIT 리스너 📮</text>
-<g font-family="Menlo, monospace" font-size="12" fill="#3d3a34">
-<text x="390" y="114">1. payload 에서 값을 꺼낸다</text>
-<text x="390" y="138">2. DB 조회 0 회</text>
-<text x="390" y="162">3. 발송 · 결과는 로그로</text>
-</g>
-
-<path d="M520 192 C 522 208, 518 224, 520 238" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#arrB2)"/>
-<path d="M372 248 C 460 245, 570 250, 672 246 C 675 270, 674 300, 673 320 C 570 323, 460 318, 374 322 C 371 300, 372 270, 372 248 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
-<text x="386" y="276" font-size="19" fill="#b3502f">여기서 초대를 다시 읽었다면 🔥</text>
-<text x="386" y="302" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f">reader 로 가면 방금 만든 행이 없다</text>
-
-<text x="30" y="272" font-size="19" fill="#2e6b41">값은 이미 payload 안에 있다</text>
-<text x="30" y="298" font-family="Menlo, monospace" font-size="11.5" fill="#8a8272">토큰 · 만료 · 조직명 · 초대자</text>
-
-<text x="30" y="348" font-size="20" fill="#b3502f">= 조회를 없애면 복제 지연에 노출될 면적이 0 이 된다</text>
-</g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 읽을 것을 커밋 전에 다 읽어두면 커밋 후엔 읽을 게 없다</div>
 
 <p>덤도 하나 있었어요. payload 만으로 발송이 완결되니까, <b>리스너 테스트에 DB 가 필요 없어졌습니다.</b> 이벤트 객체 하나 만들어 넣으면 끝이에요. 복제 지연을 피하려고 한 설계가 테스트 비용까지 깎아준 셈인데, 이건 우연이라기보다 "의존을 줄였으니 당연히"에 가깝겠죠.</p>

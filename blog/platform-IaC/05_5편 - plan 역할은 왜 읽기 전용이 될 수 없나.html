@@ -53,27 +53,7 @@
 
 <p>그리고 Terraform 1.10+ 의 S3 네이티브 잠금(<code>use_lockfile = true</code>)은 그 잠금을 state 파일 옆에 <code>&lt;state 키&gt;.tflock</code> 객체로 <b>만들었다가 지웁니다.</b> 만들려면 s3:PutObject, 지우려면 s3:DeleteObject 가 필요해요. ReadOnlyAccess 로는 둘 다 안 됩니다. 순수 ReadOnly 역할로 plan 을 돌리는 건 구조적으로 불가능해요.</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 235" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-<g font-family="'Nanum Pen Script', cursive" fill="#4a7fb5">
-<path d="M40 72C220 68 460 75 665 70" stroke="#3d3a34" stroke-width="2.6" fill="none" stroke-linecap="round"/>
-<circle cx="110" cy="70" r="7" fill="#e5a33c"/>
-<circle cx="350" cy="70" r="7" fill="#4a7fb5"/>
-<circle cx="600" cy="70" r="7" fill="#e5a33c"/>
-<g font-size="21">
-<text x="46" y="46" fill="#c07f18">1. 잠금 획득 🔒</text>
-<text x="290" y="46">2. 읽고 계산 👀</text>
-<text x="536" y="46" fill="#c07f18">3. 잠금 해제 🔓</text>
-</g>
-<g font-family="Menlo, monospace" font-size="11.5" fill="#8a8272">
-<text x="36" y="102">PutObject .tflock (쓰기)</text>
-<text x="278" y="102">GetObject + 리소스 조회 (읽기)</text>
-<text x="496" y="102">DeleteObject .tflock (쓰기)</text>
-</g>
-<path d="M30 152C250 149 470 155 670 151" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="1 7" fill="none"/>
-<text x="30" y="182" font-size="20" fill="#b3502f">-lock=false 로 뚫으면 1번과 3번이 사라진다 &mdash; 잠금 자체가 없어진다</text></g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/05/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. plan 은 쓰기로 시작해서 쓰기로 끝난다</div>
 
 <h2>2. 막히면 손이 먼저 가는 곳</h2>
@@ -99,33 +79,7 @@ s3:PutObject + s3:DeleteObject
 
 <p>핵심은 마지막 줄이에요. <b>쓰기 권한의 대상이 state 가 아니라 잠금 파일</b>이라는 것. 귀찮다고 <code>env/dev/*</code> 로 열면 같은 프리픽스의 <code>terraform.tfstate</code> 까지 덮어쓸 수 있게 되고, plan 역할은 조용히 apply 역할이 됩니다. <span class="obsv-mark">파일 이름 한 개 차이로 "계획만 세우는 역할"과 "바꿀 수 있는 역할"이 갈려요.</span></p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-<g font-family="'Nanum Pen Script', cursive" fill="#3d3a34">
-<text x="30" y="30" font-size="21">S3 버킷 &mdash; state 저장소 🪣</text>
-<path d="M28 45C160 42 300 48 452 44C455 110 454 190 453 250C300 253 160 247 30 251C27 190 28 110 28 45Z" fill="#fdfaf3" stroke="#3d3a34" stroke-width="2.4"/>
-<path d="M52 88C170 85 300 91 432 87C435 110 434 128 433 152C300 155 170 149 54 153C51 128 52 106 52 88Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
-<path d="M52 172C170 169 300 175 432 171C435 196 434 216 433 240C300 243 170 237 54 241C51 216 52 192 52 172Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.8"/>
-<g font-family="Menlo, monospace" font-size="13">
-<text x="46" y="72" font-size="12.5" fill="#8a8272">env/dev/</text>
-<text x="68" y="115">👁 terraform.tfstate</text>
-<text x="68" y="139" font-size="12" fill="#4a7fb5">s3:GetObject 만</text>
-<text x="68" y="199">🖊 terraform.tfstate.tflock</text>
-<text x="68" y="223" font-size="12" fill="#c07f18">s3:PutObject + s3:DeleteObject</text>
-</g>
-<g fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round">
-<path d="M440 112C465 110 480 116 500 114"/><path d="M492 107C496 110 498 112 501 114C498 116 496 118 493 121"/>
-<path d="M440 198C465 196 480 202 500 200"/><path d="M492 193C496 196 498 198 501 200C498 202 496 204 493 207"/>
-</g>
-<text x="508" y="108" font-size="21" fill="#4a7fb5">읽기만 해요</text>
-<text x="508" y="132" font-size="17" fill="#8a8272">덮어쓸 수 없음</text>
-<text x="508" y="194" font-size="21" fill="#c07f18">쓰기 · 삭제 허용</text>
-<text x="508" y="218" font-size="17" fill="#8a8272">이름 못 박은 이 한 개만</text>
-<text x="30" y="288" font-size="21" fill="#b3502f">= 이 한 파일 때문에 순수 ReadOnly 가 불가능하다</text>
-<text x="30" y="316" font-size="18" fill="#8a8272">env/dev/* 로 열면 state 까지 덮어쓸 수 있다 &mdash; plan 이 apply 가 되는 순간</text>
-</g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/05/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 쓰기 권한이 붙은 대상은 state 가 아니라 잠금 파일 하나다</div>
 
 <h2>4. DynamoDB 가 사라진 자리</h2>

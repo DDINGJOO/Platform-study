@@ -47,32 +47,7 @@
 
 <p>그런데 올바르게 계산한 평균조차 레이턴시 앞에서는 힘을 잃어요. 레이턴시는 종 모양 분포가 아니거든요. 캐시에 맞은 요청(5ms 근처 봉우리)과 빗나간 요청(200ms 근처 봉우리), GC에 걸린 요청(1초 꼬리)이 섞인 <b>다봉(multimodal) 분포</b>예요.</p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="harr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <g font-family="'Nanum Pen Script', cursive">
-    <!-- axes -->
-    <path d="M50 40 C 49 110, 51 180, 50 240 C 200 241, 450 239, 670 240" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
-    <text x="620" y="268" font-size="18" fill="#8a8272">응답시간 →</text>
-    <text x="20" y="60" font-size="18" fill="#8a8272">요청 수</text>
-    <!-- two humps -->
-    <path d="M70 238 C 95 235, 105 90, 135 88 C 165 90, 175 235, 200 238" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
-    <text x="95" y="70" font-size="20" fill="#4a7fb5">캐시 히트 (5ms)</text>
-    <path d="M330 238 C 360 234, 375 130, 410 128 C 445 130, 460 234, 490 238" fill="none" stroke="#e5a33c" stroke-width="3" stroke-linecap="round"/>
-    <text x="355" y="110" font-size="20" fill="#c07f18">캐시 미스 (200ms)</text>
-    <!-- long tail -->
-    <path d="M490 238 C 550 232, 610 228, 660 226" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-dasharray="8 6"/>
-    <text x="560" y="212" font-size="18" fill="#b3502f">GC 꼬리 🐢</text>
-    <!-- average arrow pointing at the valley -->
-    <path d="M262 100 C 263 140, 262 180, 263 225" stroke="#b3502f" stroke-width="2.4" stroke-linecap="round" fill="none" marker-end="url(#harr)" stroke-dasharray="1 7"/>
-    <text x="190" y="85" font-size="22" fill="#b3502f">"평균 80ms" ← 여기엔 아무도 없다!</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/02/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 평균은 두 봉우리 사이 골짜기 &mdash; 아무도 겪지 않은 시간을 가리킨다</div>
 
 <p>이런 분포에서 "평균 80ms"는 <b>아무도 경험하지 않은 시간</b>이에요. 사용자는 5ms 아니면 200ms를 겪는데, 보고서는 그 사이의 유령 값을 말하고 있는 거죠. 그래서 레이턴시는 평균 대신 퍼센타일(p95, p99)로 봐야 해요 &mdash; "요청의 95%가 이 안에 들어온다"는 실제 경험에 대한 진술이니까요.</p>
@@ -99,39 +74,7 @@
 
 <p>그런데 버킷은요? <b>그냥 개수예요. 개수는 더할 수 있어요.</b></p>
 
-<div class="obsv-fig">
-<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <defs>
-    <marker id="barr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
-    </marker>
-  </defs>
-  <g font-family="'Nanum Pen Script', cursive">
-    <text x="36" y="36" font-size="23" fill="#b3502f">완성품(퍼센타일)은 합칠 수 없다</text>
-    <g font-size="19" fill="#6b6558">
-      <text x="50" y="76">서버A p95=200</text>
-      <text x="235" y="76">서버B p95=250</text>
-      <text x="420" y="76">서버C p95=900</text>
-    </g>
-    <path d="M120 88 C 180 110, 260 122, 320 126" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" stroke-dasharray="1 7"/>
-    <path d="M300 88 C 310 100, 320 110, 328 120" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" stroke-dasharray="1 7"/>
-    <path d="M480 88 C 430 108, 380 120, 345 125" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" stroke-dasharray="1 7"/>
-    <text x="300" y="150" font-size="27" fill="#b3502f">= ❌ 불가능</text>
-    <path d="M36 172 C 250 169, 480 174, 672 171" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" fill="none"/>
-    <text x="36" y="205" font-size="23" fill="#2e6b41">재료(버킷 개수)는 그냥 덧셈</text>
-    <g font-family="Menlo, monospace" font-size="13" fill="#6b6558">
-      <text x="50" y="240">A: [60, 31,  8]</text>
-      <text x="235" y="240">B: [80, 15,  3]</text>
-      <text x="420" y="240">C: [20, 40, 30]</text>
-    </g>
-    <path d="M120 252 C 180 272, 260 282, 320 286" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" marker-end="url(#barr)"/>
-    <path d="M300 252 C 310 262, 320 272, 328 282" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" marker-end="url(#barr)"/>
-    <path d="M480 252 C 430 270, 380 280, 348 285" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" marker-end="url(#barr)"/>
-    <text x="200" y="316" font-size="20" fill="#2e6b41" font-family="Menlo, monospace">전체: [160, 86, 41]</text>
-    <text x="430" y="316" font-size="22" fill="#2e6b41">→ 진짜 전체 p95 ✅</text>
-  </g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/02/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 완성품은 못 합치고, 재료는 합쳐진다 &mdash; 그래서 재료를 보낸다</div>
 
 <p>이게 이 글의 심장이에요. <span class="obsv-mark">퍼센타일(완성품)은 합칠 수 없지만 버킷(재료)은 합칠 수 있다. 그래서 재료째 백엔드로 보낸다.</span> Micrometer의 두 옵션이 정확히 이 갈림길이에요:</p>

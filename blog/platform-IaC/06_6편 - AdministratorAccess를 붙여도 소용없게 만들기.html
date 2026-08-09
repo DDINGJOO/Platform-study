@@ -33,41 +33,7 @@
 <p>이 저장소는 단일 AWS 계정에서 dev 와 prod 를 3중 방어로 갈라놨어요 — 환경별 state 파일 경로 분리, 리소스의 env 태그가 자기 환경과 다르면 손대지 못하게 하는 IAM Deny, prod 리소스의 prevent_destroy. 그런데 이 세 겹이 iam:* 하나로 통째로 무력화됩니다.</p>
 <p>순서는 이래요. <b>①</b> <code>iam:CreateRole</code> 로 새 역할을 만듭니다. 이름은 totally-normal-app-role — 프리픽스 목록 밖이니 Deny 가 침묵해요. <b>②</b> 거기에 AdministratorAccess 를 붙이고 신뢰 정책에 자기 자신을 넣습니다. <b>③</b> sts:AssumeRole 로 갈아탑니다. 새 역할에는 env 태그가 없으니 태그 Deny 도 침묵해요. <b>④</b> 이제 state 버킷 정책 변경도, 반대 환경 리소스 삭제도 가능합니다.</p>
 <p>악의를 전제해야 성립하는 시나리오가 아니에요. <span class="obsv-mark">실수로 든 모듈 하나, 잘못 붙인 관리형 정책 하나로도 똑같은 상태가 됩니다.</span> 이 실패의 모양은 "목록에 그 이름이 없었다"였어요. 그래서 목록을 넓히는 수리는 뺐습니다. 다음 이름 하나로 또 뚫리니까요.</p>
-<div class="obsv-fig">
-<svg viewBox="0 0 700 338" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-<defs><marker id="a4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5C4 3,6 4,8.5 5C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
-<g fill="#fffdf7" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-<path d="M32 44Q160 48 288 42Q292 76 286 106Q160 110 34 108Q30 76 32 44Z" stroke="#4a7fb5"/>
-<path d="M342 44Q510 48 678 42Q682 136 676 226Q510 231 344 228Q338 136 342 44Z" stroke="#3d3a34"/>
-<path d="M42 144Q165 148 288 142Q292 186 286 226Q165 231 44 228Q38 186 42 144Z" stroke="#e5533c" stroke-dasharray="8 8" fill="#fbeee7"/>
-<path d="M42 256Q255 258 468 254Q471 281 466 303Q255 307 44 305Q39 281 42 256Z" stroke="#e5533c" fill="#fbeee7"/>
-</g>
-<g fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a4)">
-<path d="M292 66C308 60,320 57,334 59"/>
-<path d="M160 110C162 120,158 128,160 134" stroke="#8a8272" stroke-dasharray="1 6"/>
-<path d="M400 231C382 241,356 246,336 248" stroke="#e5533c" stroke-width="2.2"/>
-</g>
-<g font-family="'Nanum Pen Script', cursive" text-anchor="middle" fill="#3d3a34" font-size="16">
-<text x="510" y="105">1. iam:CreateRole 로 새 역할</text>
-<text x="510" y="161">2. AdministratorAccess 를 붙이고</text>
-<text x="510" y="197">3. sts:AssumeRole 로 갈아탄다</text>
-<text x="160" y="72" font-size="19">dev apply 역할</text>
-<text x="255" y="278" font-size="15">4. state 버킷 정책 변경도, 반대 환경 삭제도</text>
-<g fill="#b3502f">
-<text x="165" y="180" font-size="19">🚧 Deny 울타리</text>
-<text x="510" y="70" font-size="18">울타리 밖</text>
-<text x="510" y="216" font-size="13">env 태그가 없으니 태그 Deny 도 침묵</text>
-<text x="255" y="299">전부 가능해진다 💥</text>
-<text x="350" y="330" font-size="19">목록으로 막는 방어는 목록 밖에서 뚫린다</text>
-</g>
-<g font-family="Menlo, monospace" fill="#8a8272" font-size="12">
-<text x="160" y="96">iam:* 가 열려 있다</text>
-<text x="510" y="126" font-size="11">totally-normal-app-role</text>
-<text x="165" y="207" font-size="13" fill="#b3502f">platform-iac-*</text>
-</g>
-</g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/06/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 울타리는 이름을 보고, 공격은 이름을 바꾼다</div>
 <h2>2. 1겹 — 갈아타기를 끊는다</h2>
 <p>첫 겹은 싱거워요. apply 역할에 sts:AssumeRole 을 명시적으로 Deny 하면 시나리오 ③번이 그 자리에서 끊깁니다. apply 역할이 다른 역할로 갈아탈 이유도 없어요 — provider 에 assume_role 설정이 없으니 쓰지 않는 권한을 회수하는 셈이죠.</p>
@@ -75,36 +41,7 @@
 <h2>3. 2겹 — boundary 는 권한이 아니라 상한이다</h2>
 <p>permissions boundary 는 이름이 오해를 부르는 장치예요. 권한을 <b>주는</b> 정책이 아니라 권한의 <b>상한</b>을 정하는 정책입니다. boundary 가 붙은 역할이 실제로 할 수 있는 일은 붙은 정책과 boundary 가 <span class="obsv-mark">둘 다 Allow 한 것</span>뿐이고, 어느 한쪽에 Deny 가 있으면 그 Deny 가 이깁니다. 그래서 그 역할에 AdministratorAccess 를 붙여도 boundary 를 넘지 못해요. 문서상 권한과 실제 권한이 갈리는 거죠(그 역할을 principal 로 지목한 리소스 기반 정책 같은 예외는 있어요).</p>
 <p>여기서 방어의 성격이 바뀝니다. 울타리는 무엇을 붙였는지 감시하는 방어였고, boundary 는 <b>무엇을 붙여도 넘을 수 없는 천장을 두는</b> 방어예요. 감시할 이름 목록이 없으니 역할 이름이 무엇이든 성립합니다.</p>
-<div class="obsv-fig">
-<svg viewBox="0 0 700 296" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-<g fill="none" stroke-width="2.8" stroke-linecap="round">
-<path d="M295 55A145 95 0 0 1 295 245A145 95 0 0 1 295 55Z" fill="#fffdf7" stroke="#4a7fb5"/>
-<path d="M355 63.5A145 95 0 0 1 355 236.5A145 95 0 0 1 355 63.5Z" fill="#ffd54d"/>
-<path d="M355 63.5A145 95 0 0 1 355 236.5" stroke="#4a7fb5"/>
-<path d="M415 55A145 95 0 0 1 415 245A145 95 0 0 1 415 55Z" stroke="#5a9e6f"/>
-</g>
-<g font-family="'Nanum Pen Script', cursive" text-anchor="middle" fill="#3d3a34">
-<text x="355" y="28" font-size="20">boundary 가 붙은 역할이 실제로 할 수 있는 일</text>
-<text x="355" y="145" font-size="21">실효 권한</text>
-<text x="355" y="169" font-size="14">겹치는 부분만</text>
-<text x="355" y="283" font-size="19" fill="#b3502f">AdministratorAccess 를 붙여도 천장을 넘지 못한다</text>
-<g fill="#4a7fb5">
-<text x="207" y="128" font-size="19">붙인 정책</text>
-<text x="207" y="151" font-family="Menlo, monospace" font-size="11">Administrator</text>
-<text x="207" y="166" font-family="Menlo, monospace" font-size="11">Access</text>
-</g>
-<g fill="#2e6b41">
-<text x="503" y="128" font-family="Menlo, monospace" font-size="11">permissions</text>
-<text x="503" y="143" font-family="Menlo, monospace" font-size="11">boundary</text>
-<text x="503" y="171" font-size="19">권한 상한선</text>
-</g>
-<g fill="#8a8272" font-size="15">
-<text x="207" y="193">문서상 권한</text>
-<text x="503" y="196" font-size="14">여기까지만</text>
-</g>
-</g>
-</svg>
-</div>
+<div class="obsv-fig"><img src="images/06/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 노란 부분이 전부다 — 문서상 권한과 실효 권한</div>
 <h2>4. 조건 키가 없어도 true 라는 성질</h2>
 <p>천장을 만들어놔도 boundary 를 안 붙이고 역할을 만들면 소용없죠. 그래서 apply 역할 쪽에서 강제합니다. 구멍이 다섯 자리예요.</p>

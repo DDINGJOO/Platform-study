@@ -86,7 +86,38 @@ done</div>
 
 <p>검증 항목은 세 개였어요. 전 테이블 행수 diff 가 0인지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql.user</code> 의 계정이 그대로 넘어왔는지, 그리고 앱이 붙어서 API 가 200 을 주는지. 특히 계정은 5.7 → 8.0 에서 인증 플러그인 기본값이 바뀌기 때문에 꼭 봐야 했습니다.</p>
 
-<div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M40 48 C 110 45, 180 50, 250 46 C 253 70, 252 92, 251 115 C 180 118, 110 114, 42 116 C 39 92, 40 70, 40 48 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="145" y="79" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#c07f18">MySQL 5.7</text>
+      <text x="145" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">:3306 서비스 중</text>
+
+      <path d="M450 48 C 520 45, 590 50, 660 46 C 663 70, 662 92, 661 115 C 590 118, 520 114, 452 116 C 449 92, 450 70, 450 48 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="555" y="79" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">MySQL 8.0.42</text>
+      <text x="555" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">:3307 병행 기동</text>
+
+      <path d="M258 82 C 312 76, 388 88, 442 81" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr1)"/>
+      <text x="350" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">덤프 복원</text>
+
+      <text x="350" y="157" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">검증을 통과해야만 전환한다</text>
+      <text x="350" y="181" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">행수 diff = 0  ·  mysql.user 대조  ·  SELECT 1 응답</text>
+
+      <path d="M350 194 C 352 205, 348 216, 350 228" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr1)"/>
+
+      <path d="M150 238 C 250 235, 450 241, 550 237 C 553 260, 552 278, 551 295 C 450 298, 250 294, 152 296 C 149 278, 150 258, 150 238 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="350" y="263" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">5.7 중지 → 8.0 을 :3306 으로</text>
+      <text x="350" y="285" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">앱 재기동 후 API 200 확인</text>
+
+      <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 검증 끝나기 전까지 5.7 은 손대지 않는다</text>
+    </g>
+  </svg>
+</div>
 <div class="obsv-figcap">그림 1. 병행 기동해두면 "복원 실패"가 "장애"로 번지지 않아요</div>
 
 <h2>4. 진짜 어려운 건 5.7 이 되살아나지 못하게 만드는 것</h2>
@@ -97,7 +128,48 @@ done</div>
 
 <p>지금은 8.0 이 잘 돌고 있지만, <b>다음 재부팅 때 systemd 가 그 경로를 타면 5.7 컨테이너가 다시 올라옵니다.</b> 그러면 3306 을 누가 먼저 잡느냐 싸움이 되거나, 최악의 경우 예전 볼륨을 붙인 5.7 이 서비스를 받게 돼요. 며칠 뒤 "데이터가 사라졌다"는 제보를 받고 원인을 못 찾는 상황이 이렇게 만들어집니다.</p>
 
-<div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M55 30 C 165 27, 300 33, 420 29 C 423 50, 422 66, 421 82 C 300 85, 165 81, 57 83 C 54 66, 55 47, 55 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="238" y="55" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">dev-startup.service</text>
+      <text x="238" y="74" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">systemd oneshot — 부팅 시 1회</text>
+
+      <path d="M238 85 C 241 92, 235 99, 238 105" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#arr2)"/>
+
+      <path d="M55 110 C 165 107, 300 113, 420 109 C 423 130, 422 146, 421 162 C 300 165, 165 161, 57 163 C 54 146, 55 127, 55 110 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="238" y="135" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">cron-health-check-and-start.sh</text>
+      <text x="238" y="154" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">🔥 컨테이너명에 5.7 하드코딩</text>
+
+      <path d="M238 165 C 241 172, 235 179, 238 185" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#arr2)"/>
+
+      <path d="M55 190 C 165 187, 300 193, 420 189 C 423 210, 422 226, 421 242 C 300 245, 165 241, 57 243 C 54 226, 55 207, 55 190 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="238" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">start.sh</text>
+      <text x="238" y="234" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">compose up 래퍼</text>
+
+      <path d="M238 245 C 241 252, 235 259, 238 265" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#arr2)"/>
+
+      <path d="M55 270 C 165 267, 300 273, 420 269 C 423 290, 422 306, 421 322 C 300 325, 165 321, 57 323 C 54 306, 55 287, 55 270 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="238" y="295" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">docker-compose.yaml</text>
+      <text x="238" y="314" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">🔥 db 서비스 = mysql:5.7</text>
+
+      <path d="M462 105 C 535 102, 605 108, 675 104 C 678 145, 677 195, 676 248 C 605 251, 535 247, 464 249 C 461 195, 462 148, 462 105 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.4" stroke-dasharray="8 6"/>
+      <text x="569" y="130" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">🕳️ 전수 조사 대상</text>
+      <text x="484" y="156" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">systemd unit</text>
+      <text x="484" y="176" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">헬스체크 스크립트</text>
+      <text x="484" y="196" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">start 래퍼</text>
+      <text x="484" y="216" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">compose 파일</text>
+      <text x="484" y="236" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">exec / 유틸 스크립트</text>
+
+      <text x="350" y="366" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 한 곳만 놓치면 다음 재부팅에 5.7 이 되살아난다</text>
+    </g>
+  </svg>
+</div>
 <div class="obsv-figcap">그림 2. 이관은 데이터를 옮기는 일이 아니라 "옛 버전으로 가는 길"을 끊는 일이에요</div>
 
 <p>그래서 부팅 경로를 전부 따라가면서 5.7 참조를 지웠어요. compose 의 db 서비스는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code> + 새 볼륨 + 표준 기동 플래그로 갈아엎고, 헬스체크·유틸 스크립트의 컨테이너명도 일괄 교체했습니다. crontab 이 따로 없다는 것까지 확인해서 <b>실행 경로가 systemd 하나뿐임을 증명</b>하고 끝냈어요.</p>
@@ -143,7 +215,37 @@ ALTER TABLE landing_page RENAME INDEX uq_lp_slug TO uk_lp_slug;</div>
 
 <p>그래서 저장은 안전한데, 경계를 넘어 문자열을 비교하는 순간 쿼리가 죽습니다.</p>
 
-<div class="obsv-fig"><img src="images/01/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M30 42 C 115 39, 205 45, 290 41 C 293 75, 292 112, 291 142 C 205 145, 115 141, 32 143 C 29 112, 30 72, 30 42 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="160" y="72" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">신규 6개 테이블</text>
+      <text x="160" y="98" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">landing_page, _version, _study,</text>
+      <text x="160" y="114" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">_image, _version_image, ...</text>
+      <text x="160" y="135" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">utf8mb4_0900_ai_ci ✅</text>
+
+      <path d="M410 42 C 495 39, 585 45, 670 41 C 673 75, 672 112, 671 142 C 585 145, 495 141, 412 143 C 409 112, 410 72, 410 42 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="540" y="72" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">legacy 테이블 수십 개</text>
+      <text x="540" y="102" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">5.7 덤프에서 그대로 복원됨</text>
+      <text x="540" y="135" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">utf8mb4_general_ci</text>
+
+      <text x="350" y="72" text-anchor="middle" font-size="24">💥</text>
+      <path d="M298 96 C 322 90, 378 102, 402 95" fill="none" stroke="#e5533c" stroke-width="2.2" marker-start="url(#arr3)" marker-end="url(#arr3)"/>
+      <text x="350" y="118" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">JOIN</text>
+
+      <text x="350" y="192" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">저장은 같은 바이트, 비교는 다른 규칙</text>
+      <text x="350" y="219" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f">ERROR 1267: Illegal mix of collations</text>
+      <text x="350" y="238" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">(utf8mb4_0900_ai_ci,IMPLICIT) and (utf8mb4_general_ci,IMPLICIT)</text>
+
+      <text x="350" y="278" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 지금 안 터지는 건 숫자로만 조인하고 있어서다</text>
+    </g>
+  </svg>
+</div>
 <div class="obsv-figcap">그림 3. 콜레이션은 저장을 바꾸지 않고 비교를 바꿔요 — 그래서 배포 후에 터집니다</div>
 
 <p>다행히 지금은 안 터져요. 신규 테이블이 legacy 를 참조하는 컬럼이 전부 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">BIGINT</code> 라서 숫자 비교만 하고 있거든요. 숫자에는 콜레이션이 개입하지 않습니다. 그런데 이건 설계를 잘해서가 아니라 <b>아직 지뢰를 안 밟았을 뿐</b>이에요. 문자열로 경계를 넘는 쿼리가 하나 추가되는 날 터집니다. 에러가 안 나도 인덱스를 못 타서 조용히 느려지는 경로가 먼저 생기고요.</p>

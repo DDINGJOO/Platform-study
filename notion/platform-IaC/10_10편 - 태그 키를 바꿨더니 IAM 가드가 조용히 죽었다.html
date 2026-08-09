@@ -106,7 +106,47 @@ bootstrap/iam-boundary.tf   ← 빠뜨렸다
 
 <p>위험을 정확히 알고 있었고, 문장으로 적어뒀고, 그렇게 함께 교체하다가 파일 하나를 빠뜨린 거예요. <b>이 사고의 원인은 무지가 아니라 누락입니다.</b> 그리고 이건 중요한 구분이에요 &mdash; 무지는 공부로 줄어들지만, <span class="obsv-mark">누락은 아무리 잘 알아도 줄어들지 않습니다.</span> 알고 있음은 재발 방지책이 될 수 없어요.</p>
 
-<div class="obsv-fig"><img src="images/10/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 332" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="arr10a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5C4 3,6 4,8.5 5C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<g fill="#fffdf7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M30 46Q122 42 214 47Q218 78 213 112Q122 116 32 111Q27 78 30 46Z" stroke="#4a7fb5"/>
+<path d="M256 46Q353 42 450 47Q454 78 449 112Q353 116 258 111Q252 78 256 46Z" stroke="#4a7fb5"/>
+<path d="M492 46Q582 42 672 47Q676 78 671 112Q582 116 494 111Q488 78 492 46Z" stroke="#5a9e6f"/>
+<path d="M30 184Q122 180 214 185Q218 216 213 250Q122 254 32 249Q27 216 30 184Z" stroke="#4a7fb5"/>
+<path d="M256 184Q353 180 450 185Q454 216 449 250Q353 254 258 249Q252 216 256 184Z" stroke="#e5533c" stroke-dasharray="8 7" fill="#fbeee7"/>
+<path d="M492 184Q582 180 672 185Q676 216 671 250Q582 254 494 249Q488 216 492 184Z" stroke="#e5533c" fill="#fbeee7"/>
+</g>
+<g fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr10a)">
+<path d="M216 78C228 74,238 82,250 79"/>
+<path d="M452 78C464 74,474 82,486 79"/>
+<path d="M216 216C228 212,238 220,250 217"/>
+<path d="M456 217C466 213,476 220,486 217" stroke="#e5533c"/>
+</g>
+<path d="M28 146C200 143,420 149,674 145" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="2 8"/>
+<g font-family="'Nanum Pen Script', cursive" text-anchor="middle" fill="#3d3a34">
+<text x="122" y="72" font-size="17">리소스에 붙은 태그</text>
+<text x="353" y="72" font-size="17">IAM Deny 조건</text>
+<text x="582" y="84" font-size="19" fill="#2e6b41">매치 → 차단됨 ✅</text>
+<text x="122" y="210" font-size="17">리소스에 붙은 태그</text>
+<text x="353" y="210" font-size="17">boundary 의 Deny</text>
+<text x="582" y="215" font-size="19" fill="#b3502f">매치 없음 → 통과</text>
+<text x="582" y="238" font-size="14" fill="#8a8272">에러 없음 · 로그 없음</text>
+<g text-anchor="start" font-size="19">
+<text x="30" y="34" fill="#4a7fb5">리네임 전</text>
+<text x="30" y="174" fill="#b3502f">리네임 후 &mdash; 한 파일을 빠뜨린 채로</text>
+</g>
+<g font-family="Menlo, monospace" font-size="12.5">
+<text x="122" y="97">env = prod</text>
+<text x="353" y="97">aws:ResourceTag/env</text>
+<text x="122" y="235">Environment = prod</text>
+<text x="353" y="235" fill="#b3502f">aws:ResourceTag/env</text>
+</g>
+<text x="350" y="290" font-size="20" fill="#b3502f">발동하지 않은 Deny 는 아무 로그도 남기지 않는다</text>
+<text x="350" y="316" font-size="16" fill="#8a8272">거부된 요청은 흔적이 남고, 거부되지 않은 요청은 그냥 성공한 요청이다</text>
+</g>
+</svg>
+</div>
 <div class="obsv-figcap">그림 1. 잠금이 고장 나서 문이 더 잘 열리면 아무도 모른다</div>
 
 <h2>4. grep 한 줄이면 잡히는데 리뷰가 못 잡은 이유</h2>
@@ -145,7 +185,50 @@ bootstrap/iam-boundary.tf   ← 빠뜨렸다
 
 <p>실무적으로 쓸 만한 형태로 바꾸면 이렇게 돼요. 경계를 좁게 그리는 건 좋은 습관이지만, 그보다 먼저 할 일은 <b>그 경계가 몇 군데에 적혀 있는지 세어보는 것</b>입니다. 한 군데면 그냥 고치면 되고, <b>두 군데 이상이면 그 순간부터 그건 사람이 기억할 짝이 아니라 기계가 붙들어야 할 계약</b>이에요. grep 한 줄짜리 CI 검사를 붙일 값어치는 거기서 생깁니다.</p>
 
-<div class="obsv-fig"><img src="images/10/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 438" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<path d="M25 44Q350 40 675 45Q679 140 674 236Q350 241 27 236Q21 140 25 44Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.5" stroke-linejoin="round"/>
+<path d="M34 196Q350 192 666 197Q669 213 665 228Q350 232 36 228Q31 213 34 196Z" fill="#fbeee7" stroke="none"/>
+<g fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round">
+<path d="M42 71C46 75,49 79,52 78C56 74,61 66,66 60"/>
+<path d="M42 99C46 103,49 107,52 106C56 102,61 94,66 88"/>
+<path d="M42 127C46 131,49 135,52 134C56 130,61 122,66 116"/>
+<path d="M42 155C46 159,49 163,52 162C56 158,61 150,66 144"/>
+<path d="M42 183C46 187,49 191,52 190C56 186,61 178,66 172"/>
+</g>
+<g fill="none" stroke="#e5533c" stroke-width="2.8" stroke-linecap="round">
+<path d="M43 205C50 212,58 220,65 227"/>
+<path d="M65 205C58 212,50 220,43 227"/>
+</g>
+<path d="M27 282Q350 278 673 283Q677 336 672 390Q350 395 29 390Q23 336 27 282Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="9 6" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" fill="#3d3a34">
+<text x="25" y="30" font-size="21">환경 태그 키가 적혀 있는 곳 &mdash; 파일 여섯 개, 자리 여덟 곳</text>
+<text x="25" y="270" font-size="20" fill="#8a8272">같은 날, 같은 모양으로 세 번</text>
+<g font-family="Menlo, monospace" font-size="12.5">
+<text x="80" y="76">envs/dev/providers.tf</text>
+<text x="80" y="104">envs/prod/providers.tf</text>
+<text x="80" y="132">bootstrap/main.tf</text>
+<text x="80" y="160">stacks/alerting/providers.tf</text>
+<text x="80" y="188">bootstrap/iam.tf</text>
+<text x="80" y="216" fill="#b3502f">bootstrap/iam-boundary.tf</text>
+</g>
+<g font-size="16.5" fill="#2e6b41">
+<text x="400" y="77">default_tags 1곳 · 고침</text>
+<text x="400" y="105">default_tags 1곳 · 고침</text>
+<text x="400" y="133">default_tags 1곳 · 고침</text>
+<text x="400" y="161">default_tags 2곳 · 고침</text>
+<text x="400" y="189">Deny 조건 2곳 · 고침</text>
+</g>
+<text x="400" y="217" font-size="16.5" fill="#b3502f">Deny 조건 1곳 · 안 고침</text>
+<g font-size="16.5">
+<text x="48" y="312">8편 · 재사용 워크플로 권한 &mdash; 호출부 두 곳 중 한 곳만 고침</text>
+<text x="48" y="342">9편 · state 키 레이아웃 &mdash; backend 는 고치고 IAM 정책은 그대로</text>
+<text x="48" y="372" fill="#b3502f">10편 · 환경 태그 키 &mdash; 파일 두 개 중 한 개만 고침</text>
+</g>
+<text x="350" y="424" font-size="20" text-anchor="middle" fill="#b3502f">두 군데 이상이면 기억이 아니라 검사로 묶는다</text>
+</g>
+</svg>
+</div>
 <div class="obsv-figcap">그림 2. 경계를 좁게 그리기 전에, 그 경계가 몇 군데에 적혀 있는지부터 센다</div>
 
 <p>덧붙이면 이 수리에는 꼬리가 하나 더 있어요. 고친 파일이 <code>bootstrap/</code> 이라 9편에 적은 그 제약이 그대로 걸립니다 &mdash; <b>CI 의 apply 대상이 아니라서, 머지해도 자격증명을 가진 사람이 로컬에서 apply 해야 실제로 적용돼요.</b> 코드가 초록불로 머지된 시점과 가드가 실제로 되살아나는 시점 사이에 또 간격이 생기는 거죠. 좁은 경계의 값은 이렇게 계속 청구됩니다.</p>
