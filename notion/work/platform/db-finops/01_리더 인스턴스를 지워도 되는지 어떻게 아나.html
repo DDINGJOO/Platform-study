@@ -1,0 +1,296 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<p>Aurora 클러스터에 인스턴스가 두 대 붙어 있었어요. writer 하나, reader 하나. 둘 다 같은 사양이고 둘 다 매달 같은 돈을 냅니다.</p>
+
+<p>그런데 92일치 지표를 뽑아보니 reader의 쓰기가 <b>정확히 0</b>이었어요. 한 번도 아니고 92일 내내. 그래서 자연스럽게 이 질문이 나왔습니다.</p>
+
+<p><b>이거 지워도 되나요?</b> 이 글은 "된다"는 답보다, 그 답에 붙일 근거를 만들다가 <span class="obsv-mark">내가 만든 근거 세 개가 내 문서 안의 다른 숫자에 반증당한 이야기</span>입니다.</p>
+
+<h2>1. 놀고 있는 게 아니라, 못 놀게 되어 있었다</h2>
+
+<p>reader가 안 쓰인다는 건 쉽게 보였어요. 이상했던 건 <b>분포의 모양</b>입니다.</p>
+
+<div class="obsv-code">reader Queries           p10 6.86   p50 6.97   p95 7.25   p99 7.34
+reader SelectThroughput  p10 2.91   p50 2.94   p95 3.01   p99 3.05
+reader CPUUtilization    p10 12.94  p50 13.55  p95 14.18  p99 14.32
+
+reader DMLThroughput     92일 내내  0.00</div>
+
+<p>p10과 p99의 차이가 SELECT 0.14/초예요. 사람이 쓰는 서비스는 이런 분포가 안 나옵니다. 새벽 4시와 오전 10시가 같을 수가 없으니까요.</p>
+
+<p>범인은 커넥션 URL이었습니다. 드라이버가 writer와 reader 엔드포인트를 <b>둘 다</b> 물고 있으면서, 커넥션 풀의 <b>검증 쿼리만</b> reader로 보내고 있었어요. 실제 쿼리는 전부 writer가 처리하고요. 심장박동 같은 일정한 부하 — 그래서 분포가 자를 댄 것처럼 평평했던 겁니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 265" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arrA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M28 92 C 78 89, 128 94, 176 90 C 179 114, 178 136, 177 159 C 128 162, 78 158, 30 160 C 27 136, 28 114, 28 92 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="102" y="122" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2f2c26">애플리케이션</text>
+      <text x="102" y="145" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">커넥션 풀 2개</text>
+
+      <path d="M182 116 C 260 104, 330 96, 408 88" fill="none" stroke="#3d3a34" stroke-width="2.4" marker-end="url(#arrA)"/>
+      <text x="292" y="86" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">실제 쿼리 전부</text>
+
+      <path d="M182 138 C 260 152, 330 162, 408 172" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="1 7" marker-end="url(#arrA)"/>
+      <text x="292" y="192" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">검증 쿼리만</text>
+
+      <path d="M414 54 C 494 51, 574 56, 664 52 C 667 74, 666 92, 665 112 C 574 115, 494 111, 416 113 C 413 92, 414 72, 414 54 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+      <text x="539" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">writer</text>
+      <text x="539" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">SELECT 3/s + DML 0.5/s</text>
+
+      <path d="M414 142 C 494 139, 574 144, 664 140 C 667 162, 666 180, 665 200 C 574 203, 494 199, 416 201 C 413 180, 414 160, 414 142 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+      <text x="539" y="168" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">reader 💤</text>
+      <text x="539" y="189" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">DML 0.00  ·  92일</text>
+
+      <path d="M30 232 C 240 228, 460 236, 668 231" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+      <text x="350" y="256" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 돈은 두 대, 일은 한 대</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 분포가 너무 평평하면 그건 트래픽이 아니라 설정이다</div>
+
+<h2>2. 그런데 "여유 있다"의 기준은 내가 만든 숫자였다</h2>
+
+<p>여기까지는 측정이라 자신 있었어요. CloudWatch에서 뽑은 실측이고, writer와 reader를 나눠 보고, 월별 추세도 걸고, 분위수와 절대 최댓값을 따로 봤습니다.</p>
+
+<p>문제는 판정표의 <b>맨 오른쪽 열</b>이었어요. CPU는 70% 미만, 크레딧은 500 초과, 커넥션은 1500 미만, 지연은 50ms 미만. 전부 ✅ 였고 — 전부 <span class="obsv-mark">제가 그럴듯해 보이게 지어낸 숫자</span>였습니다.</p>
+
+<p>지어낸 걸 알면서도 붙인 이유는 표에 빈칸을 두기 싫었기 때문이에요. 그런데 이 열이 하는 일이 뭔지 생각해보면, 그건 <b>"지워도 된다"의 유일한 논리적 근거</b>입니다. 측정값은 사실을 말하지만, 그 사실이 안전한지 판정하는 건 기준선이니까요. 근거가 비어 있으면 남은 건 "그래프가 낮아 보인다"뿐입니다.</p>
+
+<p>그래서 기준을 하나씩 되짚었더니, 셋이 무너졌어요. 새 지식이 필요한 게 아니라 <b>제 문서 안에서 산수 한 번</b>이면 걸렸을 것들이었습니다.</p>
+
+<h2>3. 반증 1 — 베이스라인 30%는 내 문서가 부정한다</h2>
+
+<p>버스터블 인스턴스(t 계열)는 CPU 예산제로 돕니다. 정해진 베이스라인 아래로 쓰면 크레딧이 쌓이고, 넘어서 쓰면 쌓인 걸 꺼내 씁니다. 그래서 판단의 핵심이 "베이스라인이 몇 %냐"예요.</p>
+
+<p>저는 30%라고 썼습니다. 근거는 없었고요. 그런데 같은 문서에 이미 답이 적혀 있었어요.</p>
+
+<div class="obsv-code">CPUCreditBalance   최대 576   (92일간 min 569.33)
+
+576 = 시간당 적립 크레딧 x 24시간
+    -&gt; 시간당 24 크레딧
+
+크레딧 1개 = vCPU 1개를 100%로 1분 돌릴 권리
+이 사양   = 2 vCPU
+1시간 예산 = 2 x 60 = 120 vCPU분
+
+베이스라인 = 24 / 120 = 20%</div>
+
+<p>30%가 아니라 <b>20%</b>였습니다. 30%는 한 단계 위 사양의 값이에요. 그리고 이 10%p가 결론을 흔듭니다.</p>
+
+<div class="obsv-code">                        내 가정(30%)      실제(20%)
+현재 avg 16.4%          여유 있음         여유 3.6%p  (크레딧 만점의 이유)
+현재 p99 20.85%         여유 9%p          거의 베이스라인 위
+제거 후 avg 18~20%      여유 있음         적립이 0에 수렴
+제거 후 p99 23~25%      "베이스라인 아래"  베이스라인 초과 -&gt; 소모</div>
+
+<p>제가 쓴 마지막 문장은 "베이스라인 30% 아래를 유지하므로 크레딧 소모가 계속 발생하지 않습니다"였어요. 20%로 다시 읽으면 <b>성립하지 않는 문장</b>입니다.</p>
+
+<p>재미있는 건 결론 자체는 살아남았다는 거예요. 다만 이유가 달랐습니다. 92일간 크레딧이 576에서 569까지밖에 안 내려갔다는 <b>실측</b>이 어떤 기준선보다 강한 증거였어요. 기준선은 미래에 대한 추정이고, 이건 과거에 대한 사실이니까요. 제 결론은 맞았지만 제가 댄 이유는 틀렸고, <span class="obsv-mark">이유가 틀린 채로 맞은 결론은 다음번에 틀립니다.</span></p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arrB" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M78 32 C 75 100, 80 176, 77 240" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
+      <path d="M77 240 C 240 243, 470 237, 664 241" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
+      <text x="46" y="40" font-family="Menlo, monospace" font-size="11" fill="#8a8272">CPU</text>
+
+      <path d="M80 118 C 250 115, 470 121, 660 117" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-dasharray="9 7"/>
+      <text x="92" y="109" text-anchor="start" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">진짜 베이스라인 20%</text>
+
+      <path d="M80 68 C 250 65, 470 71, 660 67" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="3 6"/>
+      <text x="660" y="60" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">내가 믿었던 30%</text>
+
+      <path d="M118 146 C 158 143, 196 149, 234 145 C 237 168, 236 182, 235 198 C 196 201, 158 197, 120 199 C 117 182, 118 164, 118 146 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="176" y="170" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">현재</text>
+      <text x="176" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">avg 16.4%</text>
+
+      <path d="M300 178 C 344 175, 380 181, 420 177" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrB)"/>
+      <text x="360" y="166" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">리더 제거</text>
+
+      <path d="M462 108 C 512 105, 556 111, 598 107 C 601 132, 600 150, 599 168 C 556 171, 512 167, 464 169 C 461 150, 462 126, 462 108 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.8"/>
+      <text x="530" y="133" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">제거 후</text>
+      <text x="530" y="153" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">avg 18~20%</text>
+
+      <text x="350" y="272" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">여유 9%p 가 아니라 칼날 위였다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 기준선을 10%p 잘못 알면 여유가 통째로 사라진다</div>
+
+<h2>4. 반증 2 — 2,208이라는 숫자가 말하고 있었다</h2>
+
+<p>문서에 이런 문장을 썼어요. "<b>2,208시간 동안</b> p10~p99의 차이가 SELECT 0.14/초입니다."</p>
+
+<p>2,208 = 92 x 24. 데이터포인트가 <b>시간당 하나</b>였다는 뜻이에요. 그때는 그냥 기간을 시간으로 환산한 숫자로 썼는데, 사실 그건 제가 어떤 해상도로 보고 있었는지를 자백하는 숫자였습니다.</p>
+
+<p>CloudWatch는 오래된 데이터를 원본 해상도로 보관하지 않아요.</p>
+
+<div class="obsv-code">1분 해상도    15일까지
+5분 해상도    63일까지
+1시간 해상도  455일까지
+
+92일치를 한 번에 조회하면 -&gt; 구간이 세 조각으로 쪼개진다
+
+ [-------- 1시간 평균 --------][--- 5분 ---][- 1분 -]
+  92일 전                    63일 전     15일 전   오늘</div>
+
+<p>여기서 두 가지가 무너집니다.</p>
+
+<p>첫째, <b>"절대 최댓값"이 최댓값이 아니에요.</b> 1시간 평균 62%는 그 한 시간의 평균입니다. 그 안에서 순간 CPU가 90%를 찍고 나머지가 낮았어도 평균은 62%로 나옵니다. 크레딧 소모는 순간값에 걸리는데, 저는 순간값을 못 보고 있었어요. 제 최댓값은 진짜 최고점의 <b>하한선</b>일 뿐입니다.</p>
+
+<p>둘째, <b>reader 분포가 평평한 게 부분적으로 집계 때문이에요.</b> 1시간 평균을 내면 원래 평평해집니다. 튀는 걸 평균이 먹으니까요. "이런 분포는 트래픽일 수 없다"는 제 근거가 생각보다 약했던 겁니다.</p>
+
+<p>reader에 대한 결론 자체는 버텼습니다. 쓰기가 0이라는 것과 URL 설정이라는 <b>독립적인 근거 두 개</b>가 따로 받쳐주고 있었으니까요. 다만 저는 근거를 셋으로 세고 있었는데 실은 둘이었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 반증 3 — 0.01ms는 물리적으로 불가능하다</div>
+  판정표에 <code>WriteLatency max 0.01ms  vs  기준 50ms</code> 라고 쓰고 "여유 5000배"라며 넘겼어요.<br><br>
+  그런데 CloudWatch의 <code>ReadLatency</code> · <code>WriteLatency</code> 단위는 밀리초가 아니라 <b>초</b>입니다.<br>
+  &bull; 제 해석 : 0.01ms → 디스크 쓰기가 10마이크로초. 그런 저장장치는 없어요<br>
+  &bull; 실제 : 0.01초 = <b>10ms</b> → 6중 쿼럼에 쓰는 Aurora로는 아주 정상적인 값<br><br>
+  결론은 여전히 통과지만 마진이 5000배가 아니라 <b>5배</b>입니다. 그리고 5배는 지켜볼 만한 마진이에요.
+  숫자가 물리적으로 말이 되는지 한 번만 되짚었으면 단위를 확인했을 자리였습니다.
+</div>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M32 58 C 140 55, 250 60, 358 57 C 361 82, 360 100, 359 120 C 250 123, 140 119, 34 121 C 31 100, 32 76, 32 58 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="195" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">내가 읽은 값</text>
+      <text x="195" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">max 0.01 ms = 10 마이크로초</text>
+
+      <path d="M376 58 C 484 55, 590 60, 666 57 C 669 82, 668 100, 667 120 C 590 123, 484 119, 378 121 C 375 100, 376 76, 376 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="521" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">실제 단위</text>
+      <text x="521" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">max 0.01 초 = 10 ms</text>
+
+      <path d="M60 156 C 250 152, 460 160, 664 155" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="195" y="186" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">여유 5000배 😄</text>
+      <text x="521" y="186" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">여유 5배</text>
+
+      <text x="350" y="226" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">단위를 안 보면 마진이 1000배 부풀어 오른다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 3. 값이 물리적으로 말이 되는지 되짚는 게 단위 검증이다</div>
+
+<h2>5. 그래서 순서가 바뀌었다</h2>
+
+<p>스파이크의 정체도 짚어야 했어요. p99가 11인데 최댓값이 102, 열 배 차이. 처음엔 "1% 미만이니 예외"라고 썼습니다. 그런데 1%를 시간으로 바꿔보면요.</p>
+
+<div class="obsv-code">92일 x 24시간 x 60분 = 132,480분
+1% = 1,324.8분 = 약 22시간 = 하루 14.4분</div>
+
+<p>"전체의 1% 미만"과 "매일 15분씩"은 같은 사실인데 인상이 반대예요. 후자는 예외가 아니라 <b>일상</b>입니다. 그리고 이 스파이크는 매일 도는 배치였어요. 랜덤이 아니라 스케줄된 부하고, 그래서 <b>줄일 수 있는 부하</b>였습니다.</p>
+
+<p>그러면 할 일이 두 개가 됩니다. 배치를 최적화하는 것과 인스턴스를 줄이는 것. 둘을 같이 넣으면 편하겠지만, 그러면 작업 후에 CPU가 예상보다 높게 나올 때 <span class="obsv-mark">원인이 어느 쪽인지 영구히 가릴 수 없어요.</span></p>
+
+<p>그래서 <b>수요를 먼저 줄이고, 확인한 다음, 공급을 줄이기로</b> 했습니다. 반대로 하면 용량을 이미 내놓은 상태에서 배치 최적화가 실패했을 때 물러설 자리가 없고요. 그리고 이 순서가 앞의 해상도 문제까지 같이 해결해줍니다 — 두 작업 사이에 관찰 기간이 생기고, 그 기간은 15일 이내라 <b>1분 해상도로 조회되니까요.</b> 92일 추세는 이미 갖고 있었고, 없던 건 해상도뿐이었습니다.</p>
+
+<p>그 관찰 기간에 통과 조건도 숫자로 박아뒀어요. "줄어든 거 확인하고"에서 <b>확인</b>이 정의되지 않으면, 나중에 "느낌상 괜찮아 보이니 지우자"가 됩니다.</p>
+
+<div class="obsv-code">관찰 기간   최소 15일        1분 해상도 보존 한계. 배치 주기 1회 이상 포함
+
+통과 지표   CPUCreditBalance 추세
+            절대값이 아니라 기울기. 배치 드레인 후 24시간 내 만점 복귀
+
+보조 지표   writer CPU avg &lt;= 15%
+            베이스라인 20%  -  리더 흡수분 2~4%p  =  제거 후 17~18%
+
+검증 지표   배치 실행 시간 + 쿼리수
+            최적화가 실제로 됐는지. 안 줄면 게이트 자체가 무의미</div>
+
+<p>1차 지표를 크레딧으로 잡은 건 이유가 있어요. 크레딧 잔량은 <b>(CPU - 베이스라인)을 시간에 대해 적분한 값</b>입니다. 넘은 크기와 넘은 시간을 한 숫자가 동시에 담아요. CPU 퍼센트는 "얼마나 오래"를 못 담아서 아까 "1% = 22시간" 같은 함정에 빠지는데, 크레딧은 그게 구조적으로 불가능합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 게이트를 걸기 전에 확인할 것</div>
+  버스터블 인스턴스에는 <code>standard</code>와 <code>unlimited</code> 두 모드가 있고, RDS 계열은 기본이 <code>unlimited</code>인 경우가 있어요.<br><br>
+  <code>unlimited</code>면 크레딧이 바닥나도 성능이 떨어지는 대신 <b>초과분이 요금으로 청구됩니다.</b> 위 게이트의 의미가 달라져요 — 성능 리스크가 아니라 비용 리스크가 됩니다.<br>
+  아끼려고 시작한 작업이 조용히 요금을 늘리는 결말이 나올 수 있으니, 판단 전에 어느 모드인지부터 봐야 합니다.
+</div>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 255" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arrC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M24 46 C 84 43, 144 48, 202 44 C 205 68, 204 86, 203 104 C 144 107, 84 103, 26 105 C 23 86, 24 64, 24 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="113" y="71" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2f2c26">① 배치 최적화</text>
+      <text x="113" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">수요를 줄인다</text>
+
+      <path d="M208 74 C 234 72, 252 76, 274 74" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrC)"/>
+
+      <path d="M282 46 C 344 43, 404 48, 462 44 C 465 68, 464 86, 463 104 C 404 107, 344 103, 284 105 C 281 86, 282 64, 282 46 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.8"/>
+      <text x="372" y="71" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">② 15일 관찰</text>
+      <text x="372" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">1분 해상도 · 크레딧 추세</text>
+
+      <path d="M468 74 C 494 72, 512 76, 534 74" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrC)"/>
+
+      <path d="M542 46 C 592 43, 630 48, 674 44 C 677 68, 676 86, 675 104 C 630 107, 592 103, 544 105 C 541 86, 542 64, 542 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+      <text x="608" y="71" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">③ 리더 제거</text>
+      <text x="608" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">공급을 줄인다</text>
+
+      <path d="M30 148 C 240 145, 460 152, 670 147" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <path d="M120 172 C 200 169, 280 174, 356 171" fill="none" stroke="#e5533c" stroke-width="2.2" marker-end="url(#arrC)"/>
+      <text x="238" y="164" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">거꾸로 하면</text>
+      <text x="470" y="178" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">물러설 자리가 없다</text>
+
+      <text x="350" y="228" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">변경을 하나씩 넣어야 원인을 가릴 수 있다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 4. 수요를 먼저 줄이고 공급을 줄인다 — 순서가 곧 롤백 계획이다</div>
+
+<h2>6. 세 오류가 같은 모양이었다</h2>
+
+<p>무너진 근거 세 개를 나란히 놓으면 공통점이 보입니다.</p>
+
+<div class="obsv-code">베이스라인 30%      -&gt; 20%      문서 안의 576 으로 검산 가능했다
+2,208 데이터포인트  -&gt; 1시간    그 숫자 자체가 해상도의 증거였다
+WriteLatency 0.01ms -&gt; 0.01초  10마이크로초는 물리적으로 불가능했다</div>
+
+<p>셋 다 <b>AWS 문서를 새로 읽어야 알 수 있는 게 아니었어요.</b> 제 표 안의 다른 숫자와 맞춰보거나, 값이 물리적으로 말이 되는지 한 번 되짚으면 걸렸을 것들입니다.</p>
+
+<p>그래서 지금 저에게 제일 필요한 습관은 새 지식이 아니라 <span class="obsv-mark">내가 쓴 표를 남의 표처럼 한 번 검산하는 것</span>이라고 생각해요. 측정은 도구가 해주지만, 그 측정에 기준선을 붙이는 건 사람이 하는 일이고, 거기가 제가 제일 무른 곳이었습니다.</p>
+
+<p>덧붙이면, 판정표에 지표가 여덟 개 있었는데 전부 CPU · 메모리 · 커넥션 같은 <b>리소스</b>였어요. 사용자가 겪는 건 리소스가 아니라 <b>배치가 40분에 끝나던 게 60분 걸리는 것</b>입니다. 그 지표는 CloudWatch에 없고 애플리케이션이 직접 내보내야 하는데, 표에 없었습니다. CPU가 18%라서 통과라고 판정하면서 배치가 1.5배 느려진 걸 못 보는 결말이 가능했다는 뜻이에요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>지표는 CloudWatch가 주지만, 그 지표가 안전한지 판정하는 기준선은 사람이 만듭니다. 그리고 기준선은 지어낼 수 있어요 — 표에 빈칸을 두기 싫다는 이유만으로.</b><br><br>
+  다만 지어낸 숫자는 자기 문서 안의 다른 숫자와 충돌합니다. 576은 베이스라인을 알려주고, 2,208은 해상도를 자백하고, 0.01ms는 물리 법칙에 걸립니다. 인스턴스를 줄이는 일은 아끼는 기술이 아니라, <b>여유가 있다는 것을 검산 가능한 형태로 증명하는 기술</b>이었습니다.
+</div>
+
+</div>
