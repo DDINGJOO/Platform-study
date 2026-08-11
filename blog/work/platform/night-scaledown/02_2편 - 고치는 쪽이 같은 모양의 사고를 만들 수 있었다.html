@@ -1,0 +1,133 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 야간 스케일 다운 — 2부작</div>
+  1편 · 서버는 줄었는데 태스크는 안 줄었다<br>
+  <b>2편 · 고치는 쪽이 같은 모양의 사고를 만들 수 있었다</b> &larr; 지금 이 글
+</div>
+
+<p>고치는 건 쉬워 보였어요. 서버 쪽에만 예약이 걸려 있었으니 <b>태스크 쪽에도 예약을 걸면</b> 됩니다. 자정에 2개, 아침에 3개.</p>
+
+<p>실제로 조치는 세 줄로 끝났습니다. 그런데 그 세 줄 중 하나가 <span class="obsv-mark">1편에서 본 것과 정확히 같은 모양의 새 사고</span>를 만들 수 있는 자리에 있었어요. 이 글은 그걸 발견하고 감지 장치까지 붙인 이야기입니다.</p>
+
+<h2>1. 밤과 아침의 순서가 반대다</h2>
+
+<p>태스크 예약과 서버 예약을 같은 시각에 걸면 안 됩니다. 순서가 있어요. 그리고 <b>밤과 아침의 순서가 서로 반대</b>입니다.</p>
+
+<div class="obsv-fig"><img src="images/02/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 순서를 틀리면 드레이닝 중 강제 종료 또는 자리 없는 배치가 된다</div>
+
+<p>밤에는 태스크가 먼저 빠져야 서버를 안전하게 뺄 수 있어요. 반대로 하면 드레이닝 중에 서버가 죽습니다. 아침에는 서버가 먼저 준비돼야 태스크를 놓을 수 있고요. 반대로 하면 자리 없는 곳에 배치를 시도해서 <b>아침에 알람이 울립니다.</b></p>
+
+<h2>2. 세 번째 조치 — 확률이 아니라 구조였다</h2>
+
+<p>여기까지 걸고 나니 남는 문제가 있었어요. 자정에 태스크가 빠져서 서버 하나가 비는데, <b>ASG가 어느 서버를 고를지 모릅니다.</b></p>
+
+<p>처음엔 "1/3 확률로 맞고 2/3 확률로 틀리겠네"라고 썼어요. 다시 보니 <span class="obsv-mark">확률 문제가 아니었습니다.</span></p>
+
+<p>둘은 서로 다른 기준으로 고릅니다.</p>
+
+<div class="obsv-code">ECS   종료할 태스크를 고른다   AZ 균형 등 자체 판단
+ASG   종료할 서버를 고른다     종료 정책 — 가장 최근에 뜬 것</div>
+
+<p>그리고 <b>가장 최근에 뜬 서버는 항상 그날 아침에 추가된 3번째 서버</b>입니다. 게다가 1편에서 본 그 배치 제약 때문에, 아침에 추가된 태스크는 반드시 그 서버에 올라가요 — 나머지 두 대는 이미 태스크가 있으니 다른 선택지가 없습니다.</p>
+
+<div class="obsv-fig"><img src="images/02/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. ASG 가 고를 서버에는 거의 항상 태스크가 있다</div>
+
+<p>즉 ASG가 고를 서버에는 <b>거의 항상 태스크가 있습니다.</b> ECS가 하필 그 서버의 태스크를 골랐을 때만 우연히 맞아떨어지는 거예요. 매일 밤 불필요한 태스크 재시작이 한 번 일어나고, 그 사이 몇 분간 태스크가 하나 부족해집니다.</p>
+
+<p>그래서 세 번째 조치가 <b>종료 보호</b>입니다. 태스크가 있는 서버를 ASG의 후보 목록에서 빼버리면, 종료 정책이 무엇이든 남은 후보는 빈 서버 하나뿐이라 <span class="obsv-mark">선택이 결정적이 됩니다.</span></p>
+
+<h2>3. 그런데 그게 무력하면 앞의 것까지 망가진다</h2>
+
+<p>여기서 문제를 발견했어요. 종료 보호에는 전제 조건이 있는데, <b>이 서비스가 그 조건을 만족하는지 확실하지 않습니다.</b></p>
+
+<p>더 중요한 건 <b>실패했을 때 중립이 아니라는</b> 겁니다.</p>
+
+<p>인스턴스 축소 보호는 ECS 기능이 아니라 <b>ASG 자체 기능</b>이에요. 우리는 조치할 때 서버 3대에 보호를 손으로 걸었습니다. ECS가 그 플래그를 관리하지 않으면, 걸어둔 값이 <b>영원히 그대로 남습니다.</b></p>
+
+<div class="obsv-code">00:00   태스크 3 → 2                    ①  동작한다
+00:10   ASG 축소 시도 → 전부 보호됨      ②  차단된다
+        서버 3대 유지
+
+결과:   태스크 2 / 서버 3
+        절감액 전액 소멸.  그리고 Slack 은 조용하다</div>
+
+<p>세 번째 조치가 무력하면 <b>두 번째까지 망가집니다.</b> 안 켠 상태보다 나쁜 구성이고, 그 상태를 우리가 만든 거예요. 비용을 지키려고 한 작업이 비용을 전부 날리는 방향으로 실패할 수 있었습니다.</p>
+
+<h2>4. 그 실패는 원래 알람이 잡지 못한다</h2>
+
+<p>이 대목에서 등이 서늘했어요. 1편의 사고를 잡아낸 그 알람은 <b>배치 실패</b>를 감지합니다. 그런데 지금 상황은 자리가 없는 게 아니라 <b>자리가 남는</b> 거예요.</p>
+
+<p>배치 실패가 아니니 알람은 울리지 않습니다. 그리고 저는 조치 문서에 이렇게 써뒀어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 참인데 위험한 문장</div>
+  <b>"Slack 이 조용하면 알람도 해결된 것이다."</b><br><br>
+  틀린 문장은 아닙니다. 그런데 Slack 이 조용한 건 <b>배치 실패가 없다는 증거일 뿐</b>, 조치가 성공했다는 증거가 아니에요. 실패해도 조용하니까요.<br>
+  검증 절차를 적으면서 스스로 판정을 흐리는 문장을 넣어둔 셈이었습니다.
+</div>
+
+<p>그러니까 1편에서 며칠간 아무도 몰랐던 사고를 고치는 작업이, <span class="obsv-mark">감지 장치가 없는 상태에서 같은 모양의 새 사고를 만들 수 있는</span> 자리에 와 있었던 거예요. 방향만 반대로요.</p>
+
+<div class="obsv-fig"><img src="images/02/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 3. 불변식은 양쪽으로 깨지는데, 한쪽만 보고 있었다</div>
+
+<h2>5. 유료 결정을 기다릴 필요가 없었다</h2>
+
+<p>남는 쪽을 잡는 알람은 목록에 아예 없었어요. 그래서 만들었는데, 여기서 뜻밖의 소득이 있었습니다.</p>
+
+<p>태스크 수와 서버 수를 비교하려면 컨테이너 단위 지표가 필요하다고 생각해서, 유료 모니터링 기능 도입 결정을 기다리고 있었어요. 그런데 <b>이 방향에는 그게 필요 없었습니다.</b></p>
+
+<div class="obsv-code">IF( 실제 서버 수 - 목표 서버 수 &gt; 0,  1,  0 )
+   30분 이상 지속되면 알림</div>
+
+<p>ASG의 <code>GroupDesiredCapacity</code>와 <code>GroupInServiceInstances</code>만으로 잡힙니다. <span class="obsv-mark">ASG 안에서 목표와 실제가 어긋난 것</span>이니, 태스크 쪽을 볼 필요조차 없었어요. 무료 그룹 지표고, 며칠 전에 이미 켜둔 것이었습니다.</p>
+
+<p>부족한 쪽 알람과 짝을 이루면 등식이 <b>양방향으로 강제</b>됩니다. 30분 지연을 두는 이유는 정상 전환 중(종료 대기, 시작 대기)에 잠깐 어긋나기 때문이에요. 실측 전환 시간이 6분쯤이라 여유가 충분합니다.</p>
+
+<h2>6. 그래서 오늘 밤 판정한다</h2>
+
+<p>조치는 세 개 다 적용했습니다. 설정만 바꾸는 작업이라 재시작 0회, 다운타임 0초였어요. 다만 <b>세 개가 함께 도는 첫 밤이 오늘</b>입니다.</p>
+
+<div class="obsv-code">00:05   목표 2 / 실제 2 · 보호 하나가 풀림   →  성공
+        목표 2 / 실제 3 · 보호 셋 다 유지    →  세 번째 조치 무력
+
+00:30   태스크 2 / 서버 2                   →  최종 확인
+06:00   태스크 3 / 서버 3 · 알람 0건        →  아침 복귀</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🌙 이 글은 판정 전에 쓰였다</div>
+  세 번째 조치가 무력할 가능성을 알고 있고, 그때 어떻게 할지도 정해뒀어요. <b>즉시 되돌립니다.</b><br><br>
+  ASG 는 목표치를 향해 계속 재조정하니, 보호를 풀면 그 자리에서 축소가 완료돼 <b>그날 밤 절감을 회수</b>할 수 있습니다. 대가는 태스크 재시작 한 번이고, 야간 태스크 2개는 처리량이 아니라 <b>이중화</b>를 위한 것이라 몇 분간 하나로 도는 위험이 그만큼 쌉니다.<br><br>
+  이 결정을 새벽 0시 5분에 졸면서 하지 않으려고 미리 문서에 박아뒀습니다.
+</div>
+
+<p>그리고 오늘 밤은 하나를 더 알려줍니다. 종료 보호와 자동 조절은 <b>같은 전제</b>에 걸려 있어요 — ECS가 이 서비스의 태스크를 용량 공급자에 연결해서 보는가. 그래서 오늘 밤 결과가 <span class="obsv-mark">"더 나은 구조로 갈 수 있는가"라는 질문에도 같이 답합니다.</span> 실험 하나가 답 두 개를 주는 셈이에요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>고치는 작업이 같은 종류의 사고를 만들 수 있습니다. 1편은 자리가 없어서 조용했고, 이번엔 자리가 남아서 조용할 차례였어요. 알람은 한쪽만 보고 있었습니다.</b><br><br>
+  불변식은 양방향으로 깨지는데 감지는 보통 한 방향만 붙습니다. 그리고 돈이 새는 방향은 아무도 아프지 않아서 더 오래 안 보여요. <b>설계의 마지막 조각은 설정이 아니라 감시입니다.</b>
+</div>
+
+</div>

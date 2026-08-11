@@ -1,0 +1,244 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 야간 스케일 다운 — 2부작</div>
+  <b>1편 · 서버는 줄었는데 태스크는 안 줄었다</b> &larr; 지금 이 글<br>
+  2편 · 고치는 쪽이 같은 모양의 사고를 만들 수 있었다
+</div>
+
+<p>새벽 0시 8분에 Slack 카드가 떴어요.</p>
+
+<div class="obsv-code">ECS 태스크 배치 실패
+부족: RESOURCE:CPU
+서비스: 웹 서비스 (운영)
+클러스터: prod</div>
+
+<p>이 알람은 <b>전날 배포한 것</b>이었습니다. 감지 체계를 만들면서 넣어둔 여러 룰 중 하나였고, 배포 16시간 만에 첫 실장애를 잡았어요.</p>
+
+<p>그런데 확인해보니 이상했습니다. 5xx도 없고, 사용자 신고도 없고, 대시보드도 전부 초록불이었어요. <b>그런데 매일 밤 6시간씩, 정원의 2/3로 운영되고 있었습니다.</b> 최소 4일째요.</p>
+
+<h2>1. 알람이 없었으면 지금도 몰랐다</h2>
+
+<p>야간에 EC2 비용을 줄이려고 ASG 예약 작업이 걸려 있었어요. 자정에 서버 3대 → 2대, 아침 6시에 2대 → 3대. 오래된 설정이고, 의도한 절감입니다.</p>
+
+<p>문제는 <span class="obsv-mark">서버만 줄고 ECS 태스크 수는 아무도 줄이지 않았다</span>는 것이었어요. 태스크는 3개로 남아 있으니, 3번째가 갈 자리가 없습니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="38" y="40" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#8a8272">낮  06:00 ~ 24:00</text>
+
+      <path d="M70 52 C 124 49, 178 54, 230 50 C 233 74, 232 92, 231 112 C 178 115, 124 111, 72 113 C 69 92, 70 70, 70 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="150" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">서버 · 태스크</text>
+      <path d="M270 52 C 324 49, 378 54, 430 50 C 433 74, 432 92, 431 112 C 378 115, 324 111, 272 113 C 269 92, 270 70, 270 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="350" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">서버 · 태스크</text>
+      <path d="M470 52 C 524 49, 578 54, 630 50 C 633 74, 632 92, 631 112 C 578 115, 524 111, 472 113 C 469 92, 470 70, 470 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="550" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">서버 · 태스크</text>
+
+      <path d="M40 144 C 240 140, 460 148, 664 143" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="38" y="180" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#8a8272">밤  00:00 ~ 06:00</text>
+
+      <path d="M70 192 C 124 189, 178 194, 230 190 C 233 214, 232 232, 231 252 C 178 255, 124 251, 72 253 C 69 232, 70 210, 70 192 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="150" y="228" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">서버 · 태스크</text>
+      <path d="M270 192 C 324 189, 378 194, 430 190 C 433 214, 432 232, 431 252 C 378 255, 324 251, 272 253 C 269 232, 270 210, 270 192 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="350" y="228" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">서버 · 태스크</text>
+
+      <path d="M470 192 C 524 189, 578 194, 630 190 C 633 214, 632 232, 631 252 C 578 255, 524 251, 472 253 C 469 232, 470 210, 470 192 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8" stroke-dasharray="7 6"/>
+      <text x="550" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">태스크만 남음</text>
+      <text x="550" y="243" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">서버가 없다</text>
+
+      <text x="350" y="288" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 매일 밤 6시간, 정원의 2/3</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 서버만 줄이면 태스크는 갈 곳을 잃는다</div>
+
+<p>ECS 스케줄러는 "태스크 3개 유지"가 임무라서 포기하지 않고 계속 재시도해요. 자리가 없으니 계속 실패하고, 아침 6시에 서버가 돌아와야 비로소 채워집니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 무한 재시도는 원인이 아니라 증상이다</div>
+  로그에 배치 실패가 반복되는 걸 보면 ECS 가 고장난 것처럼 보이는데, ECS 는 정상 동작하고 있어요.<br>
+  문제는 <b>지킬 수 없는 목표를 계속 주고 있는 것</b>입니다. 고칠 곳은 재시도가 아니라 목표 쪽입니다.
+</div>
+
+<p>그리고 이 사고의 성질이 고약합니다. <b>서비스가 죽지 않아요.</b> 축소된 상태로 계속 정상 응답하니 5xx도 없고 신고도 없습니다. 알람이 잡아주는 것 말고는 알아낼 방법이 없었어요.</p>
+
+<p>실제로 어떤 밤이었는지 로그를 이어붙여 봤습니다.</p>
+
+<div class="obsv-code">00:00:05   ASG 예약 작업 실행
+00:00:15   인스턴스 종료 시작
+00:06:15   그 위의 태스크 중단
+00:06:25   연결 드레이닝
+00:08:48   ⚠️ 배치 실패 — CPU 부족            ← 알람이 여기서 울렸다
+
+           ... 6시간 동안 태스크 2개로 운영 ...
+
+06:00:02   ASG 예약 작업 실행
+06:00:14   인스턴스 시작
+06:10:13   태스크 1개 시작
+06:37:29   정상 상태 도달</div>
+
+<p>이런 밤이 <b>최소 4일</b> 반복됐습니다. 정확히는 "최소"인데, ASG 활동 로그가 남아 있는 범위가 4일이라 그 이전은 확인할 방법이 없었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 고장난 상태에서 측정한 시간은 고쳐진 상태를 예측하지 못한다</div>
+  위 타임라인에서 <b>인스턴스 시작(06:00:14) → 태스크 시작(06:10:13)이 10분</b>입니다. 처음엔 서버 부팅이 느린 거라고 생각해서, 설계할 때 아침 전환에 10분 여유를 잡았어요.<br><br>
+  나중에 재보니 <b>부팅은 2분</b>이었습니다. 남은 8분은 ECS 스케줄러의 <b>재시도 백오프</b>였어요. 6시간째 배치가 실패하는 중이었으니 재시도 간격이 최대치까지 벌어져 있었던 겁니다.<br><br>
+  즉 그 10분은 <b>고장난 상태에서만 나오는 값</b>이고, 고친 뒤에는 존재하지 않습니다. 사고 타임라인의 숫자를 그대로 설계 근거로 옮기면 이런 함정에 빠집니다.
+</div>
+
+<h2>2. 7936 = 8192 - 256</h2>
+
+<p>처음 든 생각은 "한 대에 두 개 끼워 넣으면 되지 않나"였어요. 안 됩니다.</p>
+
+<div class="obsv-code">서버 등록 CPU      8192
+태스크 요구 CPU     7936   (97%)
+                   ─────
+남는 CPU             256   → 두 번째 태스크는 절대 못 들어감</div>
+
+<p><code>7936 = 8192 - 256</code>은 우연으로 보이지 않아요. <b>서버 하나를 통째로 쓰도록 맞춘 값</b>입니다. 즉 이 서비스는 태스크 1개 = 서버 1개 구조예요.</p>
+
+<p>그리고 이 한 숫자가 <span class="obsv-mark">이 문제의 난이도를 전부 결정합니다.</span></p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 285" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="160" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f">1 태스크 : 1 서버</text>
+      <text x="540" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2e6b41">N 태스크 : 1 서버</text>
+
+      <path d="M52 56 C 124 53, 196 58, 268 54 C 271 96, 270 130, 269 166 C 196 169, 124 165, 54 167 C 51 130, 52 84, 52 56 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+      <path d="M62 66 C 130 63, 198 68, 258 64 C 261 100, 260 126, 259 150 C 198 153, 130 149, 64 151 C 61 126, 62 88, 62 66 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+      <text x="160" y="104" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">태스크</text>
+      <text x="160" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">7936 / 8192</text>
+      <text x="160" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">남는 것 256 — 틈이 없다</text>
+
+      <path d="M432 56 C 504 53, 576 58, 648 54 C 651 96, 650 130, 649 166 C 576 169, 504 165, 434 167 C 431 130, 432 84, 432 56 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+      <path d="M442 66 C 486 63, 528 68, 566 64 C 569 82, 568 92, 567 104 C 528 107, 486 103, 444 105 C 441 92, 442 78, 442 66 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+      <path d="M442 116 C 486 113, 528 118, 566 114 C 569 132, 568 142, 567 154 C 528 157, 486 153, 444 155 C 441 142, 442 128, 442 116 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+      <text x="504" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">태스크</text>
+      <text x="504" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">태스크</text>
+      <text x="608" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">여유</text>
+      <text x="540" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">틈이 있다 — 끼어들 수 있다</text>
+
+      <path d="M40 212 C 240 208, 460 216, 664 211" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="160" y="242" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">난이도 높음</text>
+      <text x="160" y="266" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">양쪽 수가 항상 같아야 하고</text>
+      <text x="540" y="242" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">난이도 낮음</text>
+      <text x="540" y="266" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">순서가 틀려도 자가 복구된다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 패킹 밀도가 설계 난이도를 결정한다</div>
+
+<p>N:1이면 서버가 한 대 빠져도 남은 서버에 끼어들 틈이 있어요. 순서가 틀려도 알아서 복구됩니다. 1:1은 다릅니다. <b>양쪽 수가 항상 같아야 하고, 전환 순서까지 맞춰야 해요.</b></p>
+
+<p>그러면 1:1을 없애면 되지 않나 싶었는데, 이 제약은 <b>의도된 설계</b>였습니다. 태스크를 서로 다른 서버에 강제로 흩어놓는 설정이 걸려 있었고, 목적이 분명해요 — 서버 하나가 죽어도 태스크 하나만 잃게 하려는 가용성 설계입니다. 존중해야 하는 제약이었습니다.</p>
+
+<h2>3. 제어 방향이 한쪽뿐이다</h2>
+
+<p>왜 이런 일이 생기나 보니, 두 시스템을 잇는 선이 <b>한 방향밖에 없었습니다.</b></p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 255" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="pa1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M46 76 C 106 73, 166 78, 224 74 C 227 100, 226 120, 225 142 C 166 145, 106 141, 48 143 C 45 120, 46 96, 46 76 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+      <text x="135" y="106" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2f2c26">ECS</text>
+      <text x="135" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">태스크 수 = 수요</text>
+
+      <path d="M474 76 C 534 73, 594 78, 652 74 C 655 100, 654 120, 653 142 C 594 145, 534 141, 476 143 C 473 120, 474 96, 474 76 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+      <text x="563" y="106" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2f2c26">ASG</text>
+      <text x="563" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">서버 수 = 공급</text>
+
+      <path d="M230 92 C 310 86, 390 90, 468 86" fill="none" stroke="#5a9e6f" stroke-width="2.6" marker-end="url(#pa1)"/>
+      <text x="350" y="72" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">태스크를 못 놓겠다, 서버를 더 달라</text>
+
+      <path d="M468 130 C 420 134, 390 130, 360 132" fill="none" stroke="#e5533c" stroke-width="2.4" marker-end="url(#pa1)"/>
+      <path d="M320 116 C 330 126, 338 138, 348 150" fill="none" stroke="#e5533c" stroke-width="3.2"/>
+      <path d="M348 116 C 338 126, 330 138, 320 150" fill="none" stroke="#e5533c" stroke-width="3.2"/>
+      <text x="424" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">이 방향은 없다</text>
+
+      <path d="M40 180 C 240 176, 460 184, 664 179" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+      <text x="350" y="212" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">ASG 는 태스크 수의 존재조차 모른다</text>
+      <text x="350" y="240" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 서버를 줄이는 쪽은 아무 신호도 보내지 않는다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 3. 결함은 잘못이 아니라 누락이었다</div>
+
+<p>ECS에서 ASG로 가는 길은 있어요. 용량 공급자의 관리형 스케일링이 "태스크를 못 놓겠으니 서버를 더 달라"고 요청합니다. <b>반대 방향은 없습니다.</b></p>
+
+<p>그래서 서버를 줄이는 사람에게 태스크 쪽이 보이지 않아요. 두 설정은 서로 다른 화면, 서로 다른 서비스, 서로 다른 API에 있습니다. <span class="obsv-mark">한쪽을 바꾸는 사람에게 다른 쪽이 보이지 않습니다.</span></p>
+
+<p>이 사고를 조사하면서 제일 인상적이었던 게 이 부분이에요. <b>고장난 부품이 하나도 없습니다.</b> ASG 예약도 정상, ECS 스케줄러도 정상, 용량 공급자도 정상. 결함은 잘못이 아니라 <b>누락</b>이었어요 — 둘을 잇는 선이 없었을 뿐입니다.</p>
+
+<h2>4. 자동 조절 장치를 달아놓고 손으로 못 박았다</h2>
+
+<p>그런데 한 방향이라도 있으면 밤에 서버가 부족할 때 스스로 늘려주지 않을까요. 안 됩니다.</p>
+
+<div class="obsv-code">ASG 예약 작업 (밤)
+  MinSize      2
+  MaxSize      2   ← 상한이 2 로 고정
+  Desired      2
+
+관리형 스케일링:  "서버를 더 달라"
+ASG:            "상한이 2 다"</div>
+
+<p>예약 작업이 <code>MinSize = MaxSize</code>로 고정하니, 관리형 스케일링이 요청해도 늘릴 수 없어요. <b>자동 조절 장치를 달아놓고 손으로 못 박아둔 상태</b>입니다.</p>
+
+<p>그러니 밤에는 유일한 자동 복구 경로마저 막혀 있었던 거죠. 6시간 동안 아무것도 이 상황을 스스로 해결할 수 없었습니다.</p>
+
+<h2>5. 근본 원인은 지키는 장치가 없는 것</h2>
+
+<p>1:1 구조에서는 이게 항상 성립해야 해요.</p>
+
+<div class="obsv-code">ASG 서버 수  ==  ECS 태스크 수</div>
+
+<p>그리고 <b>이 등식을 검사하거나 강제하는 장치가 아무것도 없었습니다.</b> 한쪽만 바뀌면 조용히 깨지고, 깨진 채로 며칠이 지나도 아무도 모릅니다. 이번에 정확히 그랬어요.</p>
+
+<p>불변식을 지키는 방법은 세 단계로 강해집니다.</p>
+
+<div class="obsv-code">최소   사람이 기억해서 양쪽을 같이 고친다        ← 여기였고, 깨졌다
+중간   양쪽 설정을 같은 IaC 파일에 둔다
+       (한쪽을 고치려면 다른 쪽이 눈에 보인다)
+강     검증 장치가 등식 위반을 감지한다</div>
+
+<p>우리는 최소 단계에 있었고, 그마저도 <b>양쪽 설정이 IaC 밖</b>에 있었습니다. 콘솔과 CLI로만 존재하니 변경 이력도 리뷰도 없어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔍 누가 만든 설정인지 추적할 수 없었다</div>
+  CloudTrail 에서 예약 작업 생성 기록을 찾아봤는데 <b>한 건도 없었습니다.</b> 조회 범위가 90일이니 그보다 오래된 설정이라는 뜻이고, 만든 사람도 의도도 추적이 안 됩니다.<br><br>
+  그래서 이렇게 추측할 수밖에 없었어요 — <b>"야간 2대"는 오래된 결정이고, 그 뒤에 누군가 태스크 수를 3으로 올리면서 ASG 쪽을 보지 않았다.</b> 악의도 실수도 아니고, 그냥 <b>안 보였을</b> 겁니다.
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>서버를 줄이는 쪽과 태스크를 줄이는 쪽이 서로를 모르면, 비용 절감은 가용성을 조용히 대가로 치릅니다. 5xx 도 신고도 없이요.</b><br><br>
+  이 사고에서 고장난 부품은 하나도 없었습니다. 결함은 잘못이 아니라 누락이었고, 그래서 어느 화면을 봐도 정상으로 보였습니다. <b>부품이 아니라 부품 사이를 검사하는 장치가 필요했던 것</b>입니다.
+</div>
+
+</div>
