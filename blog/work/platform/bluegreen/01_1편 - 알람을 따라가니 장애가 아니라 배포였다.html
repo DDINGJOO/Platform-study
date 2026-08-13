@@ -1,0 +1,143 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 블루그린 — 2부작</div>
+  <b>1편 · 알람을 따라가니 장애가 아니라 배포였다</b> &larr; 지금 이 글<br>
+  2편 · 롤백이 2초가 되기까지
+</div>
+
+<p>오후에 P1 온콜이 두 번 울렸어요.</p>
+
+<div class="obsv-code">15:29   타깃그룹에 healthy host 가 없음
+16:18   같은 알람</div>
+
+<p>붙어서 <code>docker ps</code>를 쳤더니 앱 컨테이너가 <b>33분 전에 생성</b>돼 있었습니다. 16:18 알람과 시각이 맞아요.</p>
+
+<p>장애가 아니었습니다. <span class="obsv-mark">개발자가 배포한다며 호스트에 붙어 손으로 컨테이너를 갈아끼운 것</span>이었어요.</p>
+
+<p>배포할 때마다 전화가 오면 결국 둘 중 하나가 됩니다. 배포를 안 하게 되거나, 전화를 안 받게 되거나. 둘 다 나쁘죠. 그래서 이 글은 <b>"알람을 어떻게 조용하게 만들까"에서 시작해 "배포 방식을 어떻게 바꿀까"로 옮겨간 이야기</b>입니다.</p>
+
+<h2>1. 왜 갈아끼우면 끊기나</h2>
+
+<p>당시 배포는 컨테이너를 <b>내렸다가 새로 올리는</b> 방식이었어요. 그 사이에 포트가 비고, 로드밸런서 입장에선 뒤에 아무도 없는 상태가 됩니다.</p>
+
+<p>처음엔 앱 부팅이 느린 줄 알았습니다. 실측했어요.</p>
+
+<div class="obsv-code">앱 기동 시간            32 ~ 38초
+
+타깃그룹 헬스체크
+  Interval           30초
+  HealthyThreshold    5회   →  healthy 복귀에 최소 150초
+  UnhealthyThreshold  2회   →  장애 판정 60초
+
+알람 임계                  120초</div>
+
+<p><b>앱은 35초쯤에 이미 정상 응답합니다. 그런데 로드밸런서가 150초를 더 기다립니다.</b> 30초 간격으로 5번 연속 성공해야 healthy로 인정하니까요.</p>
+
+<p>그러면 배포 한 번에 healthy host가 0인 구간이 160초쯤 생기고, 알람 임계가 120초니 <b>무조건 울립니다.</b></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 부팅이 0초여도 울렸을 것이다</div>
+  이 계산의 결론이 중요해요. 앱 기동을 35초에서 10초로 줄여도, 심지어 <b>0초로 만들어도</b> 로드밸런서는 여전히 150초를 기다립니다. 알람은 그대로 울립니다.<br><br>
+  <b>앱 성능 문제가 아니었습니다.</b> 여기서 원인을 앱으로 잡았다면 부팅 최적화에 며칠을 쓰고 알람은 그대로 울렸을 거예요. 실측 두 줄이 그 며칠을 막았습니다.
+</div>
+
+<div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 앱은 35초에 멀쩡한데 로드밸런서가 150초를 더 기다린다</div>
+
+<h2>2. 알람을 손댈까, 배포를 손댈까</h2>
+
+<p>여기서 길이 갈립니다. 알람 쪽을 건드리는 길이 훨씬 쉬워요.</p>
+
+<p>제일 쉬운 건 <b>임계를 2분에서 5분으로 늘리는 것</b>입니다. 한 줄이면 끝나고 배포는 조용해집니다. 그런데 이건 안 됩니다.</p>
+
+<p><span class="obsv-mark">시간으로는 계획된 배포와 진짜 장애를 구분할 수 없습니다.</span></p>
+
+<p>알람 입장에서 둘은 <b>완전히 같은 신호</b>예요. "healthy host가 0인 상태가 N초 지속됨". 배포라서 0이 된 것과 인스턴스가 죽어서 0이 된 것이 신호상 구별되지 않습니다. 임계를 5분으로 늘리면 배포는 조용해지지만 <b>새벽에 진짜로 죽어도 5분을 기다립니다.</b> 얻는 것과 잃는 것이 같은 축에 있어요. 감지 개선이 아니라 <b>감지 포기</b>입니다.</p>
+
+<p>배포 중에만 알람을 억제하는 방법도 있습니다. 파이프라인은 "지금 배포 중"이라는 정보를 알고 있으니 시간으로 뭉개는 것보다 정확해요. 다만 <b>해제를 잊으면 그 알람이 영구 무음</b>이 됩니다. 알람이 없는 것보다 나쁩니다 — 없으면 없는 줄 알지만 무음이면 있는 줄 아니까요. 그래서 이건 다리로만 씁니다.</p>
+
+<p>그래서 원인 쪽을 줄였습니다. 헬스체크 설정을 고쳐 복귀를 빠르게 만들었어요.</p>
+
+<div class="obsv-code">                      전      후      효과
+Interval             30초    10초
+HealthyThreshold      5회     2회    복귀 150초 → 20초
+UnhealthyThreshold    2회     5회    장애 판정 60초 → 50초</div>
+
+<p>세 번째 줄이 반대 방향입니다. <b>장애를 더 늦게 판정하도록 올렸어요.</b> Interval을 10초로 줄이면 2회는 20초가 돼서 너무 예민해집니다. 그리고 여기가 중요한데 — <span class="obsv-mark">타깃이 한 대뿐이라 unhealthy 판정이 곧 100% 중단입니다.</span> 여러 대면 하나를 빨리 빼는 게 이득이지만, 한 대면 옮겨갈 곳이 없어요. 성급하게 빼서 얻을 게 없습니다.</p>
+
+<div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 알람을 늘리지 않고 원인을 줄여서 임계 아래로 넣었다</div>
+
+<h2>3. 그런데 이건 알람만 멎게 한 것이다</h2>
+
+<p>여기서 끝낼 수도 있었어요. 전화는 안 오고, 설정 세 줄만 바꿨고, 위험도 없습니다.</p>
+
+<p>그런데 처음 장면으로 돌아가면 문제가 남아 있습니다. 그 배포 과정에 이런 게 없어요.</p>
+
+<div class="obsv-code">새 버전이 정상인지 확인하는 단계        없음
+문제가 있을 때 되돌리는 절차            옛 이미지를 다시 받아 띄우기 (40초+)
+어떤 버전이 떠 있는지 기록              :latest 라 알 수 없음</div>
+
+<p>깨진 이미지를 밀어도 <b>그대로 라이브로 갑니다.</b> 아무도 안 막아요. 헬스체크를 고치면 이 상태가 <b>조용해집니다.</b> 사라지는 게 아니고요.</p>
+
+<p><span class="obsv-mark">알람이 멎는 것과 배포가 안전해지는 것은 다릅니다.</span> 증상을 지우는 것과 병을 고치는 것을 구분하지 않으면, 조용해진 위험을 안전으로 착각하게 됩니다.</p>
+
+<p>그래서 배포 방식 자체를 봤습니다. 내려갔다 올라오는 구간이 없는 방식 — <b>무중단 배포</b>요.</p>
+
+<h2>4. 무중단 배포 방식 세 개를 놓고 봤다</h2>
+
+<p>흔히 쓰는 방식이 셋입니다. 그리고 이 환경에서는 <b>고를 수 있는 게 하나뿐</b>이었어요.</p>
+
+<div class="obsv-fig"><img src="images/01/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 3. 조건이 방식을 골라줬고, 결정한 건 롤백이었다</div>
+
+<p><b>롤링</b>은 서버를 한 대씩 빼서 교체합니다. 그래서 최소 두 대가 필요해요. 이 서비스는 인스턴스 한 대에 컨테이너 하나가 통째로 올라가는 구조라 뺄 대상이 없습니다. 애초에 지금 방식이 "한 대를 빼고 교체"였고, 그게 바로 끊긴 이유였죠.</p>
+
+<p><b>카나리</b>는 트래픽을 비율로 조금씩 흘려보내며 지표를 봅니다. 좋은 방식이지만 비율 분배를 해주는 계층과 판정할 지표 체계가 먼저 있어야 해요. 배포 때마다 P1이 오는 상태에서 시작할 단계는 아닙니다.</p>
+
+<p><b>블루그린</b>은 새 버전을 <b>따로 띄워두고</b> 확인이 끝나면 한 번에 넘깁니다. 서버가 한 대여도 <b>포트를 두 개 쓰면 됩니다.</b> 조건이 맞는 게 이거 하나였어요.</p>
+
+<h2>5. 그런데 진짜 이유는 롤백이었다</h2>
+
+<p>조건만 보면 "가능한 게 그거뿐"이라 고른 것처럼 보이는데, 실제로 결정적이었던 건 다른 지점입니다.</p>
+
+<p><b>블루그린은 옛 버전을 죽이지 않습니다.</b> 새 버전으로 넘어간 뒤에도 옛 버전이 옆에서 계속 떠 있어요. 그러면 되돌리는 일이 <b>"다시 배포"가 아니라 "전환"</b>이 됩니다.</p>
+
+<div class="obsv-code">옛 버전을 지우는 방식의 롤백
+  옛 이미지 pull → 컨테이너 기동 → 부팅 32초        40초 +
+
+옛 버전이 살아 있는 방식의 롤백
+  목적지를 되돌린다                                  2초</div>
+
+<p>이 차이가 숫자보다 큽니다. 롤백이 40초짜리 재배포면 사람은 <b>망설입니다.</b> "조금 더 보자"가 되고, 그 몇 분이 장애 시간이 돼요. 롤백이 2초면 <span class="obsv-mark">일단 되돌리고 나서 원인을 봅니다.</span> 순서가 뒤바뀌는 겁니다.</p>
+
+<p>그래서 저는 무중단 배포의 값이 <b>배포 순간이 아니라 되돌리는 순간에 나온다</b>고 생각합니다. 배포가 매끄러운 건 좋은 부수 효과고, 실제로 사람을 구하는 건 "되돌리기가 싸다"는 사실이에요.</p>
+
+<p>그래서 블루그린으로 방향을 정했습니다. 그리고 AWS에서 이걸 하는 정석은 <b>로드밸런서 가중치</b>인데 — 준비를 다 해놓고 그 안을 버렸습니다. 2편은 그 이야기와, 롤백을 2초로 만든 방법입니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>알람을 따라가니 장애가 아니라 배포였고, 배포가 끊긴 원인은 앱이 아니라 헬스체크였습니다. 앱은 35초에 멀쩡한데 로드밸런서가 150초를 더 기다렸어요. 부팅을 0초로 만들어도 울렸을 겁니다.</b><br><br>
+  헬스체크를 고치면 알람은 멎지만 검증 없는 배포라는 병은 남습니다. 그래서 무중단 배포 방식을 봤고, 서버가 한 대라는 조건이 블루그린을 골라줬습니다. 다만 결정적이었던 건 조건이 아니라 <b>옛 버전이 살아 있어서 롤백이 재배포가 아니라 전환이 된다는 점</b>이었습니다.
+</div>
+
+</div>
