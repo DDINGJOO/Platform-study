@@ -1,0 +1,177 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<p>DB 읽기 전용 인스턴스의 92일치 지표를 뽑다가 손이 멈췄어요.</p>
+
+<div class="obsv-code">reader Queries           p10 6.86   p50 6.97   p95 7.25   p99 7.34
+reader SelectThroughput  p10 2.91   p50 2.94   p95 3.01   p99 3.05
+reader CPUUtilization    p10 12.94  p50 13.55  p95 14.18  p99 14.32</div>
+
+<p>p10과 p99의 차이가 <b>SELECT 0.14/초</b>입니다. CPU는 1.4%p 폭 안에서만 움직여요.</p>
+
+<p>처음 든 생각은 "부하가 굉장히 안정적이네"였습니다. 그런데 그게 아니었어요. <span class="obsv-mark">사람이 쓰는 서비스는 이런 그래프가 나올 수 없습니다.</span></p>
+
+<h2>1. 안정적인 게 아니라 이상한 것이다</h2>
+
+<p>새벽 4시와 오전 10시의 트래픽이 같을 수가 없어요. 사람은 자고, 출근하고, 점심을 먹습니다. 그래서 사용자 트래픽 그래프는 <b>반드시 하루 주기로 출렁입니다.</b></p>
+
+<p>업무시간과 야간을 갈라봤습니다.</p>
+
+<div class="obsv-code">reader   업무 09-18  7.09   /   야간 18-09  6.94   →  차이 2.2%</div>
+
+<p>2.2%. 낮과 밤이 사실상 같습니다.</p>
+
+<p>여기서 판단이 뒤집혔어요. <b>이 부하는 사람이 만든 게 아닙니다.</b> 심장박동처럼 일정한 무언가가 기계적으로 두드리고 있는 거죠.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M56 40 C 53 90, 58 140, 55 176" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
+      <path d="M55 176 C 200 179, 480 173, 660 178" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
+      <text x="60" y="34" font-family="Menlo, monospace" font-size="11" fill="#8a8272">부하</text>
+
+      <path d="M60 150 C 110 148, 150 62, 210 58 C 262 55, 300 142, 352 148 C 404 152, 440 66, 500 60 C 556 56, 600 144, 656 150" fill="none" stroke="#5a9e6f" stroke-width="2.8"/>
+      <text x="668" y="146" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">사람이 쓰는 서비스</text>
+
+      <path d="M60 120 C 160 118, 260 122, 360 119 C 460 117, 560 121, 656 118" fill="none" stroke="#e5533c" stroke-width="2.8"/>
+      <text x="668" y="112" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">우리 그래프</text>
+
+      <text x="150" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">새벽</text>
+      <text x="350" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">오전</text>
+      <text x="550" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">오후</text>
+
+      <path d="M56 218 C 240 215, 460 222, 664 217" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+      <text x="350" y="252" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">출렁이지 않으면 사람이 만든 부하가 아니다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 하루 주기가 없다는 것이 단서였다</div>
+
+<h2>2. 범인은 커넥션 풀의 검증 쿼리였다</h2>
+
+<p>커넥션 풀은 빌려준 커넥션이 아직 살아 있는지 확인합니다. DB가 유휴 커넥션을 조용히 끊거나 네트워크 장비가 세션을 정리해버릴 수 있으니까요.</p>
+
+<p>그래서 <b>주기적으로, 그리고 커넥션을 꺼내줄 때 아주 가벼운 쿼리를 던집니다.</b> 이게 사용자 요청과 무관하게 <b>일정한 간격으로</b> 돕니다.</p>
+
+<div class="obsv-code">애플리케이션 요청 없어도
+  풀이 유휴 커넥션을 주기적으로 점검  →  일정 간격 쿼리
+  풀 크기가 고정이면 그 빈도도 고정   →  낮과 밤이 같다</div>
+
+<p>여기에 이 시스템의 사정이 겹쳤어요. 접속 URL이 쓰기·읽기 두 엔드포인트를 <b>모두</b> 물고 있었고, 드라이버가 양쪽에 커넥션 풀을 유지하면서 <b>실제 쿼리는 전부 쓰기 쪽으로 보내고</b> 있었습니다. 읽기 쪽으로 간 건 <b>점검 쿼리뿐</b>이었죠.</p>
+
+<p>그러니까 저 예쁜 그래프는 <span class="obsv-mark">애플리케이션 트래픽이 아니라 인프라 자체가 내는 상시 오버헤드</span>였습니다. 92일 내내 쓰기가 정확히 0이었던 것도 같은 이유고요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 상시 오버헤드는 읽기 전용 노드에서 특히 잘 보인다</div>
+  쓰기 노드에서는 이 부하가 실제 트래픽에 묻혀서 안 보입니다. 실측으로 쓰기 노드도 업무시간에 3.7%만 올랐는데, 그건 <b>애플리케이션 부하가 상시 오버헤드에 묻히는 수준</b>이었다는 뜻이에요.<br><br>
+  트래픽이 거의 없는 노드가 오히려 <b>인프라가 스스로 내는 소리를 들려주는 관측 지점</b>이 됩니다.
+</div>
+
+<h2>3. 가설을 어떻게 확인했나</h2>
+
+<p>"점검 쿼리다"는 아직 가설이에요. 그래프 모양만으로는 부족합니다. 그래서 <b>서로 독립된 증거</b>를 찾았습니다.</p>
+
+<div class="obsv-code">① 쓰기가 92일 내내 정확히 0
+     사용자 트래픽이면 읽기 전용 노드라도 0 이 나오기 어렵다
+     점검 쿼리는 SELECT 하나뿐이므로 0 이 자연스럽다
+
+② 접속 URL 이 두 엔드포인트를 모두 물고 있다
+     드라이버가 양쪽에 풀을 유지하는 구조 → 점검만 흘러가는 경로가 설명된다
+
+③ 분포 폭이 SELECT 0.14/초
+     기계적 신호의 특징</div>
+
+<p>여기서 중요한 건 <b>①과 ②가 서로를 안 빌린다</b>는 점입니다. 하나가 틀려도 다른 하나가 남아요. ③은 ①·②와 같은 현상의 다른 얼굴이라 독립 증거가 아니고, 그래서 <span class="obsv-mark">근거를 셋으로 세고 있었지만 실은 둘이었습니다.</span></p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="gf1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M28 46 C 92 43, 156 48, 216 44 C 219 68, 218 82, 217 100 C 156 103, 92 99, 30 101 C 27 82, 28 64, 28 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="122" y="70" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">① 쓰기 0</text>
+      <text x="122" y="90" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">독립</text>
+
+      <path d="M28 132 C 92 129, 156 134, 216 130 C 219 154, 218 168, 217 186 C 156 189, 92 185, 30 187 C 27 168, 28 150, 28 132 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="122" y="156" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">② 접속 URL</text>
+      <text x="122" y="176" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">독립</text>
+
+      <path d="M224 72 C 290 68, 350 104, 402 112" fill="none" stroke="#3d3a34" stroke-width="2.2" marker-end="url(#gf1)"/>
+      <path d="M224 158 C 290 154, 350 128, 402 120" fill="none" stroke="#3d3a34" stroke-width="2.2" marker-end="url(#gf1)"/>
+
+      <path d="M410 90 C 480 87, 550 92, 616 88 C 619 112, 618 126, 617 144 C 550 147, 480 143, 412 145 C 409 126, 410 108, 410 90 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.8"/>
+      <text x="513" y="114" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">점검 쿼리다</text>
+      <text x="513" y="136" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">결론</text>
+
+      <path d="M122 206 C 190 203, 260 209, 320 205" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="5 6"/>
+      <text x="122" y="226" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">③ 평평한 분포</text>
+      <text x="430" y="212" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= ①②와 같은 현상의 다른 얼굴</text>
+      <text x="430" y="236" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">독립 증거가 아니다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 근거를 셀 때는 서로 독립인지 따져야 한다</div>
+
+<p>그리고 사실 <b>산수로 확정할 수 있었습니다.</b> 점검 쿼리는 규칙적이니 빈도를 계산할 수 있어요.</p>
+
+<div class="obsv-code">상시 QPS  ≈  유지하는 커넥션 수  ÷  점검 주기(초)
+
+관측값 SELECT 2.94/초 를 이 식에 넣으면
+  커넥션 30개 / 10초 주기  →  3.0/초     거의 일치
+  커넥션 10개 / 10초 주기  →  1.0/초     안 맞는다</div>
+
+<p>풀 설정을 열어서 이 식과 맞춰보면 <b>"점검 쿼리다"가 추론에서 계산으로 바뀝니다.</b> 관측값이 설정에서 나오는 값과 맞으면 가설이 확정되고, 안 맞으면 다른 게 섞여 있다는 뜻이니 그것도 정보예요.</p>
+
+<p>저는 이걸 안 하고 넘어갔습니다. 결론이 맞았으니 문제는 없었지만, <span class="obsv-mark">근거가 "모양이 이상하다"에서 멈춘 것과 "설정에서 나온 숫자와 일치한다"까지 간 것은 다릅니다.</span> 다음엔 여기부터 하려고요.</p>
+
+<h2>4. 그래서 무엇을 다르게 읽나</h2>
+
+<p>모니터링 그래프를 볼 때 이걸 먼저 봅니다.</p>
+
+<div class="obsv-code">1.  하루 주기로 출렁이는가
+      아니오  →  사람이 만든 부하가 아닐 가능성
+
+2.  분위수 폭이 비정상적으로 좁은가
+      p10~p99 가 소수점 두 자리 안  →  기계적 신호
+
+3.  업무시간 / 야간 비율이 1에 가까운가
+      가깝다  →  사용자와 무관한 부하</div>
+
+<p>셋 다 <b>"안정적이다"로 읽히기 쉬운 특징</b>인데, 실은 <b>"이 노드는 일을 안 하고 있다"</b>는 신호입니다. 그리고 안 하고 있다면 왜 돈을 내고 있는지 물어봐야 하죠.</p>
+
+<p>거꾸로도 성립합니다. 진짜 트래픽이 흐르는 노드의 그래프가 갑자기 평평해지면 그건 안정이 아니라 <b>트래픽이 안 오고 있다는 뜻</b>일 수 있어요. 라우팅이 끊겼거나, 앞단이 캐시로 다 막고 있거나요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 다만 집계 해상도를 먼저 확인할 것</div>
+  평평한 그래프의 원인이 하나 더 있습니다. <b>긴 구간을 조회하면 모니터링 도구가 자동으로 굵은 해상도를 씁니다.</b> 1시간 평균을 내면 튀는 게 평균에 먹혀서 원래 평평해져요.<br><br>
+  저도 92일을 한 번에 조회해서 일부 구간이 1시간 평균이었습니다. 그래서 "분포가 평평하다"는 근거가 <b>생각보다 약했어요.</b> 결론은 다른 증거 두 개(쓰기 0, 접속 URL 구조)가 받쳐줘서 버텼지만, 근거를 셋으로 세고 있었는데 실은 둘이었습니다.<br><br>
+  <b>평평함을 근거로 쓰려면 짧은 구간을 세밀한 해상도로 다시 뽑아야 합니다.</b>
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>그래프가 자로 잰 것처럼 평평하면 "부하가 안정적이다"가 아니라 "이건 사람이 만든 부하가 아니다"로 읽습니다. 하루 주기가 없다는 건 사용자가 없다는 뜻이니까요.</b><br><br>
+  범인은 커넥션 풀의 점검 쿼리였습니다 — 애플리케이션과 무관하게 일정 간격으로 도는 인프라 자체의 상시 오버헤드요. 트래픽이 거의 없는 노드가 오히려 그 소리를 들려줍니다. <b>다만 평평함을 근거로 쓰기 전에 집계 해상도를 확인해야 합니다. 평균이 만든 평평함과 부하가 만든 평평함은 그래프에서 똑같이 생겼습니다.</b>
+</div>
+
+</div>

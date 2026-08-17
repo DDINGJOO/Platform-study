@@ -1,0 +1,174 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<p>DB 인스턴스를 한 대 줄여도 되는지 판단하려고 92일치 지표를 뽑았어요. 평균만 보면 판단이 안 되니 분위수까지 나눴습니다.</p>
+
+<div class="obsv-code">writer Queries    p50  8.76   p95 10.03   p99 11.32   절대max 102.04</div>
+
+<p>p99가 11.32인데 최댓값이 102입니다. <b>열 배 차이</b>죠. 이걸 보고 문서에 이렇게 썼습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">✍️ 내가 쓴 문장</div>
+  p99와 절대max의 격차가 10~20배입니다. Queries가 102까지 튀는 순간은 <b>전체 시간의 1% 미만</b>이고, 그때조차 CPU 62%로 처리됐습니다.
+</div>
+
+<p>읽어보면 그럴듯합니다. 그런데 <span class="obsv-mark">이 문장에 틀린 게 두 개 있습니다.</span> 둘 다 새 지식이 아니라 산수 한 번으로 걸립니다.</p>
+
+<h2>1. "1% 미만"을 시간으로 바꿔보면</h2>
+
+<p>비율은 사람을 속여요. 1%라고 쓰면 무시해도 되는 것처럼 읽히는데, 벽시계 시간으로 환산하면 인상이 달라집니다.</p>
+
+<div class="obsv-code">92일 × 24시간 × 60분 = 132,480분
+1% = 1,324.8분 = 약 22시간
+
+하루로 나누면  →  매일 14.4분</div>
+
+<p><b>"전체 시간의 1% 미만"과 "매일 15분씩"은 같은 사실인데, 후자는 예외가 아니라 일상입니다.</b></p>
+
+<p>그리고 표현 문제만이 아니에요. "예외적이니 무시해도 된다"는 판정을 내리려면 그게 <b>언제</b> 일어나는지 알아야 합니다. 매일 15분이 무작위로 흩어진 것과 매일 같은 시각에 몰린 것은 완전히 다른 리스크입니다.</p>
+
+<p>제 경우는 후자였어요. <b>매일 도는 배치</b>였습니다. 그러면 판정이 바뀝니다 — 예측 가능하고, 그래서 줄일 수 있는 부하니까요. "무시한다"가 아니라 "이 시간대를 손본다"가 답이 됩니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M40 54 C 130 51, 226 56, 300 52 C 302 74, 301 84, 300 96 C 226 99, 130 95, 42 97 C 39 84, 40 66, 40 54 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="170" y="82" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#2f2c26">전체 시간의 1% 미만</text>
+
+      <path d="M400 54 C 490 51, 586 56, 660 52 C 662 74, 661 84, 660 96 C 586 99, 490 95, 402 97 C 399 84, 400 66, 400 54 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+      <text x="530" y="82" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#b3502f">매일 14.4분</text>
+
+      <path d="M308 74 C 336 71, 360 76, 392 73" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 6"/>
+      <text x="350" y="122" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">같은 사실</text>
+
+      <path d="M40 152 C 240 149, 460 156, 664 151" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="170" y="188" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#8a8272">"예외적이다"</text>
+      <text x="530" y="188" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">"일상이다"</text>
+
+      <text x="350" y="232" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">비율은 무시해도 될 것처럼 읽힌다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 비율은 벽시계 시간으로 한 번 환산해보면 인상이 뒤집힌다</div>
+
+<h2>2. p99는 경계값만 알려준다</h2>
+
+<p>두 번째가 더 큽니다. p99가 11.32라는 건 <b>"11.32를 넘는 게 1%다"</b>라는 뜻이에요. 그 1%가 <b>어떻게 생겼는지는 아무것도 알려주지 않습니다.</b></p>
+
+<p>그런데 저는 p99와 최댓값을 나란히 놓고 "격차가 10배니 스파이크가 예외적이다"라고 읽었습니다. 비약이에요.</p>
+
+<div class="obsv-code">p99 = 11.32   ← 이 선을 넘는 게 1% (약 1,325 데이터포인트)
+max = 102.04  ← 그 1% 중 가장 높은 하나
+
+11.32 ~ 102 사이 9배 구간에 1,325개가 어떻게 흩어져 있는지
+→  모른다.  p99 와 max 는 그걸 말해주지 않는다</div>
+
+<p>같은 p99와 같은 max로도 정반대 모양이 나올 수 있습니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M64 44 C 61 100, 66 170, 63 216" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
+      <path d="M63 216 C 200 219, 480 213, 660 218" fill="none" stroke="#3d3a34" stroke-width="2.2"/>
+
+      <path d="M66 176 C 200 173, 460 178, 656 174" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-dasharray="7 6"/>
+      <text x="72" y="168" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">p99</text>
+      <path d="M66 62 C 200 59, 460 64, 656 60" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="3 6"/>
+      <text x="72" y="54" font-family="Menlo, monospace" font-size="11" fill="#8a8272">max</text>
+
+      <path d="M120 176 C 122 168, 118 160, 121 152" fill="none" stroke="#5a9e6f" stroke-width="3"/>
+      <path d="M150 176 C 152 170, 148 164, 151 158" fill="none" stroke="#5a9e6f" stroke-width="3"/>
+      <path d="M180 176 C 182 150, 178 110, 181 64" fill="none" stroke="#5a9e6f" stroke-width="3"/>
+      <path d="M210 176 C 212 170, 208 165, 211 160" fill="none" stroke="#5a9e6f" stroke-width="3"/>
+      <path d="M240 176 C 242 169, 238 162, 241 156" fill="none" stroke="#5a9e6f" stroke-width="3"/>
+      <text x="180" y="244" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">한 점만 튄다</text>
+      <text x="180" y="268" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">= 진짜 예외</text>
+
+      <path d="M370 216 C 373 160, 369 100, 372 46" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="6 7"/>
+
+      <path d="M440 176 C 442 148, 438 108, 441 68" fill="none" stroke="#e5533c" stroke-width="3"/>
+      <path d="M470 176 C 472 152, 468 118, 471 80" fill="none" stroke="#e5533c" stroke-width="3"/>
+      <path d="M500 176 C 502 145, 498 104, 501 64" fill="none" stroke="#e5533c" stroke-width="3"/>
+      <path d="M530 176 C 532 150, 528 112, 531 74" fill="none" stroke="#e5533c" stroke-width="3"/>
+      <path d="M560 176 C 562 146, 558 106, 561 68" fill="none" stroke="#e5533c" stroke-width="3"/>
+      <text x="500" y="244" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">여러 점이 몰려 있다</text>
+      <text x="500" y="268" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">= 상시 부하의 일부</text>
+
+      <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">p99 도 max 도 같은데 모양이 정반대다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 왼쪽은 무시해도 되고 오른쪽은 안 되는데, 두 숫자로는 구별이 안 된다</div>
+
+<p>왼쪽은 정말 예외입니다. 한 번 튀고 끝나요. 오른쪽은 <b>그 구간이 상시 부하의 일부</b>입니다. 인스턴스를 줄였을 때 앞의 것은 아무 일도 없고, 뒤의 것은 매일 그 시간대에 여유가 사라집니다.</p>
+
+<p>그리고 <b>제 판단은 이 구별에 걸려 있었어요.</b> "리더를 없애면 writer가 이 스파이크를 혼자 받을 수 있나"가 질문이었는데, 스파이크가 한 점인지 1,325점인지 모르면 그 질문에 답할 수 없습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 그래서 무엇을 더 뽑아야 했나</div>
+  <b>p99.9를 같이 뽑으면 됩니다.</b> 한 줄 추가로 그 구간의 모양이 드러나요.<br><br>
+  &bull; p99 11.32 · <b>p99.9 12.1</b> · max 102 → 상위 0.1%까지도 12 근처. max 102 는 진짜 외딴 한 점<br>
+  &bull; p99 11.32 · <b>p99.9 74.0</b> · max 102 → 상위 1% 구간이 통째로 높다. 예외가 아니다<br><br>
+  분위수를 하나 더 찍는 것만으로 "예외인가 상시인가"가 갈립니다. 저는 p99에서 멈춰서 그 구별을 못 했어요.
+</div>
+
+<h2>3. 그리고 최댓값 두 개를 같은 순간으로 읽었다</h2>
+
+<p>앞의 문장에 뒷부분이 하나 더 붙어 있었어요. <b>"그때조차 CPU 62%로 처리됐습니다."</b></p>
+
+<p>이 말은 <code>Queries</code>가 102를 찍은 순간과 <code>CPU</code>가 62%를 찍은 순간이 <b>같은 시각</b>이라는 뜻입니다. 그런데 제 손에 있던 건 92일 전체의 최댓값 두 개뿐이었어요.</p>
+
+<div class="obsv-code">Queries  max 102.04   ← 92일 중 가장 높았던 어느 순간
+CPU      max  61.97   ← 92일 중 가장 높았던 어느 순간
+
+같은 순간인가?  →  최댓값 통계는 시각을 알려주지 않는다</div>
+
+<p>두 지표의 최댓값은 <b>서로 다른 시각</b>일 수 있습니다. 최댓값만 뽑으면 "언제"가 버려지니까요. 그런데 저는 두 숫자를 나란히 적어놓고 인과처럼 읽었습니다.</p>
+
+<p>결과적으로 이 문장은 <b>참이었어요.</b> 그 스파이크가 매일 도는 배치라는 걸 시스템을 아는 사람으로서 알고 있었고, 배치 스케줄과 지표 시각이 맞습니다. <span class="obsv-mark">다만 그 근거가 제 머릿속에만 있었고 문서에는 없었습니다.</span></p>
+
+<p>문서를 읽는 사람 입장에서는 "92일 최댓값 두 개를 같은 시각이라고 우기고 있다"로 보입니다. 필요한 건 한 줄이었어요 — <b>"이 스파이크는 매일 HH:MM에 도는 배치이며 스케줄과 타임스탬프가 일치함."</b> 그러면 검증 가능한 문장이 되고, 동시에 <b>스파이크가 예측 가능하다</b>는 훨씬 강한 사실이 드러납니다.</p>
+
+<h2>4. 세 오류의 모양이 같다</h2>
+
+<p>나란히 놓으면 공통점이 보입니다.</p>
+
+<div class="obsv-code">"1% 미만"        → 벽시계로 환산 안 함        → 매일 15분을 예외로 판정
+"p99 대 max"     → 사이 구간을 안 봄          → 1,325점을 한 점으로 판정
+"그때조차 62%"   → 시각을 안 적음             → 맞는 결론인데 검증 불가</div>
+
+<p>셋 다 <b>요약 통계를 원본 분포처럼 읽은 것</b>입니다. 분위수와 최댓값은 분포를 <b>압축</b>한 값이고, 압축에는 버려진 정보가 있어요. 무엇이 버려졌는지 보면 세 오류가 정확히 그 자리에 있습니다.</p>
+
+<div class="obsv-code">p99      가 버린 것 →  그 선 위의 모양
+max      가 버린 것 →  시각
+"1%"     가 버린 것 →  절대 시간</div>
+
+<p>p50·p95·p99를 나란히 적어놓으면 분포를 다 본 것 같은 기분이 드는데, <span class="obsv-mark">실제로는 세 점만 본 겁니다.</span></p>
+
+<p>그리고 이 함정은 평균만 볼 때보다 오히려 더 위험합니다. 평균만 보면 "이건 부족하다"는 걸 스스로 아는데, 분위수를 여러 개 뽑으면 <b>충분히 봤다고 믿게</b> 되니까요. 도구를 잘 쓴 기분이 판단을 무디게 만듭니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>p99는 "이 선을 넘는 게 1%"라는 경계값입니다. 그 1%가 한 점인지 천 점인지는 말해주지 않아요. 그런데 p99와 max를 나란히 놓으면 그 사이를 본 것 같은 기분이 듭니다.</b><br><br>
+  비율은 벽시계 시간으로 한 번 환산하고, 꼬리가 궁금하면 분위수를 하나 더 찍습니다. 둘 다 새 지식이 아니라 산수예요. <b>요약 통계를 원본 분포로 착각하는 순간, 여러 개를 뽑았다는 사실이 오히려 판단을 무디게 만듭니다.</b>
+</div>
+
+</div>
