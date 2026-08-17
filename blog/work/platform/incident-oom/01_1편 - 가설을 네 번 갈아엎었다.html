@@ -1,0 +1,224 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 49분 전면 중단 — 3부작</div>
+  <b>1편 · 가설을 네 번 갈아엎었다</b> &larr; 지금 이 글<br>
+  2편 · 재부팅은 시작이지 끝이 아니었다<br>
+  3편 · 조용한 실패 세 개
+</div>
+
+<p>월요일 오전 10시 35분에 전화가 왔어요. 타깃그룹에 정상 호스트가 하나도 없다는 알람이었습니다.</p>
+
+<p>결과부터 적으면 <b>49분 전면 중단</b>이었고, 원인은 호스트 메모리 고갈이었습니다. 그런데 거기 닿기까지 <span class="obsv-mark">가설을 네 번 세우고 세 번 틀렸어요.</span> 이 글은 그 틀린 세 번에 대한 기록입니다.</p>
+
+<h2>1. 알람은 배포 6일째였다</h2>
+
+<p>증상 시작부터 전화까지 7분 걸렸습니다.</p>
+
+<div class="obsv-code">10:28:27   앱 정지. 증상 시작
+10:29~30   헬스체크 3회 연속 실패 (30초 간격 × 3회)        +90초
+10:31, 32  정상 호스트 수 = 0 데이터포인트 2개              +2분
+10:35:48   알람 발화 → 전화·Slack                          +7분</div>
+
+<p>이 알람은 <b>엿새 전에 배포한 것</b>이었어요. 감지 체계를 정비하면서 넣은 여러 룰 중 하나였고, 배포 6일 만에 처음으로 진짜 장애를 잡았습니다.</p>
+
+<p>그리고 대조군이 있었습니다. 같은 계정의 다른 로드밸런서 3개는 <b>지표가 발행되지 않아</b> 이 알람의 대상에서 빠져 있었는데, 그쪽은 타깃 없이 503을 내는 상태로 <b>최소 2주간 아무도 모르고</b> 지나갔어요.</p>
+
+<p>같은 종류의 장애입니다. <span class="obsv-mark">차이는 그물이 있었느냐뿐이었습니다.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 알람은 잘 울렸다. 그런데 나흘 늦었다</div>
+  탐지 7분은 나쁘지 않습니다. 문제는 <b>이 알람이 증상을 잡는 알람</b>이라는 거예요.<br><br>
+  원인은 호스트 메모리였고, 그 메모리는 <b>나흘 전부터 99%</b>였습니다. 그런데 그걸 보는 지표가 아예 없었어요. CloudWatch 기본 EC2 지표에 메모리가 없습니다 — CPU·네트워크·디스크 I/O는 하이퍼바이저가 알지만 <b>메모리는 게스트 OS 안의 정보</b>라 에이전트 없이는 밖에서 안 보입니다.<br><br>
+  <b>알람이 늦은 게 아니라, 나흘 먼저 울렸어야 할 지표가 존재하지 않았습니다.</b>
+</div>
+
+<div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 증상 알람은 증상이 시작돼야 울린다</div>
+
+<h2>2. 첫 관찰 — 살아 있는데 대답을 안 한다</h2>
+
+<p>타깃 상태를 보니 두 가지가 바로 보였습니다.</p>
+
+<div class="obsv-code">State   : unhealthy
+Reason  : Target.Timeout          ← 연결 거부가 아니라 응답 지연
+Target  : 인스턴스 1대            ← 그 하나가 빠지면 전면 중단</div>
+
+<p><b>연결이 거부된 게 아니라 시간이 초과된 겁니다.</b> 프로세스는 살아 있고 포트도 열려 있는데 응답만 못 하는 상태예요. 헬스체크 경로는 단순한 엔드포인트 하나고 타임아웃이 5초였으니, <b>그 간단한 걸 5초 안에 못 돌려주는 상태가 90초 넘게 이어졌다</b>는 뜻입니다.</p>
+
+<p>그리고 타깃이 한 대뿐이라 그 하나가 빠지자 그대로 전면 중단이었습니다. 완충이 없었어요.</p>
+
+<p>먼저 배제할 것부터 지웠습니다.</p>
+
+<div class="obsv-code">인스턴스 상태 점검     running, 시스템·인스턴스 모두 ok   → 하드웨어·호스트 네트워크 아님
+콘솔 로그 grep         oom / killed 없음                  → 커널 OOM Killer 아님
+CPU 6시간              5~7% → 46%, 포화 아님              → 단순 트래픽 폭주 아님
+호스트 자원 지표       조회 결과 비어 있음                 → 메모리·디스크는 볼 수단이 없음</div>
+
+<h2>3. 가설 1 — GC 스래싱 (틀림)</h2>
+
+<p>CPU가 평시 5~6%에서 <b>46%</b>로 올라 있었어요. 4 vCPU에서 46%면 대략 두 코어입니다.</p>
+
+<p>이 어중간한 숫자가 실마리로 보였습니다. 트래픽 폭주면 코어를 다 씁니다. 46%에서 멈추지 않아요. 반면 <b>풀 GC 루프는 정확히 이 모양</b>입니다 — GC 스레드 몇 개만 돌아서 CPU는 중간인데, stop-the-world 때문에 앱은 요청을 못 받습니다.</p>
+
+<p><b>죽은 이유:</b> 힙을 보려 했더니 이 서버는 도커로 돌고 있었고 호스트에 자바가 없었습니다. JVM 진단 도구를 쓸 대상이 애초에 없었어요.</p>
+
+<h2>4. 가설 2 — 컨테이너 크래시 루프 (틀림)</h2>
+
+<p>SSH가 안 붙어서 콘솔 로그로 커널 메시지를 긁었습니다.</p>
+
+<div class="obsv-code">br-xxxx: port 3(vethXXXX) entered forwarding state
+br-xxxx: port 3(vethXXXX) entered disabled state
+...
+br-xxxx: port 5(vethYYYY) entered forwarding state
+br-xxxx: port 5(vethYYYY) entered disabled state
+                            ↑ 0.137초 만에 사라짐</div>
+
+<p>가상 인터페이스가 붙었다 떨어지는 건 컨테이너가 뜨고 죽는다는 뜻이에요. 마지막 것은 <b>137밀리초</b> 살고 죽었습니다. 커널 타임스탬프를 환산하니 이 구간이 사고 시각과 겹쳤고요.</p>
+
+<p><b>죽은 이유:</b> 박스에 들어가 컨테이너 목록을 보니 앱 컨테이너들의 재시작 횟수가 <b>0</b>이었습니다. 한 번도 재시작한 적이 없었어요. 죽고 있던 건 며칠 전 작업이 절반만 끝나며 남겨진 <b>모니터링 에이전트 컨테이너</b>였고, 사고와 시간대가 겹쳤을 뿐이었습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 그 빈칸을 내가 찾던 답으로 채웠다</div>
+  커널 로그는 <b>"컨테이너가 죽었다"까지만</b> 말했습니다. <b>"어느 컨테이너"인지는 말하지 않았어요.</b><br><br>
+  저는 마침 앱이 죽는 원인을 찾고 있었고, 그래서 그 빈칸에 앱을 넣었습니다. 로그가 거짓말한 게 아니라 <b>제가 침묵을 답으로 읽었습니다.</b><br><br>
+  가설이 있으면 데이터의 빈칸이 그 모양으로 채워집니다. 그래서 확인 절차가 필요했어요 — 재시작 횟수 한 번만 봤으면 3분이면 끝났을 일입니다.
+</div>
+
+<h2>5. 가설 3 — 외부 호출 재시도 폭주 (절반만 맞음)</h2>
+
+<p>앱 로그의 사고 직전 구간에 이런 게 있었습니다.</p>
+
+<div class="obsv-code">Failed to resolve '...' [A(1)]
+  Caused by: ReadTimeoutException
+  at ...RetryWhenMainSubscriber.onError</div>
+
+<p>DNS 실패 더하기 재시도 연산자. 그림이 그려졌어요. 외부 호출이 실패하면서 재시도가 폭주해 스레드를 다 먹었다는 이야기가요. 그런데 세어봤습니다.</p>
+
+<div class="obsv-code">Failed to resolve       1건      ← 일회성. 원인일 수 없다
+ReadTimeoutException    3,040건   ← 많다. 그런데?</div>
+
+<p>3,040건을 분 단위로 펼쳤습니다.</p>
+
+<div class="obsv-code">22:33  12건    23:40  15건    00:25  12건
+00:50  13건    01:05  14건    01:23   5건
+01:27  ──── 사고 시작. 여기서부터 0건</div>
+
+<p><b>사고 시점에 폭증한 게 아니라 오히려 직전에 끊겼습니다.</b> 며칠 내내 10~20분마다 반복되던 <b>만성 배경 잡음</b>이었어요. 그리고 사고가 나면서 앱이 아무 일도 못 하게 되니 이 에러마저 안 나온 겁니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 평시를 같이 보지 않으면 평시의 노이즈가 범인처럼 보인다</div>
+  사고 구간만 잘라 봤으면 <b>"여기 에러가 3천 건이나 있다"</b>로 결론 냈을 겁니다. 숫자가 크니까 설득력도 있고요.<br><br>
+  며칠치를 펼치니 <b>원래 그런 서비스</b>였습니다. 사고 구간의 이상을 판정하려면 <b>비교할 평시</b>가 있어야 하는데, 장애 대응 중에는 급해서 사고 구간만 보게 됩니다.<br><br>
+  그리고 이 경우엔 방향까지 반대였어요. 에러가 <b>는</b> 게 아니라 <b>멎은</b> 것이 신호였습니다.
+</div>
+
+<h2>6. 방향 전환 — "무엇이 에러를 냈나" 대신 "언제 끊겼나"</h2>
+
+<p>세 번 틀리고 나서 질문을 바꿨습니다. 에러 메시지를 뒤지는 걸 멈추고 <b>시간</b>을 봤어요.</p>
+
+<p>도커 로그에는 시각이 두 개 찍힙니다. 앱이 문장을 만든 시각과, 도커가 그걸 받은 시각. 평소엔 몇 밀리초 차이예요.</p>
+
+<div class="obsv-code">도커 수신        앱 기록          격차
+10:25:00.986  ←→  10:25:00.982      4ms     정상
+10:27:43.014  ←→  10:27:42.953     61ms
+10:28:17.342  ←→  10:28:17.177    165ms
+10:28:25.117  ←→  10:28:23.877  1,240ms     ← 1.2초
+10:28:27.535  ←→  10:28:26.413  1,122ms
+
+그리고 로그 완전 중단. 40분간 한 줄도 없음</div>
+
+<p>앱이 문장을 만들고 그게 도커에 닿기까지가 <b>점점 벌어지다 멈췄습니다.</b> 에러가 아니라 <b>표준 출력에 쓰는 것조차 밀리고 있었어요.</b></p>
+
+<p>그리고 대기 중이던 다른 컨테이너에서 결정타가 나왔습니다.</p>
+
+<div class="obsv-code">도커 수신 10:43  ←→  앱 기록 10:35      격차 8분
+도커 수신 10:58  ←→  앱 기록 10:36      격차 22분
+
+WARN [HikariPool-1 housekeeper] - Thread starvation or clock leap detected</div>
+
+<p>커넥션 풀의 관리 스레드는 <b>30초마다 도는</b> 아주 가벼운 작업입니다. 그게 몇 분씩 밀렸고, 풀이 스스로 감지해서 경고를 남겼어요.</p>
+
+<p>중요한 건 <span class="obsv-mark">이게 두 컨테이너 모두에서 일어났다는 것</span>입니다. 앱 버그면 한쪽만 멈춥니다. <b>둘 다면 범인은 앱이 아니라 그 둘이 공유하는 것</b> — 호스트예요.</p>
+
+<div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 로그가 늦는다는 것 자체가 데이터였다</div>
+
+<h2>7. 없는 데이터가 데이터다</h2>
+
+<p>서버에 시스템 통계 수집기가 켜져 있었습니다. 아무도 안 쓰고 있었는데 사고 시각 데이터가 그대로 남아 있었어요.</p>
+
+<div class="obsv-code">        여유메모리   메모리사용률   캐시     커밋    블록된프로세스
+01:00     160MB       99.00      56MB    132%        1
+01:10     166MB       98.96      51MB    132%        2
+01:20     158MB       99.01      62MB    132%        2
+01:30   ─────────  기록 없음  ─────────
+02:15   LINUX RESTART</div>
+
+<p>세 가지가 동시에 말했습니다.</p>
+
+<p><b>첫째, 메모리 99%.</b> 15.6GB 중 여유가 156MB입니다. 커밋이 132%인데 <b>스왑이 0</b>이었어요.</p>
+
+<p><b>둘째, 캐시가 56MB.</b> 정상이면 수 GB입니다. 커널이 페이지 캐시를 <b>전량 회수</b>하며 쥐어짜고 있었어요. 캐시가 없으니 모든 페이지 폴트가 디스크 읽기가 되고, 그래서 디스크 큐가 0.4에서 3.8로 뛴 채 45분을 유지했습니다.</p>
+
+<p><b>셋째 — 그리고 이게 결정적이었는데 — 통계 수집 자체가 01:30부터 안 돌았습니다.</b> 10분마다 도는 cron인데 다섯 번이 통째로 비었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🎯 빈칸이 가장 정확한 증거였다</div>
+  JVM이 멈춘 건 앱 문제일 수 있습니다. 라이브러리 문제일 수도 있고요.<br><br>
+  그런데 <b>10분마다 도는 초경량 cron이 못 돌았다면</b> 멈춘 건 특정 프로세스가 아니라 <b>호스트 전체</b>입니다. 이건 앱과 아무 관계가 없어요.<br><br>
+  남아 있는 어떤 로그보다 이 <b>"빈칸"</b>이 정확했습니다. 그리고 빈칸은 검색으로 안 찾아져요 — 있어야 할 것이 무엇인지 알아야 없다는 걸 알 수 있습니다.
+</div>
+
+<h2>8. 진짜 원인 — 산수가 안 맞았다</h2>
+
+<p>컨테이너 이미지의 실행 스크립트를 열었더니 이게 있었습니다.</p>
+
+<div class="obsv-code">export OPTS="-Xmx8192m -Xms8192m"</div>
+
+<p><b>힙 8GB 하드코딩.</b> 최소값까지 8GB라 시작부터 확보합니다.</p>
+
+<p>그리고 <b>닷새 전, 이 서비스는 무중단 배포를 위해 블루그린으로 전환</b>했어요. 앱 컨테이너가 하나에서 둘이 됐습니다.</p>
+
+<div class="obsv-code">전환 전   JVM 1개 × 8GB =  8GB   /  호스트 15.6GB   →  여유 있음
+전환 후   JVM 2개 × 8GB = 16GB   /  호스트 15.6GB   →  물리 메모리 초과</div>
+
+<p>통계의 커밋 값 21.1GB가 정확히 이 값이었습니다 (힙 16GB + 메타스페이스·네이티브).</p>
+
+<p><span class="obsv-mark">이 장애는 우연이 아니라 산수상 필연이었습니다.</span> 닷새에 걸쳐 힙이 자라 메모리를 채웠고, 월요일 아침 트래픽이 남은 156MB를 밀어냈어요.</p>
+
+<div class="obsv-code">8/12   블루그린 전환 — JVM 1개 → 2개, 메모리 제한 없음
+ ↓     나흘간 힙 성장 → 메모리 99% 상주 (지표가 없어 아무도 모름)
+10:25  아침 트래픽 램프업 → 남은 여유 소진
+       커널이 페이지 캐시 전량 회수 → 스왑 없어 스래싱
+10:27  디스크 큐 0.4 → 3.8, CPU 5% → 46% (전부 회수·IO 대기)
+10:28  JVM 정지. 관리 스레드 22분 지연. 헬스체크 5초 내 응답 불가
+10:31  정상 호스트 0 → 알람</div>
+
+<p>CPU 46%도 여기서 설명됩니다. GC가 아니라 <b>메모리 회수와 IO 대기</b>였어요. 첫 가설이 본 숫자는 맞았고 해석이 틀렸던 겁니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>가설을 세 번 틀렸습니다. GC 스래싱은 힙을 볼 수단이 없어서, 컨테이너 크래시 루프는 재시작 횟수가 0이어서, 재시도 폭주는 사고 시점에 오히려 0건이어서 죽었습니다.</b><br><br>
+  방향을 바꾼 건 "무엇이 에러를 냈나" 대신 <b>"언제 끊겼나"</b>를 물었을 때였어요. 로그가 도착하는 시각이 벌어지는 것, 두 컨테이너가 동시에 아픈 것, 그리고 <b>10분마다 도는 cron이 45분간 안 돈 빈칸</b>이 호스트를 가리켰습니다. <b>없는 데이터가 가장 정확한 데이터일 때가 있습니다.</b>
+</div>
+
+</div>
