@@ -1,0 +1,171 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Aurora 5.7 → 8.0 — 3부작</div>
+  <b>1편 · 확장 지원료가 마감을 만들었다</b> &larr; 지금 이 글<br>
+  2편 · 되돌릴 수 있는 단계를 쌓았다<br>
+  3편 · 6분 만에 넘어갔다
+</div>
+
+<p>운영 DB의 메이저 버전을 올렸습니다. Aurora MySQL 5.7 호환에서 8.0으로요.</p>
+
+<p>그런데 <b>성능 때문이 아니었습니다.</b> 이 작업의 목적은 처음부터 끝까지 <span class="obsv-mark">요금을 없애는 것</span>이었고, 그래서 마감이 정해져 있었어요. 이 글은 그 돈이 어떤 판단을 강제했는지, 그리고 그 판단을 두 번 뒤집은 이야기입니다.</p>
+
+<h2>1. 지원이 끝나면 요금이 붙는다</h2>
+
+<p>Aurora MySQL 2(5.7 호환)는 표준 지원이 끝났습니다. 그러면 그냥 못 쓰게 되는 게 아니라 <b>확장 지원 요금</b>이 붙어요. 계속 쓸 수는 있는데 돈을 더 내는 구조입니다.</p>
+
+<p>단가를 실측했습니다. 문서에서 읽은 게 아니라 가격 API로요.</p>
+
+<div class="obsv-code">확장 지원  1~2년차       $0.120 / vCPU-hour
+확장 지원  3년차부터      $0.240 / vCPU-hour     ← 2배가 된다
+인스턴스 클래스           2 vCPU
+인스턴스 컴퓨트 요금       $0.113 / hour = 월 $82.49</div>
+
+<p>여기서 중요한 게 <b>과금 단위가 vCPU-시간</b>이라는 점입니다. 인스턴스 대수와 코어 수에 비례해요. 이 클러스터는 쓰기·읽기 두 대라서 이렇게 됩니다.</p>
+
+<div class="obsv-code">1대   2 vCPU × $0.120 × 730h  =  $175.20 / 월
+2대                          =  $350.40 / 월
+연간                         =  $4,204.80</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 그런데 이 클러스터의 두 번째 인스턴스는 놀고 있었다</div>
+  과금이 <b>vCPU-시간</b>이라 대수에 비례합니다. 그리고 이 저장소에 <b>그 두 번째 인스턴스에 대한 글이 이미 있어요</b> — 같은 클러스터의 읽기 인스턴스를 지워도 되는지 판단한 글입니다.<br><br>
+  그 결론은 <b>"쓰기가 92일간 정확히 0, 읽기도 커넥션 풀 검증 쿼리뿐"</b>이었고, 순서까지 정해뒀습니다. 배치 최적화 먼저, 확인 후 제거.<br><br>
+  <b>그 인스턴스가 아직 살아 있습니다.</b> 즉 <span class="obsv-mark">먼저 지웠으면 확장 지원료가 절반이 됐고 마감 압박도 절반이 됐을 겁니다.</span> 그리고 뒤에 나올 최대 Blocker(가용영역 확인)도 확인 대상이 하나로 줄었을 거예요.<br><br>
+  왜 안 했나 — 배치 최적화가 선행조건이었고 마감이 외부에서 주어졌기 때문입니다. 다만 이건 <b>미룬 판단이고, 미뤘다고 적어두는 것과 목록에 없는 것은 다릅니다.</b> 이 글이 그 기록입니다.
+</div>
+
+<p>인스턴스 한 대의 월 청구서를 놓고 보면 구조가 더 선명합니다.</p>
+
+<div class="obsv-code">전환 전   컴퓨트 $82.49 + 확장지원 $175.20  =  $257.69
+전환 후   컴퓨트 $82.49
+
+                 확장 지원료가 컴퓨트보다 2배 비쌌다</div>
+
+<p><span class="obsv-mark">서버를 굴리는 값보다 옛 버전을 쓰는 값이 두 배였습니다.</span> 그리고 3년차가 되면 그게 또 두 배가 됩니다.</p>
+
+<div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 1. 인스턴스 1대 월 청구 — 그리고 3년차에 빨간 칸이 또 2배가 된다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 이 작업의 성격을 결정한 것</div>
+  목적이 <b>비용 제거</b>라는 게 이후 모든 판단을 지배했습니다.<br><br>
+  성능 개선이 목적이면 "좋아질 때까지" 미룰 수 있어요. 그런데 <b>매달 새는 돈</b>이면 미루는 것 자체가 비용입니다. 그리고 3년차 단가 인상이라는 <b>정해진 날짜</b>가 있으니 마감이 외부에서 주어집니다.<br><br>
+  그래서 "무중단이냐"보다 <b>"확실하게 넘어가느냐"</b>가 먼저였습니다. 나중에 방식을 고를 때 이 순서가 결론을 만듭니다.
+</div>
+
+<h2>2. 세 가지 방식</h2>
+
+<p>메이저 버전을 올리는 길이 셋 있었습니다.</p>
+
+<div class="obsv-code">A. in-place       클러스터를 그 자리에서 업그레이드
+B. Blue/Green     8.0 복제본을 만들어두고 이름을 맞바꾼다
+C. 신규 클러스터    새로 만들고 앱을 옮긴다</div>
+
+<p>비교표를 만들어보니 축이 넷이었어요.</p>
+
+<div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 다운타임만 보면 B가 이기지만, 축이 넷이면 답이 달라진다</div>
+
+<p><b>C가 먼저 빠졌습니다.</b> 알람 이름이 인스턴스 식별자로 조립되는 구조라서요. 클러스터를 새로 만들면 <b>알람 10개가 삭제·재생성되고 히스토리가 사라집니다.</b> 그리고 옛 클러스터를 지우려면 삭제 방지 설정을 풀어야 하는데, 코드에 그 자리를 "사고 경로"라고 적어둔 주석이 있었어요.</p>
+
+<p>남은 건 A와 B였습니다.</p>
+
+<h2>3. 협의체 1차 — in-place 채택</h2>
+
+<p>세 관점으로 나눠서 각각 독립적으로 검토했습니다. 플랫폼, SRE, 배포 파이프라인이요.</p>
+
+<div class="obsv-code">플랫폼   in-place.  B 는 공유 파라미터그룹을 건드려야 한다.
+                    다른 팀 DB 의 변경이 PR 도 plan 도 없이 나간다
+SRE      in-place.  B 의 그 파라미터는 정적이라 즉시 효과가 없다.
+                    다른 팀 DB 가 언젠가 재부팅되는 날 켜진다 — 시한폭탄
+파이프라인 Blue/Green. in-place 는 이 파이프라인에서 실행 자체가 어렵다
+                    (즉시 적용 옵션 부재 · 유지보수 창 어긋남 · 의존 간선 없음)</div>
+
+<p><b>판정은 in-place였습니다.</b> 파이프라인의 반대 근거는 전부 <b>"코드로 실행할 때"</b>의 문제였고, 실행을 코드에서 빼면 사라집니다. 반면 B의 <b>공유 파라미터그룹 비용은 남고</b>, 요구사항이었던 "다른 팀에 아무것도 강요하지 않는다"와 정면으로 충돌했어요.</p>
+
+<p>반대 의견에서 하나는 살렸습니다. 콘솔로 실행하면 <b>"코드가 실물보다 낮은 버전을 말하는 창"</b>이 열리고, 그동안 드리프트 감지가 "코드대로 반영하세요"라고 안내합니다. 그걸 그대로 따르면 <b>8.0 클러스터에 5.7을 되돌려 씁니다.</b></p>
+
+<h2>4. 그런데 기각의 최대 근거가 사실이 아니었다</h2>
+
+<p>실물을 확인하다가 이게 나왔습니다. 문제의 파라미터가 <b>공유 파라미터그룹에 이미 설정돼 있었어요.</b></p>
+
+<p>즉 <span class="obsv-mark">Blue/Green을 기각한 최대 근거가 사실이 아니었습니다.</span></p>
+
+<p>이게 불편한 이유가 있습니다. 플랫폼과 SRE가 <b>독립적으로 같은 지적</b>을 했어요. 서로 상의하지 않고 같은 결론에 도달했으니 신뢰도가 높아 보였고, 저도 그걸 결정타로 썼습니다. <b>그런데 실물이 반대였습니다.</b></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🎯 합의는 사실을 대체하지 않는다</div>
+  두 사람이 독립적으로 같은 말을 하면 그게 <b>교차검증처럼 느껴집니다.</b> 그런데 둘 다 <b>같은 자료(코드)를 봤다면</b> 그건 교차검증이 아니에요. 같은 출처를 두 번 읽은 것입니다.<br><br>
+  독립성은 <b>사람이 다른 것</b>이 아니라 <b>보는 것이 다른 것</b>에서 나옵니다. 코드를 두 명이 보는 것보다 코드와 실물을 각각 보는 게 낫습니다.<br><br>
+  그래서 이 저장소에서 반복해서 나오는 문장이 또 나옵니다 — <b>실물이 코드보다 앞선다.</b>
+</div>
+
+<p>판정을 <b>Blue/Green으로 바꿨습니다.</b> 근거도 바뀌었어요.</p>
+
+<div class="obsv-code">데이터가 작아 in-place 다운타임도 짧다  →  무중단의 값어치는 크지 않다
+그래도 B 가 나은 이유는                →  롤백 대상이 살아 있다는 것
+그리고 그 파라미터가 이미 켜져 있으니   →  다른 팀 리소스를 하나도 안 건드린다
+전환 시 이름·엔드포인트 승계            →  앱 변경 불필요</div>
+
+<p>재밌는 건 <b>다운타임이 결정 근거에서 빠졌다</b>는 점입니다. 데이터가 작아서 어느 쪽이든 짧았으니까요. B를 고른 진짜 이유는 <span class="obsv-mark">되돌릴 대상이 살아 있다는 것</span>이었습니다.</p>
+
+<h2>5. 2차 협의체가 정정한 것들</h2>
+
+<p>방식이 바뀌었으니 다시 검토했습니다. 이번엔 "오늘 밤 실행해도 되나"가 주제였고, 여기서 <b>제가 세운 전제 여섯 개가 정정됐습니다.</b> 두 개만 옮기면요.</p>
+
+<p><b>① 백업 보존기간 상향은 전제조건이 아니었다.</b> 롤백을 대비해 보존기간을 늘리는 PR을 먼저 머지하려 했는데 — <b>보존기간 상향은 과거 시점 복구를 소급 생성하지 않습니다.</b> 오후 3시에 올려도 밤 10시의 복구 창은 그대로예요.</p>
+
+<div class="obsv-code">내가 믿은 것    보존기간을 늘리면 롤백 자산이 생긴다
+실제           과거는 소급되지 않는다. 늘어나는 건 앞으로뿐
+
+실제 롤백 자산   수동 스냅샷
+그 개수         0개</div>
+
+<p><b>안전장치라고 믿었던 것이 안전장치가 아니었고, 진짜 안전장치는 0개였습니다.</b></p>
+
+<p><b>② 드라이버의 Aurora 모드가 8.0에서 한 번도 안 돌았다.</b> dev에서 미리 검증을 했는데, dev 접속 URL은 일반 모드였고 운영은 <b>페일오버를 지원하는 Aurora 모드</b>였어요. <b>다른 코드 경로입니다.</b> 검증했다고 믿었던 게 검증되지 않은 상태였습니다.</p>
+
+<h2>6. 그리고 수렴 라운드가 내 판정을 세 번 뒤집었다</h2>
+
+<p>세 관점에 서로의 결론을 주고 하나의 시각표로 수렴시켰습니다. 그 과정에서 <b>제가 이미 내린 판정 셋이 뒤집혔어요.</b> 하나만 옮기면 이렇습니다.</p>
+
+<p>전환 후에는 옛 클러스터가 <code>-old</code>가 붙은 이름으로 남습니다. 감시 커버리지 가드가 그걸 "감시 밖 리소스"로 잡을 테니, 저는 <b>그 이름 패턴을 예외 처리</b>하려 했어요. 노이즈니까요.</p>
+
+<p>수렴안이 그걸 막았습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🚨 체크리스트에 박아둔 금지문</div>
+  이 가드가 막는 최악은 "유령"이 아니라 <b>라이브인데 감시 밖</b>이다. 전환 후 <code>-old</code>는 운영 태그를 달고 살아서 도는 5.7 클러스터이고, <b>롤백하면 그것이 라이브 DB가 된다.</b><br><br>
+  <code>-old</code>를 제외하는 필터는 <b>롤백한 바로 그 순간 라이브 DB를 감시 밖으로 숨긴다.</b><br><br>
+  제외 대신 <b>기간을 짧게</b> 하고, 걸리는 이슈는 노이즈가 아니라 <b>삭제 리마인더로 쓴다.</b>
+</div>
+
+<p>제가 노이즈라고 부른 것이 <b>롤백 자산에 대한 정탐</b>이었습니다. 그리고 필터는 필요할 때 정확히 반대로 작동했을 거예요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>목적이 성능이 아니라 비용이면 마감이 외부에서 주어집니다. 옛 버전을 쓰는 값이 서버를 굴리는 값의 두 배였고, 3년차엔 또 두 배가 됩니다. 그래서 "무중단이냐"보다 "확실하게 넘어가느냐"가 먼저였습니다.</b><br><br>
+  판정을 두 번 뒤집었어요. 처음엔 두 사람이 독립적으로 낸 같은 지적을 결정타로 썼는데 <b>실물이 반대였습니다</b> — 둘 다 같은 코드를 봤으니 교차검증이 아니었던 거죠. 그리고 롤백 자산이라 믿었던 보존기간 상향은 <b>과거를 소급하지 않았고</b>, 진짜 자산인 수동 스냅샷은 0개였습니다.
+</div>
+
+</div>
