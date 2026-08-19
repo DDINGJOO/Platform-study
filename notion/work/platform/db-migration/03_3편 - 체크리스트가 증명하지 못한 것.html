@@ -19,10 +19,10 @@
 <div class="obsv-wrap">
 
 <div class="obsv-series">
-  <div class="obsv-st">📚 dev DB 메이저 버전 이관 — 3편</div>
+  <div class="obsv-st">📚 dev DB 메이저 버전 이관, 3편</div>
   dev MySQL 5.7 을 8.0.42 로 옮긴 5단계<br>
   롤백 수단을 보관했다는 착각<br>
-  <b>검증표가 전부 ✅ 였는데 폭탄이 3개 남아있었다</b> &larr; 지금 이 글
+  <b>검증표가 전부 ✅ 였는데 폭탄이 3개 남아 있었다</b> &larr; 지금 이 글
 </div>
 
 <p>이관을 마치고 마지막으로 검증표를 만들었어요. 항목마다 기대값을 적고, 실제로 쿼리를 돌려서 확인하고, 체크를 찍었습니다.</p>
@@ -98,7 +98,7 @@ created_at   DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),</div>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🌩️ 관리형 서비스에는 "서버에 들어가서 설정"이 없어요</div>
-  dev 에서 통한 방법이 prod 에 존재하지 않는다 — 이게 "dev·prod 동일하게 맞추기"의 진짜 어려운 부분이에요. <b>버전 숫자는 맞출 수 있는데 조작 수단이 다릅니다.</b><br>
+  dev 에서 통한 방법이 prod 에 존재하지 않는다는 점, 이게 "dev·prod 동일하게 맞추기"의 진짜 어려운 부분이에요. <b>버전 숫자는 맞출 수 있는데 조작 수단이 다릅니다.</b><br>
   Aurora 는 파라미터 그룹도 <b>클러스터 스코프 / 인스턴스 스코프</b>로 나뉘고, 값에 따라 재시작이 필요한 것과 아닌 것이 갈려요. "설정하면 되지"로 넘기면 배포 당일에 막힙니다.
 </div>
 
@@ -152,7 +152,7 @@ SELECT @@global.time_zone, @@session.time_zone,
 
 <p>이관 검증에서 제일 자신 있었던 항목이 <b>"전 테이블 행수 diff = 0"</b> 이었어요. 원본과 복원본의 행수가 완벽히 같으니 데이터가 온전하다고 생각했습니다.</p>
 
-<p>그런데 5.7 에서 8.0 으로 넘어갈 때 제일 흔한 사고 유형이 <b>이중 인코딩(double encoding)</b> 이에요. 컬럼이 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">latin1</code> 인데 애플리케이션이 UTF-8 바이트를 그냥 밀어넣은 경우입니다.</p>
+<p>그런데 5.7 에서 8.0 으로 넘어갈 때 제일 흔한 사고 유형이 <b>이중 인코딩(double encoding)</b> 이에요. 컬럼이 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">latin1</code> 인데 애플리케이션이 UTF-8 바이트를 그대로 저장한 경우입니다.</p>
 
 <p><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">한</code> 이라는 글자는 UTF-8 로 3바이트예요. 이걸 latin1 컬럼에 넣으면 DB 는 <b>latin1 문자 3개</b>로 받아들입니다. 저장은 됩니다. 에러도 안 나요. 그리고 덤프를 뜨면 그 바이트가 그대로 옮겨가고, 복원해도 그대로 들어갑니다.</p>
 
@@ -193,8 +193,8 @@ SELECT @@global.time_zone, @@session.time_zone,
 <div class="obsv-callout">
   <div class="obsv-ct">💡 "무결성 검증"이라고 부르려면 내용을 봐야 해요</div>
   최소한 이 정도는 있어야 합니다.<br>
-  &bull; 주요 텍스트 컬럼의 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SUM(CRC32(col))</code> 대조 — 버전이 달라도 결정적인 값<br>
-  &bull; <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--single-transaction</code> 은 InnoDB 만 보장 — MyISAM 테이블이 있는지 먼저 확인<br>
+  &bull; 주요 텍스트 컬럼의 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SUM(CRC32(col))</code> 대조: 버전이 달라도 결정적인 값입니다<br>
+  &bull; <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--single-transaction</code> 은 InnoDB 만 보장하니 MyISAM 테이블이 있는지 먼저 확인하세요<br>
   &bull; <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--source-data</code> 없이 뜨면 binlog 좌표가 없어서 <b>시점 복구(PITR)가 불가능</b>합니다
 </div>
 
@@ -204,7 +204,7 @@ SELECT @@global.time_zone, @@session.time_zone,
 
 <p>인덱스 항목에 "uk_ 6개 / idx_ 5개 = 11/11 ✅" 라고 적었어요. 실제로 dev DB 를 조회해서 11개를 세고 찍은 체크였습니다. <b>그런데 정답은 10개였어요.</b></p>
 
-<p>작업 도중에 상신본을 한 번 더 다듬으면서 중복 인덱스를 하나 뺐거든요. 유니크 키 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">uk_lpv_page_version (page_id, version)</code> 이 있는데 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">idx_lpv_page (page_id, id)</code> 를 또 둘 이유가 없었습니다. InnoDB 는 세컨더리 인덱스에 PK 를 암묵적으로 붙이기 때문에, 앞의 인덱스가 물리적으로 이미 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">(page_id, version, id)</code> 라서 뒤엣것을 완전히 흡수하거든요. 읽기 이득은 0이고 쓰기 비용만 늘어요.</p>
+<p>작업 도중에 상신본을 한 번 더 다듬으면서 중복 인덱스를 하나 뺐거든요. 유니크 키 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">uk_lpv_page_version (page_id, version)</code> 이 있는데 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">idx_lpv_page (page_id, id)</code> 를 또 둘 이유가 없었습니다. InnoDB 는 세컨더리 인덱스에 PK 를 암묵적으로 붙이기 때문에, 앞의 인덱스가 물리적으로 이미 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">(page_id, version, id)</code> 라서 뒤의 것을 완전히 흡수하거든요. 읽기 이득은 0이고 쓰기 비용만 늘어요.</p>
 
 <p>그래서 <b>상신본과 레포 마이그레이션 파일에서는 뺐는데, dev DB 에서는 DROP 을 안 했습니다.</b> 그리고 검증할 때 제가 기준으로 삼은 작업 문서는 <b>인덱스를 빼기 전 버전</b>이었어요.</p>
 
@@ -219,10 +219,10 @@ ALTER TABLE landing_page_version DROP INDEX idx_lpv_page;</div>
 <div class="obsv-callout">
   <div class="obsv-ct">🕳️ 검증은 기준이 최신일 때만 검증이에요</div>
   작업 문서를 오전에 쓰고, 스키마를 오후에 한 번 더 고쳤어요. 문서를 다시 안 열었을 뿐입니다. 한 시간 차이였고요.<br>
-  <b>기준 문서에 버전을 박고, 검증할 때 그 버전이 최신인지부터 확인하는 것</b> — 이게 항목 하나 추가하는 것보다 중요했습니다. 틀린 기준으로 하는 검증은 검증이 아니라 <b>확신 생산기</b>예요.
+  <b>기준 문서에 버전을 명시하고, 검증할 때 그 버전이 최신인지부터 확인하는 것.</b> 이게 항목 하나 추가하는 것보다 중요했습니다. 틀린 기준으로 하는 검증은 검증이 아니라 <b>확신 생산기</b>예요.
 </div>
 
-<p>그리고 이건 제가 덤벙댔다기보다 구조 문제에 가까워요. <b>문서와 스키마가 각자 따로 움직이는 한, 둘이 어긋나는 순간은 반드시 옵니다.</b> 한 시간이든 하루든요.</p>
+<p>그리고 이건 제가 부주의했다기보다 구조 문제에 가까워요. <b>문서와 스키마가 각자 따로 움직이는 한, 둘이 어긋나는 순간은 반드시 옵니다.</b> 한 시간이든 하루든요.</p>
 
 <p>그래서 검증 스크립트가 문서가 아니라 <b>실제 최종본(레포의 마이그레이션 파일)을 읽게</b> 만들어야 해요. 사람이 눈으로 두 문서를 대조하는 단계가 남아 있으면, 그 단계는 언젠가 틀립니다. 오늘은 인덱스 하나였지만 다음엔 컬럼 타입일 수도 있고요.</p>
 
@@ -230,9 +230,9 @@ ALTER TABLE landing_page_version DROP INDEX idx_lpv_page;</div>
 
 <p>다 정리하고 보니 셋이 같은 모양이었어요.</p>
 
-<p><b>① 버전은 맞췄는데 파라미터는 안 봤다</b> — Docker 에서 되던 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">TZ</code> 설정이 Aurora 에도 있을 거라고 가정했어요.<br>
-<b>② 행수가 같으면 데이터도 같다고 봤다</b> — 제가 아는 손상 방식(행이 사라짐)만 실패 모드로 상상했어요.<br>
-<b>③ 문서가 최신일 거라고 봤다</b> — 한 시간 전의 나를 믿었고요.</p>
+<p><b>① 버전은 맞췄는데 파라미터는 안 봤다</b>: Docker 에서 되던 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">TZ</code> 설정이 Aurora 에도 있을 거라고 가정했어요.<br>
+<b>② 행수가 같으면 데이터도 같다고 봤다</b>: 제가 아는 손상 방식(행이 사라짐)만 실패 모드로 상상했어요.<br>
+<b>③ 문서가 최신일 거라고 봤다</b>: 한 시간 전의 나를 믿었고요.</p>
 
 <p>세 개 다 <b>"내가 아는 방식이 저쪽에도 통할 것"</b> 이라는 가정이었습니다. 그리고 검증표는 이런 걸 못 잡아요. <span class="obsv-mark">검증 항목은 내가 상상할 수 있는 실패 모드까지만 덮으니까요.</span> 상상 못 한 실패는 애초에 항목이 안 만들어집니다.</p>
 

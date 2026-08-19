@@ -1,5 +1,5 @@
 <!-- ============================================================
-  IaC 작업일지 2편 — 리뷰에서 맞은 네 발을 수리하다
+  IaC 작업일지 2편: 리뷰에서 맞은 네 발을 수리하다
   tistory-sketch-post 스타일 · 단일 HTML
 ============================================================ -->
 <style>
@@ -24,16 +24,16 @@
 
 <div class="obsv-series">
   <div class="obsv-st">📚 IaC 작업일지</div>
-  1편 &mdash; 빈 저장소에서 설계 리뷰까지<br>
-  <b>2편 &mdash; 리뷰에서 맞은 네 발을 수리하다</b> &larr; 지금 이 글<br>
-  3편 &mdash; 라벨 붙이고 재실행하세요는 거짓말이었다<br>
-  4편 &mdash; 문서를 믿었다가 두 번 막혔다<br>
-  5편 &mdash; plan 역할은 왜 읽기 전용이 될 수 없나<br>
-  6편 &mdash; AdministratorAccess를 붙여도 소용없게 만들기<br>
-  7편 &mdash; 드리프트는 이슈로, 고장은 실패로
+  1편. 빈 저장소에서 설계 리뷰까지<br>
+  <b>2편. 리뷰에서 맞은 네 발을 수리하다</b> &larr; 지금 이 글<br>
+  3편. 라벨 붙이고 재실행하세요는 거짓말이었다<br>
+  4편. 문서를 믿었다가 두 번 막혔다<br>
+  5편. plan 역할은 왜 읽기 전용이 될 수 없나<br>
+  6편. AdministratorAccess를 붙여도 소용없게 만들기<br>
+  7편. 드리프트는 이슈로, 고장은 실패로
 </div>
 
-<p>설계 리뷰에서 7.5점을 받고 나서 제일 먼저 한 일은 브랜치를 하나 파는 거였어요. 이름은 <code style="font-family:Menlo,monospace;font-size:14px;">IAC-0008/fix-apply-gate-and-label-guard</code>. 지적 4건 중 두 건이 같은 워크플로 파일에 있었으니까요.</p>
+<p>설계 리뷰에서 7.5점을 받고 나서 제일 먼저 한 일은 브랜치를 하나 파는 거였어요. 이름은 <code style="font-family:Menlo,monospace;font-size:14px;">IAC-0008/fix-apply-gate-and-label-guard</code> 로 정했습니다. 지적 4건 중 두 건이 같은 워크플로 파일에 있었으니까요.</p>
 <p>이 글은 그 브랜치에서 있었던 일의 기록입니다. 지적을 받는 것과 <b>실제로 고치는 것</b>은 전혀 다른 작업이었어요. 고치려고 파일을 열면 지적받지 않은 구멍이 하나 더 나오고, "이건 이렇게 막으면 되겠다" 싶은 해법이 알고 보면 같은 방식으로 또 뚫리고요. <b>"이벤트와 권한 모델의 실제 동작에 맞춰 파이프라인을 다시 짜면 무엇이 달라지는가"</b>가 오늘의 질문입니다.</p>
 
 <h2>1. prod apply 를 두 번 누르게 만들었다</h2>
@@ -96,18 +96,18 @@
 <h2>2. 가드가 보는 대상을 숫자에서 파일로 바꿨다</h2>
 
 <p>이건 리뷰에서 맞은 게 아니라 1단계를 고치다가 스스로 발견한 구멍이에요. 기존 파괴적 변경 가드는 plan 잡이 삭제·재생성 건수를 세서 job output 으로 넘기고, apply 잡이 그 <b>숫자</b>를 보고 통과 여부를 정하는 구조였습니다. 평소엔 잘 돌아요.</p>
-<p>문제는 두 가지였어요. 첫째, 숫자와 실제 적용될 파일이 어긋날 수 있습니다. 숫자는 plan 잡의 메모지고, apply 가 실행하는 건 artifact 로 내려받은 tfplan 파일이니까요. 둘째가 치명적인데, <span class="obsv-mark">mode=apply 에서는 plan 잡이 아예 돌지 않으니 그 숫자가 존재하지 않습니다.</span> 2단계로 쪼개는 순간 가드가 빈손이 되는 거예요.</p>
+<p>문제는 두 가지였어요. 첫째, 숫자와 실제 적용될 파일이 어긋날 수 있습니다. 숫자는 plan 잡의 메모지고, apply 가 실행하는 건 artifact 로 내려받은 tfplan 파일이니까요. 둘째가 치명적인데, <span class="obsv-mark">mode=apply 에서는 plan 잡이 아예 돌지 않으니 그 숫자가 존재하지 않습니다.</span> 2단계로 쪼개는 순간 가드가 판단할 근거를 잃는 거예요.</p>
 <p>그래서 가드를 apply 잡 안으로 옮기고, 내려받은 tfplan 을 직접 <code style="font-family:Menlo,monospace;font-size:14px;">terraform show -json</code> 으로 열어 세게 했습니다. 판단 근거가 "앞 잡이 말해준 숫자"에서 "지금 내 손에 있고 곧 실행할 이 파일"로 바뀐 거죠. 가드는 전언이 아니라 물증을 봐야 해요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">⚠️ 종료 코드도 전언이었다</div>
-  변경 유무 판정도 같은 함정을 밟았어요. <code style="font-family:Menlo,monospace;font-size:14px;">terraform plan -detailed-exitcode</code> 는 변경이 있으면 2 를 주는데, <code style="font-family:Menlo,monospace;font-size:14px;">setup-terraform</code> 액션의 래퍼를 거치면 그 코드가 그대로 오지 않습니다. 변경이 있는데 <code style="font-family:Menlo,monospace;font-size:14px;">has_changes=false</code> 가 되어 apply 가 조용히 스킵됐고요. <code style="font-family:Menlo,monospace;font-size:14px;">terraform_wrapper: false</code> 로 껐지만, 결론은 같아요 &mdash; <b>plan JSON 이 유일한 사실</b>입니다.
+  변경 유무 판정도 같은 함정을 밟았어요. <code style="font-family:Menlo,monospace;font-size:14px;">terraform plan -detailed-exitcode</code> 는 변경이 있으면 2 를 주는데, <code style="font-family:Menlo,monospace;font-size:14px;">setup-terraform</code> 액션의 래퍼를 거치면 그 코드가 그대로 오지 않습니다. 변경이 있는데 <code style="font-family:Menlo,monospace;font-size:14px;">has_changes=false</code> 가 되어 apply 가 조용히 스킵됐고요. <code style="font-family:Menlo,monospace;font-size:14px;">terraform_wrapper: false</code> 로 껐지만, 결론은 같아요. <b>plan JSON 이 유일한 사실</b>입니다.
 </div>
 
 <h2>3. 에러 메시지가 거짓말을 하고 있었다</h2>
 
 <p>1편에서 제일 아팠던 지적을 이제 실제로 고칠 차례였어요. PR 의 파괴적 변경 가드는 이렇게 안내합니다. "의도한 변경이라면 PR 에 allow-destroy 라벨을 붙이고 다시 실행하세요."</p>
-<p>그런데 <code style="font-family:Menlo,monospace;font-size:14px;">github.event</code> 는 살아있는 값이 아니에요. <span class="obsv-mark">이벤트가 발생한 순간의 webhook payload 를 그대로 박제해 둔 것</span>입니다. 그래서 안내대로 라벨을 붙이고 Re-run 을 눌러도, 가드는 라벨이 없던 시절의 스냅샷을 다시 읽고 또 실패해요. 영원히요. 안내문이 구조적으로 불가능한 절차를 지시하고 있었던 거예요. 로그에 남는 문구가 사용자를 무한 루프에 집어넣는 건, 버그보다는 거짓말에 가깝습니다.</p>
+<p>그런데 <code style="font-family:Menlo,monospace;font-size:14px;">github.event</code> 는 살아있는 값이 아니에요. <span class="obsv-mark">이벤트가 발생한 순간의 webhook payload 를 그대로 박제해 둔 것</span>입니다. 그래서 안내대로 라벨을 붙이고 Re-run 을 눌러도, 가드는 라벨이 없던 시절의 스냅샷을 다시 읽고 또 실패해요. 몇 번을 눌러도 영원히 실패합니다. 안내문이 구조적으로 불가능한 절차를 지시하고 있었던 거예요. 로그에 남는 문구가 사용자를 무한 루프에 집어넣는 건, 버그보다는 거짓말에 가깝습니다.</p>
 <p>반대 방향도 뚫려 있었어요. 라벨을 붙여 초록불을 받은 뒤 라벨을 <b>떼면</b>, 재검사가 안 일어나서 초록불이 그대로 남습니다. 승인 근거가 사라졌는데 승인 도장은 남아 있는 상태죠.</p>
 
 <div class="obsv-code">// before — 이벤트 발생 순간의 박제를 읽는다
@@ -164,7 +164,7 @@ on:
 </div>
 <div class="obsv-figcap">그림 2. 안내문이 지시한 절차는 애초에 성공할 수 없는 절차였다</div>
 
-<h2>4. dev 지우려고 누른 버튼이 prod 까지 쐈다</h2>
+<h2>4. dev 지우려고 누른 버튼이 prod 에도 적용됐다</h2>
 
 <p>이건 고치는 데 십 분 걸렸는데, 위험도로는 제일 컸어요. 기존 dispatch 입력에는 <code style="font-family:Menlo,monospace;font-size:14px;">allow_destroy</code> 만 있고 <b>환경 선택이 없었습니다.</b> 워크플로는 dev 잡과 prod 잡을 나란히 갖고 있고, dispatch 입력은 두 잡에 똑같이 흘러가고요.</p>
 <p>결과가 뭐냐면, "dev 에서 뭘 좀 지우려고" allow_destroy 를 켜고 실행하면 <span class="obsv-mark">prod 의 파괴적 변경 가드도 같이 해제된 채로 prod apply 가 돌아갑니다.</span> 사용자가 머릿속에 그린 폭발 반경은 dev 하나인데, 실제 반경은 두 환경 전부였어요.</p>
@@ -173,7 +173,7 @@ on:
 <h2>5. iam:* 승격 경로를 두 겹으로 막았다</h2>
 
 <p>가장 오래 붙잡은 건 이 건이었어요. apply 역할에는 PowerUserAccess 에 빠진 IAM 을 보충하려고 <code style="font-family:Menlo,monospace;font-size:14px;">iam:*</code> 를 열어줬고, 자기 권한 확대를 막으려고 파이프라인 역할 이름 패턴(<code style="font-family:Menlo,monospace;font-size:14px;">platform-iac-*</code>)에 Deny 를 걸어뒀습니다.</p>
-<p>그런데 공격자는 그 목록 안에서 놀 필요가 없어요. 아무 평범한 이름으로 AdministratorAccess 가 붙은 역할을 새로 만들고 거기로 갈아타면, dev/prod 태그 격리 3중 방어가 전부 무의미해집니다. 1편에서 적은 문장이 그대로 여기 적용돼요. <span class="obsv-mark">목록으로 막는 방어는 목록 밖에서 뚫립니다.</span></p>
+<p>그런데 공격자는 그 목록 안에 머무를 필요가 없어요. 아무 평범한 이름으로 AdministratorAccess 가 붙은 역할을 새로 만들고 거기로 갈아타면, dev/prod 태그 격리 3중 방어가 전부 무의미해집니다. 1편에서 적은 문장이 그대로 여기 적용돼요. <span class="obsv-mark">목록으로 막는 방어는 목록 밖에서 뚫립니다.</span></p>
 <p>그래서 두 겹으로 막았어요. 첫 겹은 <code style="font-family:Menlo,monospace;font-size:14px;">sts:AssumeRole</code> 명시적 Deny 입니다. 시나리오의 마지막 단계인 "갈아타기"를 끊는 거예요. 역할을 만드는 것까지는 막지 못하지만, 만든 역할을 쓸 수가 없으면 공격이 성립하지 않죠.</p>
 <p>둘째 겹이 더 중요합니다. permissions boundary 강제예요. 역할 생성과 정책 부착을 <code style="font-family:Menlo,monospace;font-size:14px;">iam:PermissionsBoundary</code> 조건이 붙었을 때만 허용하고, boundary 를 떼는 것과 boundary 정책 자체를 수정하는 것을 Deny 합니다.</p>
 
@@ -211,29 +211,29 @@ on:
   <text x="45" y="320" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">boundary 제거와 boundary 정책 수정은 Deny — 그래서 재귀적으로 닫힌다</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 3. 목록을 세는 방어 대신 상한선 하나 — 교집합 밖은 애초에 존재하지 않는다</div>
+<div class="obsv-figcap">그림 3. 목록을 세는 방어 대신 상한선 하나: 교집합 밖은 애초에 존재하지 않는다</div>
 
-<h2>6. 네 발의 공통점 &mdash; 세 가지 질문</h2>
+<h2>6. 네 발의 공통점: 세 가지 질문</h2>
 
 <p>수리를 다 하고 diff 를 다시 읽어 보니, 네 건이 전부 같은 종류의 틈이었어요. 코드가 틀린 게 아니라, <span class="obsv-mark">"만든 사람의 행복 경로"와 "실제 이벤트·권한 모델의 동작"이 어긋나 있던 것</span>입니다. 각각의 코드는 제가 상상한 시나리오 안에서는 완벽하게 동작했고요. 문제는 상상 밖이었죠.</p>
 <p>그래서 이걸 세 가지 질문으로 정리해 뒀습니다. 다음에 워크플로나 IAM 정책을 쓸 때 초안 위에 그대로 얹어볼 체크리스트예요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🧭 초안에 얹는 세 가지 질문</div>
-  &bull; <b>이 버튼을 잘못 누르면 어디까지 가는가</b> &mdash; 패치 ①(안 읽은 plan 이 함께 나감), 패치 ④(dev 버튼이 prod 를 쏨)<br>
-  &bull; <b>이 입력은 어디까지 전파되는가</b> &mdash; 패치 ④(allow_destroy 가 두 잡에), 패치 ⑤(iam:* 가 새 역할로)<br>
-  &bull; <b>이 값은 언제 찍힌 스냅샷인가</b> &mdash; 패치 ②(앞 잡이 센 숫자), 패치 ③(박제된 payload)
+  &bull; <b>이 버튼을 잘못 누르면 어디까지 가는가</b>: 패치 ①(안 읽은 plan 이 함께 나감), 패치 ④(dev 버튼이 prod 에도 적용됨)<br>
+  &bull; <b>이 입력은 어디까지 전파되는가</b>: 패치 ④(allow_destroy 가 두 잡에), 패치 ⑤(iam:* 가 새 역할로)<br>
+  &bull; <b>이 값은 언제 찍힌 스냅샷인가</b>: 패치 ②(앞 잡이 센 숫자), 패치 ③(고정된 채 남은 payload)
 </div>
 
-<p>설계 단계에서 이 질문을 스스로 던졌다면 리뷰 전에 절반은 잡았을 거예요. 특히 세 번째 질문이요. 파이프라인 코드에는 "지금의 값"처럼 보이지만 실은 어느 시점에 찍힌 사진인 값들이 곳곳에 있는데, <code style="font-family:Menlo,monospace;font-size:14px;">github.event</code> 도 job output 도 종료 코드도 다 그런 값이었습니다.</p>
+<p>설계 단계에서 이 질문을 스스로 던졌다면 리뷰 전에 절반은 잡았을 거예요. 특히 세 번째 질문이 그래요. 파이프라인 코드에는 "지금의 값"처럼 보이지만 실은 어느 시점에 찍힌 사진인 값들이 곳곳에 있는데, <code style="font-family:Menlo,monospace;font-size:14px;">github.event</code> 도 job output 도 종료 코드도 다 그런 값이었습니다.</p>
 <p>그리고 이번 수리에서 제일 만족스러웠던 건 새 안전장치를 발명한 대목이 아니라, 패치 ① 처럼 <b>이미 있던 안전장치를 발견한 대목</b>이었어요. Terraform 이 stale plan 을 거부한다는 사실 하나가 "plan 과 apply 를 붙여둬야 한다"는 제약을 없앴고, 그 제약이 사라지자 사람이 읽을 시간이 생겼습니다. 도구가 이미 보장하는 걸 모르면, 그걸 대신하려고 설계를 비틀게 되더라고요.</p>
 
-<p>이 다섯 패치는 PR 두 개로 올라가 지금 리뷰 대기 중입니다 &mdash; 워크플로 쪽(①~④)과 IAM 쪽(⑤). IAM 패치는 <code style="font-family:Menlo,monospace;font-size:14px;">bootstrap/</code> 이라 머지된 뒤에도 사람이 로컬에서 한 번 apply 해야 반영돼요. CI 가 자기 state 버킷을 파괴할 수 있는 경로를 만들지 않기로 했으니까요.</p>
+<p>이 다섯 패치는 PR 두 개로 올라가 지금 리뷰 대기 중입니다. 워크플로 쪽(①~④)과 IAM 쪽(⑤)으로 나눴어요. IAM 패치는 <code style="font-family:Menlo,monospace;font-size:14px;">bootstrap/</code> 이라 머지된 뒤에도 사람이 로컬에서 한 번 apply 해야 반영돼요. CI 가 자기 state 버킷을 파괴할 수 있는 경로를 만들지 않기로 했으니까요.</p>
 
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>
   <b>리뷰에서 맞은 네 발은 전부 "코드가 틀렸다"가 아니라 "내가 상상한 동작과 플랫폼의 실제 동작이 달랐다"였습니다.</b> 이벤트 payload 는 박제고, 앞 잡이 넘긴 숫자는 전언이고, 이름 목록으로 만든 울타리는 목록 밖에서 뚫려요.<br><br>
-  그래서 수리의 방향은 매번 같았습니다. 전언 대신 물증을 보고, 스냅샷 대신 실행 시점에 조회하고, 목록 대신 상한선을 두는 것. <b>가드는 "무엇을 세는가"가 아니라 "무엇을 보고 있는가"로 판정됩니다.</b>
+  그래서 수리의 방향은 매번 같았습니다. 전언 대신 물증을 보고, 스냅샷 대신 실행 시점에 조회하고, 목록 대신 상한선을 두는 것이었어요. <b>가드는 "무엇을 세는가"가 아니라 "무엇을 보고 있는가"로 판정됩니다.</b>
 </div>
 
 </div>

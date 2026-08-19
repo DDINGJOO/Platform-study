@@ -1,5 +1,5 @@
 <!-- ============================================================
-  AWS SDLC 시리즈 1편 — tistory-sketch-post
+  AWS SDLC 시리즈 1편: tistory-sketch-post
 ============================================================ -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
@@ -22,10 +22,10 @@
 <div class="obsv-wrap">
 
 <div class="obsv-series">
-  <div class="obsv-st">📚 AWS로 보는 소프트웨어 개발 생명주기 — 1편</div>
-  <b>SDLC 다섯 단계와 CodePipeline — 코드가 프로드에 도착하기까지</b> &larr; 지금 이 글<br>
-  Build·Test의 도구들 — CodeBuild, CodeArtifact, Device Farm, CodeGuru<br>
-  Deploy 3노선 — CodeDeploy vs Beanstalk vs Amplify
+  <div class="obsv-st">📚 AWS로 보는 소프트웨어 개발 생명주기, 1편</div>
+  <b>SDLC 다섯 단계와 CodePipeline: 코드가 프로덕션에 도착하기까지</b> &larr; 지금 이 글<br>
+  Build·Test의 도구들: CodeBuild, CodeArtifact, Device Farm, CodeGuru<br>
+  Deploy 3노선: CodeDeploy vs Beanstalk vs Amplify
 </div>
 
 <p>배포하는 날의 풍경을 떠올려볼게요. 서버에 접속해서 빌드된 파일을 손으로 올리고, 프로세스를 재시작하고, 브라우저를 새로고침하면서 기도합니다. 어딘가 하나라도 사람 손을 타는 순간, 실수는 시간 문제예요.</p>
@@ -33,7 +33,7 @@
 
 <h2>1. 개념은 다섯 단계, 일꾼은 넷</h2>
 <p>소프트웨어 생명주기는 교과서적으로 <b>Code → Build → Test → Deploy → Provision</b> 흐름이에요. AWS에 이걸 얹으면 단계마다 담당 서비스가 하나씩 매핑되는데, 딱 한 군데 겹칩니다. <span class="obsv-mark">Build와 Test는 별개 단계지만, 실제로는 CodeBuild 한 명이 buildspec 안에서 빌드와 유닛테스트를 같이 처리해요.</span> 테스트 전용 stage를 따로 만들어도 그 안에서 도는 건 결국 CodeBuild입니다.</p>
-<p>그리고 Provision, 즉 인프라를 까는 일은 Code 시리즈가 아니라 IaC 도구인 CloudFormation(또는 CDK)의 몫이에요. 이 다섯 단계를 아래처럼 두 층으로 그리면 지도가 완성됩니다.</p>
+<p>그리고 Provision, 즉 인프라를 세우는 일은 Code 시리즈가 아니라 IaC 도구인 CloudFormation(또는 CDK)의 몫이에요. 이 다섯 단계를 아래처럼 두 층으로 그리면 지도가 완성됩니다.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -117,8 +117,8 @@
 </div>
 <div class="obsv-figcap">그림 2. 바통 터치가 아니라 사물함 릴레이</div>
 
-<h2>3. 코드는 어떻게 감지되나 — polling vs event</h2>
-<p>파이프라인의 출발점은 "코드가 바뀌었다"는 신호예요. 이걸 알아채는 방식이 두 가지입니다. <b>polling</b>은 파이프라인이 주기적으로 저장소를 두드려보며 "바뀐 거 있어?"라고 묻는 방식이고, <b>event 기반</b>은 저장소 쪽에서 변경이 생기는 순간 webhook이나 EventBridge로 파이프라인을 깨우는 방식이에요. <span class="obsv-mark">polling은 지연도 있고 헛질문이 대부분이라, AWS 권장은 event 기반입니다.</span></p>
+<h2>3. 코드는 어떻게 감지되나: polling vs event</h2>
+<p>파이프라인의 출발점은 "코드가 바뀌었다"는 신호예요. 이걸 알아채는 방식이 두 가지입니다. <b>polling</b>은 파이프라인이 주기적으로 저장소를 두드려보며 "바뀐 거 있어?"라고 묻는 방식이고, <b>event 기반</b>은 저장소 쪽에서 변경이 생기는 순간 webhook이나 EventBridge로 파이프라인을 깨우는 방식이에요. <span class="obsv-mark">polling은 지연도 있고 대부분은 변경이 없다는 답만 받는 헛된 질문이라, AWS 권장은 event 기반입니다.</span></p>
 <p>event 기반 아키텍처는 응용도 넓어요. 예를 들어 A리전과 B리전 양쪽에서 저장소를 관리하고 싶다면, A리전 repo의 변경 이벤트를 EventBridge가 받아 ECS 태스크를 invoke하고, 그 태스크가 B리전 repo로 git push해서 복제하는 설계가 가능합니다. CodeCommit에 자체 크로스 리전 복제 기능이 없어서 나온 우회 패턴인데, "이벤트가 파이프라인 밖의 일도 시킬 수 있다"는 좋은 예시예요.</p>
 
 <div class="obsv-callout">
@@ -126,8 +126,8 @@
   2024년 7월부터 CodeCommit은 신규 고객 가입이 막혔어요. 기존 사용자는 계속 쓸 수 있지만, 새 프로젝트라면 Source는 GitHub/GitLab을 CodeStar Connections(콘솔에서는 "연결")로 붙이는 게 표준입니다. 시험공부든 실무든 이 각주는 꼭 달아두세요.
 </div>
 
-<h2>4. 사람 손을 거치는 문 — 수동 승인</h2>
-<p>프로덕션 배포 직전만큼은 사람이 확인하고 싶을 때가 있죠. 그럴 때 stage 사이에 승인 게이트를 끼워 넣습니다. 액션 설정으로는 owner <b>AWS</b>, category <b>Approval</b>, provider <b>Manual</b>이에요. 승인 요청이 생기면 SNS 토픽으로 이메일을 쏘게 연결할 수 있고요.</p>
+<h2>4. 사람 손을 거치는 문: 수동 승인</h2>
+<p>프로덕션 배포 직전만큼은 사람이 확인하고 싶을 때가 있죠. 그럴 때 stage 사이에 승인 게이트를 끼워 넣습니다. 액션 설정으로는 owner <b>AWS</b>, category <b>Approval</b>, provider <b>Manual</b>이에요. 승인 요청이 생기면 SNS 토픽으로 이메일을 보내게 연결할 수 있고요.</p>
 <p>여기에 지뢰가 하나 있어요. <span class="obsv-mark">이메일을 받는 것과 승인할 수 있는 것은 별개라서, 승인자의 IAM에 파이프라인 조회 권한과 PutApprovalResult 권한이 있어야 합니다.</span> 이메일 링크를 눌렀는데 권한 에러가 나면 십중팔구 이거예요.</p>
 
 <div class="obsv-code">{
@@ -141,14 +141,14 @@
 
 <div class="obsv-callout">
   <div class="obsv-ct">&#128161; 승인 게이트 체크리스트</div>
-  &bull; SNS 발행은 파이프라인 서비스 롤의 몫, 승인 클릭은 승인자 IAM의 몫 &mdash; 주체가 달라요<br>
+  &bull; SNS 발행은 파이프라인 서비스 롤의 몫이고, 승인 클릭은 승인자 IAM의 몫이라 주체가 달라요<br>
   &bull; 승인 대기는 기본 7일, 지나면 파이프라인이 실패 처리돼요<br>
-  &bull; "approve"라는 액션명은 없어요. 공식 명칭은 PutApprovalResult
+  &bull; "approve"라는 액션명은 없어요. 공식 명칭은 PutApprovalResult 입니다.
 </div>
 
-<h2>5. CloudFormation과 짜는 설계 — 일회용 테스트 인프라</h2>
+<h2>5. CloudFormation과 짜는 설계: 일회용 테스트 인프라</h2>
 <p>Provision 담당인 CloudFormation을 파이프라인 안으로 끌어들이면 재미있는 설계가 가능해집니다. 빌드가 끝나면 CF가 테스트용 인프라(ALB, ASG, 앱까지)를 스택으로 통째로 세우고, 그 위에서 검증을 돌린 뒤, <b>테스트 스택을 삭제해서 흔적 없이 치우고</b>, 그다음에야 프로덕션 스택을 배포하는 흐름이에요.</p>
-<p>수동으로 서버를 깔던 시절엔 상상 못 할 사치죠. <span class="obsv-mark">인프라가 코드이기 때문에, 테스트 환경을 일회용 컵처럼 만들고 버릴 수 있는 거예요.</span> 테스트 환경이 프로드와 미묘하게 다른 "환경 드리프트" 문제도 매번 새로 찍어내니 사라집니다.</p>
+<p>수동으로 서버를 하나씩 설치하던 시절엔 상상 못 할 사치죠. <span class="obsv-mark">인프라가 코드이기 때문에, 테스트 환경을 일회용 컵처럼 만들고 버릴 수 있는 거예요.</span> 테스트 환경이 프로덕션과 미묘하게 다른 "환경 드리프트" 문제도 매번 새로 찍어내니 사라집니다.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -190,9 +190,9 @@
 <text x="350" y="298" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 프로드에 가기 전, Test 단계 안에서 인프라를 세웠다 부숩니다</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 3. Test 단계를 확대하면 &mdash; 세우고, 검증하고, 부수고, 그다음 프로드</div>
+<div class="obsv-figcap">그림 3. Test 단계 확대: 세우고, 검증하고, 부수고, 그다음 프로덕션</div>
 
-<p>마지막으로 하나 더. 같은 stage 안의 액션들은 <b>runOrder</b> 값으로 순서를 정하는데, 같은 숫자를 주면 병렬로 동시에 실행돼요. 두 리전에 동시에 배포하고, 둘 다 끝나면 스모크 테스트를 돌리는 식의 설계가 숫자 하나로 됩니다.</p>
+<p>마지막으로 하나 더 짚을게요. 같은 stage 안의 액션들은 <b>runOrder</b> 값으로 순서를 정하는데, 같은 숫자를 주면 병렬로 동시에 실행돼요. 두 리전에 동시에 배포하고, 둘 다 끝나면 스모크 테스트를 돌리는 식의 설계가 숫자 하나로 됩니다.</p>
 
 <div class="obsv-code">"actions": [
   { "name": "DeployToSeoul",  "runOrder": 1 },
@@ -203,7 +203,7 @@
 <div class="obsv-summary">
   <div class="obsv-st2">&#9997;&#65039; 오늘의 요약</div>
   <b>SDLC 다섯 단계(Code&rarr;Build&rarr;Test&rarr;Deploy&rarr;Provision)는 AWS에서 GitHub &middot; CodeBuild &middot; CodeDeploy &middot; CloudFormation 네 일꾼에게 배정되고, CodePipeline이 S3 아티팩트 릴레이로 전체를 지휘합니다.</b><br><br>
-  변경 감지는 polling 대신 event로, 프로드 앞엔 수동 승인 게이트(PutApprovalResult 권한 필수)를, 테스트 인프라는 CF로 세웠다 부수는 일회용으로. 결국 파이프라인 설계란 사람 손이 닿는 지점을 의도한 곳 하나로 줄이는 일이에요.
+  변경 감지는 polling 대신 event로 하고, 프로덕션 앞엔 수동 승인 게이트(PutApprovalResult 권한 필수)를 두고, 테스트 인프라는 CF로 세웠다 부수는 일회용으로 만듭니다. 결국 파이프라인 설계란 사람 손이 닿는 지점을 의도한 곳 하나로 줄이는 일이에요.
 </div>
 
 </div>

@@ -19,17 +19,17 @@
 <div class="obsv-wrap">
 
 <div class="obsv-series">
-  <div class="obsv-st">📚 dev DB 메이저 버전 이관 — 1편</div>
+  <div class="obsv-st">📚 dev DB 메이저 버전 이관, 1편</div>
   <b>dev MySQL 5.7 을 8.0.42 로 옮긴 5단계</b> &larr; 지금 이 글<br>
   롤백 수단을 보관했다는 착각<br>
-  검증표가 전부 ✅ 였는데 폭탄이 3개 남아있었다
+  검증표가 전부 ✅ 였는데 폭탄이 3개 남아 있었다
 </div>
 
 <p>새로 만든 테이블 DDL 을 dev 에 올리는데 이런 에러가 떴어요.</p>
 
 <div class="obsv-code">ERROR 1273 (HY000): Unknown collation: 'utf8mb4_0900_ai_ci'</div>
 
-<p>전사 표준으로 쓰기로 한 콜레이션인데, dev DB 가 그런 건 모른다고 합니다. 이유는 허무했어요. <b>dev 는 MySQL 5.7 이었고, 그 콜레이션은 8.0 부터 생긴 것</b>이거든요. 그리고 prod 는 Aurora MySQL 3.10.3 — MySQL 8.0.42 호환 버전이었습니다.</p>
+<p>전사 표준으로 쓰기로 한 콜레이션인데, dev DB 가 그런 건 모른다고 합니다. 이유는 허무했어요. <b>dev 는 MySQL 5.7 이었고, 그 콜레이션은 8.0 부터 생긴 것</b>이거든요. 그리고 이 서비스의 prod 는 Aurora MySQL 3.10.3, 즉 MySQL 8.0.42 호환 버전이었습니다.</p>
 
 <p>즉 <span class="obsv-mark">dev 에서 통과한 DDL 이 prod 에서 통과할지, dev 에서 막힌 게 prod 에서도 막힐지 아무것도 보장되지 않는 상태</span>로 몇 달을 쓰고 있었던 거예요. 그래서 dev DB 를 5.7 에서 8.0.42 로 옮겼습니다. 5단계로 나눠서, 매 단계마다 되돌릴 수 있는 상태를 유지하면서요.</p>
 
@@ -37,7 +37,7 @@
 
 <p>"dev 랑 prod 버전이 좀 다른데 뭐 어때"라고 넘기기 쉬운데, 안 되는 이유가 생각보다 많아요. 콜레이션 하나만 봐도 그렇습니다.</p>
 
-<p>5.7 에서는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_general_ci</code> 나 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_unicode_ci</code> 만 쓸 수 있어요. 8.0 에서 기본값이 된 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_0900_ai_ci</code> 는 아예 존재하지 않습니다. 그러니까 신규 테이블에 전사 표준을 적용하고 싶어도 <b>dev 에서 그 DDL 을 테스트할 방법 자체가 없었어요.</b> 검증 없이 prod 에 올리는 수밖에요.</p>
+<p>5.7 에서는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_general_ci</code> 나 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_unicode_ci</code> 정도를 씁니다. 8.0 에서 기본값이 된 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_0900_ai_ci</code> 는 아예 존재하지 않습니다. 그러니까 신규 테이블에 전사 표준을 적용하고 싶어도 <b>dev 에서 그 DDL 을 테스트할 방법 자체가 없었어요.</b> 검증 없이 prod 에 올리는 수밖에요.</p>
 
 <p>예약어도 늘었습니다. 8.0 에서 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">rank</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">groups</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">system</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">lead</code> 같은 단어가 예약어가 됐어요. 5.7 에서 잘 돌던 쿼리가 8.0 에서 문법 에러로 죽을 수 있다는 뜻입니다. 이런 건 dev 가 5.7 인 채로는 절대 못 잡아요.</p>
 
@@ -84,7 +84,7 @@ done</div>
   로그 문자열을 grep 하지 말고, 위처럼 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SELECT 1</code> 이 실제로 응답할 때까지 도는 루프</b>를 쓰는 게 안전합니다. 로그는 상태를 말해주지만 응답은 상태를 증명해요.
 </div>
 
-<p>검증 항목은 세 개였어요. 전 테이블 행수 diff 가 0인지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql.user</code> 의 계정이 그대로 넘어왔는지, 그리고 앱이 붙어서 API 가 200 을 주는지. 특히 계정은 5.7 → 8.0 에서 인증 플러그인 기본값이 바뀌기 때문에 꼭 봐야 했습니다.</p>
+<p>검증 항목은 세 개였어요. 전 테이블 행수 diff 가 0인지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql.user</code> 의 계정이 그대로 넘어왔는지, 그리고 앱이 붙어서 API 가 200 을 주는지를 확인했습니다. 특히 계정은 5.7 → 8.0 에서 인증 플러그인 기본값이 바뀌기 때문에 꼭 봐야 했습니다.</p>
 
 <div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 병행 기동해두면 "복원 실패"가 "장애"로 번지지 않아요</div>
@@ -95,12 +95,12 @@ done</div>
 
 <p>dev 서버에는 컨테이너를 띄우는 경로가 여러 겹으로 쌓여 있었어요. systemd 유닛이 헬스체크 스크립트를 부르고, 그게 start 스크립트를 부르고, 그게 compose 를 실행하는 구조였습니다. <span class="obsv-mark">그리고 그 층 중 두 곳에 5.7 이 문자열로 박혀 있었어요.</span></p>
 
-<p>지금은 8.0 이 잘 돌고 있지만, <b>다음 재부팅 때 systemd 가 그 경로를 타면 5.7 컨테이너가 다시 올라옵니다.</b> 그러면 3306 을 누가 먼저 잡느냐 싸움이 되거나, 최악의 경우 예전 볼륨을 붙인 5.7 이 서비스를 받게 돼요. 며칠 뒤 "데이터가 사라졌다"는 제보를 받고 원인을 못 찾는 상황이 이렇게 만들어집니다.</p>
+<p>지금은 8.0 이 잘 돌고 있지만, <b>다음 재부팅 때 systemd 가 그 경로를 타면 5.7 컨테이너가 다시 올라옵니다.</b> 그러면 3306 포트를 어느 쪽이 먼저 차지하느냐에 따라 결과가 갈리거나, 최악의 경우 예전 볼륨을 붙인 5.7 이 서비스를 받게 돼요. 며칠 뒤 "데이터가 사라졌다"는 제보를 받고 원인을 못 찾는 상황이 이렇게 만들어집니다.</p>
 
 <div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 이관은 데이터를 옮기는 일이 아니라 "옛 버전으로 가는 길"을 끊는 일이에요</div>
 
-<p>그래서 부팅 경로를 전부 따라가면서 5.7 참조를 지웠어요. compose 의 db 서비스는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code> + 새 볼륨 + 표준 기동 플래그로 갈아엎고, 헬스체크·유틸 스크립트의 컨테이너명도 일괄 교체했습니다. crontab 이 따로 없다는 것까지 확인해서 <b>실행 경로가 systemd 하나뿐임을 증명</b>하고 끝냈어요.</p>
+<p>그래서 부팅 경로를 전부 따라가면서 5.7 참조를 지웠어요. compose 의 db 서비스는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code> + 새 볼륨 + 표준 기동 플래그로 전부 교체하고, 헬스체크·유틸 스크립트의 컨테이너명도 일괄 교체했습니다. crontab 이 따로 없다는 것까지 확인해서 <b>실행 경로가 systemd 하나뿐임을 증명</b>하고 끝냈어요.</p>
 
 <p>그런데 이 작업, 정작 <b>검증은 못 했습니다.</b> "지금 재부팅하면 8.0 이 뜬다"를 증명하는 방법은 실제로 재부팅해보는 것뿐인데, 그걸 안 했으니까요. 코드를 다 고쳤다는 것과 부팅이 실제로 그 코드를 탄다는 건 다른 이야기예요.</p>
 
@@ -111,9 +111,9 @@ done</div>
 <p>8.0 이 한 번 손댄 데이터 디렉터리는 5.7 이 못 읽어요. 그래서 <b>물리 볼륨을 따로 보존</b>하는 게 필수였습니다. 논리 백업(44MB SQL 파일)도 있었지만, 그건 복원에 시간이 걸리는 수단이고, 볼륨은 붙이면 바로 뜨는 수단이니까요. 성격이 다른 두 개를 다 들고 있어야 했어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🕳️ 놓친 것 — 목표 버전을 처음부터 핀하지 않았어요</div>
+  <div class="obsv-ct">🕳️ 놓친 것: 목표 버전을 처음부터 고정하지 않았어요</div>
   Phase 2 에서 "8.0" 컨테이너에 복원하고, Phase 4 에서 이미지를 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">8.0.42</code> 로 교체하는 <b>2단계</b>로 진행했어요. 그런데 만약 Phase 2 가 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0</code> 태그였다면 8.0.43 이상을 받았을 수 있고, 그러면 Phase 4 는 업그레이드가 아니라 <b>다운그레이드</b>예요. InnoDB 는 그걸 지원하지 않습니다.<br>
-  결과적으로는 무사히 지나갔지만, 애초에 <b>첫 컨테이너부터 prod 와 똑같은 패치 버전으로 핀했으면 Phase 4 자체가 필요 없었어요.</b> 2단계로 나눈 대가가 리스크뿐이었던 거죠.
+  결과적으로는 무사히 지나갔지만, 애초에 <b>첫 컨테이너부터 prod 와 똑같은 패치 버전으로 고정했으면 Phase 4 자체가 필요 없었어요.</b> 2단계로 나눈 대가가 리스크뿐이었던 거죠.
 </div>
 
 <h2>6. 스키마 표준화, 그리고 남겨둔 미봉책</h2>
@@ -134,7 +134,7 @@ ALTER TABLE landing_page RENAME INDEX uq_lp_slug TO uk_lp_slug;</div>
 <p>세 개의 성격이 완전히 달라요. ①은 테이블을 통째로 다시 쓰는 작업이라 데이터가 크면 오래 걸리고, ③은 이름만 바꾸는 거라 메타데이터 수정으로 끝납니다. <b>같은 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">ALTER TABLE</code> 이라고 비용이 같지 않아요.</b> prod 에 적용할 때 이 차이를 모르면 예상 시간이 크게 틀립니다.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🕳️ 놓친 것 — 콜레이션은 신규 테이블만 바꿨어요</div>
+  <div class="obsv-ct">🕳️ 놓친 것: 콜레이션은 신규 테이블만 바꿨어요</div>
   Phase 2 가 <b>5.7 덤프를 논리 복원</b>했기 때문에, 나머지 수십 개 테이블은 5.7 시절 콜레이션(<code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">general_ci</code>)을 그대로 들고 왔어요. 표준으로 바꾼 건 신규 6개뿐입니다.<br>
   즉 <b>한 DB 안에 콜레이션이 두 종류 섞인 상태</b>가 됐고, 저는 이걸 "표준화 완료"라고 기록했어요. 정확하지 않은 기록이었습니다.
 </div>
@@ -144,16 +144,16 @@ ALTER TABLE landing_page RENAME INDEX uq_lp_slug TO uk_lp_slug;</div>
 <p>그래서 저장은 안전한데, 경계를 넘어 문자열을 비교하는 순간 쿼리가 죽습니다.</p>
 
 <div class="obsv-fig"><img src="images/01/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
-<div class="obsv-figcap">그림 3. 콜레이션은 저장을 바꾸지 않고 비교를 바꿔요 — 그래서 배포 후에 터집니다</div>
+<div class="obsv-figcap">그림 3. 콜레이션은 저장을 바꾸지 않고 비교를 바꿔요. 그래서 배포 후에 터집니다</div>
 
 <p>다행히 지금은 안 터져요. 신규 테이블이 legacy 를 참조하는 컬럼이 전부 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">BIGINT</code> 라서 숫자 비교만 하고 있거든요. 숫자에는 콜레이션이 개입하지 않습니다. 그런데 이건 설계를 잘해서가 아니라 <b>아직 지뢰를 안 밟았을 뿐</b>이에요. 문자열로 경계를 넘는 쿼리가 하나 추가되는 날 터집니다. 에러가 안 나도 인덱스를 못 타서 조용히 느려지는 경로가 먼저 생기고요.</p>
 
-<p>그래서 이건 "완료"가 아니라 <b>"혼재 상태 — 경계를 넘는 문자열 비교 금지"</b> 로 문서에 남기고 별도 과제로 뺐어요. 전체 테이블 콜레이션 변환은 데이터 크기만큼 시간이 드는 작업이라 이관과 같이 할 일이 아니었습니다.</p>
+<p>그래서 이건 "완료"가 아니라 <b>"혼재 상태: 경계를 넘는 문자열 비교 금지"</b> 로 문서에 남기고 별도 과제로 뺐어요. 전체 테이블 콜레이션 변환은 데이터 크기만큼 시간이 드는 작업이라 이관과 같이 할 일이 아니었습니다.</p>
 
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>
   <b>메이저 버전 이관은 5단계로 쪼개면 매 단계마다 되돌릴 수 있어요.</b> 백업은 검증까지, 이관은 병행 기동으로, 그리고 옛 버전으로 가는 부팅 경로를 전부 끊어야 끝납니다.<br><br>
-  놓친 것도 남았습니다. 목표 버전을 처음부터 핀하지 않아 불필요한 다운그레이드 위험을 만들었고, 콜레이션은 신규 테이블만 바꿨는데 "표준화 완료"라고 적었어요.<br><br>
+  놓친 것도 남았습니다. 목표 버전을 처음부터 고정하지 않아 불필요한 다운그레이드 위험을 만들었고, 콜레이션은 신규 테이블만 바꿨는데 "표준화 완료"라고 적었어요.<br><br>
   결국 데이터를 옮기는 게 어려운 일이 아니었습니다. <b>어려운 건 옛 버전으로 돌아가는 모든 길을 찾아서 끊는 일이었어요.</b>
 </div>
 

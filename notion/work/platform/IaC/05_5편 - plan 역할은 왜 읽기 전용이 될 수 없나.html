@@ -20,34 +20,34 @@
 
 <div class="obsv-series">
   <div class="obsv-st">📚 IaC 작업일지</div>
-  1편 &mdash; 빈 저장소에서 설계 리뷰까지<br>
-  2편 &mdash; 리뷰에서 맞은 네 발을 수리하다<br>
-  3편 &mdash; 라벨 붙이고 재실행하세요는 거짓말이었다<br>
-  4편 &mdash; 문서를 믿었다가 두 번 막혔다<br>
-  <b>5편 &mdash; plan 역할은 왜 읽기 전용이 될 수 없나</b> &larr; 지금 이 글<br>
-  6편 &mdash; AdministratorAccess를 붙여도 소용없게 만들기<br>
-  7편 &mdash; 드리프트는 이슈로, 고장은 실패로
+  1편. 빈 저장소에서 설계 리뷰까지<br>
+  2편. 리뷰에서 맞은 네 발을 수리하다<br>
+  3편. 라벨 붙이고 재실행하세요는 거짓말이었다<br>
+  4편. 문서를 믿었다가 두 번 막혔다<br>
+  <b>5편. plan 역할은 왜 읽기 전용이 될 수 없나</b> &larr; 지금 이 글<br>
+  6편. AdministratorAccess를 붙여도 소용없게 만들기<br>
+  7편. 드리프트는 이슈로, 고장은 실패로
 </div>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">📌 정정 &mdash; 이 글의 3장은 다음 날 무효가 됐습니다</div>
+  <div class="obsv-ct">📌 정정: 이 글의 3장은 다음 날 무효가 됐습니다</div>
   이 글을 쓴 다음 날, 여기서 자랑한 &ldquo;잠금 파일 이름을 못 박는&rdquo; 권한 설계를 두 번 넓혀
   결국 버킷 전체를 열었습니다. <b>3장의 코드블록과 그림 2 는 현재 코드와 다릅니다.</b>
   &ldquo;최종 형태&rdquo;라고 쓴 문장도 최종이 아니었고요.<br><br>
-  다만 <b>경고 자체는 지금도 맞습니다</b> &mdash; 프리픽스를 통째로 열면 plan 이 apply 가 되므로,
+  다만 <b>경고 자체는 지금도 맞습니다.</b> 프리픽스를 통째로 열면 plan 이 apply 가 되므로,
   지금도 확장자 <code>.tflock</code> 제한과 apply 역할의 쓰기 경계는 그대로 남겨두었습니다.
   무효가 된 건 &ldquo;우리는 파일 이름으로 못 박아서 안전하다&rdquo;는 자랑이고,
   1&middot;2&middot;4&middot;5장은 그대로 유효합니다.<br><br>
   왜 그 좁은 경계를 유지할 수 없었는지는 <b>9편</b>에 적었습니다. 이 글은 그날의 기록으로 남겨둡니다.
 </div>
 
-<p>Terraform CI 에는 환경마다 역할이 두 개 있어요. 리소스를 실제로 바꾸는 apply 용, PR 에서 변경 계획만 계산하는 plan 용. PR 을 올리는 것만으로 인프라가 바뀌면 안 되니까 나눕니다. 그럼 plan 쪽은 계산만 하니 <code>ReadOnlyAccess</code> 한 장이면 끝날 것 같죠. 그렇게 만들면 <b>첫 PR 부터 plan 이 실패해요.</b></p>
+<p>Terraform CI 에는 환경마다 역할이 두 개 있어요. 리소스를 실제로 바꾸는 apply 용과, PR 에서 변경 계획만 계산하는 plan 용입니다. PR 을 올리는 것만으로 인프라가 바뀌면 안 되니까 나눕니다. 그럼 plan 쪽은 계산만 하니 <code>ReadOnlyAccess</code> 한 장이면 끝날 것 같죠. 그렇게 만들면 <b>첫 PR 부터 plan 이 실패해요.</b></p>
 
 <p>실패 메시지는 state 잠금을 획득할 수 없다는 내용입니다. state 는 Terraform 이 "내가 만든 리소스가 지금 이렇게 생겼다"를 적어두는 파일이고, 우리는 그걸 S3 버킷에 둬요. 읽기만 하는 명령이 왜 그 파일을 잠그죠? <b>"읽기 전용 역할"이라는 이름이 무엇을 감추고 있는가</b>가 오늘의 질문입니다.</p>
 
 <h2>1. terraform plan 은 읽기 작업이 아니다</h2>
 
-<p>plan 이 읽는 건 세 가지예요. 코드가 원하는 상태, state 에 적힌 상태, 실제 리소스의 지금 모습. 여기까지는 전부 읽기입니다. 그런데 Terraform 은 plan 을 시작할 때 <b>state 를 잠가요.</b></p>
+<p>plan 이 읽는 건 세 가지예요. 코드가 원하는 상태, state 에 적힌 상태, 그리고 실제 리소스의 지금 모습입니다. 여기까지는 전부 읽기입니다. 그런데 Terraform 은 plan 을 시작할 때 <b>state 를 잠가요.</b></p>
 
 <p>기준선 때문이에요. plan 이 계산하는 동안 다른 실행이 같은 state 를 갱신하면, 내가 보고 있는 diff 는 이미 존재하지 않는 상태와의 차이가 됩니다. 그래서 Terraform 은 <span class="obsv-mark">state 를 다루는 명령이 기본적으로 잠금을 잡도록</span> 통일했어요. plan 도 예외가 아니고요.</p>
 
@@ -78,13 +78,13 @@
 
 <h2>2. 막히면 손이 먼저 가는 곳</h2>
 
-<p>plan 이 잠금에서 실패했을 때 사람이 먼저 하는 일은 정해져 있어요. <code>-lock=false</code>. 한 줄 붙이면 plan 이 통과하고 PR 이 초록불이 됩니다. 문제는 그 다음이에요. 왜 붙었는지는 붙인 사람만 알고, 그 사람도 두 달 뒤엔 잊어요. 굳은 플래그는 언젠가 복사돼서 apply 쪽으로 넘어갑니다. 두 apply 가 겹치는 순간 state 가 깨지고요.</p>
+<p>plan 이 잠금에서 실패했을 때 사람이 먼저 하는 일은 정해져 있어요. <code>-lock=false</code> 를 붙이는 겁니다. 한 줄 붙이면 plan 이 통과하고 PR 이 초록불이 됩니다. 문제는 그 다음이에요. 왜 붙었는지는 붙인 사람만 알고, 그 사람도 두 달 뒤엔 잊어요. 한번 남은 플래그는 언젠가 복사돼서 apply 쪽으로 넘어갑니다. 두 apply 가 겹치는 순간 state 가 깨지고요.</p>
 
 <p><span class="obsv-mark">가장 위험한 우회는 "일단 되게 만드는" 우회예요.</span> 권한을 잘못 짜는 비용은 "plan 이 한 번 실패한다"가 아니라 <b>"안전장치가 영구히 꺼진다"</b> 로 계산해야 해요. 도구가 정당하게 요구하는 동작을 정책이 막고 있다면, 고칠 쪽은 도구가 아니라 정책입니다.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">⚠️ 지금 확인해볼 것</div>
-  여러분 저장소의 워크플로에 <code>-lock=false</code> 가 있다면 누가 왜 붙였는지 커밋을 찾아보세요. 답이 안 나오면 그건 권한 설계가 남긴 흉터예요. 우리 워크플로에는 그 플래그가 없고 전부 <code>-lock-timeout=5m</code> 이에요 &mdash; 잠금을 건너뛰는 게 아니라 5분까지 기다렸다가 포기하는 쪽이에요.
+  여러분 저장소의 워크플로에 <code>-lock=false</code> 가 있다면 누가 왜 붙였는지 커밋을 찾아보세요. 답이 안 나오면 그건 권한 설계가 남긴 흉터예요. 우리 워크플로에는 그 플래그가 없고 전부 <code>-lock-timeout=5m</code> 이에요. 잠금을 건너뛰는 게 아니라 5분까지 기다렸다가 포기하는 쪽입니다.
 </div>
 
 <h2>3. 그래서 비대칭으로 만든다</h2>
@@ -97,7 +97,7 @@ s3:ListBucket   prefix=env/dev/* # 자기 프리픽스만
 s3:PutObject + s3:DeleteObject
    env/dev/terraform.tfstate.tflock   ^ 와일드카드가 아니라 파일 이름</div>
 
-<p>핵심은 마지막 줄이에요. <b>쓰기 권한의 대상이 state 가 아니라 잠금 파일</b>이라는 것. 귀찮다고 <code>env/dev/*</code> 로 열면 같은 프리픽스의 <code>terraform.tfstate</code> 까지 덮어쓸 수 있게 되고, plan 역할은 조용히 apply 역할이 됩니다. <span class="obsv-mark">파일 이름 한 개 차이로 "계획만 세우는 역할"과 "바꿀 수 있는 역할"이 갈려요.</span></p>
+<p>핵심은 마지막 줄이에요. <b>쓰기 권한의 대상이 state 가 아니라 잠금 파일</b>이라는 점입니다. 귀찮다고 <code>env/dev/*</code> 로 열면 같은 프리픽스의 <code>terraform.tfstate</code> 까지 덮어쓸 수 있게 되고, plan 역할은 조용히 apply 역할이 됩니다. <span class="obsv-mark">파일 이름 한 개 차이로 "계획만 세우는 역할"과 "바꿀 수 있는 역할"이 갈려요.</span></p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -132,11 +132,11 @@ s3:PutObject + s3:DeleteObject
 
 <p>예전에는 S3 백엔드의 state 잠금에 DynamoDB 테이블이 필요했어요. 부트스트랩에 테이블이 하나 더 붙고, 권한도 S3 와 DynamoDB 두 서비스에 걸쳐 써야 했죠. 1.10 의 네이티브 잠금은 그걸 없앴어요. 만들 리소스가 하나 줄고, 권한도 S3 안에서 끝납니다.</p>
 
-<p>좋은 변화인데 대가가 하나 있어요. 잠금이 <b>S3 객체</b>라는 걸 모르면 위의 정책을 아예 쓸 수 없다는 것. <code>use_lockfile = true</code> 한 줄은 편하지만, 그 아래에서 무슨 객체가 생기고 지워지는지를 알아야 권한을 좁힐 수 있어요. <span class="obsv-mark">추상화가 편해진 만큼, 그 아래를 모르면 권한을 못 짭니다.</span></p>
+<p>좋은 변화인데 대가가 하나 있어요. 잠금이 <b>S3 객체</b>라는 걸 모르면 위의 정책을 아예 쓸 수 없다는 점입니다. <code>use_lockfile = true</code> 한 줄은 편하지만, 그 아래에서 무슨 객체가 생기고 지워지는지를 알아야 권한을 좁힐 수 있어요. <span class="obsv-mark">추상화가 편해진 만큼, 그 아래를 모르면 권한을 못 짭니다.</span></p>
 
 <h2>5. 이름이 읽기인데 쓰기를 하는 명령들</h2>
 
-<p>"읽기 전용 역할"이라는 이름은 그 역할이 실제로 무엇을 하는지 말해주지 않아요. 권한은 이름이 아니라 <b>그 역할이 실행하는 명령이 무엇을 건드리는지</b>로 설계해야 해요. 이름이 읽기인데 쓰기 권한을 요구하는 명령은 여기저기 있어요 &mdash; Athena 의 <code>SELECT</code> 는 결과를 S3 에 내려써야 하니 <code>s3:PutObject</code> 가 필요하고, CloudFormation 의 변경 집합은 미리보기인데도 만드는 것 자체가 쓰기 API 예요.</p>
+<p>"읽기 전용 역할"이라는 이름은 그 역할이 실제로 무엇을 하는지 말해주지 않아요. 권한은 이름이 아니라 <b>그 역할이 실행하는 명령이 무엇을 건드리는지</b>로 설계해야 해요. 이름이 읽기인데 쓰기 권한을 요구하는 명령은 여기저기 있어요. Athena 의 <code>SELECT</code> 는 결과를 S3 에 내려써야 하니 <code>s3:PutObject</code> 가 필요하고, CloudFormation 의 변경 집합은 미리보기인데도 만드는 것 자체가 쓰기 API 예요.</p>
 
 <p>그래서 순서가 바뀌어야 해요. 역할 이름에 어울리는 정책을 찾는 게 아니라, <b>그 역할이 돌릴 명령을 한 번 실행해 보고 무엇이 만들어지는지 세는 것</b>부터 시작하는 거죠. 우리 plan 역할이 이름은 읽기 전용인데 파일 하나를 쓸 수 있는 비대칭이 된 건 그래서예요.</p>
 
