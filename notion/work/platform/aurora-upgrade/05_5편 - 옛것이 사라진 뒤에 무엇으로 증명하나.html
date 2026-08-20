@@ -1,0 +1,207 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Aurora 5.7 → 8.0, 5부작</div>
+  1편 · 확장 지원료가 마감을 만들었다<br>
+  2편 · 되돌릴 수 있는 단계를 쌓았다<br>
+  3편 · 6분 만에 넘어갔다<br>
+  4편 · 앱은 한 번도 멈추지 않았다<br>
+  <b>5편 · 옛것이 사라진 뒤에 무엇으로 증명하나</b> &larr; 지금 이 글
+</div>
+
+<p>블루그린 전환은 두 가지를 합니다. <b>새 클러스터가 옛 이름을 물려받고</b>, 관측이 끝나면 <b>옛 클러스터를 지웁니다.</b></p>
+
+<p>이 두 가지가 검증에 각각 다른 영향을 줍니다. <span class="obsv-mark">앞의 것은 지표를 망가뜨리고, 뒤의 것은 대조 자체를 없앱니다.</span></p>
+
+<p>이 글은 그 둘을 각각 어떻게 처리했는지에 대한 기록입니다. 그리고 <b>두 번째에서 제가 증명했다고 착각한 것</b>에 대한 정정입니다.</p>
+
+<h2>1. 크레딧이 750 줄었는데 CPU 는 기준선 아래였다</h2>
+
+<p>이 클러스터는 <b>버스터블 등급</b>입니다. CPU 를 예산제로 쓰는 종류예요. 정해진 <b>기준선</b> 아래로 쓰면 크레딧이 쌓이고, 넘겨 쓰면 쌓인 걸 꺼내 씁니다. <span class="obsv-mark">1크레딧은 vCPU 하나를 1분 동안 100% 로 돌리는 권리</span>입니다.</p>
+
+<p>전환 뒤 그 크레딧 잔량 지표를 보다가 이상한 값을 만났습니다.</p>
+
+<div class="obsv-code">CPUCreditBalance 급락   −750.8</div>
+
+<p>크레딧이 줄어드는 방법은 하나뿐입니다. <b>기준선을 넘겨 쓰는 것</b>이요. 그러니까 750 이 줄었다면 CPU 를 기준선 위로 한참 썼다는 뜻입니다.</p>
+
+<p>그런데 4편에서 같은 구간의 CPU 를 실측해 적어뒀어요.</p>
+
+<div class="obsv-code">이 클래스의 기준선        30%
+같은 구간 CPU 평균       18.5%
+같은 구간 CPU 최대       20.7%   ← 기준선을 한 번도 안 넘었다</div>
+
+<p><b>기준선을 안 넘었으면 크레딧은 쌓이는 방향이어야 합니다.</b> 줄어들 이유가 아예 없어요. <span class="obsv-mark">지표는 750 이 빠졌다고 말하고, 다른 지표는 빠질 이유가 없다고 말합니다.</span></p>
+
+<h2>2. 이름으로 묶인 시계열은 한 자원의 역사가 아니다</h2>
+
+<p>원인은 전환 방식에 있었습니다. 이번 전환은 <b>블루그린</b>이었어요. 운영과 똑같은 복제 클러스터를 따로 만들어 두고, 전환 순간 <b>새 클러스터가 원래 이름을 물려받고 옛 클러스터에는 접미사가 붙습니다.</b> 3편에서 "이름이 승계돼서 앱도 알람도 그대로 새 클러스터를 봤다"고 적었던 그 성질이에요.</p>
+
+<p>그런데 <b>지표도 이름으로 묶입니다.</b></p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="a5a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M60 250 C 58 190, 61 120, 59 44" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#a5a)"/>
+      <path d="M60 250 C 220 252, 460 248, 664 251" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#a5a)"/>
+      <text x="36" y="48" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">크레딧</text>
+
+      <path d="M352 40 C 354 110, 350 180, 352 254" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="7 6"/>
+      <text x="352" y="32" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">전환</text>
+
+      <path d="M70 96 C 140 99, 250 94, 344 97" fill="none" stroke="#4a7fb5" stroke-width="2.8"/>
+      <text x="196" y="84" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">옛 인스턴스 · 오래 쌓여 천장 근처</text>
+
+      <path d="M360 232 C 440 226, 560 210, 656 192" fill="none" stroke="#5a9e6f" stroke-width="2.8"/>
+      <text x="524" y="250" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">새 인스턴스 · 0 에서 시작해 쌓인다</text>
+
+      <path d="M348 100 C 350 140, 348 180, 350 224" fill="none" stroke="#e5533c" stroke-width="2.4" marker-end="url(#a5a)"/>
+      <text x="288" y="168" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">−750.8</text>
+
+      <path d="M110 276 C 290 273, 510 279, 610 275 C 613 292, 612 300, 611 310 C 510 313, 290 309, 112 311 C 109 300, 110 286, 110 276 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.4"/>
+      <text x="360" y="298" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f">이 급락은 소비가 아니라 대상이 바뀐 것이다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 한 시계열이 전환 경계에서 서로 다른 두 인스턴스를 이어붙인다</div>
+
+<p>크레딧을 오래 쌓아둔 옛 인스턴스에서 <b>방금 생성된 새 인스턴스로 값이 갑자기 옮겨간</b> 것이었습니다. 소비가 아니라 <span class="obsv-mark">그 이름이 가리키는 대상이 중간에 바뀐 것</span>이에요. 그래서 CPU 실측과 앞뒤가 안 맞았던 겁니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🎯 4편의 그 오탐과 뿌리가 같다</div>
+  4편에서 크레딧 알람이 오탐이었던 이야기를 했어요. 새 인스턴스가 0에서 시작하는데 임계값이 400 이라, 채워지는 동안 계속 울린 것이요.<br><br>
+  그건 이것과 <b>다른 문제가 아니라 같은 뿌리에서 나온 다른 읽기 오류</b>입니다. 사건은 하나예요. <b>인스턴스가 교체되고 이름이 승계된 것</b>이요. 거기서 오류가 둘 나왔습니다. <b>찰 때까지 우는 임계값</b>과 <b>경계를 걸친 급락</b>요.<br><br>
+  그래서 규칙은 하나로 적을 수 있습니다. <b>이름으로 묶이는 지표를 볼 때는 그 이름이 구간 내내 같은 것을 가리켰는지 먼저 확인한다.</b> 이름 재사용이 있으면 그 시계열은 한 자원의 역사가 아니에요.
+</div>
+
+<p>실무적으로 하나가 더 딸려옵니다. <b>임계값을 전환 경계를 걸친 구간에서 뽑으면 안 됩니다.</b> 두 인스턴스가 섞인 최대·최소니까요. 한쪽만 담긴 구간이면 괜찮고, 4편의 알람은 전환 전 구간 실측으로 정한 것이라 그 조건에 걸리지 않습니다.</p>
+
+<h2>3. 그리고 대조본이 사라졌다</h2>
+
+<p>관측 기간이 끝나 옛 클러스터를 지웠습니다. 그 순간 <b>3편에서 썼던 검증 수단이 없어집니다.</b> 지우기 전에 확인할 게 더 없나 되짚어봤고, 그래서 이 절이 생겼어요.</p>
+
+<div class="obsv-code">행 수 대조   3편에서 쓴 방법.  상대가 없으니 절대값만 나온다
+스키마 diff  3편에서 쓴 방법.  상대가 없다
+갱신 시각    이번에 시도한 우회로.  information_schema.tables.UPDATE_TIME</div>
+
+<p>세 번째가 특히 아까웠어요. 테이블마다 <b>마지막으로 갱신된 시각</b>을 돌려주는 컬럼이 있어서, 그것만 있으면 "전환 시각 이후에 쓰기가 들어왔나"를 바로 볼 수 있습니다.</p>
+
+<p>조회했더니 비어 있었습니다. 처음엔 InnoDB 가 이 값을 안 채우는 줄 알았는데 <b>그게 아니었어요.</b> 채우기는 하는데 <span class="obsv-mark">그 값이 메모리에만 있어서 인스턴스가 재시작되면 사라집니다.</span> 전환으로 방금 생성된 인스턴스라 기록된 게 없었던 겁니다. 8.0 에서는 이 컬럼이 통계 캐시를 거치는 것도 겹칩니다.</p>
+
+<p>즉 <b>"엔진이 안 준다"가 아니라 "이 인스턴스에는 아직 없다"</b>였습니다. 원인을 잘못 적어두면 며칠 뒤 같은 컬럼에 값이 채워져서 앞말이 뒤집혀요.</p>
+
+<p>그래서 판단을 정리했습니다. <b>대조는 두 대상이 있어야 하지만, 증명은 꼭 그렇지 않습니다.</b> 자기 자신 안에 반드시 성립해야 하는 관계가 있으면 그걸로도 되니까요.</p>
+
+<h2>4. 그런데 내가 증명한 것은 내가 증명하려던 것이 아니었다</h2>
+
+<p>쓴 것은 <b>자동 증가 컬럼의 다음 값과 현재 최대값의 관계</b>였어요.</p>
+
+<div class="obsv-code">다음 값 − MAX(id)  =  1     마지막으로 발급된 번호가 지금도 테이블에 있다</div>
+
+<p>카운터 값은 되돌아가지 않으니, 다음 값이 최대값보다 정확히 1 크다면 <b>가장 최근에 발급된 번호가 살아 있다</b>는 뜻입니다. 여덟 테이블 전부 그 상태였어요.</p>
+
+<p>그래서 저는 이렇게 적었습니다. <b>"가장 위험한 순간인 전환 직전의 쓰기가 유실되지 않았다."</b></p>
+
+<p><span class="obsv-mark">그 문장이 틀렸습니다.</span> 두 가지 이유로요.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="352" y="26" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">간격 1 은 두 경우에 똑같이 나온다</text>
+
+      <text x="60" y="72" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">유실 없음</text>
+      <path d="M60 84 C 180 81, 340 87, 452 83 C 455 100, 454 110, 453 122 C 340 125, 180 121, 62 123 C 59 110, 60 96, 60 84 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="256" y="108" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">전환 직전 1839 까지 넘어옴 → 이후 1840, 1841 …</text>
+      <path d="M466 103 C 500 99, 530 107, 560 103" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="4 5"/>
+      <text x="626" y="108" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">간격 1</text>
+
+      <text x="60" y="164" font-family="Menlo, monospace" font-size="12" fill="#b3502f">꼬리 유실</text>
+      <path d="M60 176 C 180 173, 340 179, 452 175 C 455 192, 454 202, 453 214 C 340 217, 180 213, 62 215 C 59 202, 60 188, 60 176 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="256" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">1837~1839 유실 → 이후 새 쓰기가 1840, 1841 …</text>
+      <path d="M466 195 C 500 191, 530 199, 560 195" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="4 5"/>
+      <text x="626" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">간격 1</text>
+
+      <path d="M40 240 C 200 237, 460 243, 664 239" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="352" y="272" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">전환 뒤에 쓰기가 계속 들어오면 간격은 따라잡힌다</text>
+      <text x="352" y="300" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34">그래서 이 검사는 "측정 시점의 마지막 쓰기가 살아 있다" 까지만 말한다</text>
+      <text x="352" y="322" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#8a8272">전환 시점의 꼬리에 대해서는 아무 말도 하지 않는다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 통과가 보장된 시험은 시험이 아니다</div>
+
+<p><b>첫째, 측정 시점이 너무 늦었습니다.</b> 저는 <b>옛 클러스터를 지운 뒤</b>에 이걸 쟀어요. 그런데 3편에 적었듯 전환 직후부터 새 클러스터에 쓰기가 계속 들어오고 있었습니다. 전환 직전 행 몇 개가 유실되고 카운터가 그 자리에 남아 있었어도, <b>그 뒤 정상 운영의 신규 행이 그 번호를 받습니다.</b> 그러면 간격은 다시 1 이 돼요.</p>
+
+<p><b>둘째, 이 전환 방식에서는 카운터가 행을 따라갑니다.</b> 복제로 따라잡는 방식이라 복제본이 <b>실제로 적용한 행</b>이 카운터를 밀어 올려요. 꼬리를 못 받았으면 카운터도 거기까지만 올라가 있으니 <b>그때도 간격은 1</b> 입니다.</p>
+
+<p>즉 <span class="obsv-mark">쓰기가 계속되는 테이블에서 이 검사는 사실상 항상 통과합니다.</span> 15편에서 "일부러 고장 내서 잡히는지 확인하라"고 썼는데, 이건 고장을 넣어도 통과하는 시험이었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 그래서 이 검사가 실제로 말하는 것</div>
+  <b>측정 시점의 마지막 쓰기가 살아 있고, 카운터와 데이터가 일관됩니다.</b> 여기까지예요. 운영이 정상으로 돌고 있다는 확인으로는 쓸모가 있습니다.<br><br>
+  <b>전환 시점의 꼬리는 이 검사로 알 수 없습니다.</b> 그걸 보려면 전환 당시에 최대값을 따로 떠두고 나중에 맞춰야 했어요. 지나간 뒤에는 만들 수 없는 증거입니다.<br><br>
+  반대 방향도 확정이 아닙니다. 간격이 1보다 크다고 유실인 것도 아니에요. <b>롤백된 삽입, 중복키 실패, 최근 행 삭제, 대량 삽입의 번호 블록 예약</b>이 전부 번호를 쓰고 버립니다.<br><br>
+  하나 더. 이 값을 <code>information_schema</code> 로 읽으면 8.0 은 통계 캐시를 거칩니다. 캐시 만료를 끄지 않으면 <b>하루 전 값</b>을 볼 수 있어요.
+</div>
+
+<h2>5. 오류는 절대값으로 읽을 수 있다</h2>
+
+<p>같은 생각을 오류에도 적용했는데, 이쪽은 앞의 것보다 나았습니다. 대조본이 없으니 "전보다 늘었나"는 물을 수 없어요. 대신 <b>절대값이 0이어야 하는 종류</b>를 골랐습니다.</p>
+
+<p>DB 엔진은 오류를 <b>종류별 누적 카운터</b>로 세어둡니다. 기동 이후 각 오류 번호가 몇 번 났는지가 남아 있어요.</p>
+
+<div class="obsv-code">performance_schema.events_errors_summary_global_by_error
+
+전체 실행 문장            약 290만
+오류 총계                 1건  ← 내가 낸 오타였다
+
+문자셋 불일치 (1267 · 1271)        0
+읽기 전용 위반 (1290 · 1836 · 1792) 0</div>
+
+<p>이 두 계열을 고른 이유가 있어요. <b>메이저 버전 이관에서 실제로 터지는 모양</b>이기 때문입니다.</p>
+
+<p><b>문자셋 불일치</b>는 콜레이션이 섞였을 때 나옵니다. db-migration 시리즈에서 한 DB 안에 콜레이션이 두 종류 섞인 상태를 만들고 "경계를 넘는 문자열 비교 금지"로 적어뒀던 그 위험이에요. 이번 전환은 기존 테이블의 콜레이션을 바꾸지 않으니 <b>나면 안 되는 오류</b>입니다.</p>
+
+<p><b>읽기 전용 위반</b>은 앱이 쓰기를 받지 않는 쪽에 쓰려 할 때 납니다. 4편에서 접속 URL 에 읽기 전용 엔드포인트가 섞여 있으면 전환 순간 드라이버가 그쪽에 고정된다고 했던 그 계열이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 이 카운터를 읽을 때 붙는 조건</div>
+  이건 <b>인스턴스마다 따로 세고, 그 인스턴스가 기동한 시점부터의 누적</b>입니다. 그래서 두 가지가 따라붙어요.<br><br>
+  하나, <b>어디서 읽었는지가 값의 의미를 정합니다.</b> 읽기 전용 위반은 쓰기를 거부하는 쪽에서 나므로, 그쪽 인스턴스에서 읽어야 0 이 증거가 됩니다.<br><br>
+  둘, <b>창이 인스턴스 나이만큼입니다.</b> 전환으로 방금 생성된 인스턴스면 그 이전은 아예 안 담겨 있어요. 4편이 앱 로그 폴러로 본 것과 <b>관측 지점이 다른 교차 확인</b>이라고 보는 게 맞고, 그것을 대체하지는 않습니다.
+</div>
+
+<p>정리하면 비교 대상이 없을 때는 <span class="obsv-mark">세는 대상을 고르는 것이 곧 가설을 세우는 일</span>이 됩니다. 아무 오류나 세면 절대값에 의미가 없고, <b>이 작업이 깨뜨릴 수 있는 것</b>을 골라 세면 0 이 증거가 돼요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>전환은 이름을 재사용하고, 그 뒤 옛것을 지웁니다. 앞의 것이 지표를 망가뜨리고 뒤의 것이 대조를 없앱니다.</b> 크레딧이 750 빠졌다는데 같은 구간 CPU 최대가 20.7% 로 기준선 30% 아래였어요. 기준선을 안 넘었으면 크레딧은 쌓여야 하니, 그 급락은 소비가 아니라 <b>한 시계열이 두 인스턴스를 이어붙인 것</b>이었습니다. 4편의 크레딧 오탐과 같은 뿌리예요.<br><br>
+  대조본이 사라진 뒤에는 자기 자신 안의 불변식을 썼는데, <b>여기서 제가 착각했습니다.</b> 자동 증가 카운터의 간격이 1이라고 "전환 직전 쓰기가 온전하다"고 적었는데, 전환 뒤 쓰기가 계속 들어오면 간격은 따라잡히고, 복제로 넘기는 방식에서는 못 받은 행이 카운터도 안 올립니다. <b>고장을 넣어도 통과하는 시험이었어요.</b> 그 검사가 실제로 말하는 건 측정 시점의 마지막 쓰기가 살아 있다는 것까지입니다.<br><br>
+  <b>전환 시점의 꼬리를 보려면 전환 당시에 값을 떠뒀어야 했습니다. 지나간 뒤에는 만들 수 없는 증거가 있고, 그걸 대신할 불변식을 찾았다고 생각한 것이 이 작업에서 가장 위험한 순간이었습니다.</b>
+</div>
+
+</div>
