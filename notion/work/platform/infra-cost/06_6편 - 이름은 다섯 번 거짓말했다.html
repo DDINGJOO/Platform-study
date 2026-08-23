@@ -1,0 +1,273 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">💰 인프라 절감 작업일지 · 6편</div>
+  1편. 선예약을 못 쓰는 조건에서 깎아야 했다<br>
+  2편. 청구서가 이미 틀린 숫자였다<br>
+  3편. 그럴듯한 숫자가 가장 위험하다<br>
+  4편. 유휴의 증거를 잘못 골랐다<br>
+  5편. 평균은 사이징의 근거가 못 된다<br>
+  <b>6편. 이름은 다섯 번 거짓말했다</b> &larr; 지금 이 글<br>
+  7편. 삭제에도 문법이 있다<br>
+  8편. 못 줄인 것이 결론이 되는 항목들<br>
+  9편. 줄이기 전에 알람을 먼저 만들었다<br>
+  10편. 다운타임 없이 요금 모델만 바꿨다<br>
+  11편. 정리하는 날 apply 가 막혔다
+</div>
+
+<p>리더를 한 대 줄이면 얼마가 빠지는지 세려고 DB 인스턴스 목록을 뽑았습니다. 이름으로 갈랐어요. 이름에 <code>writer</code> 가 들어 있으면 쓰기를 받는 쪽이니 후보에서 빼고, 나머지를 후보로 올렸습니다.</p>
+
+<p>그 목록이 정확히 거꾸로였습니다. 이름에 <code>writer</code> 가 들어 있던 그 인스턴스가 <b>reader</b> 였고, 후보로 올려둔 다른 인스턴스가 <b>writer</b> 였어요.</p>
+
+<p>같은 종류의 오독을 세어보니 이번 과제에서 <b>다섯 번</b>이었습니다. 종류가 다 달랐어요. DB 인스턴스 둘, 네트워크 자원, 게이트웨이, 서버 네 대. 그래서 이 글은 "이름을 믿지 말자"로 끝나지 않습니다. <b>자원 종류마다 진짜 용도가 나오는 필드가 다르고, 그 자리를 알아야 판정이 됩니다.</b></p>
+
+<p>예전에 서비스 하나를 코드로 편입할 때도 이름을 못 믿어서 참조를 따라간 적이 있어요. 그때 틀리면 대가는 "코드 밖에 남거나 남의 것을 끌어오는 것"이었습니다. <span class="obsv-mark">절감 판정에서 틀리면 대가가 다릅니다. 판정 결과가 곧 삭제예요.</span></p>
+
+<h2>1. 이름에 writer 가 있는데 reader 였다</h2>
+
+<p>클러스터의 역할은 <b>바뀝니다.</b> 페일오버가 한 번 나면 승격된 쪽이 쓰기를 받고, 원래 쓰기를 받던 쪽은 읽기 전용으로 내려옵니다. 그때 바뀌는 건 역할뿐이고 <b>이름은 만들어질 때의 역할을 그대로 들고 있어요.</b></p>
+
+<p>그래서 이름은 "지금 어느 쪽이 쓰기를 받는가"에 대해 아무것도 말하지 않습니다. 그 질문에 답하는 필드는 따로 있어요. RDS 는 클러스터 안에서의 역할을 <code>IsClusterWriter</code> 로 돌려줍니다.</p>
+
+<div class="obsv-code">이름이 말하는 역할      IsClusterWriter      실제 역할
+─────────────────────────────────────────────────────
+writer                  false                reader
+reader (번호가 붙음)     true                 writer</div>
+
+<p>절감 판정에서 이게 왜 고약하냐면, <b>한 번의 오독이 두 방향으로 동시에 틀리기 때문</b>입니다.</p>
+
+<p>이름으로 후보를 고르면 실제 writer 가 축소 후보에 올라갑니다. 그대로 실행하면 쓰기가 멈춰요. 동시에 진짜 reader 는 이름 때문에 후보에서 빠집니다. 줄일 수 있는 것을 못 줄이는 거예요. <span class="obsv-mark">사고와 누락이 같은 실수에서 함께 나옵니다.</span></p>
+
+<h2>2. 이름에 박힌 세대가 실물과 달랐다</h2>
+
+<p>두 번째는 같은 자원 종류의 다른 필드였습니다. 이름 끝에 인스턴스 세대 계열이 박혀 있는 인스턴스가 있었어요. 그 문자열대로면 최신 세대고, 최신 세대면 클래스를 낮출 여지를 그 단가 기준으로 계산하게 됩니다.</p>
+
+<p>실제 클래스는 버스터블 계열(<code>db.t4g.medium</code>)이었습니다. <b>누군가 이미 낮추고 이름만 남겨둔 것</b>이었어요.</p>
+
+<div class="obsv-code">이름에 박힌 것          DBInstanceClass 가 말하는 것
+────────────────────────────────────────────────────
+최신 세대 접미사        버스터블 계열 클래스
+                        = 이미 낮춰져 있다
+
+이름으로 잡은 절감      최신 세대 단가에서 깎는 만큼
+실제 절감               0</div>
+
+<p>1장과 실패의 모양이 다릅니다. 여기서는 아무것도 안 지웠는데도 손해가 나요. <b>계획서에 들어간 숫자가 허수</b>가 되고, 그 항목을 믿고 목표를 잡으면 나중에 빈 자리가 그대로 남습니다.</p>
+
+<p>이 인스턴스는 편입 작업기에도 한 번 적었는데, 그때는 "이름은 고쳐지지 않고 늙는다"의 예였습니다. 절감 판정에서는 같은 사실이 다른 곳을 때려요. <span class="obsv-mark">이름은 판정을 틀리게 하는 데서 멈추지 않고 절감액까지 틀리게 만듭니다.</span></p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 344" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="c6a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M232 24 C 300 21, 400 27, 468 23 C 471 44, 470 60, 469 78 C 400 81, 300 77, 234 79 C 231 60, 232 42, 232 24 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.8"/>
+      <text x="350" y="50" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">이름을 근거로 분류한다</text>
+      <text x="350" y="70" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">실제 필드를 보지 않았다</text>
+
+      <path d="M290 82 C 250 94, 210 100, 178 110" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#c6a)"/>
+      <path d="M412 82 C 452 94, 492 100, 524 110" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#c6a)"/>
+
+      <path d="M28 116 C 110 113, 250 119, 336 115 C 339 146, 338 178, 337 208 C 250 211, 110 207, 30 209 C 27 178, 28 146, 28 116 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="182" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">잔재로 분류 → 지운다</text>
+      <text x="182" y="164" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">실제로는 쓰이는 자원이었다</text>
+      <text x="182" y="184" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">삭제는 되돌릴 수 없다 = 사고</text>
+      <text x="182" y="202" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">예: 이름이 reader 인 실제 writer</text>
+
+      <path d="M364 116 C 450 113, 590 119, 672 115 C 675 146, 674 178, 673 208 C 590 211, 450 207, 366 209 C 363 178, 364 146, 364 116 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="518" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">운영으로 분류 → 남긴다</text>
+      <text x="518" y="164" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">실제로는 줄일 여지가 있었다</text>
+      <text x="518" y="184" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">조용히 절감을 놓친다</text>
+      <text x="518" y="202" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">예: 이름이 writer 인 실제 reader</text>
+
+      <path d="M36 228 C 200 225, 460 231, 666 227" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="350" y="256" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">한 번의 오독이 두 방향으로 틀린다</text>
+
+      <path d="M112 274 C 260 271, 460 277, 598 273 C 601 296, 600 314, 599 332 C 460 335, 260 331, 114 333 C 111 314, 112 292, 112 274 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="355" y="300" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34">사고 쪽은 되돌릴 수 없고 누락 쪽은 아무도 신고하지 않는다</text>
+      <text x="355" y="322" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">그래서 두 방향을 같은 무게로 확인한다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 이름을 근거로 쓰면 지울 것과 남길 것을 동시에 틀린다</div>
+
+<h2>3. 네트워크 자원의 정체는 이름 밖에 있다</h2>
+
+<p>세 번째가 이번에 가장 크게 헛디딘 자리입니다. 어떤 데이터 분석 플랫폼을 붙일 때 만들어진 VPC 하나가 있었어요. 그 안의 자원들 이름에 <b>실험용을 뜻하는 접두사</b>가 붙어 있었고, 만든 뒤 <b>아홉 달</b>이 지났습니다. NAT 하나와 인터페이스 엔드포인트 둘이 그동안 계속 과금되고 있었어요.</p>
+
+<p>이름과 방치 기간만 보면 답이 이미 나온 것처럼 보입니다. 실험 잔재요. 그래서 그렇게 분류했습니다.</p>
+
+<p>그다음에 피어링을 열어봤어요. <b>피어링 연결 이름에는 실험이 아니라 그 플랫폼의 운영 환경을 가리키는 문자열이 들어 있었습니다.</b> 엔드포인트 둘의 대상 서비스도 용도를 그대로 말하고 있었어요. 하나는 역할 위임에 쓰는 <code>sts</code>, 하나는 로그 전송에 쓰는 스트리밍 서비스였습니다.</p>
+
+<div class="obsv-code">이름이 말한 것        실험용 접두사가 붙은 VPC 와 그 안의 자원들
+
+피어링 연결 이름      그 데이터 플랫폼의 운영 환경을 가리킨다
+엔드포인트 대상       역할 위임 · 로그 전송
+라우팅                운영 VPC 쪽으로 열려 있다
+
+정체                  실험 잔재가 아니라
+                      그 플랫폼의 운영 컴퓨트용 네트워킹</div>
+
+<p>즉 그 플랫폼이 자기 컴퓨트를 이 VPC 에 띄우고, 피어링을 넘어 운영 자원에 접근하는 구성이었습니다. <span class="obsv-mark">네트워크 자원은 이름이 아니라 피어링·라우팅·엔드포인트를 실제로 쓰는 주체가 정체를 말해줍니다.</span></p>
+
+<h3>같은 종류의 오독이 게이트웨이에서도 나왔다</h3>
+
+<p>네 번째는 더 짧습니다. <b>이름이 개발 환경을 가리키는 NAT 게이트웨이가 운영 VPC 안에 있었어요.</b> 운영 API 서버와 DB 복제 인스턴스가 사는 VPC 입니다.</p>
+
+<p>게이트웨이가 어느 환경 것인지는 이름이 아니라 <b>속한 VPC</b> 가 말합니다. 그리고 그것을 실제로 쓰고 있는지는 <b>라우팅 테이블 참조</b> 말고 확인할 방법이 없어요. NAT 는 라우팅에 등록되는 것 외에 연결 수단이 없으니까요.</p>
+
+<p>이름을 그대로 믿었으면 이 게이트웨이는 "개발 자원"이라는 칸에 들어갔을 겁니다. 그 칸에 들어간 자원은 정지 스케줄이나 통합 후보로 다뤄지고, <b>그 판단이 운영 VPC 에 적용됩니다.</b></p>
+
+<h2>4. 이름을 바로잡은 뒤에 판정이 다시 왔다</h2>
+
+<p>3장으로 돌아가면, 정체가 운영 네트워킹이라는 게 밝혀졌으니 남겨야 할 것 같았습니다. 그런데 판정은 <b>같은 결론으로 왔어요. 삭제였습니다.</b></p>
+
+<p>그 플랫폼이 지금은 서버리스 방식만 쓰고 있었습니다. 청구 사용량의 SKU 가 전부 서버리스 계열이었고 클래식 계열은 하나도 없었어요. 그러면 이 VPC 에 컴퓨트가 뜰 일이 없습니다. 실제로 세어보니 그 VPC 의 서버는 <b>0대</b>였고, 네트워크 인터페이스 다섯 개가 전부 엔드포인트와 NAT 자기 것이었습니다.</p>
+
+<div class="obsv-code">1차 판정   이름에 실험 접두사가 있다        → 삭제   (근거 없음)
+정체 확인  피어링 이름 · 엔드포인트 대상    → 운영 컴퓨트용 네트워킹
+2차 판정   그 방식을 쓰는 컴퓨트가 0대      → 삭제   (근거 있음)</div>
+
+<p>결론이 같아도 두 판정은 다릅니다. 앞의 것은 <b>우연히 맞은 것</b>이고 뒤의 것은 <b>근거를 갖고 맞은 것</b>이에요. 3편에서 그럴듯한 숫자를 그대로 쓰면 왜 위험한지 썼는데, 여기서는 그럴듯한 <b>이름</b>이 같은 일을 합니다. <span class="obsv-mark">결과가 같으면 근거를 안 봐도 된다는 뜻이 아닙니다.</span></p>
+
+<p>엔드포인트를 지운 뒤에 하나 더 확인했어요. <b>다른 서비스가 그 엔드포인트를 쓰고 있었을 가능성</b>입니다. 같은 계정의 DB 복제 인스턴스도 역할 위임을 쓰니까요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 VPC 엔드포인트는 피어링을 넘지 않는다</div>
+  확인해보니 그 복제 인스턴스는 <b>피어링 상대 쪽 VPC</b> 에 있었습니다. 그래서 애초에 쓸 수가 없었어요.<br><br>
+  <b>인터페이스 엔드포인트는 같은 VPC 안에서만 쓰이고, 피어링을 넘어 공유되지 않습니다.</b> 엔드포인트가 만드는 네트워크 인터페이스와 그것이 받는 사설 DNS 는 그 VPC 안에서만 유효해요. <b>NAT 게이트웨이도 같습니다.</b> 피어링 상대 VPC 의 인스턴스가 남의 NAT 로 나갈 수 없어요.<br><br>
+  그래서 "피어링이 있으니 저쪽에서 쓰고 있을 수도 있다"는 걱정은, 엔드포인트와 NAT 에 대해서는 <b>확인할 것이 아니라 성립하지 않는 걱정</b>입니다. 반대로 라우팅과 보안그룹 참조는 VPC 를 넘어 영향을 주니 그쪽은 확인해야 합니다.
+</div>
+
+<p>남긴 것도 적어둘게요. <b>VPC · 서브넷 · 라우팅 테이블 · 피어링은 그대로 뒀습니다.</b> 이 넷은 과금이 없어요. 그리고 나중에 그 플랫폼을 클래식 방식으로 되돌릴 검토가 생기면, 뼈대가 남아 있으니 엔드포인트 둘과 NAT 만 다시 만들면 됩니다. <span class="obsv-mark">과금이 없는 것을 지우는 일은 절감이 아니라 되돌릴 여지를 버리는 일입니다.</span></p>
+
+<p>대신 NAT 를 지울 때 붙어 있던 탄력적 IP 는 함께 반납했습니다. 안 반납하면 미연결 상태로 계속 과금되니, 그걸 놓치면 절감분의 일부가 그대로 남아요.</p>
+
+<h2>5. 컨테이너 인스턴스가 아니었던 서버 넷</h2>
+
+<p>다섯 번째가 가장 위험했습니다. 이름이 <b>콘솔이 컨테이너 호스트에 자동으로 붙여주는 형식</b>이고 끝에 개발 환경 표시가 붙은 인스턴스 네 대가 있었어요.</p>
+
+<p>이름대로면 개발용 컨테이너 클러스터의 호스트입니다. 그리고 개발 클러스터가 안 쓰이면 호스트째로 정리하는 게 자연스러운 후보가 돼요. <b>아주 그럴듯한 삭제 후보</b>였습니다.</p>
+
+<p>두 가지가 어긋났습니다.</p>
+
+<div class="obsv-code">부팅 스크립트   컨테이너 에이전트에 넘길 ECS_CLUSTER 지정이 없다
+                = 이 서버는 어떤 클러스터에도 등록하지 않는다
+
+클러스터 목록   이름이 가리키는 그 개발 클러스터가 계정에 없다
+                = 등록할 대상 자체가 존재하지 않는다</div>
+
+<p>그럼 이 넷은 뭘 하고 있었을까요. 지표를 봤습니다. <b>CPU 최대가 90% 를 넘고 네트워크 사용량이 수십 GB</b> 였어요. 유휴가 아니라 한창 돌고 있었습니다.</p>
+
+<p>개발자들이 원격 접속으로 쓰는 <b>개발 서버</b>였습니다. 컨테이너와는 아무 관계가 없었고, 이름만 컨테이너 호스트 형식이었어요. 아마 그 이름을 붙이는 방식으로 처음 만들었다가 용도가 바뀐 것이겠죠.</p>
+
+<p>여기서 필요한 필드가 둘이라는 게 중요합니다. <span class="obsv-mark">부팅 스크립트는 정체를 말하고, 지표는 상태를 말합니다.</span> 부팅 스크립트만 봤으면 "컨테이너 호스트가 아니다"까지만 알고 그다음을 몰랐어요. 지표만 봤으면 "뭔가 돌고 있다"까지만 알았을 겁니다. 둘을 합쳐야 <b>개발자가 쓰는 서버</b>라는 답이 나옵니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 컨테이너 쪽은 반대 방향으로도 틀린다</div>
+  <b>등록 인스턴스가 0인데 태스크가 돌고 있는 클러스터</b>는 서버 없는 실행 방식입니다. 컴퓨트 환경 설정을 열어보면 서버리스 계열만 들어 있어요.<br><br>
+  이런 클러스터는 <b>애초에 서버 요금이 없습니다.</b> 그런데 이름에 클러스터라고 붙어 있으니 서버 절감 항목으로 세기 쉽고, 그러면 절감액이 허수가 돼요. 이번에 그런 클러스터가 <b>넷</b> 있었습니다.<br><br>
+  그래서 컨테이너 쪽은 <b>클러스터의 등록 인스턴스 수</b>를 먼저 봅니다. 0이면 서버 절감 대상이 아니고, 0이 아니면 그 인스턴스들의 부팅 스크립트로 넘어갑니다.
+</div>
+
+<h2>6. 종류마다 진실을 담은 필드가 다르다</h2>
+
+<p>다섯 사례를 자원 종류로 묶으면 규칙이 하나 남습니다. 이름은 다섯 번 전부 틀렸고, <b>맞은 필드도 다섯 번 다 달랐어요.</b> 아래에서 RDS 는 두 사례가 같은 종류라 한 줄인데, 그 한 줄 안에서도 봐야 할 필드가 서로 달랐습니다.</p>
+
+<div class="obsv-code">자원 종류         이름   진짜 용도가 나오는 곳
+──────────────────────────────────────────────────────────
+RDS 인스턴스      X      IsClusterWriter · DBInstanceClass
+네트워크 자원     X      피어링 · 라우팅 · 엔드포인트를 쓰는 주체
+게이트웨이        X      속한 VPC · 라우팅 테이블 참조
+EC2 인스턴스      X      user-data · 실사용 지표
+컨테이너 클러스터  X      등록 인스턴스 수 · 컴퓨트 환경</div>
+
+<p>그래서 "이름 대신 무엇을 봐야 하나"에 <b>단일한 답이 없습니다.</b> 자원 종류를 먼저 정하고, 그 종류에서 용도를 결정하는 필드를 찾은 다음에 판정을 해야 해요.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 352" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="112" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">자원 종류</text>
+      <text x="252" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">이름</text>
+      <text x="492" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">진짜 용도가 나오는 곳</text>
+
+      <path d="M28 46 C 200 43, 470 49, 672 45 C 675 110, 674 200, 673 272 C 470 275, 200 271, 30 273 C 27 200, 28 110, 28 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+
+      <path d="M199 48 C 202 100, 198 200, 201 270" fill="none" stroke="#d8cfba" stroke-width="1.8"/>
+      <path d="M305 48 C 308 100, 304 200, 307 270" fill="none" stroke="#d8cfba" stroke-width="1.8"/>
+      <path d="M30 102 C 200 99, 470 105, 671 101" fill="none" stroke="#d8cfba" stroke-width="1.8"/>
+      <path d="M30 158 C 200 155, 470 161, 671 157" fill="none" stroke="#d8cfba" stroke-width="1.8"/>
+      <path d="M30 216 C 200 213, 470 219, 671 215" fill="none" stroke="#d8cfba" stroke-width="1.8"/>
+
+      <text x="112" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">RDS 인스턴스</text>
+      <path d="M244 68 C 250 72, 256 78, 261 84" fill="none" stroke="#e5533c" stroke-width="2.4"/>
+      <path d="M261 68 C 256 73, 249 79, 244 84" fill="none" stroke="#e5533c" stroke-width="2.4"/>
+      <text x="490" y="70" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">IsClusterWriter</text>
+      <text x="490" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">DBInstanceClass</text>
+
+      <text x="112" y="136" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">네트워크 자원</text>
+      <path d="M244 124 C 250 128, 256 134, 261 140" fill="none" stroke="#e5533c" stroke-width="2.4"/>
+      <path d="M261 124 C 256 129, 249 135, 244 140" fill="none" stroke="#e5533c" stroke-width="2.4"/>
+      <text x="490" y="126" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">피어링 · 라우팅 · 엔드포인트를</text>
+      <text x="490" y="144" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">실제로 쓰는 주체</text>
+
+      <text x="112" y="192" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">EC2 인스턴스</text>
+      <path d="M244 180 C 250 184, 256 190, 261 196" fill="none" stroke="#e5533c" stroke-width="2.4"/>
+      <path d="M261 180 C 256 185, 249 191, 244 196" fill="none" stroke="#e5533c" stroke-width="2.4"/>
+      <text x="490" y="182" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">user-data (정체)</text>
+      <text x="490" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">실사용 지표 (상태)</text>
+
+      <text x="112" y="250" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">컨테이너 쪽</text>
+      <path d="M244 238 C 250 242, 256 248, 261 254" fill="none" stroke="#e5533c" stroke-width="2.4"/>
+      <path d="M261 238 C 256 243, 249 249, 244 254" fill="none" stroke="#e5533c" stroke-width="2.4"/>
+      <text x="490" y="240" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">클러스터의 등록 인스턴스 수</text>
+      <text x="490" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">컴퓨트 환경 설정</text>
+
+      <text x="350" y="302" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">진실을 담은 필드는 자원이 동작하려면 필요한 값이다</text>
+      <text x="350" y="330" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34">이름은 아무것도 결정하지 않는다. 그래서 틀려도 아무 일이 일어나지 않는다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 이름 열은 전부 X 이고, 진실 열은 종류마다 다르다</div>
+
+<p>다섯 필드를 고른 기준은 하나였어요. <b>그 자원이 동작하려면 반드시 맞아야 하는 값</b>입니다. 역할 플래그는 쓰기를 어디로 보낼지 결정하고, 라우팅은 패킷이 나가는 길이고, 부팅 스크립트는 서버가 실제로 실행하는 내용이에요. 그래서 틀린 채로 방치될 수가 없습니다.</p>
+
+<p>그런데 이 표에는 한계가 있습니다. <span class="obsv-mark">자원 종류가 늘어나면 줄도 늘어나야 해요.</span> 즉 "이름을 믿지 마라"만으로는 아무것도 판정할 수 없고, 그 종류에서 무엇이 동작을 결정하는지 아는 사람만 쓸 수 있는 규칙입니다. 규칙이 종류별 지식을 대신해주지 않아요.</p>
+
+<p>실제로 이 표는 닫히지 않았습니다. 뒤에 로드밸런서를 정리하다가 <b>여섯째가 나왔어요.</b> 이름에 상위 로드밸런서 종류가 박힌 타깃그룹이 있었는데, 상위 목록이 비어 있어서 <b>이미 지워진 상위를 가리키던 고아</b>였습니다. 진실을 담은 필드가 또 다른 것이었죠. 그러니 다섯은 <b>세어본 만큼</b>이고, 종류를 더 열면 더 나옵니다.</p>
+
+<p>마지막으로 이 오독이 절감 판정에서 비싼 이유를 다시 적어둘게요. 조사 문서에서 이름을 잘못 읽으면 문서가 틀립니다. <b>절감 판정에서 잘못 읽으면 자원이 사라집니다.</b> 판정의 출력이 곧 삭제 명령이고, 삭제는 되돌릴 수 없어요.</p>
+
+<p>그래서 규칙을 이렇게 적었습니다. <b>되돌릴 수 없는 작업에서 이름은 후보를 모으는 데까지만 쓰고, 판정에는 쓰지 않습니다.</b> 이름으로 눈에 띈 것을 목록에 올리는 건 괜찮아요. 그 목록의 한 줄을 실행으로 넘기기 전에, 그 자원 종류에서 용도를 결정하는 필드를 한 번 열어보면 됩니다. 다섯 번 다 그 한 번에 드러났습니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>이름이 다섯 번 틀렸고, 맞은 필드는 다섯 번 다 달랐습니다. 이름에 writer 가 있는 인스턴스가 reader 였고, 이름에 박힌 세대가 실물과 달라 예상 절감이 0이었고, 실험 접두사가 붙은 네트워크가 운영 컴퓨트용이었고, 개발 이름의 게이트웨이가 운영 VPC 안에 있었고, 컨테이너 호스트 형식으로 이름 붙은 서버 넷이 개발자가 쓰는 서버였습니다.</b><br><br>
+  그러니 "이름 대신 무엇을 보라"에는 하나의 답이 없어요. RDS 는 클러스터 역할 플래그와 클래스, 네트워크는 피어링·라우팅·엔드포인트를 쓰는 주체, EC2 는 부팅 스크립트와 실사용 지표, 컨테이너는 클러스터 등록 여부입니다. <b>공통점은 전부 그 자원이 동작하려면 필요한 값이라는 것</b>이고, 이름은 아무것도 결정하지 않아서 틀린 채로 남습니다. 다만 이 표는 닫힌 목록이 아니에요. 종류를 더 열면 줄이 더 붙고, 그래서 이 규칙은 종류별 지식을 대신해주지 않습니다.<br><br>
+  실험 접두사가 붙은 그 네트워킹은 정체를 바로잡은 뒤에도 판정이 삭제로 왔습니다. 결론이 같아도 우연히 맞은 것과 근거를 갖고 맞은 것은 다릅니다. 과금이 없는 뼈대는 남겼어요. 지워도 절감은 없고 되돌릴 여지만 잃습니다.<br><br>
+  <b>이름은 후보를 모으는 데까지만 쓰고, 판정에는 쓰지 않습니다. 삭제는 되돌릴 수 없으니까요.</b>
+</div>
+
+</div>

@@ -106,7 +106,7 @@
 <p>그래서 코드에는 이렇게 적혔어요. skip 은 리소스 단위로 붙고, 사유와 걷어낼 조건을 같은 줄에 답니다.</p>
 
 <div class="obsv-code">resource "aws_s3_bucket_public_access_block" "front" {
-  # checkov:skip=CKV_AWS_53:2023년부터 퍼블릭인 것을 실물 그대로 편입한다. 잠그는 것은 별도 PR
+  # checkov:skip=CKV_AWS_53:2023년부터 퍼블릭인 것을 실물 그대로 편입한다 (결정 기록 참조). 잠그는 것은 별도 PR
   # checkov:skip=CKV_AWS_54:위와 같음
   # checkov:skip=CKV_AWS_55:위와 같음
   # checkov:skip=CKV_AWS_56:위와 같음
@@ -116,10 +116,11 @@
   block_public_policy     = false
   ignore_public_acls      = false
   restrict_public_buckets = false
+  skip_destroy            = null
 }
 
 resource "aws_s3_bucket_policy" "front" {
-  # checkov:skip=CKV_AWS_20:2023년부터 퍼블릭인 것을 실물 그대로 편입한다. 잠그는 것은 별도 PR
+  # checkov:skip=CKV_AWS_20:2023년부터 퍼블릭인 것을 실물 그대로 편입한다 (결정 기록 참조). 잠그는 것은 별도 PR
   bucket = aws_s3_bucket.front.id
   policy = jsonencode({ ... })   # Principal: * 가 첫 Statement
 }</div>
@@ -238,7 +239,7 @@ s3-data.tf    보관용.        절대 퍼블릭이면 안 되는 것</div>
 
 <p>더 뼈아픈 건, <b>이 ADR 자신이 그 사실을 이미 알고 있었다</b>는 겁니다. 반대 의견 칸에는 이렇게 적혀 있어요. "'편입인가'를 기계가 판정할 수 없다. <code>import</code> 블록은 apply 후 제거되므로 6개월 뒤에는 그 skip 이 편입 때문이었는지 알 방법이 주석뿐이다." 그리고 <b>바로 다음 섹션</b>에서, 그 사라지는 블록을 검사 입력으로 쓰겠다고 적었습니다.</p>
 
-<p>같은 문서 안에서 한 화면에 같이 들어오는 두 문장이 서로를 부정하고 있는 거예요. 그리고 이건 <span class="obsv-mark">이 시리즈가 반복해서 다룬 그 모양</span>입니다. <b>같은 사실이 두 군데 적혀 있는데, 판단할 때 한쪽만 본 것.</b> 그게 워크플로 권한이었고, state 키 레이아웃이었고, 태그 키였고, 이번엔 ADR 자기 자신이었습니다.</p>
+<p>같은 문서의 서로 다른 두 섹션에 있는 두 문장이 서로를 부정하고 있는 거예요. 그리고 이건 <span class="obsv-mark">이 시리즈가 반복해서 다룬 그 모양</span>입니다. <b>같은 사실이 두 군데 적혀 있는데, 판단할 때 한쪽만 본 것.</b> 그게 워크플로 권한이었고, state 키 레이아웃이었고, 태그 키였고, 이번엔 ADR 자기 자신이었습니다.</p>
 
 <p>그래서 그 재검토 조건은 지금 <b>쓸 수 없는 계획으로 남아 있어요.</b> 진짜로 기계 판정을 붙이려면 사라지지 않는 신호를 써야 합니다. skip 사유 문구의 형식을 규격화하고 그걸 검사하거나, 편입된 리소스 목록을 별도 파일로 유지하거나요. 어느 쪽이든 <b>"편입이었다"는 사실을 어딘가에 영속적으로 적어두는 것</b>이 선행 조건입니다. <code>import</code> 블록은 그런 기록이 아니라 <b>일회용 지시</b>였어요.</p>
 
