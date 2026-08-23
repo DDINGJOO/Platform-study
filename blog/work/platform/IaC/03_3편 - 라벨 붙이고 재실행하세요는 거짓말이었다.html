@@ -29,7 +29,7 @@
   7편. 드리프트는 이슈로, 고장은 실패로
 </div>
 
-<p>Terraform 코드를 관리하는 저장소 이야기예요. PR 을 올리면 dev/prod plan 을 떠서 요약을 코멘트로 남기고, 거기에 삭제나 재생성이 섞여 있으면 <code>allow-destroy</code> 라벨 없이는 체크를 실패시키는 가드를 달아뒀습니다. 어느 날 동료가 낡은 dev 리소스를 정리하는 PR 을 올렸어요. plan 요약 코멘트에 삭제 3건이 찍혔어요. 의도한 변경이었습니다. 그 가드가 빨간불을 켜고 이렇게 안내했어요. <i>"의도한 변경이라면 PR 에 allow-destroy 라벨을 붙이고 다시 실행하세요."</i> 시키는 대로 라벨을 붙이고 Actions 에서 Re-run failed jobs 를 누릅니다. 또 실패해요. 다시 누릅니다. 또 실패합니다.</p>
+<p>Terraform 코드를 관리하는 저장소 이야기예요. PR 을 올리면 dev/prod plan 을 떠서 요약을 코멘트로 남겨요. 거기에 삭제나 재생성이 섞여 있으면 <code>allow-destroy</code> 라벨 없이는 체크를 실패시키는 가드를 달아뒀습니다. 어느 날 동료가 낡은 dev 리소스를 정리하는 PR 을 올렸어요. plan 요약 코멘트에 삭제 3건이 찍혔어요. 의도한 변경이었습니다. 그 가드가 빨간불을 켜고 이렇게 안내했어요. <i>"의도한 변경이라면 PR 에 allow-destroy 라벨을 붙이고 다시 실행하세요."</i> 시키는 대로 라벨을 붙이고 Actions 에서 Re-run failed jobs 를 누릅니다. 또 실패해요. 다시 누릅니다. 또 실패합니다.</p>
 
 <p>세 번쯤 되면 사람은 파이프라인이 고장났다고 결론 내려요. 그리고 자기 admin 권한으로 우회할 방법을 찾기 시작하죠. 그런데 고장난 건 파이프라인이 아니라 <b>제가 가드에 쓴 그 한 줄</b>이었습니다.</p>
 
@@ -49,7 +49,7 @@
 
 <h2>2. github.event 는 박제된 payload 다</h2>
 
-<p><code>github.event</code> 는 실행 시점에 GitHub API 를 호출해 가져오는 살아있는 값이 아니에요. 이벤트가 발생한 그 순간의 <b>webhook payload JSON 이 run 에 통째로 박제된 것</b>입니다. 여기서 그 이벤트는 마지막 커밋 push, 즉 <code>synchronize</code> 였고, 그때 PR 에는 라벨이 없었죠.</p>
+<p><code>github.event</code> 는 실행 시점에 GitHub API 를 호출해 가져오는 살아있는 값이 아니에요. 이벤트가 발생한 그 순간의 <b>webhook payload JSON 이 run 에 통째로 박제된 것</b>입니다. 여기서 그 이벤트는 마지막 커밋 push, 즉 <code>synchronize</code> 였고 그때 PR 에는 라벨이 없었죠.</p>
 
 <p>그리고 Re-run 은 새 이벤트를 발생시키는 버튼이 아니에요. <b>박제된 payload 를 그대로 들고 job 만 다시 돌리는 버튼</b>입니다. 라벨은 payload 가 찍힌 <b>뒤에</b> 붙였으니, 재실행이 읽는 <code>labels</code> 배열은 여전히 비어 있어요. 몇 번을 눌러도 결과가 같습니다.</p>
 
@@ -60,7 +60,7 @@
 
 <h2>3. 반대 방향도 뚫려 있었다</h2>
 
-<p>더 무서운 건 반대편이에요. 트리거는 <code>on: pull_request</code> 한 줄이었고, 이건 기본값 세 종류(<code>opened</code>, <code>synchronize</code>, <code>reopened</code>)만 잡습니다. <code>unlabeled</code> 가 없으니 체크가 초록불이 된 뒤에 라벨을 떼도 워크플로가 다시 돌지 않아요. 필수 상태 체크는 <b>그 커밋에 같은 이름으로 마지막에 보고된 결과</b>만 보고, 새 run 이 없으면 옛 초록불이 그대로 남습니다. 결과는 <span class="obsv-mark">라벨 없는 PR 이 머지 가능한 초록불로 방치되는 상태</span>입니다. 붙일 때는 안 통하고, 뗄 때는 그냥 통과하는 가드였어요.</p>
+<p>더 무서운 건 반대편이에요. 트리거는 <code>on: pull_request</code> 한 줄이었고 이건 기본값 세 종류(<code>opened</code>, <code>synchronize</code>, <code>reopened</code>)만 잡습니다. <code>unlabeled</code> 가 없으니 체크가 초록불이 된 뒤에 라벨을 떼도 워크플로가 다시 돌지 않아요. 필수 상태 체크는 <b>그 커밋에 같은 이름으로 마지막에 보고된 결과</b>만 봅니다. 새 run 이 없으면 옛 초록불이 그대로 남죠. 결과는 <span class="obsv-mark">라벨 없는 PR 이 머지 가능한 초록불로 방치되는 상태</span>입니다. 붙일 때는 안 통하고, 뗄 때는 그냥 통과하는 가드였어요.</p>
 
 <h2>4. 수리 두 가지와 트레이드오프</h2>
 
@@ -78,7 +78,7 @@ run: |
     exit 1
   fi</div>
 
-<p>그래서 <b>B 를 쓰고 types 에는 <code>unlabeled</code> 만 추가</b>했어요. 붙일 때는 싼 Re-run 으로 해결하고, 뗄 때는 강제로 재검사를 걸어 초록불을 지웁니다. <code>labeled</code> 는 넣지 않았어요. B 가 있으니 굳이 plan 두 판을 더 돌릴 이유가 없죠.</p>
+<p>그래서 <b>B 를 쓰고 types 에는 <code>unlabeled</code> 만 추가</b>했어요. 붙일 때는 싼 Re-run 으로 해결하고 뗄 때는 강제로 재검사를 걸어 초록불을 지웁니다. <code>labeled</code> 는 넣지 않았어요. B 가 있으니 굳이 plan 두 판을 더 돌릴 이유가 없죠.</p>
 
 <h2>5. 박제가 오히려 정확한 값도 있다</h2>
 

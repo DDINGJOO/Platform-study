@@ -20,9 +20,9 @@
 
 <div class="obsv-series">
   <div class="obsv-st">📚 dev DB 메이저 버전 이관, 3편</div>
-  dev MySQL 5.7 을 8.0.42 로 옮긴 5단계<br>
-  롤백 수단을 보관했다는 착각<br>
-  <b>검증표가 전부 ✅ 였는데 폭탄이 3개 남아 있었다</b> &larr; 지금 이 글
+  어려운 건 옛 버전으로 가는 길을 끊는 일이었다<br>
+  롤백은 되감기가 아니다<br>
+  <b>체크리스트가 증명하지 못한 것</b> &larr; 지금 이 글
 </div>
 
 <p>이관을 마치고 마지막으로 검증표를 만들었어요. 항목마다 기대값을 적고, 실제로 쿼리를 돌려서 확인하고, 체크를 찍었습니다.</p>
@@ -56,7 +56,7 @@ created_at   DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),</div>
 
 <p>첫째, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">DEFAULT CURRENT_TIMESTAMP(6)</code> 을 계산하는 건 <b>앱이 아니라 DB 서버</b>입니다. 정확히는 그 INSERT 를 처리하는 세션의 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">time_zone</code> 이고, 기본값이 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SYSTEM</code> 이라 결국 서버 설정을 따라가요. <span class="obsv-mark">앱에서 타임존을 아무리 잡아도 DEFAULT 절에는 닿지 않습니다.</span></p>
 
-<p>둘째, dev 는 compose 에 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">TZ=Asia/Seoul</code> 을 넣어뒀는데 <b>prod 는 Aurora 라 그 방법 자체가 없어요.</b> SSH 도 없고 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">my.cnf</code> 도 못 만집니다. 남는 건 파라미터 그룹뿐이고, 그건 확인한 적이 없었습니다.</p>
+<p>둘째, dev 는 compose 에 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">TZ=Asia/Seoul</code> 을 넣어뒀는데 <b>prod 는 Aurora 라 그 방법 자체가 없어요.</b> SSH 도 없고 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">my.cnf</code> 도 못 만집니다. 남는 건 파라미터 그룹뿐이고 그건 확인한 적이 없었습니다.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🌩️ 관리형 서비스에는 "서버에 들어가서 설정"이 없어요</div>
@@ -92,7 +92,7 @@ SELECT @@global.time_zone, @@session.time_zone,
 <div class="obsv-fig"><img src="images/03/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 3. 행수는 "몇 개인가"만 대답해요. "무엇인가"는 대답하지 않습니다</div>
 
-<p><span class="obsv-mark">행은 하나도 안 잃었어요. 글자만 잃은 거예요.</span> 그리고 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">COUNT(*)</code> 는 이걸 절대 못 잡습니다. 검증표에 ✅ 가 찍히고, 몇 주 뒤에 어드민 목록에서 깨진 글자를 발견하게 되죠.</p>
+<p><span class="obsv-mark">행은 하나도 안 잃었어요. 글자만 잃은 거예요.</span> 그리고 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">COUNT(*)</code> 는 이걸 절대 못 잡습니다. 검증표에 ✅ 가 찍히고 몇 주 뒤에 어드민 목록에서 깨진 글자를 발견하게 되죠.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">💡 "무결성 검증"이라고 부르려면 내용을 봐야 해요</div>
@@ -128,7 +128,7 @@ ALTER TABLE landing_page_version DROP INDEX idx_lpv_page;</div>
 
 <p>그리고 이건 제가 부주의했다기보다 구조 문제에 가까워요. <b>문서와 스키마가 각자 따로 움직이는 한, 둘이 어긋나는 순간은 반드시 옵니다.</b> 한 시간이든 하루든요.</p>
 
-<p>그래서 검증 스크립트가 문서가 아니라 <b>실제 최종본(레포의 마이그레이션 파일)을 읽게</b> 만들어야 해요. 사람이 눈으로 두 문서를 대조하는 단계가 남아 있으면, 그 단계는 언젠가 틀립니다. 오늘은 인덱스 하나였지만 다음엔 컬럼 타입일 수도 있고요.</p>
+<p>그래서 검증 스크립트가 문서가 아니라 <b>실제 최종본(레포의 마이그레이션 파일)을 읽게</b> 만들어야 해요. 사람이 눈으로 두 문서를 대조하는 단계가 남아 있으면 그 단계는 언젠가 틀립니다. 오늘은 인덱스 하나였지만 다음엔 컬럼 타입일 수도 있고요.</p>
 
 <h2>4. 세 폭탄의 공통점</h2>
 
