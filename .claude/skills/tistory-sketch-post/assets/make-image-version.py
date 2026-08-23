@@ -48,12 +48,26 @@ def main() -> None:
     tmp = dst_root / "_tmp"
     tmp.mkdir(parents=True)
 
-    total_posts = total_figs = 0
-    for html in sorted(src_root.rglob("*.html")):
+    # 글 번호를 이미지 폴더 이름으로 쓴다 (한글 경로를 이미지 src 에 넣지 않기 위해).
+    # 다만 같은 폴더에 번호가 겹치는 글이 있으면 (예: ch2 의 01_ 세 편) 서로의
+    # fig1.png 를 덮어쓰므로, 겹칠 때만 a·b·c 접미사를 붙여 갈라준다.
+    # 겹치지 않는 글의 경로는 그대로 두어 기존 이미지 주소를 깨지 않는다.
+    posts = sorted(src_root.rglob("*.html"))
+    by_slug: dict[tuple[str, str], list[Path]] = {}
+    for html in posts:
         rel = html.relative_to(src_root)
-        # 글 번호를 이미지 폴더 이름으로 쓴다 (한글 경로를 이미지 src 에 넣지 않기 위해)
         num = re.match(r"(\d+)", rel.name)
-        slug = num.group(1) if num else rel.stem[:8]
+        by_slug.setdefault((str(rel.parent), num.group(1) if num else rel.stem[:8]),
+                           []).append(html)
+    slugs: dict[Path, str] = {}
+    for (_, base), group in by_slug.items():
+        for i, html in enumerate(group):
+            slugs[html] = base if len(group) == 1 else f"{base}{chr(ord('a') + i)}"
+
+    total_posts = total_figs = 0
+    for html in posts:
+        rel = html.relative_to(src_root)
+        slug = slugs[html]
         imgdir = dst_root / rel.parent / "images" / slug
         imgdir.mkdir(parents=True, exist_ok=True)
 

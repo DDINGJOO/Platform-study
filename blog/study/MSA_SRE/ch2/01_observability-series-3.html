@@ -42,7 +42,7 @@
 
 <h3>왜 빠른가: hot path에서 하는 일의 차이</h3>
 
-<div class="obsv-fig"><img src="images/01/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig"><img src="images/01c/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 비싼 일을 hot path 밖으로 밀어낸 것이 eBPF의 속도 비결</div>
 
 <p>APM 라이브러리는 span 객체 생성(GC 부담), 직렬화, 소켓 전송을 <b>요청을 처리해야 할 앱의 스레드</b>에서 합니다. eBPF는 어차피 발생하는 시스템 콜에 붙어서, JIT 컴파일된 네이티브 코드가 고정 메모리에 몇 바이트 적는 게 전부예요. 무거운 일(파싱, 전송)은 전부 별도 데몬이 비동기로 처리하고요. 오버헤드가 보통 1% 미만이라 <b>프로덕션 상시 가동</b>이 성립합니다.</p>
@@ -61,7 +61,7 @@
 
 <p>OpenTelemetry(OTel)의 제안: <b>계측은 벤더 중립 표준으로 한 번만 하고, 데이터를 어디로 보낼지는 설정으로 바꾸자.</b> OpenTracing과 OpenCensus가 2019년 합쳐진 프로젝트로, 지금은 사실상 업계 표준이에요.</p>
 
-<div class="obsv-fig"><img src="images/01/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig"><img src="images/01c/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. OTel 3층 구조: 락인을 설정 파일 안에 가둔다</div>
 
 <p>구조의 백미는 <b>API와 SDK의 분리</b>입니다. API는 껍데기뿐이라 SDK가 없으면 아무것도 안 해요(no-op). 덕분에 DB 드라이버 같은 오픈소스 라이브러리들이 부담 없이 OTel 계측을 미리 내장하기 시작했고, 이게 생태계 승리의 비결이에요. <b>Collector</b>는 receiver &rarr; processor &rarr; exporter로 조립하는 파이프라인인데, 1편의 tail 샘플링(<code>tailsampling</code> 프로세서)이 바로 여기서 돌아갑니다.</p>
@@ -97,7 +97,7 @@ main() → handleCheckout() → calcDiscount() → parseJSON()  ← 지금 실�
 
 <p>결과는 <b>플레임 그래프</b>로 봅니다. 가로 폭은 CPU 시간 점유율이고, 세로는 콜스택 깊이예요.</p>
 
-<div class="obsv-fig"><img src="images/01/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig"><img src="images/01c/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 3. 플레임 그래프 읽는 법: 넓고 평평한 꼭대기를 찾아라</div>
 
 <p>읽는 요령은 하나예요. <b>넓은데 그 위에 자식이 없는 블록</b>이 실제로 CPU를 쓰고 있는 지점입니다. 성능 최적화가 "감으로 찔러보기"에서 "제일 넓은 블록부터 공략"으로 바뀝니다.</p>
@@ -111,7 +111,7 @@ main() → handleCheckout() → calcDiscount() → parseJSON()  ← 지금 실�
 
 <p>3부작의 조각들이 여기서 하나로 이어집니다.</p>
 
-<div class="obsv-fig"><img src="images/01/fig4.png" alt="그림 4" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig"><img src="images/01c/fig4.png" alt="그림 4" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 4. 대시보드에서 소스코드 한 줄까지, 조사 경로의 완성</div>
 
 <p>2편의 SLO 알람이 "사용자가 아프다"를 알리면, 1편에서 tail 샘플링으로 남겨둔 에러 트레이스가 "이 서비스의 이 span"을 찾아주고, span에 연결된 프로파일이 "이 함수의 이 줄"을 가리킵니다. 관측성 스택 전체가 하나의 조사 경로예요.</p>

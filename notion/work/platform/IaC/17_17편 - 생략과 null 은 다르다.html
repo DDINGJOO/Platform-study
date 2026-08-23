@@ -1,0 +1,492 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지, 넷째 날 · 17편</div>
+  1~7편. 첫날: 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날: 같은 사실이 두 군데 적혀 있을 때<br>
+  12~15편. 셋째 날: 만든 가드를 의심한 날들<br>
+  16편. 이름을 믿지 않고 자원을 판독하는 법<br>
+  <b>17편. 생략과 null 은 다르다</b> &larr; 지금 이 글<br>
+  18편. 정직하게 적으면 CI 가 죽는다<br>
+  19편. 이사를 두 번에 나눠도 세 번째 apply 가 필요했다<br>
+  20편. 잘못한 PR 은 통과하고 다음 PR 이 막혔다<br>
+  21편. 코드로 가져오니 처음 보인 것들
+</div>
+
+<p>여러 해째 운영 중인 서비스 하나를 저장소로 데려오기로 했어요. 로드밸런서, 리스너, 타깃그룹, 데이터베이스, 서버. 전부 사람들이 쓰고 있는 실물이고요. 작업 문서 첫 줄에 저는 이렇게 적었습니다. <b>"import 는 실물을 건드리지 않는다. state 에만 쓴다."</b></p>
+
+<p>이 문장은 사실이에요. <code>terraform import</code> 는 AWS 에 쓰기 API 를 한 번도 보내지 않습니다. 리소스를 읽고, state 파일에 "이 주소가 이 실물이다"라고 적고, 끝나요. 실물의 설정값 하나도 바뀌지 않습니다.</p>
+
+<p>그런데 그 문장은 <span class="obsv-mark">import 그 자체에만 참이고, 그 직후 첫 apply 에는 거짓입니다.</span> 저는 그걸 "그러니까 안전하다"의 근거로 썼고, 첫 plan 이 그 착각의 청구서를 내밀었어요.</p>
+
+<p>오늘 글은 그 청구서에 뭐가 적혀 있었는지, 그리고 그 청구서가 <b>plan 화면에서 태그 하나 바뀌는 것과 똑같이 <code>~ 1</code> 로 보인다</b>는 이야기예요. import 를 한 번이라도 쓸 사람이면 이 두 겹 규칙을 만나게 되니까, 시리즈에서 제일 재사용성 높은 편이 될 것 같습니다.</p>
+
+<h2>1. 코드가 실물을 이긴다</h2>
+
+<p>순서를 정확히 봐야 해요. <code>import</code> 는 <b>state 에 등록만 합니다. 코드는 만들어주지 않아요.</b> 그러니까 import 직후 state 에는 실물의 모든 속성이 들어와 있고, 코드(<code>.tf</code>)에는 내가 적은 것만 있습니다.</p>
+
+<p>그다음 apply 가 하는 일은 정해져 있어요. <b>코드를 정답으로 삼아 실물을 코드에 맞춥니다.</b> 여기서 "코드에 안 적은 속성"은 무시되는 게 아니라 <span class="obsv-mark">프로바이더 기본값으로 취급되고, 그 기본값이 실물을 덮어씁니다.</span> 삭제가 아니라 <b>조용한 되돌림</b>이에요.</p>
+
+<p>미리 한 가지는 밝혀둘게요. <b>생략한 속성 전부가 되돌아가는 건 아닙니다.</b> 생략을 "그대로 두라"로 읽는 속성도 있어요. 무엇이 그 갈림을 정하는지는 4장에서 다룹니다. 지금 필요한 건 <b>생략이 안전을 뜻하지 않는다</b>는 사실 하나예요.</p>
+
+<p>제가 가져오려던 데이터베이스에서 되돌아갈 뻔한 게 최소 넷이었습니다.</p>
+
+<div class="obsv-code">코드에 안 적으면 첫 apply 가 이렇게 되돌린다
+
+  deletion_protection                true   ->  false     삭제 보호가 꺼진다
+  enabled_cloudwatch_logs_exports    4종    ->  전부 해제  감사 로그가 내려간다
+  monitoring_interval                60     ->  0         향상된 모니터링이 멈춘다
+  performance_insights_enabled       true   ->  false     성능 통계가 꺼진다</div>
+
+<p>넷 다 실물에서는 켜져 있던 값이에요. 누군가 이유가 있어서 켰을 텐데, 제 코드에는 그 줄이 없었습니다. 없다는 건 "그대로 두라"가 아니라 "기본값으로 만들라"였어요.</p>
+
+<p>그리고 넷 중 둘은 <b>알아차린 뒤에 다시 켜도 회복되지 않습니다.</b> 삭제 보호는 다시 켜면 원래대로예요. 그런데 감사 로그와 성능 통계가 꺼져 있던 구간은 나중에 켜도 채워지지 않아요. 되돌림이 조용한 것보다 나쁜 건 <b>조용한 동안의 기록을 함께 지운다</b>는 점입니다.</p>
+
+<h3>가장 위험한 건 로드밸런서의 보안그룹이었다</h3>
+
+<p>목록에서 제일 무서운 건 위의 넷이 아니었어요. 로드밸런서의 <code>security_groups</code> 였습니다.</p>
+
+<p>여기 붙어 있는 건 <b>계정의 퍼블릭 로드밸런서 30여 개가 함께 쓰는 공유 보안그룹 하나뿐</b>이었어요. 코드에 이 줄을 안 적으면 apply 가 그걸 뗍니다. 그리고 이게 떨어지면 <span class="obsv-mark">막히는 건 인바운드가 아니라 뒷단이에요.</span></p>
+
+<p>왜냐면 타깃 쪽이 로드밸런서를 <b>보안그룹 참조</b>로 신뢰하고 있으니까요. "이 보안그룹에서 오는 트래픽만 받는다"고 적혀 있는데, 로드밸런서가 그 보안그룹을 잃으면 조건에 안 맞아요. 밖에서 로드밸런서까지는 잘 들어옵니다. 로드밸런서에서 서버로 가는 길이 끊겨서 헬스체크가 전부 실패하고, 타깃 healthy 가 0 이 되고, 모든 요청이 503 이 됩니다.</p>
+
+<p>이건 가정이 아니에요. 같은 계정의 <b>{다른 서비스}</b>에서 실제로 그렇게 끊긴 적이 있습니다. 그 기록이 있어서 이번엔 목록에 올릴 수 있었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ import 위험을 셀 때 헷갈리는 지점</div>
+  &bull; <b>삭제</b>는 무섭게 보이고, 실제로 여러 안전장치가 막는다: <code>prevent_destroy</code>, 라벨 게이트, 리뷰<br>
+  &bull; <b>되돌림</b>은 안 무섭게 보이는데, <b>그 장치들은 전부 <code>-</code> 와 <code>±</code> 를 겨냥한다.</b> 되돌림은 <code>~</code>(in-place)라서 셋 중 아무것도 걸리지 않는다<br>
+  &bull; <b>사후에 잡는 장치도 안 통한다.</b> 드리프트 감지는 코드와 실물이 벌어진 것을 찾는데, 되돌림은 apply 가 실물을 코드에 맞춘 결과라서 그 직후에는 둘이 정확히 같다. 드리프트는 0 이 나온다<br>
+  &bull; 우는 것이 하나 있긴 하다. 공유 보안그룹이 떨어지면 healthy 타깃 0 알람이 운다. 그건 막은 게 아니라 <b>이미 끊긴 뒤에 알려주는 것</b>이다<br>
+  &bull; 그러니 import 절차에서 세어야 하는 건 <code>-</code> 와 <code>±</code> 가 아니라 <b><code>~</code> 안에 뭐가 들었는지</b>다
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 472" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="ia1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+<marker id="ia2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+
+<path d="M20 20 C 130 17, 280 23, 400 20 C 403 44, 402 70, 399 90 C 280 93, 130 87, 22 90 C 19 70, 20 44, 20 20 Z" fill="#fffdf7" stroke="#5a9e6f"/>
+<text x="40" y="48" font-size="21" fill="#2e6b41">실물 · 지금 이대로 🟢</text>
+<text x="40" y="78" font-size="16" fill="#3d3a34">삭제 보호 켬 · 로그 4종 · 모니터링 60초</text>
+<text x="424" y="62" font-size="17" fill="#8a8272">누군가 이유가 있어서 켰다</text>
+
+<path d="M80 94 C 76 106, 82 116, 80 126" stroke="#3d3a34" marker-end="url(#ia1)"/>
+<text x="102" y="118" font-family="Menlo, monospace" font-size="12" fill="#8a8272">terraform import</text>
+
+<path d="M20 130 C 130 127, 280 133, 400 130 C 403 154, 402 180, 399 200 C 280 203, 130 197, 22 200 C 19 180, 20 154, 20 130 Z" fill="#fffdf7" stroke="#4a7fb5"/>
+<text x="40" y="158" font-size="21" fill="#4a7fb5">import · state 에만 쓴다</text>
+<text x="40" y="188" font-size="16" fill="#3d3a34">쓰기 API 가 안 나간다 · 정말 무해하다 ✅</text>
+<text x="424" y="172" font-size="17" fill="#8a8272">실물 설정값 변경 0개</text>
+
+<path d="M80 204 C 76 216, 82 226, 80 236" stroke="#3d3a34" marker-end="url(#ia1)"/>
+<text x="102" y="228" font-size="17" fill="#8a8272">그다음 첫 apply</text>
+
+<path d="M20 240 C 130 237, 280 243, 400 240 C 403 264, 402 290, 399 310 C 280 313, 130 307, 22 310 C 19 290, 20 264, 20 240 Z" fill="#fdf3dd" stroke="#e5a33c"/>
+<text x="40" y="268" font-size="21" fill="#c07f18">첫 apply · 코드가 정답이다</text>
+<text x="40" y="298" font-size="16" fill="#3d3a34">안 적은 속성 → 프로바이더 기본값으로</text>
+<text x="424" y="282" font-size="17" fill="#8a8272">코드가 실물을 이긴다</text>
+
+<path d="M80 314 C 76 326, 82 336, 80 346" stroke="#e5533c" marker-end="url(#ia2)"/>
+<text x="102" y="338" font-size="17" fill="#b3502f">쓰기 API 는 여기서부터 나간다</text>
+
+<path d="M20 350 C 130 347, 280 353, 400 350 C 403 374, 402 400, 399 420 C 280 423, 130 417, 22 420 C 19 400, 20 374, 20 350 Z" fill="#fbeee7" stroke="#e5533c"/>
+<text x="40" y="378" font-size="21" fill="#b3502f">되돌아간 실물 🔻</text>
+<text x="40" y="408" font-size="16" fill="#3d3a34">삭제 보호 꺼짐 · 로그 해제 · 모니터링 0</text>
+<text x="424" y="392" font-size="17" fill="#b3502f">실패가 아니라서 조용하다</text>
+
+<text x="20" y="452" font-size="20" fill="#b3502f">= 무해한 것은 import 이고, 값을 청구하는 것은 첫 apply 다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. import 는 아무것도 안 바꾸고, 바꾸는 건 그 뒤에 오는 첫 apply 다</div>
+
+<h2>2. 그래서 손으로 쓰지 말라는데, 손으로 썼다</h2>
+
+<p>설계 리뷰에서 이런 권고가 나왔어요. <b>"사람이 손으로 쓴 설정으로 import 하지 마라."</b> 근거는 지금 보면 너무 당연해요. 1장의 되돌림은 전부 "코드가 실물과 다르다"에서 나오고, 손으로 옮겨 적는 순간 다를 확률이 100% 에 가까우니까요.</p>
+
+<p>저는 그 권고를 따르지 않았어요. 리소스가 몇 개 안 되니 콘솔 덤프를 보고 옮겨 적는 게 빠르다고 판단했습니다. 다만 <b>조건 하나를 미리 걸어뒀어요.</b></p>
+
+<div class="obsv-code">손으로 쓴다. 대신 갈아탈 조건을 미리 못 박는다.
+
+  첫 plan 에서 tags 밖의 변경이 하나라도 뜨면
+    -> 손으로 쓴 것을 버리고 생성 도구로 갈아탄다
+    -> apply 하지 않는다</div>
+
+<p>그리고 조건이 충족됐습니다. 첫 plan 에 <b>태그 밖 변경이 7건</b> 떴어요. 그중 하나는 <span class="obsv-mark">운영 중인 443 리스너에 수정 API 를 보내는 것</span>이었습니다. 사용자 트래픽이 지금 지나가고 있는 그 리스너요.</p>
+
+<p>손으로 쓴 것과 실물을 한 줄씩 대조했더니 <b>네 군데가 틀렸어요.</b></p>
+
+<div class="obsv-code">손으로 쓴 것                         실물                                 그대로 apply 했다면
+------------------------------------------------------------------------------------------------
+Name = {서비스}-prod-alb-https       {서비스}-api-prod-alb-listener-2      없는 이름으로 태그를 덮어씀
+forward 블록 생략 (축약형으로 씀)     ForwardConfig 명시                   운영 443 리스너에 ModifyListener
+lambda_multi_value_headers 생략      = null                               ModifyTargetGroupAttributes
+stickiness / target_group_health     실물에 블록이 있음                    그 블록을 지우려 함</div>
+
+<p>첫 줄을 보세요. 리스너의 <code>Name</code> 태그는 틀린 게 아니라 <b>아예 지어낸 값</b>이었어요. 실물에 존재하지도 않는 문자열을 제가 "그럴 것 같은 이름"으로 만들어서 적어둔 겁니다. 이대로 apply 했으면 실물의 이름이 제 상상으로 덮였을 거고, 그건 태그 변경이니까 plan 에서도 무해하게 보였겠죠.</p>
+
+<p>여기서 살릴 게 하나 있어요. <b>"손으로 하지 마라"를 안 따른 건 잘못입니다.</b> 그건 변명할 게 없어요. 그런데 <span class="obsv-mark">갈아탈 조건을 미리 명시해둔 덕에 늦지 않게 돌아섰습니다.</span> 조건이 없었다면 저는 그 7건을 보고 "태그 정리하는 거니까 괜찮겠지" 쪽으로 해석했을 거예요. 사람은 자기가 이미 한 작업을 버리는 방향으로 해석하지 않으니까요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 권고를 안 따를 때 남겨야 하는 것</div>
+  권고를 어기는 판단은 종종 합리적이다. 문제는 <b>어긴 뒤에 판단을 재고할 계기가 없다</b>는 것이다.<br>
+  &bull; 나쁨: "리소스가 적으니 손으로 쓴다" (끝)<br>
+  &bull; 나음: "손으로 쓴다. 단 <b>X 가 관측되면</b> 원래 권고로 되돌린다"<br>
+  &bull; X 는 <b>느낌이 아니라 관측 가능한 사건</b>이어야 한다. "위험해 보이면"은 조건이 아니다
+</div>
+
+<h2>3. 그런데 그 공식 도구가 안 돌아가는 코드를 뱉는다</h2>
+
+<p>여기가 오늘의 반전이에요. 손으로 쓰기를 포기하고 공식 도구로 갈아탔습니다. <code>terraform plan -generate-config-out</code> 은 실물을 읽어서 그에 해당하는 <code>.tf</code> 를 생성해주는 기능이에요. 값을 사람이 옮기지 않으니 2장의 사고가 원천적으로 안 생깁니다.</p>
+
+<p>그런데 <span class="obsv-mark">생성된 코드가 프로바이더 자기검증에 걸려 <code>validate</code> 부터 실패했어요.</span> 한 번이 아니라 아래 목록만 열일곱입니다. 리소스 종류를 넓혀갈 때마다 새로 나왔고, 저는 세다가 커밋 메시지에 "일곱 번째다"라고 적기 시작했어요.</p>
+
+<div class="obsv-code">생성된 설정이 프로바이더 자기검증에 걸린 것들
+
+[A] 값이 허용 범위 밖이다
+  target_control_port                  = 0     1-65535 만 받는다
+  default_action.order                 = 0     1-50000 만 받는다
+  forward.stickiness.duration          = 0     1-604800 만 받는다
+  tunnel1_rekey_margin_time_seconds    = 0     60-1800 만 받는다
+  tunnel1_replay_window_size           = 0     64-2048 만 받는다
+  tunnel1_dpd_timeout_seconds          = 0     하한 미달
+  tunnel1_ike_versions                 = []    빈 집합은 받지 않는다
+  root_block_device 의 iops · throughput       실물이 gp2 인데 gp3/io1/io2 전용
+
+[B] 함께 쓸 수 없는 것을 같이 뱉는다
+  mutual_authentication                mode 가 off 인데
+                                       ignore_client_certificate_expiry 를 같이 낸다
+  subnet_mapping                       subnets 와 충돌
+  launch_template                      id 와 name 을 동시에 낸다
+  ipv6_address_count + ipv6_addresses  0 과 [] 를 둘 다 낸다 (상호 배타)
+  primary_network_interface            associate_public_ip_address 와 상호 배타
+
+[C] 다른 타입 전용 속성을 붙인다
+  tunnel_bandwidth = "standard"        vpn_gateway_id 와 conflicts with
+                                       (Transit Gateway 연결 전용 속성)
+  enable_acceleration = false          transit_gateway_id 와 함께만 쓸 수 있다
+
+[D] 필수 인자 없이 빈 블록을 낸다
+  target_failover {}    target_health_state {}</div>
+
+<p>에러 문구는 대개 이런 모양이에요. 프로바이더가 <b>자기가 생성한 코드를 자기가 거부</b>합니다.</p>
+
+<div class="obsv-code">Error: Invalid Attribute Combination
+
+  Attribute "mutual_authentication[0].ignore_client_certificate_expiry"
+  cannot be specified when "mutual_authentication[0].mode" is "off".</div>
+
+<h3>공통 원인이 하나다</h3>
+
+<p>열일곱이 제각각처럼 보이지만 뿌리가 거의 같아요. <b>세 층이 "값이 없다"를 서로 다르게 표현합니다.</b></p>
+
+<p>여기서 걸린 AWS API 들은 "이 속성은 설정된 적이 없다"를 <code>0</code> 이나 <code>[]</code> 로 돌려줘요. 숫자 필드는 0, 리스트 필드는 빈 리스트입니다. 생성기는 API 응답을 성실하게 코드로 옮기니까 <code>= 0</code> 과 <code>= []</code> 를 그대로 씁니다. 그런데 프로바이더 스키마는 그 속성에 "1 이상만 받는다", "빈 집합은 안 된다"는 검증을 걸어둔 상태예요. <span class="obsv-mark">"미설정"을 뜻하는 값이 "잘못된 값"으로 읽히는 겁니다.</span></p>
+
+<p>범위는 적어둘게요. <b>AWS API 전부가 그런 규약을 갖는 건 아닙니다.</b> 값이 없으면 필드를 아예 빼고 주는 API 도 많고, 그때는 생성기가 <code>= null</code> 을 뱉어요. 그건 검증에 안 걸립니다. 걸리는 건 <b>"없음"을 값으로 표현해서 주는 API</b> 쪽이에요. 그래서 이 실패는 리소스 종류를 넓힐 때마다 새로 나옵니다. 어느 API 가 어느 쪽인지 미리 알 방법이 없으니까요.</p>
+
+<p>[C] 는 성격이 좀 다르고, 솔직히 그냥 프로바이더 결함이에요. Transit Gateway 연결에만 쓰는 속성을 Virtual Private Gateway 연결에 대해서도 뱉습니다. 그러고는 자기 검증에서 "그 둘은 같이 못 쓴다"고 거부해요. 생성기와 검증기가 같은 프로바이더 안에 있는데 서로의 규칙을 모르는 상태입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔧 그래도 도구를 쓰는 게 옳다</div>
+  두 실패는 등급이 다르다.<br>
+  &bull; <b>손으로 쓰면</b> 문법은 맞고 <b>값이 틀린다</b>. 아무도 안 잡아준다. plan 이 초록일 수도 있다<br>
+  &bull; <b>도구로 뽑으면</b> 값은 맞고 <b>문법이 틀린다</b>. <code>validate</code> 가 즉시 잡는다<br>
+  기계가 잡아주는 실패로 바꿀 수 있다면 그건 개선이다. 열일곱 가지를 걷어내는 수고는 값이 조용히 틀린 채 apply 되는 것보다 싸다
+</div>
+
+<h2>4. 규칙이 두 겹이다</h2>
+
+<p>여기가 핵심이에요. 1장에서 "코드에 안 적으면 기본값으로 되돌아간다"고 했으니, 처방은 간단해 보입니다. <b>실물 값을 적으면 된다.</b> 값이 없는 속성이면 <code>= null</code> 로 "여기는 비어 있다"고 명시하면 되겠죠.</p>
+
+<p>대부분은 그게 맞아요. <span class="obsv-mark">그런데 일부 속성은 <code>= null</code> 로 적어도 프로바이더 스키마 기본값이 이깁니다.</span> plan 의 <code>~</code> 가 사라지지 않아요. 문서를 읽어서 알아낸 게 아니고, 적어보고 CI plan 이 여전히 바꾸려 드는 걸 보고 알았습니다.</p>
+
+<p>그래서 규칙이 두 겹입니다.</p>
+
+<div class="obsv-code">겹 1.  생략하면        -> 프로바이더 기본값이 실물을 덮는다
+겹 2.  = null 로 적어도 -> 프로바이더 스키마 기본값이 이긴다
+
+  즉 "명시적으로 비움" 이 통하지 않는 속성이 있다.</div>
+
+<h3>갈림길은 스키마가 그 속성을 Computed 로도 표시했는지다</h3>
+
+<p>왜 속성마다 다른가를 파보면 답이 나와요. 스키마에는 속성마다 <code>optional</code> 과 <code>computed</code> 표시가 붙고, 그 조합이 "값이 없음"을 어떻게 읽을지를 정합니다.</p>
+
+<p><b>Optional + Computed 인 속성</b>은 코드에서 <b>생략하면 실물 값이 유지</b>돼요. 설정이 비어 있으면 이전 state 의 값을 그대로 계획에 올리기 때문입니다. 3장의 <code>target_control_port</code> 를 그냥 안 적어도 되는 이유가 이거예요. 생략하면 computed 로 남고 실물과 어긋나지 않습니다.</p>
+
+<p>이건 특정 리소스의 성질이 아니라 <b>Terraform 이 계획을 만드는 방식</b>이에요. 그래서 리소스 종류를 안 가립니다. 다만 <b>이전 state 에 값이 있을 때만 성립</b>해요. import 직후에는 state 에 실물이 들어와 있으니 통하는 거고, 새로 만드는 리소스에는 이어받을 값이 없습니다.</p>
+
+<p><b>Optional + 기본값이 있는 속성</b>은 다릅니다. 생략해도 기본값, <code>null</code> 로 적어도 기본값이에요. 이쪽이 1장의 되돌림을 만들고, <code>= null</code> 이 안 통하는 쪽입니다.</p>
+
+<p>그리고 <b>셋째 경우가 있습니다.</b> 생략도 못 하고 실물 값도 못 적는 자리예요. 리스너의 고정 세션 블록이 그랬습니다. 실물의 지속 시간은 0 인데 프로바이더가 1 이상만 받고, <b>바깥 블록이 실물에 명시돼 있어서 블록째로 지울 수도 없어요.</b> 지우면 apply 가 그 블록을 없애려 들고, 그 대상이 운영 중인 리스너입니다. 그래서 허용 범위 안의 값을 하나 적고 그 한 줄만 무시했어요. 고정 세션이 꺼져 있으니 그 값은 아무 데도 쓰이지 않습니다.</p>
+
+<p>그런데 3장의 목록에는 <b>같은 속성이 "걷어낸 것"으로 올라가 있어요.</b> 다른 스택에서는 그 블록이 실물에 없어서 그냥 지울 수 있었으니까요. <b>같은 속성이 한쪽에서는 1번이고 다른 쪽에서는 3번입니다.</b> 그러니 판정은 속성 단위가 아니라 <b>이 리소스의 이 속성</b> 단위로 해야 해요.</p>
+
+<p>문제는 <b>어느 속성이 어느 쪽인지가 문서에 잘 안 적혀 있다</b>는 거예요. 속성 설명에는 "Optional" 한 단어만 있고, Computed 인지는 안 나옵니다. 규칙 자체는 일반적인데 <b>적용 대상 목록이 없는 셈</b>이에요.</p>
+
+<p>표시를 직접 읽는 방법은 있습니다. <code>terraform providers schema -json</code> 이 속성마다 그 두 플래그를 내주니까, 문서를 기다리지 않고 확인할 수 있어요. 다만 그걸로도 <b>기본값이 무엇인지는 안 나옵니다.</b> 그래서 이 저장소에서는 <b>적어보고 plan 을 돌리는 쪽</b>을 썼어요. plan 에서 <code>~</code> 가 사라지면 1번, 남으면 2번입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="ia4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+
+<path d="M200 22 C 300 19, 420 25, 500 22 C 503 44, 502 60, 499 78 C 420 81, 300 75, 202 78 C 199 60, 200 40, 200 22 Z" fill="#fffdf7" stroke="#4a7fb5"/>
+<text x="350" y="48" text-anchor="middle" font-size="22" fill="#3d3a34">코드에 값이 없다</text>
+<text x="350" y="69" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">생략했거나 = null 이다</text>
+
+<path d="M290 82 C 240 96, 170 108, 128 122" stroke="#8a8272" stroke-width="2" marker-end="url(#ia4)"/>
+<path d="M350 82 C 352 96, 348 110, 350 122" stroke="#8a8272" stroke-width="2" marker-end="url(#ia4)"/>
+<path d="M410 82 C 460 96, 530 108, 572 122" stroke="#8a8272" stroke-width="2" marker-end="url(#ia4)"/>
+
+<path d="M20 128 C 90 125, 160 131, 225 128 C 228 160, 227 200, 224 244 C 160 247, 90 241, 22 244 C 19 200, 20 160, 20 128 Z" fill="#fffdf7" stroke="#5a9e6f"/>
+<text x="122" y="152" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">Optional + Computed</text>
+<text x="122" y="182" text-anchor="middle" font-size="19" fill="#2e6b41">실물이 유지된다 🟢</text>
+<text x="122" y="208" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">생략하면 그대로 남는다</text>
+<text x="122" y="231" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">target_control_port</text>
+
+<path d="M248 128 C 318 125, 388 131, 452 128 C 455 160, 454 200, 451 244 C 388 247, 318 241, 250 244 C 247 200, 248 160, 248 128 Z" fill="#fbeee7" stroke="#e5533c"/>
+<text x="350" y="152" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f">Optional + 기본값</text>
+<text x="350" y="182" text-anchor="middle" font-size="19" fill="#b3502f">기본값이 이긴다 🔻</text>
+<text x="350" y="208" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">생략도 null 도 기본값</text>
+<text x="350" y="231" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">deletion_protection</text>
+
+<path d="M475 128 C 545 125, 615 131, 680 128 C 683 160, 682 200, 679 244 C 615 247, 545 241, 477 244 C 474 200, 475 160, 475 128 Z" fill="#fdf3dd" stroke="#e5a33c"/>
+<text x="577" y="152" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#c07f18">Optional + 범위 검증</text>
+<text x="577" y="182" text-anchor="middle" font-size="19" fill="#c07f18">생략도 못 한다 🔧</text>
+<text x="577" y="208" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">블록이 값을 요구한다</text>
+<text x="577" y="231" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">stickiness.duration</text>
+
+<path d="M40 268 C 200 265, 460 271, 664 267" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+<text x="350" y="300" text-anchor="middle" font-size="18" fill="#8a8272">문서에는 Optional 한 단어만 있다. 판정은 plan 을 돌려야 나온다</text>
+<text x="350" y="328" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">terraform providers schema -json 이 두 플래그를 내주지만 기본값은 안 나온다</text>
+
+<text x="350" y="370" text-anchor="middle" font-size="20" fill="#b3502f">= 값이 없음 하나가 스키마에 따라 세 갈래로 갈린다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 같은 빈칸이 유지·되돌림·불가능 세 갈래로 갈린다</div>
+
+<h3>2번이면 처방이 또 둘로 갈린다</h3>
+
+<p><code>= null</code> 이 안 통한다고 판정됐을 때, 선택지는 <b>무시하기</b>와 <b>기본값을 명시하기</b>입니다. 실제로 여섯을 서로 다르게 처리했어요.</p>
+
+<div class="obsv-code">속성                                  AWS 호출  미래 의미  확인 비용     처방
+---------------------------------------------------------------------------------------
+proxy_protocol_v2                     있다      없다      -             ignore_changes
+lambda_multi_value_headers_enabled    있다      없다      -             ignore_changes
+enable_global_write_forwarding        있다      없다      운영 라이터    ignore_changes
+enable_local_write_forwarding         있다      없다      운영 라이터    ignore_changes
+force_destroy (DB 인스턴스)            없다      없다      -             ignore_changes
+user_data_replace_on_change           없다      있다      -             기본값 명시
+
+  무시하는 쪽도 코드에는 = null 을 그대로 남겼다.
+  동작은 ignore_changes 가 정하고, null 은 "AWS 가 이 값을 안 줬다" 는
+  사실을 코드에 남긴다.</div>
+
+<p><b>타깃그룹의 두 속성</b>은 다른 타입 전용이에요. 그대로 apply 하면 속성 수정 API 로 <code>proxy_protocol_v2</code> 를 보내는데, 그건 네트워크 로드밸런서 쪽 속성이라 애플리케이션 로드밸런서의 타깃그룹에서는 거부될 수 있습니다. 관리하려는 값이 아니니 <code>ignore_changes</code> 로 명시했어요.</p>
+
+<p>여기서 <b>범위를 잘못 넓히면 안 됩니다.</b> 무시해야 하는 건 <b>그 속성이 아니라 그 리소스 종류에서의 그 속성</b>이에요. 같은 계정의 네트워크 로드밸런서 타깃그룹에서는 <code>proxy_protocol_v2</code> 가 실제 값(<code>false</code>)으로 잡히고, 그래서 그쪽 무시 목록에는 <code>lambda_multi_value_headers_enabled</code> 하나만 들어 있습니다. 속성 이름만 보고 목록을 베끼면 관리해야 할 값을 안 보이게 만들어요.</p>
+
+<p><b>데이터베이스의 write forwarding 플래그 둘</b>은 더 조심스러웠습니다. 그때 그 엔진 버전은 이 기능을 지원하지 않아서 API 가 값을 안 줬어요. 그런데 apply 하면 <b>살아 있는 라이터로 클러스터 수정 API 가 나갑니다.</b> 미지원 기능에 대한 그 호출이 어떻게 처리되는지 확인이 안 됐고, <b>확인할 자리가 운영 라이터라서 확인하지 않기로 했어요.</b> 어떤 실험은 실험 비용이 실험 가치보다 큽니다.</p>
+
+<p>이 둘은 나중에 얘기가 하나 더 붙습니다. 며칠 뒤 엔진을 올렸더니 그 기능이 지원되는 버전이 됐어요. 무시할 근거가 <b>"지원하지 않는다"에서 "지원하는데 우리가 쓰지 않는다"로 바뀐 겁니다.</b> 무시 자체는 유지하고 <b>주석의 이유만 고쳐 적었어요.</b> 이유가 낡은 무시 목록은 다음 사람에게는 근거 없는 목록과 같습니다.</p>
+
+<p><b>DB 인스턴스의 강제 삭제 스위치</b>는 성격이 또 달라요. Terraform 전용 필드라 AWS 호출이 없고 미래 의미도 없는데, 무시로 갔습니다. 이유는 <b>중단 조건을 흐리기 때문</b>이에요. 되돌릴 수 없는 리소스의 plan 은 "태그 밖에 아무것도 없다"로 읽혀야 하고, 거기에 상시 한 줄이 섞여 있으면 사람이 그 한 줄을 넘겨 읽는 습관을 들이게 됩니다.</p>
+
+<p><b>서버의 재생성 스위치</b>는 반대로 갔어요. <code>user_data_replace_on_change</code> 도 Terraform 전용 필드라 AWS 호출이 전혀 없습니다. 부팅 스크립트를 바꿀 때 인스턴스를 재생성할지 정하는 스위치예요. 그러니 apply 해도 실물에 아무 일이 없고, 무시할 이유가 없습니다. 그리고 <b>나중에 의미를 갖습니다.</b> 언젠가 부팅 스크립트를 코드로 관리하게 되면 이 값이 "재생성할지"를 결정해요. <code>ignore_changes</code> 로 덮어두면 그때 이 스위치가 보이지 않습니다. 그래서 기본값을 그대로 명시해서 첫 apply 후 state 에 정착시켰어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 무시할까, 명시할까: 네 질문</div>
+  &bull; <b>AWS 를 호출하나?</b> 호출이 나가고 그 호출이 위험하면 무시 쪽. Terraform 전용 필드면 대개 명시 쪽<br>
+  &bull; <b>미래에 의미를 갖나?</b> 나중에 값을 정해야 할 속성이면 명시 쪽이다. <code>ignore_changes</code> 는 그 속성을 <b>영구히 안 보이게</b> 한다<br>
+  &bull; <b>중단 조건을 흐리나?</b> 되돌릴 수 없는 리소스라면, 상시로 뜨는 무해한 한 줄이 <b>사람의 판독을 무디게</b> 한다. 그때는 Terraform 전용 필드여도 무시 쪽<br>
+  &bull; <b>확인 비용이 얼마인가?</b> 확인할 자리가 운영 라이터면 확인하지 않는 것도 결정이다. 다만 <b>"확인 안 했다"와 그 이유를 코드 주석에 남기고, 이유가 바뀌면 주석을 고친다.</b> 무시 목록은 이유가 낡으면 그냥 눈가리개가 된다
+</div>
+
+<h3>이 구분은 여기만의 문제가 아니다</h3>
+
+<p>"필드가 없다"와 "필드가 null 이다"를 구분하는 문제는 부분 갱신을 다루는 데면 어디든 나와요. JSON 으로 일부만 고쳐 보내는 API 에는 <b>필드 부재는 "건드리지 마라", 명시적 null 은 "지워라"</b>로 갈라 정의하는 규약이 있고, 그 셋을 구분하려고 언어마다 "값 없음"과 "필드 없음"을 따로 담는 타입을 씁니다.</p>
+
+<p>그 규약과 비교하면 <b>Terraform 이 헷갈리는 이유가 분명해집니다. "지워라"라는 표현이 아예 없어요.</b> 원하는 상태를 적는 방식이니 "이 속성을 미설정으로 만들라"를 쓸 자리가 없습니다. 대신 <b>"부재"가 스키마에 따라 두 가지 뜻을 갖고</b>, Optional + Computed 면 "건드리지 마라", 기본값이 있으면 "기본값으로 만들라"예요.</p>
+
+<p>그러니 제목을 한 번 더 좁혀 적을게요. <b>생략과 <code>null</code> 은 다릅니다.</b> 생성기가 낸 <code>= null</code> 줄을 지우는 순간 그 속성이 "기본값으로 만들라"로 바뀔 수 있으니까요. 다만 <span class="obsv-mark">남기는 것이 곧 막는 것은 아닙니다.</span> 두 번째 겹에서는 <code>null</code> 을 남겨도 plan 이 그대로 바꾸려 들었고, 거기서 필요했던 건 <code>ignore_changes</code> 였어요. <b>규칙은 "null 로 적으면 안전하다"가 아니라 "생성기가 낸 줄을 가볍게 지우지 않는다"입니다.</b></p>
+
+<h2>5. 그리고 이 위험은 plan 에서 &quot;~1&quot; 로 보인다</h2>
+
+<p>1장부터 4장까지의 위험이 plan 화면에서 어떻게 생겼는지가 마지막 문제예요. 이렇게 생겼습니다.</p>
+
+<div class="obsv-code">Plan: 0 to add, 1 to change, 0 to destroy.</div>
+
+<p>그리고 <b>태그 하나 바뀔 때도 정확히 이렇게 생겼습니다.</b> 화면상 구분이 안 돼요. 그러니까 "변경이 적으면 안전하다"는 판단이 성립하지 않습니다. 삭제 보호를 끄는 변경도 <code>~ 1</code>, 라벨 오타를 고치는 변경도 <code>~ 1</code> 이니까요.</p>
+
+<p>이 저장소에는 실측 사례가 있어요. 다른 스택의 인스턴스에서 이런 두 속성이 나왔습니다.</p>
+
+<div class="obsv-code">  source_dest_check        = false    (프로바이더 기본값 true)
+  disable_api_termination  = true     (프로바이더 기본값 false)
+
+  둘 다 코드에서 빠지면 첫 apply 가 기본값으로 되돌린다.
+  전자는 그 인스턴스를 통한 라우팅을 끊고,
+  후자는 종료 보호를 푼다.</div>
+
+<p>이게 태그 변경 옆에 붙어서 오면 <code>~ 1</code> 이 <code>~ 1</code> 로, 혹은 <code>~ 2</code> 로 보여요. 숫자로는 판단할 수가 없습니다.</p>
+
+<h3>그래서 개수가 아니라 속성 이름을 낸다</h3>
+
+<p>이 저장소가 도달한 처방은 <b>판정 스크립트가 개수 대신 바뀌는 속성의 경로를 출력하는 것</b>이었어요. 그리고 중단 조건의 문장을 바꿨습니다.</p>
+
+<div class="obsv-code">전 :  "no-op 아닌 변경이 1건 이하면 진행한다"
+후 :  "tags 와 tags_all 외에 바뀌는 것이 있으면 멈춘다"
+
+  python3 scripts/plan-verdict.py plan.json --expect tags,tags_all
+
+  기대 밖 속성이 하나라도 있으면 실패한다.
+  ::error:: 코드가 실제와 다릅니다. apply 하지 말고
+            코드를 실제에 맞춘 뒤 plan 부터 다시 하세요.</div>
+
+<p>차이가 결정적이에요. <b>숫자로 쓰면 그 숫자를 채우는 무해한 변경이 위험한 변경을 가립니다.</b> 태그 변경 1건으로 예산을 다 쓰면, 그 옆에 붙은 삭제 보호 해제는 "이미 1건 이하니까 통과" 안에 숨어요. 이름으로 쓰면 태그 100개가 바뀌어도 통과하고, 태그 아닌 게 하나 붙으면 그 자리에서 멈춥니다.</p>
+
+<p><b>출력에 값은 절대 넣지 않습니다.</b> 경로만 내요. plan JSON 은 민감값을 평문으로 담고 있고, 이 출력은 PR 코멘트로 나가니까요. 사람이 판단하는 데는 이름만 있으면 충분합니다.</p>
+
+<h3>정직하게 적자면, 이건 아직 게이트가 아니다</h3>
+
+<p>여기서 자랑을 멈춰야 합니다. <span class="obsv-mark">지금 CI 가 자동으로 돌리는 건 <code>--expect</code> 가 아니에요.</span> 워크플로가 매 PR 에 돌리는 건 뒤에 나오는 <b>import 블록 수 대조</b> 하나뿐이고, PR 코멘트는 여전히 <code>+0 ~0 -0 ±0 · 파괴적 변경 없음</code> 이라는 <b>개수</b>를 냅니다. 판정이 워크플로 네 파일 여섯 지점에 복제돼 있어서, 그걸 스크립트 하나로 합치는 일이 아직 안 끝났어요.</p>
+
+<p>그러니 <code>--expect</code> 는 <b>스택 README 에 적혀 있고 사람이 손으로 돌리는 명령</b>입니다. 15편에서 저는 "1회성이고, 사람 손이고, 흔적이 문장 하나뿐"인 확인은 시험이 아니라고 썼어요. <b>이 확인이 정확히 그 형태예요.</b> 제가 그 명령을 안 치고 머지하면 아무것도 안 막습니다.</p>
+
+<p>그리고 팀이 늘면 더 안 버텨요. 기대 목록이 스택마다 다르고(어느 스택은 <code>tags,tags_all</code>, 어느 스택은 거기에 하나 더), 그 목록이 <b>README 산문 안에</b> 살아요. 스택이 다섯이면 진실이 다섯 군데 있는 거고, <b>같은 사실이 두 군데 적혀 있으면 어떻게 어긋나는지는 둘째 날 내내 쓴 이야기입니다.</b> 게이트로 만들려면 기대 목록을 스택 옆에 데이터로 두고 워크플로가 읽게 해야 하는데, 그게 남은 일이에요.</p>
+
+<h3>정상 import 마다 울지 않게 하려면</h3>
+
+<p>여기 디테일이 하나 있어요. 이 가드를 소박하게 만들면 <b>정상적인 import 마다 울립니다.</b></p>
+
+<p>import 할 때는 코드에서 기본값 블록을 여럿 걷어내게 되는데(3장 참고), 그러면 plan JSON 의 <code>after</code> 에서 그 값들이 사라져요. before 와 after 를 그냥 비교하면 전부 "변경"으로 잡힙니다. 그런데 실제로는 안 바뀌어요. 그건 프로바이더가 apply 때 채우는 <b>계산된 값</b>이고, plan JSON 은 그걸 <code>after_unknown</code> 이라는 별도 자리에 표시해둡니다. 실제로 기본값 블록 넷을 지운 plan 이 <code>0 to change</code> 로 나왔어요.</p>
+
+<p>그래서 판정 스크립트는 <code>after_unknown</code> 에 표시된 속성을 변경 목록에서 뺍니다. 이 구분을 안 하면 "지워도 되는 것"이 전부 변경으로 잡혀서 가드가 매번 울고, <b>매번 우는 가드는 꺼진 가드예요.</b> 사람이 곧 <code>--expect</code> 목록에 다 집어넣거나 스크립트를 건너뛰게 됩니다.</p>
+
+<h3>반대편 실패가 더 무섭다: 너무 조용한 가드</h3>
+
+<p>매번 우는 가드가 위험하다고 썼으니, 반대편도 적어야 공평합니다. 그리고 <b>이 스크립트가 태어난 이유는 사실 반대편이었어요.</b></p>
+
+<p>Terraform 은 import 를 plan 에 이렇게 표시합니다. <b>액션은 <code>no-op</code>, 그 옆에 "이건 import 다"라는 표시가 따로 붙어요.</b> 그런데 그때까지 이 저장소의 판정은 전부 <code>no-op</code> 을 건너뛰고 있었습니다. 그렇게 만든 이유도 있었어요. 그 앞달에 데이터 소스 읽기 세 건이 "기타"로 세어져서 파괴적 변경 가드가 오탐했거든요. <b>오탐을 없앤 필터가 미탐을 만든 겁니다.</b></p>
+
+<p>결과가 이랬습니다.</p>
+
+<div class="obsv-code">운영 중인 prod 리소스가 state 로 들어오는 PR 에서
+
+  PR 코멘트        +0 ~0 -0 ±0  ·  "파괴적 변경 없음"
+  apply            변경 없음으로 판단 → 통째로 스킵
+  드리프트          clean
+  미적용 변경 점검   clean → 열려 있던 이슈까지 닫는다
+
+  즉 사람이 보는 화면 전부가 "아무 일도 없음" 이었다.</div>
+
+<p><span class="obsv-mark">시끄러운 가드는 사람이 끄고, 조용한 가드는 사람이 끌 필요조차 없어요.</span> 이미 아무 말도 안 하고 있으니까요. 앞의 시끄러움은 제가 목록을 넓히거나 스크립트를 건너뛰는 방식으로 무력화되는 것이고, 이 조용함은 <b>무력화된 상태로 초록불을 냅니다.</b> 후자가 나쁩니다.</p>
+
+<p>처방은 두 줄이었어요. <b>"변경이 하나도 없어도 import 가 있으면 apply 할 것이 있다"</b>를 판정에 넣고, <b>코드의 import 블록 수와 plan 의 import 건수를 대조</b>하는 단언을 붙였습니다. 이 단언이 지금 CI 가 매 PR 에 실제로 돌리는 하나예요. 그리고 <b>오탐이 구조적으로 안 납니다.</b> 이미 state 에 있는 주소를 import 하려 하면 plan 자체가 실패하니까, "plan 은 성공했는데 import 건수가 모자란다"는 상태가 정상일 수 없어요. import 블록이 0개인 동안은 조용히 지나가고, 첫 import 가 들어오는 순간 스스로 무장됩니다.</p>
+
+<p>두 실패를 나란히 놓으면 뿌리가 같아요. <b>둘 다 액션 종류만 보고 내용을 안 본 결과입니다.</b> 시끄러운 쪽은 <code>update</code> 라는 이름만 보고 그 안이 계산된 값인지 안 봤고, 조용한 쪽은 <code>no-op</code> 이라는 이름만 보고 그 옆에 import 표시가 붙었는지 안 봤어요.</p>
+
+<h3>예외는 필요하다. 다만 수명을 맞춘다</h3>
+
+<p>실제로 예외가 필요한 경우가 있어요. 서버를 가져오는 단계에서는 <code>user_data_replace_on_change</code> 가 <code>null</code> 에서 <code>false</code> 로 함께 바뀝니다(4장의 그 명시). 이건 AWS 호출이 없고 첫 apply 후 정착하니까 통과시켜야 하는데, <b>기대 목록을 코드에 영구히 넓히지 않았어요.</b> 그 PR 의 확인 명령에서만 넓혔습니다.</p>
+
+<div class="obsv-code"># 평소
+python3 scripts/plan-verdict.py plan.json --expect tags,tags_all
+
+# 서버를 가져오는 그 PR 에서만
+python3 scripts/plan-verdict.py plan.json \
+    --expect tags,tags_all,user_data_replace_on_change</div>
+
+<p>예외를 기본값에 넣으면 그 예외가 영원히 남고, 다음 사람은 그게 왜 있는지 모릅니다. <b>예외의 수명은 그 예외가 필요했던 변경의 수명과 같아야 해요.</b></p>
+
+<p>그런데 <b>이건 절반만 지켰습니다.</b> 같은 서비스의 dev 스택에서는 서버가 스택의 일부라, 같은 예외가 README 의 중단 조건 절에 <b>상설로</b> 적혀 있어요. "허용되는 변경은 tags 와 tags_all 과 이 속성뿐"이라고요. <b>같은 예외가 한쪽에서는 한 PR 짜리였고, 다른 쪽에서는 영구가 됐습니다.</b> 예외의 수명을 사람이 기억으로 관리하면 이렇게 됩니다. 이것도 남은 일이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 382" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="ia3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+
+<path d="M20 24 C 110 21, 240 27, 330 24 C 333 52, 332 86, 329 116 C 240 119, 110 113, 22 116 C 19 86, 20 52, 20 24 Z" fill="#fffdf7" stroke="#5a9e6f"/>
+<text x="38" y="52" font-size="21" fill="#2e6b41">무해한 변경 🟢</text>
+<text x="38" y="80" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">~ tags.ManagedBy</text>
+<text x="38" y="106" font-size="17" fill="#8a8272">태그 한 개가 바뀐다</text>
+
+<path d="M370 24 C 460 21, 590 27, 680 24 C 683 52, 682 86, 679 116 C 590 119, 460 113, 372 116 C 369 86, 370 52, 370 24 Z" fill="#fbeee7" stroke="#e5533c"/>
+<text x="388" y="52" font-size="21" fill="#b3502f">위험한 변경 🔥</text>
+<text x="388" y="80" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">~ deletion_protection</text>
+<text x="388" y="106" font-size="17" fill="#b3502f">삭제 보호가 꺼진다</text>
+
+<path d="M175 120 C 198 142, 246 156, 288 170" stroke="#8a8272" stroke-width="2" marker-end="url(#ia3)"/>
+<path d="M525 120 C 502 142, 456 156, 414 170" stroke="#8a8272" stroke-width="2" marker-end="url(#ia3)"/>
+
+<path d="M150 176 C 260 173, 440 179, 552 176 C 555 198, 554 220, 551 242 C 440 245, 260 239, 152 242 C 149 220, 150 198, 150 176 Z" fill="#fffdf7" stroke="#3d3a34"/>
+<text x="196" y="202" font-size="19" fill="#3d3a34">plan 화면 · 똑같이 보인다</text>
+<text x="172" y="230" font-family="Menlo, monospace" font-size="13" fill="#b3502f">Plan: 0 to add, 1 to change, 0 to destroy.</text>
+
+<text x="20" y="278" font-size="18" fill="#8a8272">숫자는 태그 수정과 삭제 보호 해제를 구분하지 못한다</text>
+
+<text x="20" y="312" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">plan-verdict.py plan.json --expect tags,tags_all → 속성 이름을 낸다 (지금은 사람이 손으로)</text>
+
+<text x="20" y="354" font-size="20" fill="#b3502f">= 게이트는 개수가 아니라 무엇이 바뀌는지를 봐야 한다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 같은 <span style="font-family:Menlo,monospace">~1</span> 인데 하나는 오타 수정이고 하나는 안전장치 해제다</div>
+
+<h2>6. 무해함은 절차를 생략할 근거가 아니다</h2>
+
+<p>오늘 배운 걸 두 줄로 남깁니다.</p>
+
+<p><b>첫째, "state 에만 쓴다"는 문장은 import 에만 참이고 그다음 apply 에는 거짓입니다.</b> 이 문장 자체는 정확해요. 다만 그게 정확하다는 이유로 <b>절차를 가볍게 만드는 근거</b>로 쓰이는 순간 틀립니다. 저는 그 문장을 근거로 "손으로 써도 되겠지"까지 갔고, 첫 plan 이 태그 밖 변경 7건으로 값을 청구했어요.</p>
+
+<p>같은 구조가 다른 데도 많습니다. "읽기 전용이니까", "드라이런이니까", "state 만 만지니까". 이런 말들은 대개 사실이고, 그래서 <span class="obsv-mark">무해함이 절차를 생략하는 허가증으로 오해되기 쉬워요.</span> 물어야 할 질문은 "이 동작이 무해한가"가 아니라 <b>"이 동작 바로 다음에 오는 동작이 무해한가"</b>입니다.</p>
+
+<p><b>둘째, 위험을 개수로 세면 가려집니다.</b> 같은 <code>~ 1</code> 이 태그 수정일 수도 있고 삭제 보호 해제일 수도 있어요. 개수로 만든 게이트는 무해한 변경이 예산을 채우는 만큼 위험한 변경을 숨겨줍니다.</p>
+
+<p>그래서 게이트는 <b>무엇이 바뀌는지</b>를 봐야 해요. 그리고 이건 import 만의 이야기가 아닙니다. "경고 5건 이하", "커버리지 80% 이상", "실패 테스트 0건" 같은 숫자 기준 전부 같은 성질을 갖습니다. 숫자는 세기 쉽고, 세기 쉬운 것은 채우기도 쉬워요. 채워진 숫자 뒤에 뭐가 앉아 있는지는 <b>이름을 보지 않으면 알 수 없습니다.</b></p>
+
+<p>다만 오늘 배운 걸 한 줄 더 붙여야 정직해요. <b>이름을 내는 스크립트는 있고, 그걸 매 PR 에 자동으로 돌리는 장치는 아직 없습니다.</b> 지금 CI 가 스스로 무장하는 건 import 건수 대조 하나뿐이고, 나머지는 제가 명령을 치는 데 달려 있어요. <span class="obsv-mark">가드를 만든 것과 가드가 켜져 있는 것은 다른 일입니다.</span> 15편에서 쓴 문장을 이번에는 제 처방에 돌려줘야 하겠네요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>import 는 정말로 state 에만 쓴다. 위험한 건 그 직후의 첫 apply 다.</b> apply 는 코드를 정답으로 삼으니, 코드에 안 적은 속성은 프로바이더 기본값으로 <b>되돌아간다.</b> 삭제 보호가 꺼지고, 로그 내보내기가 해제되고, 로드밸런서가 공유 보안그룹을 잃으면 인바운드가 아니라 뒷단이 끊긴다. 그리고 이 되돌림은 <code>-</code> 를 겨냥한 장치들에 걸리지 않고, apply 직후에는 코드와 실물이 같으니 드리프트에도 안 잡힌다.<br><br>
+  그래서 설정은 손으로 쓰지 말고 생성 도구로 뽑아야 하는데, 그 도구가 프로바이더 자기검증에 걸리는 코드를 열일곱 가지 뱉었다. 여기서 걸린 AWS API 들이 "미설정"을 <code>0</code> 과 <code>[]</code> 로 돌려주고, 생성기가 그걸 값으로 받아쓰고, 프로바이더가 그 값을 거부하기 때문이다. 그리고 규칙은 두 겹이다. <b>생략하면 기본값이 실물을 덮고, <code>= null</code> 로 적어도 스키마 기본값이 이긴다.</b> Optional + Computed 면 생략이 실물을 지키지만, 어느 속성이 그런지는 문서에 안 적혀 있어서 적어보고 plan 을 돌려야 안다.<br><br>
+  무엇보다 이 모든 위험이 plan 에서 <code>~ 1</code> 로 보인다. <b>무해함을 근거로 절차를 생략하면 다음 단계가 값을 청구하고, 위험을 개수로 세면 무해한 변경이 위험한 변경을 가린다. 게이트는 개수가 아니라 이름을 봐야 한다.</b> 다만 그 이름을 내는 명령은 아직 사람이 치고 있다. <b>가드를 만든 것과 가드가 켜져 있는 것은 다른 일이다.</b>
+</div>
+
+</div>

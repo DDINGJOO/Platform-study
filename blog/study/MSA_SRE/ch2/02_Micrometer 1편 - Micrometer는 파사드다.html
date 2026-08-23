@@ -43,7 +43,7 @@ implementation 'io.micrometer:micrometer-registry-datadog'     // 데이터독�
 implementation 'io.micrometer:micrometer-registry-prometheus'  // 프로메테우스든
 // → 계측 코드는 한 글자도 안 바뀜</div>
 
-<div class="obsv-fig"><img src="images/02/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig"><img src="images/02a/fig1.png" alt="그림 1" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 1. 락인은 코드에 스며들고, 파사드는 벤더를 설정에 가둔다</div>
 
 <p>로깅의 SLF4J가 정확히 같은 구조예요. 코드는 <code>log.info()</code>만 알고, 뒤에 Logback이 오든 Log4j가 오든 신경 안 쓰죠. Micrometer는 그 아이디어를 메트릭에 적용한 겁니다. 파사드가 뒤에서 흡수하는 차이는 생각보다 많아요. 메트릭 이름 관례(<code>http.server.requests</code>를 프로메테우스에는 <code>http_server_requests</code>로 번역), 히스토그램 포맷(일반 vs 누적), 전송 방식(push vs pull)까지 전부요.</p>
@@ -80,7 +80,7 @@ implementation 'io.micrometer:micrometer-registry-prometheus'  // 프로메테�
 
 <p>파사드의 심장은 <code>MeterRegistry</code>예요. "우편함"이라고 부르기 쉬운데, 실제로는 네 가지 일을 합니다. 카운터 호출 하나의 여정을 따라가 보면:</p>
 
-<div class="obsv-fig"><img src="images/02/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig"><img src="images/02a/fig2.png" alt="그림 2" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 2. 호출 한 번의 여정: 검문, 장부, 집계, 수출</div>
 
 <p>①에서 조직의 태그 정책이 집행되고(번외 4편에서 자세히), ②의 장부가 "태그 조합 = 시계열 = 과금 단위"의 실체이고, ③ 덕분에 요청량만큼 네트워크가 터지지 않고, ④에서 push(60초마다 발사)냐 pull(긁힐 때까지 대기)이냐가 구현체에 따라 갈려요. 그리고 명확히 할 것이 하나 있어요. <span class="obsv-mark">registry는 측정하지 않아요.</span> 언제 뭘 잴지는 계측 코드(Actuator 필터, 여러분의 코드)가 정하고, registry는 받은 것을 관리&middot;집계&middot;수출할 뿐입니다.</p>
@@ -106,7 +106,7 @@ ServerRequestObservationConvention myConvention() { ... }</div>
 
 <p>③이 재밌는 지점이에요. Actuator의 자동 구성 빈들은 전부 <code>@ConditionalOnMissingBean</code>으로 선언돼 있어요. "사용자가 같은 타입 빈을 안 만들었을 때만 내 기본값을 쓴다." 그래서 여러분이 빈을 등록하는 순간 <b>스프링이 조용히 물러납니다.</b> 오버라이드라기보다 "기본값이 스스로 비켜주는 자리"에 가까워요.</p>
 
-<div class="obsv-fig"><img src="images/02/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
+<div class="obsv-fig"><img src="images/02a/fig3.png" alt="그림 3" style="width:100%;max-width:700px;height:auto;"></div>
 <div class="obsv-figcap">그림 3. 커스터마이징 3단계: 낮은 계단부터 밟는다</div>
 
 <p>순서도 ① → ② → ③으로 시도하는 게 좋아요. 프로퍼티로 되면 그게 최선이고, 빈 교체는 강력하지만 스프링 업그레이드 때 기본 구현이 바뀌면 따라가야 하는 유지보수 비용이 생기거든요. 셋의 공통점은 하나예요. <span class="obsv-mark">프레임워크 코드는 한 줄도 안 고치고, 앱이 조립되는 구성 정보만 수정한다.</span> "동작은 코드에, 선택은 구성에"라는 파사드 철학이 커스터마이징에도 그대로 이어지는 거예요.</p>

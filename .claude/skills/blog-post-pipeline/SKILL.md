@@ -152,3 +152,29 @@ assert html.count('<div') == html.count('</div>')
 
 통과하면 사용자에게 라운드 요약과 함께 전달하고, 커밋/푸시는 사용자 확인 후 진행한다.
 (이 저장소는 DDINGJOO 계정으로 푸시 — `gh auth status`로 활성 계정 확인)
+
+### 이미지판을 재생성했으면 장수를 대조한다
+
+`notion/` 에서 `blog/` 를 만든 뒤(`assets/make-image-version.py`), 스크립트가 출력한
+"그림 N장"과 실제 PNG 파일 수가 **같은지 반드시 확인한다.**
+
+```bash
+python3 - <<'PY'
+import re
+from pathlib import Path
+ref = sum(len(re.findall(r'<img src="images/', p.read_text(encoding='utf-8')))
+          for p in Path('blog').rglob('*.html'))
+print('img 참조', ref, '/ PNG', len(list(Path('blog').rglob('*.png'))))
+PY
+```
+
+두 수가 다르면 **그림이 덮어써졌다.** 참조가 깨지지 않으니 눈에 안 띄는데,
+글 A 의 자리에 글 B 의 그림이 들어가 있는 상태다. 링크 검사로는 절대 안 잡힌다.
+
+2026-08-23에 실제로 났던 사고다. 이미지 폴더 이름을 글 번호로만 만들던 탓에
+`study/MSA_SRE/ch2` 의 `01_` 세 편이 같은 `images/01/` 을 쓰면서 서로의
+`fig1.png` 를 덮었다. **필요 23장 중 8장만 남아 있었고, 그 상태로 커밋돼 있었다.**
+스크립트는 이제 같은 폴더에 번호가 겹칠 때만 `01a`·`01b` 로 갈라준다.
+
+교훈은 검사기 쪽이다. "깨진 참조 0건"과 "미참조 PNG 0건"을 둘 다 통과해도
+내용이 뒤바뀐 건 못 잡는다. **개수 보존을 따로 세야 한다.**
