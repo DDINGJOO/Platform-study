@@ -32,7 +32,7 @@
 <p>AWS는 이 여정 전체를 서비스 몇 개로 쪼개서 자동화해 놨습니다. 이 글이 답할 질문은 하나예요. <b>코드가 커밋된 순간부터 프로덕션에 뜨기까지, 각 단계를 어떤 AWS 리소스가 받아서 어떻게 다음으로 넘기는가?</b></p>
 
 <h2>1. 개념은 다섯 단계, 일꾼은 넷</h2>
-<p>소프트웨어 생명주기는 교과서적으로 <b>Code → Build → Test → Deploy → Provision</b> 흐름이에요. AWS에 이걸 얹으면 단계마다 담당 서비스가 하나씩 매핑되는데, 딱 한 군데 겹칩니다. <span class="obsv-mark">Build와 Test는 별개 단계지만, 실제로는 CodeBuild 한 명이 buildspec 안에서 빌드와 유닛테스트를 같이 처리해요.</span> 테스트 전용 stage를 따로 만들어도 그 안에서 도는 건 결국 CodeBuild입니다.</p>
+<p>소프트웨어 생명주기는 교과서적으로 <b>Code → Build → Test → Deploy → Provision</b> 흐름이에요. AWS에 이걸 얹으면 단계마다 담당 서비스가 하나씩 매핑되는데 딱 한 군데 겹칩니다. <span class="obsv-mark">Build와 Test는 별개 단계지만, 실제로는 CodeBuild 한 명이 buildspec 안에서 빌드와 유닛테스트를 같이 처리해요.</span> 테스트 전용 stage를 따로 만들어도 그 안에서 도는 건 결국 CodeBuild입니다.</p>
 <p>그리고 Provision, 즉 인프라를 세우는 일은 Code 시리즈가 아니라 IaC 도구인 CloudFormation(또는 CDK)의 몫이에요. 이 다섯 단계를 아래처럼 두 층으로 그리면 지도가 완성됩니다.</p>
 
 <div class="obsv-fig">
@@ -119,7 +119,7 @@
 
 <h2>3. 코드는 어떻게 감지되나: polling vs event</h2>
 <p>파이프라인의 출발점은 "코드가 바뀌었다"는 신호예요. 이걸 알아채는 방식이 두 가지입니다. <b>polling</b>은 파이프라인이 주기적으로 저장소를 두드려보며 "바뀐 거 있어?"라고 묻는 방식이고, <b>event 기반</b>은 저장소 쪽에서 변경이 생기는 순간 webhook이나 EventBridge로 파이프라인을 깨우는 방식이에요. <span class="obsv-mark">polling은 지연도 있고 대부분은 변경이 없다는 답만 받는 헛된 질문이라, AWS 권장은 event 기반입니다.</span></p>
-<p>event 기반 아키텍처는 응용도 넓어요. 예를 들어 A리전과 B리전 양쪽에서 저장소를 관리하고 싶다면, A리전 repo의 변경 이벤트를 EventBridge가 받아 ECS 태스크를 invoke하고, 그 태스크가 B리전 repo로 git push해서 복제하는 설계가 가능합니다. CodeCommit에 자체 크로스 리전 복제 기능이 없어서 나온 우회 패턴인데, "이벤트가 파이프라인 밖의 일도 시킬 수 있다"는 좋은 예시예요.</p>
+<p>event 기반 아키텍처는 응용도 넓어요. 예를 들어 A리전과 B리전 양쪽에서 저장소를 관리하고 싶다면, A리전 repo의 변경 이벤트를 EventBridge가 받아 ECS 태스크를 invoke하고 그 태스크가 B리전 repo로 git push해서 복제하는 설계가 가능합니다. CodeCommit에 자체 크로스 리전 복제 기능이 없어서 나온 우회 패턴인데 "이벤트가 파이프라인 밖의 일도 시킬 수 있다"는 좋은 예시예요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">&#9888;&#65039; CodeCommit은 사실상 은퇴 준비 중</div>
@@ -192,7 +192,7 @@
 </div>
 <div class="obsv-figcap">그림 3. Test 단계 확대: 세우고, 검증하고, 부수고, 그다음 프로덕션</div>
 
-<p>마지막으로 하나 더 짚을게요. 같은 stage 안의 액션들은 <b>runOrder</b> 값으로 순서를 정하는데, 같은 숫자를 주면 병렬로 동시에 실행돼요. 두 리전에 동시에 배포하고, 둘 다 끝나면 스모크 테스트를 돌리는 식의 설계가 숫자 하나로 됩니다.</p>
+<p>마지막으로 하나 더 짚을게요. 같은 stage 안의 액션들은 <b>runOrder</b> 값으로 순서를 정하는데 같은 숫자를 주면 병렬로 동시에 실행돼요. 두 리전에 동시에 배포하고 둘 다 끝나면 스모크 테스트를 돌리는 식의 설계가 숫자 하나로 됩니다.</p>
 
 <div class="obsv-code">"actions": [
   { "name": "DeployToSeoul",  "runOrder": 1 },

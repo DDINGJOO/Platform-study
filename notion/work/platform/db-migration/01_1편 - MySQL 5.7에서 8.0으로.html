@@ -31,7 +31,7 @@
 
 <p>전사 표준으로 쓰기로 한 콜레이션인데, dev DB 가 그런 건 모른다고 합니다. 이유는 허무했어요. <b>dev 는 MySQL 5.7 이었고, 그 콜레이션은 8.0 부터 생긴 것</b>이거든요. 그리고 이 서비스의 prod 는 Aurora MySQL 3.10.3, 즉 MySQL 8.0.42 호환 버전이었습니다.</p>
 
-<p>즉 <span class="obsv-mark">dev 에서 통과한 DDL 이 prod 에서 통과할지, dev 에서 막힌 게 prod 에서도 막힐지 아무것도 보장되지 않는 상태</span>로 몇 달을 쓰고 있었던 거예요. 그래서 dev DB 를 5.7 에서 8.0.42 로 옮겼습니다. 5단계로 나눠서, 매 단계마다 되돌릴 수 있는 상태를 유지하면서요.</p>
+<p>즉 <span class="obsv-mark">dev 에서 통과한 DDL 이 prod 에서 통과할지, dev 에서 막힌 게 prod 에서도 막힐지 아무것도 보장되지 않는 상태</span>로 몇 달을 쓰고 있었던 거예요. 그래서 dev DB 를 5.7 에서 8.0.42 로 옮겼습니다. 5단계로 나눠서 매 단계마다 되돌릴 수 있는 상태를 유지하면서요.</p>
 
 <h2>1. 메이저 버전이 다르면 뭐가 보장되지 않나</h2>
 
@@ -59,7 +59,7 @@ grep -c 'CREATE TABLE' backup.sql</div>
 <div class="obsv-callout">
   <div class="obsv-ct">💡 --databases 와 --all-databases 는 다른 명령이에요</div>
   <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--all-databases</code> 는 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql</code> 시스템 DB 까지 같이 덤프</b>해요. 그걸 8.0 에 복원하면 5.7 구조의 권한 테이블이 8.0 시스템 테이블 위에 덮여요. 8.0 은 시스템 테이블 구조가 바뀌었기 때문에 여기서 사고가 납니다.<br>
-  메이저 버전을 넘어갈 때는 <b>내 데이터만</b> 옮기고, 시스템 DB 는 새 버전이 자기가 만든 걸 쓰게 두세요.
+  메이저 버전을 넘어갈 때는 <b>내 데이터만</b> 옮기고 시스템 DB 는 새 버전이 자기가 만든 걸 쓰게 두세요.
 </div>
 
 <p>그리고 백업은 <b>떴다고 끝이 아니에요.</b> 44MB 파일이 생겼다는 사실이 그 안에 데이터가 온전히 들어있다는 뜻은 아니거든요. 디스크가 차서 중간에 끊겼을 수도 있고요. 그래서 덤프 말미에 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">-- Dump completed on</code> 이 찍혔는지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">CREATE TABLE</code> 개수가 원본 테이블 수와 같은지를 확인했습니다. 이 두 개가 <span class="obsv-mark">"파일이 있다"를 "복원할 수 있다"로 바꿔주는 최소 조건</span>이에요.</p>
@@ -81,7 +81,7 @@ done</div>
 <div class="obsv-callout">
   <div class="obsv-ct">⚠️ "ready for connections" 는 준비 완료가 아니에요</div>
   MySQL 컨테이너 로그에 이 문장이 <b>두 번</b> 나와요. 하나는 X Plugin(33060) 것이고 하나는 실제 SQL 포트 것입니다. 앞의 걸 보고 복원을 시작하면 커넥션이 거부돼요.<br>
-  로그 문자열을 grep 하지 말고, 위처럼 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SELECT 1</code> 이 실제로 응답할 때까지 도는 루프</b>를 쓰는 게 안전합니다. 로그는 상태를 말해주지만 응답은 상태를 증명해요.
+  로그 문자열을 grep 하지 말고 위처럼 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SELECT 1</code> 이 실제로 응답할 때까지 도는 루프</b>를 쓰는 게 안전합니다. 로그는 상태를 말해주지만 응답은 상태를 증명해요.
 </div>
 
 <p>검증 항목은 세 개였어요. 전 테이블 행수 diff 가 0인지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql.user</code> 의 계정이 그대로 넘어왔는지, 그리고 앱이 붙어서 API 가 200 을 주는지를 확인했습니다. 특히 계정은 5.7 → 8.0 에서 인증 플러그인 기본값이 바뀌기 때문에 꼭 봐야 했습니다.</p>
@@ -174,7 +174,7 @@ done</div>
 
 <p>그래서 부팅 경로를 전부 따라가면서 5.7 참조를 지웠어요. compose 의 db 서비스는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code> + 새 볼륨 + 표준 기동 플래그로 전부 교체하고, 헬스체크·유틸 스크립트의 컨테이너명도 일괄 교체했습니다. crontab 이 따로 없다는 것까지 확인해서 <b>실행 경로가 systemd 하나뿐임을 증명</b>하고 끝냈어요.</p>
 
-<p>그런데 이 작업, 정작 <b>검증은 못 했습니다.</b> "지금 재부팅하면 8.0 이 뜬다"를 증명하는 방법은 실제로 재부팅해보는 것뿐인데, 그걸 안 했으니까요. 코드를 다 고쳤다는 것과 부팅이 실제로 그 코드를 탄다는 건 다른 이야기예요.</p>
+<p>그런데 이 작업, 정작 <b>검증은 못 했습니다.</b> "지금 재부팅하면 8.0 이 뜬다"를 증명하는 방법은 실제로 재부팅해보는 것뿐인데 그걸 안 했으니까요. 코드를 다 고쳤다는 것과 부팅이 실제로 그 코드를 탄다는 건 다른 이야기예요.</p>
 
 <h2>5. 인플레이스 업그레이드는 되돌아갈 수 없어요</h2>
 
