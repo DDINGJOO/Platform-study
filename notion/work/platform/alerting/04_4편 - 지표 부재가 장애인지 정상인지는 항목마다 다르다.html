@@ -1,0 +1,299 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔔 온콜 만들기 · 4편</div>
+  1편. 온콜 도구를 먼저 고르면 실패한다<br>
+  2편. 호출 경로에는 우리 코드를 두지 않았다<br>
+  3편. 페이지는 원인이 아니라 증상에 건다<br>
+  <b>4편. 지표 부재가 장애인지 정상인지는 항목마다 다르다</b> &larr; 지금 이 글<br>
+  5편. 계획한 것 중 절반이 만들 수 없는 것이었다<br>
+  6편. 알람을 감시하는 알람<br>
+  7편. 노이즈를 깎는 일은 알람을 올린 뒤에 온다
+</div>
+
+<p>알람 하나를 추가하려다 계획 단계도 못 갔어요. 모듈이 <b>필수 변수 하나가 비었다</b>고 거부했습니다. 기본값이 없는 칸이 하나 있었어요.</p>
+
+<div class="obsv-code">treat_missing_data = ?
+  breaching      데이터가 없으면 위반으로 본다   -> 알람이 울린다
+  notBreaching   데이터가 없으면 정상으로 본다   -> 조용하다</div>
+
+<p>고르라는 것인데, 두 값이 정확히 반대 방향입니다. <b>같은 결측을 놓고 하나는 장애라고 하고 하나는 아무 일도 없다고 해요.</b> 그리고 이 칸의 답은 알람마다 다릅니다.</p>
+
+<p>0 이라는 값과 지표가 아예 없는 것을 갈라야 한다는 이야기는 다른 시리즈에서 한 번 썼는데, 거기는 <b>"이 자원을 지워도 되는가"</b> 를 묻는 자리였어요. 여기는 질문이 다릅니다. <b>"지금 아무 값도 안 오는데, 전화를 걸어야 하나"</b> 입니다.</p>
+
+<h2>1. 단일 기본값이 위험해서 기본값을 뺐다</h2>
+
+<p>이 설정의 기본 동작은 <b>결측을 무시하는 것</b>입니다. 지표가 안 오면 알람은 마지막 상태를 유지하고, 조용해요. 감시 대상이 사라져도 아무 일도 일어나지 않습니다.</p>
+
+<p>그래서 감시 관점에서는 위험합니다. 인스턴스가 응답을 멈추면 지표도 함께 멈추는데, 그때가 정확히 알람이 울려야 하는 순간이니까요. 설계 문서가 <b>필수 설정은 위반으로 보기</b> 라고 적어둔 이유입니다.</p>
+
+<p>그런데 전부 위반으로 두면 다른 사고가 납니다. 모듈 주석에 그 경로를 적어뒀어요.</p>
+
+<div class="obsv-code">새벽 3시, 트래픽 0
+  -> 함수가 호출되지 않는다
+  -> 쓰로틀 지표가 발행되지 않는다
+  -> 결측을 위반으로 봄  ->  ALARM  ->  P1 전화
+
+실제로는 아무 문제 없다. 장애가 없어서 알람이 울린 것이다.</div>
+
+<p><span class="obsv-mark">장애가 없어서 알람이 울리는 것</span>이 이 설정을 일괄 적용했을 때의 결과입니다. 그래서 결론은 "어느 값이 맞다" 가 아니라 <b>단일 기본값이 위험하다</b> 가 됐어요. 모듈이 기본값을 주지 않고 매번 명시하게 만들었습니다.</p>
+
+<p>대가는 호출부가 장황해지는 것입니다. 알람 하나 추가할 때마다 그 칸을 채워야 해요. <b>의도한 마찰입니다.</b> 기본값을 두면 아무도 판단하지 않으니까요. 대신 판단을 돕는 분기 규칙을 변수 설명에 박아뒀습니다. 그러면 호출부에서 매번 보입니다.</p>
+
+<div class="obsv-code">variable "missing_data" {
+  description = &lt;&lt;-EOT
+    데이터가 없을 때의 처리. 기본값이 없다. 매번 판단해야 한다.
+
+    breaching      상태 게이지. 값이 계속 보고되는 지표.
+                   없어지면 진짜 이상이다
+    notBreaching   이벤트 카운터. 사건이 없으면 데이터포인트 자체가 없다
+  EOT
+  type = string
+
+  validation { ... }
+}</div>
+
+<h2>2. 전부 위반으로 두면 배포 즉시 영구 ALARM 이 되는 것들이 있다</h2>
+
+<p>가장 뚜렷한 사례가 <b>복제 지연</b>이었어요. 지표 이름은 <code>AuroraReplicaLag</code> 이고, 리더가 라이터를 얼마나 늦게 따라가는지를 밀리초로 보고합니다.</p>
+
+<p>이 지표를 클러스터의 인스턴스 전부에 걸었습니다. 그리고 결측을 위반으로 두면, <b>라이터 쪽 알람이 배포하는 순간 전부 ALARM 이 됩니다.</b> 라이터는 자기 자신을 복제하지 않으니 이 지표를 발행할 일이 없어요. 값이 없는 것이 그 인스턴스의 정상 상태입니다.</p>
+
+<p>이건 잠깐 울리는 게 아니라 <b>영구 ALARM</b> 입니다. 회선이 복구되기를 기다리는 것과 다르게, 라이터가 이 지표를 내는 날은 오지 않아요. 그리고 항상 빨간 알람은 <span class="obsv-mark">사람을 알람 화면 자체에 둔감하게 만듭니다.</span></p>
+
+<p>같은 모양을 다른 곳에서 한 번 더 만났습니다. 버스터블 인스턴스만 발행하는 CPU 크레딧 지표를 인스턴스 전체 목록에 걸면 똑같은 일이 나요. 비버스터블 쪽은 지표 자체가 없습니다.</p>
+
+<p>반대 방향의 대가도 있습니다. 결측을 위반으로 둔 알람은 <b>대상이 사라지면 아무도 끌 수 없어요.</b> 지표가 끊기고, 알람은 영원히 ALARM 이고, 정상으로 되돌릴 방법이 없습니다. 그래서 서버 그룹 하나를 정리할 때 순서를 뒤집었습니다.</p>
+
+<div class="obsv-code">잘못된 순서   실물 삭제  ->  지표 끊김  ->  영구 ALARM  ->  알람 삭제
+올바른 순서   알람 삭제  ->  실물 삭제</div>
+
+<p>알람 설정 하나가 자원 정리 순서를 정하게 된 자리예요. 이런 것들은 코드에 적어두지 않으면 다음 사람이 같은 순서로 밟습니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 392" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">같은 지표, 같은 설정, 다른 결과</text>
+
+      <text x="255" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">지표를 내는 대상</text>
+      <text x="255" y="84" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">리더</text>
+      <text x="530" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">지표를 내지 않는 대상</text>
+      <text x="530" y="84" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">라이터</text>
+
+      <text x="88" y="152" text-anchor="middle" font-family="Menlo, monospace" font-size="12.5" fill="#3d3a34">breaching</text>
+      <text x="88" y="172" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">결측 = 위반</text>
+
+      <path d="M136 100 C 220 97, 320 103, 376 99 C 379 128, 378 168, 377 196 C 320 199, 220 195, 138 197 C 135 168, 136 128, 136 100 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="256" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">지표가 끊기면 울린다</text>
+      <text x="256" y="158" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">인스턴스 이상을 잡는다</text>
+      <text x="256" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">여기 하나만 둔다 ✔</text>
+
+      <path d="M404 100 C 490 97, 590 103, 668 99 C 671 128, 670 168, 669 196 C 590 199, 490 195, 406 197 C 403 168, 404 128, 404 100 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+      <text x="536" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">배포 즉시 ALARM</text>
+      <text x="536" y="158" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">복구되는 날이 오지 않는다</text>
+      <text x="536" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">영구 빨간불 ✘</text>
+
+      <text x="88" y="264" text-anchor="middle" font-family="Menlo, monospace" font-size="12.5" fill="#3d3a34">notBreaching</text>
+      <text x="88" y="284" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">결측 = 정상</text>
+
+      <path d="M136 212 C 220 209, 320 215, 376 211 C 379 240, 378 280, 377 308 C 320 311, 220 307, 138 309 C 135 280, 136 240, 136 212 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+      <text x="256" y="244" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">임계를 넘으면 울린다</text>
+      <text x="256" y="270" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">소실은 못 잡는다</text>
+      <text x="256" y="294" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">위 칸이 대신 잡아준다</text>
+
+      <path d="M404 212 C 490 209, 590 215, 668 211 C 671 240, 670 280, 669 308 C 590 311, 490 307, 406 309 C 403 280, 404 240, 404 212 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="536" y="244" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">영원히 조용하다</text>
+      <text x="536" y="270" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">대상 없는 알람이 남는다</text>
+      <text x="536" y="294" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">감수한 대가 ▵</text>
+
+      <path d="M40 332 C 200 329, 460 335, 662 331" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="350" y="366" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">전수에 걸려면 무해한 칸을 골라야 한다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 지표를 내는 대상과 내지 않는 대상이 한 목록에 섞이면 설정 하나로 둘을 만족시킬 수 없다</div>
+
+<h2>3. 결측 담당은 리소스마다 한 명만 둔다</h2>
+
+<p>그림의 왼쪽 위 칸에 "여기 하나만 둔다" 고 적은 것이 이 장의 규칙입니다.</p>
+
+<p>DB 인스턴스 한 대에 알람이 다섯 종 걸려 있어요. 로컬 스토리지, 엔진 가동 시간, 복제 지연, 데드락, 디스크 큐 깊이입니다. 인스턴스가 응답을 멈추면 <b>다섯 지표가 동시에 끊깁니다.</b> 다섯을 다 위반으로 두면 한 사건에 알람 다섯 개가 뜨고, <span class="obsv-mark">같은 사건에 알람이 셋 넘게 겹치면 사람은 셋 다 무시하게 됩니다.</span></p>
+
+<p>그래서 <b>지표 소실을 담당하는 알람을 하나만 정했어요.</b> 엔진 가동 시간입니다. 살아 있으면 계속 증가하는 값을 보고하는 지표라, 값이 사라지는 것이 곧 인스턴스가 없어졌다는 뜻이에요. 나머지는 결측을 정상으로 두고 자기 임계만 봅니다.</p>
+
+<div class="obsv-code">인스턴스 한 대의 알람 다섯 종
+
+  엔진 가동 시간     breaching      &lt;- 지표 소실 담당. 이 한 명만
+  로컬 스토리지 잔량  breaching      &lt;- 예외. 아래 설명
+  복제 지연          notBreaching
+  데드락             notBreaching
+  디스크 큐 깊이      notBreaching
+
+주석이 서로를 가리킨다
+  "인스턴스 소실은 엔진 가동 시간 알람이 잡는다. 여기서 중복으로 울리지 않는다"</div>
+
+<p>이 교차 참조가 설정의 근거입니다. <b>어떤 알람에 결측을 정상으로 둔다는 것은 그 사건을 다른 알람이 맡고 있다는 뜻</b>이고, 그 다른 알람을 이름으로 적어두지 않으면 나중에 아무도 확인할 수 없어요.</p>
+
+<p>표에 예외가 하나 보일 겁니다. 로컬 스토리지 잔량도 위반으로 뒀어요. 이건 규칙 위반이 아니라 판단입니다. 남은 용량은 항상 보고되는 값이고, 이 알람은 P1 이라 <b>덜 민감하게 두는 쪽의 위험이 더 큽니다.</b> 서버 그룹 쪽에도 같은 자리가 있어요. 전멸 감시와 부분 부족 감시가 같은 조건에 둘 다 위반으로 걸려 있고, 지표 수집이 꺼지면 함께 울립니다. 중복이지만 하나는 전화를 걸고 하나는 슬랙 기록을 남기니 남겨뒀습니다.</p>
+
+<p>그러니까 이 장의 규칙은 <b>"결측 담당은 하나"</b> 이고, 예외를 둘 때는 <b>중복이라는 것을 알고 남겼다고 적어두는 것</b>이 조건입니다.</p>
+
+<h2>4. 이름으로 대상을 가릴 수 없어서 전수에 걸고 무해화했다</h2>
+
+<p>복제 지연 알람을 리더에만 걸면 이 문제가 다 사라집니다. 알람 여섯 개를 아끼고 결측 설정도 고민할 필요가 없어요. <b>그렇게 하지 않았습니다.</b></p>
+
+<p>이름으로 리더를 고를 수 없기 때문이에요. 이 계정에는 <b>이름에 <code>writer</code> 가 들어 있는데 실제로는 리더인 인스턴스</b>가 있었고, 같은 클러스터에서 이름에 <code>reader</code> 계열 문자가 들어간 쪽이 실제 라이터였습니다. 페일오버 한 번에 역할이 맞바뀌고 이름은 그대로 남은 결과예요.</p>
+
+<p>이름으로 골랐다면 두 방향으로 동시에 틀렸을 겁니다. <b>실제 라이터에 영구 ALARM 을 걸고, 실제 리더를 감시에서 빠뜨렸을 것</b>이에요. 하나는 시끄러운 오답이고 하나는 조용한 오답인데, 뒤쪽이 더 나쁩니다.</p>
+
+<p>그럼 실제 역할을 읽어오면 되지 않나요. 두 가지가 걸렸습니다.</p>
+
+<p>첫째, <b>그 값은 페일오버 한 번에 바뀝니다.</b> 코드가 적용 시점에 읽어와도 다음 페일오버에 거짓이 돼요. 목록의 유효기간이 "다음 페일오버까지" 인 셈입니다.</p>
+
+<p>둘째, 이 스택은 <b>알람이 지표 차원 문자열로만 대상을 가리키므로 데이터 소스가 필요 없다</b>를 출발 전제로 삼았어요. 알람은 대상 자원을 만들지도 소유하지도 않고, 문자열로 지목만 합니다. 그 전제가 이 스택을 첫 코드화 대상으로 고른 근거이기도 했습니다.</p>
+
+<p>그래서 <b>전수에 걸고 무해화하는 쪽</b>을 택했습니다. 결측을 정상으로 두면 라이터 쪽 알람은 조용히 있어요. 역할이 바뀌면 <span class="obsv-mark">새 리더가 지표를 내기 시작하고 새 라이터는 내지 않게 되면서 알람이 저절로 따라갑니다.</span> 코드가 개입할 일이 없습니다.</p>
+
+<p>대가는 정직하게 적어야겠어요. <b>대상 없는 알람이 남습니다.</b> 라이터 쪽 알람은 데이터를 한 번도 받지 못한 채 정상으로 표시되고, 그 조용함은 "감시가 잘 되고 있음" 과 화면에서 구분되지 않습니다. 요금도 그만큼 더 냅니다. 그걸 감수한 근거는 3장이에요. <b>지표 소실은 다른 알람이 담당하고 있고, 그 담당이 누구인지 주석에 적혀 있습니다.</b></p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 404" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="oc4a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">페일오버가 한 번 일어난 뒤</text>
+
+      <path d="M28 48 C 130 45, 240 51, 320 47 C 323 68, 322 84, 321 102 C 240 105, 130 101, 30 103 C 27 84, 28 66, 28 48 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="174" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">이름으로 리더만 골랐다</text>
+      <text x="174" y="94" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">목록을 손으로 적는다</text>
+
+      <path d="M380 48 C 480 45, 590 51, 670 47 C 673 68, 672 84, 671 102 C 590 105, 480 101, 382 103 C 379 84, 380 66, 380 48 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="526" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">전수에 걸고 무해화</text>
+      <text x="526" y="94" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">결측을 정상으로 둔다</text>
+
+      <path d="M174 108 C 174 126, 174 140, 174 156" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#oc4a)"/>
+      <path d="M526 108 C 526 126, 526 140, 526 156" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#oc4a)"/>
+
+      <path d="M28 164 C 130 161, 240 167, 320 163 C 323 194, 322 232, 321 264 C 240 267, 130 263, 30 265 C 27 232, 28 194, 28 164 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+      <text x="174" y="192" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">이름에 writer, 실제로는 리더</text>
+      <text x="174" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">감시 밖으로 빠진다</text>
+      <text x="174" y="238" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">목록에 있던 쪽이 라이터가 된다</text>
+      <text x="174" y="258" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">영구 ALARM</text>
+
+      <path d="M380 164 C 480 161, 590 167, 670 163 C 673 194, 672 232, 671 264 C 590 267, 480 263, 382 265 C 379 232, 380 194, 380 164 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+      <text x="526" y="192" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">새 리더가 지표를 내기 시작한다</text>
+      <text x="526" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">알람이 따라간다</text>
+      <text x="526" y="238" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">새 라이터는 지표를 멈춘다</text>
+      <text x="526" y="258" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">조용해진다</text>
+
+      <path d="M40 290 C 200 287, 460 293, 662 289" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="174" y="320" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">코드를 고쳐야 한다</text>
+      <text x="526" y="320" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">코드가 개입하지 않는다</text>
+      <text x="526" y="342" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">대가: 대상 없는 알람이 남는다</text>
+
+      <text x="350" y="384" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">역할은 런타임에 바뀌고 목록은 그 자리에 남는다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 대상을 좁혀서 아끼는 알람 여섯 개보다, 낡지 않는 목록이 쌉니다</div>
+
+<p>같은 판단을 서버 그룹 알람에서도 썼어요. 목표 대수를 0 으로 내려둔 그룹이 몇 개 있었는데, 그 그룹을 목록에서 빼는 대신 <b>식의 조건으로 걸렀습니다.</b> 목표 대수는 런타임에 바뀌니까요. 오늘 0 이어도 내일 2 로 올릴 수 있고, 그때 코드의 목록은 낡아 있습니다. 조건으로 두면 올린 뒤에 전멸했을 때 자동으로 울려요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 데이터 소스를 한 번 들였고, 그 대가도 받았다</div>
+  로드밸런서 알람에서는 그 전제를 깼습니다. 이 지표의 차원에는 <b>랜덤 16진수 접미사</b>가 붙어서 손으로 적을 수가 없어요. 한 글자 틀리면 그 알람은 데이터를 받지 못하고, 결측을 위반으로 뒀으면 영구 ALARM, 정상으로 뒀으면 영구 침묵이 됩니다. <b>둘 다 조용한 실패예요.</b><br><br>
+  그래서 이름만 목록으로 두고 접미사는 데이터 소스로 받습니다. 오타가 불가능해지고, 대상이 사라지면 <b>계획이 시끄럽게 실패합니다.</b><br><br>
+  대가를 실제로 받았어요. 로드밸런서 하나를 콘솔에서 지웠는데 목록에 남아 있어서, 데이터 소스가 실물을 못 찾아 <b>이 스택의 모든 계획이 막혔습니다.</b> 알람 하나가 아니라 스택 전체예요. 서로 무관한 변경 두 개가 그것 때문에 동시에 멈췄습니다.<br><br>
+  그래도 이 교환은 유지했습니다. <b>조용히 빠지는 것보다 시끄럽게 막히는 편이 낫습니다.</b>
+</div>
+
+<h2>5. 임계값은 실측에서 뽑는다</h2>
+
+<p>결측 처리를 정하는 것과 임계값을 정하는 것은 같은 성질의 일이었어요. 둘 다 <b>명세를 그대로 옮기면 조용한 알람이 됩니다.</b></p>
+
+<p>감지 목록에는 조건이 자연어로 적혀 있었습니다. "급증", "임계 초과", "증가 추세" 같은 것들이에요. 구현하려고 실제 값을 조회할 때마다 어긋났고, 어긋나는 방식이 한 가지가 아니었습니다.</p>
+
+<div class="obsv-code">명세                          실측                            결과
+------------------------------------------------------------------------
+NAT 패킷 드롭 "급증"          14일간 정확히 0                  &gt; 0 으로 바꿈
+스트림 지연 "증가 추세"        지표 발행 자체가 없다            대상 없음
+함수 DLQ 오류                 DLQ 설정된 함수가 0개            대상 없음
+메시지 적체 "임계 초과"        12시간 적체는 개발 큐였다        기준 재설정</div>
+
+<p>첫 줄이 재미있어요. <b>14일 내내 정확히 0 이면 "급증" 이라는 개념이 필요 없습니다.</b> 0 을 넘는 순간이 곧 이상이니까요. 조건이 단순해지는 게 아니라, 실측이 <b>더 예민한 임계를 쓸 근거</b>를 줬습니다.</p>
+
+<p>배수로 잡은 자리도 있습니다. 복제 지연 임계는 1초로 뒀는데, 리더들의 평시 지연이 수십 밀리초라 <b>실측의 스무 배 이상 여유</b>입니다. 디스크 큐 깊이는 관측된 최대의 약 1.5배로 잡았어요.</p>
+
+<p>뒤쪽에는 근거가 약하다고 코드에 적어뒀습니다. 이 DB 는 분산 스토리지를 쓰기 때문에 그 지표의 의미가 일반적인 경우와 달라요. 그래서 그 값에는 <b>"관측된 최대보다 확실히 큰 값" 이라는 것 외의 근거가 없습니다.</b> 그렇게 적어두면 다음 사람이 그 값을 믿을지 스스로 판단할 수 있어요.</p>
+
+<p>반대 방향도 규칙으로 뒀습니다. <b>실측이 "이상이 이미 있다" 고 말하면 알람을 그것에 맞춥니다.</b> 조용하게 만들지 않아요. 데드락 알람과 서버 부족 알람은 배포 즉시 발화했고 오탐이 아니었습니다. 그 대상을 목록에서 빼면 <span class="obsv-mark">유일하게 문제 있는 대상을 감시 밖으로 빼는 셈</span>이 됩니다.</p>
+
+<p>이 방식의 약점도 적어둘게요. <b>실측은 관측 창에 의존합니다.</b> 14일 0 이던 값이 15일째 나올 수 있어요. 패킷 드롭 임계가 정확히 그 위험 위에 서 있습니다. 그래도 받아들였습니다. <b>울리면 고치겠다는 쪽이 조용해서 모르는 쪽보다 낫습니다.</b></p>
+
+<h2>6. 비율 알람은 상시 호출 대상에만 성립한다</h2>
+
+<p>명세에 실패율로 적혀 있던 항목이 하나 있었어요. 오류 수를 호출 수로 나눈 값입니다. 그대로 만들면 안 되는 이유가 두 겹이었습니다.</p>
+
+<p>먼저 <b>분모 가드</b>가 필요합니다. 없으면 호출이 한두 건인 구간에 "1회 호출, 1회 실패, 100%" 가 되어 새벽마다 울려요. 그래서 호출 수가 일정 수를 넘을 때만 비율을 계산하게 했습니다.</p>
+
+<div class="obsv-code">IF(m1 &gt; 10, m0/m1*100, 0) &gt; 5      m0 = 오류, m1 = 호출</div>
+
+<p>여기서 제가 계산을 틀렸어요. 첫 배포는 집계 주기 5분에 가드 10 이었습니다. 배포 직후 발화해야 할 함수가 <b>정상으로 떴습니다.</b></p>
+
+<div class="obsv-code">14일 호출 11,438회        많아 보인다
+= 하루 817회
+= 5분당 2.8회             가드 10 을 산술적으로 넘을 수 없다
+
+네 함수 전부 같았다. 총량만 보고 주기당 환산을 안 했다.</div>
+
+<p>총량이 많아도 <span class="obsv-mark">집계 주기가 짧으면 가드를 못 넘습니다.</span> 주기를 1시간으로 바꾸니 셋은 성립했고 하나는 여전히 성립하지 않았어요. 시간당 한 번 도는 함수였습니다.</p>
+
+<p>그 하나는 <b>절대값 알람으로 옮겼습니다.</b> 하루에 몇 번 도는 작업이 실패하면 그것이 곧 100% 실패이고, 비율을 계산할 이유가 없어요. 그래서 명세의 비율 알람 하나가 <b>비율 셋과 절대값 여섯</b>으로 갈렸습니다.</p>
+
+<p>호출이 아예 없는 함수는 대상에서 뺐어요. 비율의 분모가 0 이고, 절대값으로 걸어도 실행되지 않으니 발화하지 않습니다. <b>요금을 내면서 아무것도 감시하지 않는 알람</b>이 됩니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔇 조용한 알람을 만드는 네 가지 길</div>
+  이번 작업에서 실제로 밟거나 밟기 직전에 멈춘 것들입니다. 넷 다 계획과 적용이 성공하고 커버리지 표에 체크가 찍혀요.<br><br>
+  &bull; <b>발행되지 않는 지표</b>에 알람을 건다. 임계값을 바꿔도 발행되지 않습니다<br>
+  &bull; <b>대상이 0건</b>인 조건에 건다. DLQ 가 설정된 함수가 없는데 DLQ 오류를 감시하는 식이에요<br>
+  &bull; <b>분모 가드를 주기당으로 검산하지 않는다</b>. 식이 영원히 0 을 돌려줍니다<br>
+  &bull; <b>필드 이름이나 값의 형태를 잘못 짚는다</b>. 심각도를 문자열로 매칭했는데 실제로는 숫자였던 자리가 있었습니다<br><br>
+  그래서 규칙 하나를 앞에 뒀어요. <b>지표가 실제로 발행되는지 먼저 확인하고, 발행되지 않으면 그 항목은 "미배포" 가 아니라 "대상 없음" 으로 적습니다.</b> 미배포는 할 일이고 대상 없음은 할 일이 아니에요. 두 상태를 구분하지 않으면 커버리지 숫자가 실제를 뜻하지 않게 됩니다.
+</div>
+
+<p>정리하면 이번에 정한 것들은 전부 같은 모양이었어요. <b>결측을 위반으로 볼지, 임계를 얼마로 둘지, 비율로 볼지 절대값으로 볼지.</b> 셋 다 항목마다 답이 다르고, 하나의 기본값으로 덮으면 절반이 조용해지거나 절반이 영구히 울립니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>결측 처리에 기본값을 두지 않았습니다. 기본 동작은 지표가 끊겨도 조용한 것이라 감시로는 위험하고, 전부 위반으로 두면 트래픽 없는 새벽에 장애가 없어서 알람이 울립니다. 그래서 모듈이 매번 판단을 요구하고, 호출부가 장황해지는 것은 의도한 마찰이에요.</b><br><br>
+  리더만 발행하는 지표를 인스턴스 전체에 걸었더니 결측 처리 하나로 두 집합을 만족시킬 수 없었습니다. 위반으로 두면 라이터 쪽이 배포 즉시 영구 ALARM 이 되고, 그건 복구되는 날이 오지 않아요. 그래서 <b>지표 소실을 담당하는 알람을 리소스마다 하나만</b> 정하고 나머지는 결측을 정상으로 뒀습니다. 어느 알람이 그 사건을 맡는지는 주석에 이름으로 적었어요.<br><br>
+  이름으로 대상을 좁힐 수는 없었습니다. 이름에 <code>writer</code> 가 들어 있는데 실제로는 리더인 인스턴스가 있었고, 그 역할은 페일오버 한 번에 또 바뀝니다. 실제 역할을 읽어와도 목록의 유효기간은 다음 페일오버까지예요. 그래서 <b>전수에 걸고 무해화</b>했고, 그 대가로 데이터를 한 번도 받지 못하는 알람이 남았습니다. 감수한 근거는 소실을 다른 알람이 맡고 있다는 것 하나입니다.<br><br>
+  임계값은 실측에서 뽑았습니다. 14일간 정확히 0 이던 지표에는 "급증" 대신 0 초과를 썼고, 근거가 약한 값에는 약하다고 코드에 적었어요. 비율 알람의 분모 가드는 총량이 아니라 <b>집계 주기당 호출 수로 검산</b>해야 했습니다. 그걸 빼먹어서 발화해야 할 알람이 정상으로 떴고, 그래서 비율 하나가 비율 셋과 절대값 여섯으로 갈렸습니다.<br><br>
+  <b>조용한 알람은 없는 알람보다 나쁩니다.</b> 없으면 없다는 것을 알지만, 조용한 알람은 커버리지 표에서 체크로 보이면서 아무것도 하지 않아요.
+</div>
+
+</div>

@@ -1,0 +1,329 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔔 온콜 만들기 · 1편</div>
+  <b>1편. 온콜 도구를 먼저 고르면 실패한다</b> &larr; 지금 이 글<br>
+  2편. 호출 경로에는 우리 코드를 두지 않았다<br>
+  3편. 페이지는 원인이 아니라 증상에 건다<br>
+  4편. 지표 부재가 장애인지 정상인지는 항목마다 다르다<br>
+  5편. 계획한 것 중 절반이 만들 수 없는 것이었다<br>
+  6편. 알람을 감시하는 알람<br>
+  7편. 노이즈를 깎는 일은 알람을 올린 뒤에 온다
+</div>
+
+<p>온콜을 만들자는 이야기가 나오면 손이 먼저 가는 곳이 정해져 있어요. 도구 비교표입니다. 스케줄을 어떻게 돌리고, 에스컬레이션을 몇 분 간격으로 두고, 전화를 앱 푸시 다음에 걸지 앞에 걸지를 봅니다.</p>
+
+<p>그렇게 도구를 붙이고 스케줄을 채우고 폴리시까지 만들어도, 그 다음에 아무 일도 일어나지 않습니다. 전화가 한 통도 오지 않아요. 장애가 없어서가 아니라 <b>무엇이 잘못됐는지 판별하는 층이 비어 있어서</b>입니다.</p>
+
+<p>온콜 도구는 전달 계층입니다. 판별은 앞단에 따로 만들어야 하고, 그게 이 작업의 대부분이었어요. 이 글은 <b>세 계층으로 갈라놓고 시작한 이유</b>와 도구를 어떻게 골랐는지, 그리고 <b>설계가 두 군데서 뒤집힌 이야기</b>입니다.</p>
+
+<h2>1. 온콜은 하나의 제품이 아니라 세 계층입니다</h2>
+
+<p>온콜을 하나의 제품으로 생각하면 설계가 꼬입니다. 그래서 처음부터 세 계층으로 갈라놓고 시작했어요.</p>
+
+<div class="obsv-code">계층                역할                            구현 수단
+--------------------------------------------------------------------
+탐지 (Detection)    무엇이 잘못됐는지 판별한다        CloudWatch 알람
+                                                    EventBridge 룰
+                                                    RDS 이벤트 구독
+
+라우팅 (Routing)    심각도를 판정하고                SNS 토픽 3개
+                    어디로 보낼지 결정한다            p1 / p2 / p3
+
+호출 (Paging)       누구를 어떤 순서로 깨울지          온콜 도구
+                                                    p1 구독으로 호출</div>
+
+<p>이렇게 갈라놓는 것 자체가 결론입니다. <span class="obsv-mark">탐지 계층이 없으면 온콜 도구는 아무 일도 하지 않습니다.</span> 대부분의 팀이 3번부터 세팅하다가 실패하는 이유가 이거예요.</p>
+
+<p>왜 3번부터 시작하게 되냐면, 그게 눈에 보이는 유일한 계층이기 때문입니다. 도구를 결정하고 계약하고 스케줄을 만드는 일은 하루면 끝나고, 화면에 무언가 생겨요. 반면 탐지는 몇 주가 걸리고 그동안 화면에 아무것도 안 생깁니다. <b>진행률이 보이는 쪽부터 손이 갑니다.</b></p>
+
+<p>라우팅 계층에도 규칙을 하나 걸었습니다. <b>라우팅은 토픽으로만 결정합니다.</b> 알람이 어느 토픽을 바라보는지가 곧 티어예요. 매핑 테이블이나 조건 분기 코드를 만들지 않습니다.</p>
+
+<p>왜 그렇게까지 단순하게 두냐면, 라우팅은 장애 순간에 동작해야 하는 계층인데 <b>그 정확성을 확인할 방법이 필요</b>하기 때문입니다. 토픽만 보면 되면 잘못 연결된 알람을 찾는 일이 조회 한 번이에요. 코드로 분기하면 그걸 확인하려면 코드를 읽어야 합니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="oc1a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="350" y="26" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">세 계층은 위에서 아래로만 흐른다</text>
+
+      <path d="M40 44 C 170 41, 330 47, 462 43 C 465 70, 464 90, 463 112 C 330 115, 170 111, 42 113 C 39 90, 40 66, 40 44 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+      <text x="251" y="70" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">1. 탐지</text>
+      <text x="251" y="94" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">CloudWatch 알람 · EventBridge 룰 · 이벤트 구독</text>
+
+      <path d="M251 115 C 254 128, 248 136, 251 148" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#oc1a)"/>
+
+      <path d="M40 154 C 170 151, 330 157, 462 153 C 465 180, 464 200, 463 222 C 330 225, 170 221, 42 223 C 39 200, 40 176, 40 154 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+      <text x="251" y="180" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">2. 라우팅</text>
+      <text x="251" y="204" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">SNS 토픽 3개. 티어는 토픽 이름 하나로 결정된다</text>
+
+      <path d="M251 225 C 254 238, 248 246, 251 258" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#oc1a)"/>
+
+      <path d="M40 264 C 170 261, 330 267, 462 263 C 465 290, 464 310, 463 332 C 330 335, 170 331, 42 333 C 39 310, 40 286, 40 264 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+      <text x="251" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">3. 호출</text>
+      <text x="251" y="314" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">온콜 도구. 스케줄 · 에스컬레이션 · 전화</text>
+
+      <path d="M486 260 C 490 210, 486 130, 490 96" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="7 7" marker-end="url(#oc1a)"/>
+
+      <path d="M508 60 C 570 57, 630 63, 668 59 C 671 96, 670 132, 669 156 C 630 159, 570 155, 510 157 C 507 132, 508 84, 508 60 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="588" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">3번부터 세팅하면</text>
+      <text x="588" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">스케줄도 있고 폴리시도 있고</text>
+      <text x="588" y="124" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">화면도 초록불인데</text>
+      <text x="588" y="146" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f">전화가 한 통도 안 온다</text>
+
+      <text x="588" y="248" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">눈에 보이는</text>
+      <text x="588" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">유일한 계층이</text>
+      <text x="588" y="288" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">맨 아래에 있다</text>
+
+      <text x="350" y="368" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 1번이 비어 있으면 2번과 3번은 완성돼도 조용하다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 온콜 도구는 마지막 한 칸이고, 대부분의 일은 첫 칸에 있다</div>
+
+<h2>2. 자체 지표로는 전혀 보이지 않는 장애가 있습니다</h2>
+
+<p>탐지 계층을 새로 만들어야 했던 이유는 <b>기존에 보던 지표로는 아예 안 보이는 장애가 있어서</b>였습니다. 인지 경로를 정리해보니 이렇게 나왔어요.</p>
+
+<div class="obsv-code">장애 유형             지금까지의 인지 경로       문제
+-------------------------------------------------------------
+VPN 터널 단절         대외 연동 실패 문의        사용자가 먼저 발견한다
+DLQ 적재              주기적 수동 확인           처리 누락 건이 방치된다
+NAT 포트 고갈         간헐적 타임아웃 조사       원인 규명에 반나절 걸린다
+ECS 태스크 배치 실패   배포 후 확인               야간 발생 시 인지 불가</div>
+
+<p>첫 줄이 제일 급했어요. <b>대외 연동 하나가 끊기면 핵심 기능이 정지하는 구조</b>인데, 그 단절은 CPU 나 5xx 로는 전혀 드러나지 않습니다. 우리 쪽 자원은 전부 건강해요. 상대방에게 가는 길만 끊긴 거니까요. 그래서 <span class="obsv-mark">가장 치명적인 장애를 사용자 문의로 알게 되는 구조</span>였습니다.</p>
+
+<p>세 번째 줄도 성격이 비슷합니다. NAT 게이트웨이의 포트가 고갈되면 증상이 "간헐적 타임아웃"으로만 나타나요. 앱 로그에는 타임아웃이, 네트워크 지표에는 아무것도 없습니다. 그러면 앱을 뒤지다가 인프라를 뒤지다가 반나절이 갑니다. <b>지표가 하나 있으면 그 반나절이 사라져요.</b></p>
+
+<p>그래서 1차로 넷을 골랐습니다. 투자 대비 효과가 가장 큰 것들이에요. VPN 터널 상태, DLQ 메시지 수, 데이터베이스 이벤트 구독, NAT 포트 할당 실패입니다.</p>
+
+<p>그런데 그 넷을 만들면서 예상하지 못한 게 나왔습니다. <b>탐지를 붙이는 일이 곧 현황 조사</b>였어요.</p>
+
+<div class="obsv-code">계획한 것              실제로 만들 때 드러난 것
+----------------------------------------------------------
+VPN 3세트에 알람        실물 VPN 은 8개였다. 전수로 걸었다
+DLQ 알람                운영 환경에는 알람이 없었다. 개발 환경만 있었다
+데이터베이스 이벤트 구독  계정에 구독이 하나도 없었다
+NAT 포트 알람           한 게이트웨이는 이 지표를 발행한 적이 없었다</div>
+
+<p>둘째 줄이 특히 그랬어요. 알람이 없는 게 아니라 <b>개발 환경에만 있었습니다.</b> 목록으로 보면 "DLQ 알람 있음"으로 세어지는 상태였고, 어느 환경인지를 확인하지 않으면 그대로 넘어갑니다.</p>
+
+<p>그리고 알람을 올리자마자 바로 경보 상태로 들어온 것이 있었습니다. 알람이 잘못된 게 아니라 <b>실제로 그런 상태였고 아무도 모르고 있었어요.</b> 별건으로 조치를 걸었습니다. 탐지를 만드는 일의 첫 산출물이 알림이 아니라 <b>지금 상태의 목록</b>이라는 걸 여기서 알았어요.</p>
+
+<h2>3. 호출 계층은 이미 쓰던 도구의 기능을 골랐습니다</h2>
+
+<p>도구는 이미 쓰고 있던 관측 도구의 온콜 기능으로 갔습니다. 새 벤더를 들이지 않은 이유가 명확했어요. 그 도구에 이미 지표와 대시보드가 있으니 <b>알림에서 조사로 넘어가는 지점이 이어져 있습니다.</b> 스케줄, 에스컬레이션 폴리시, 전화와 앱 푸시가 한 흐름으로 연결돼요.</p>
+
+<p>검토했으나 채택하지 않은 것이 셋입니다.</p>
+
+<div class="obsv-code">검토 대상                    판단
+------------------------------------------------------------------
+EOL 이 진행 중인 상용 도구    신규 도입 대상이 아니다
+
+업계 표준으로 불리는 전문 도구  기능은 가장 낫다
+                             2인 팀에는 과하고 비용 부담이 크다
+
+자체 구현                     스케줄러 + 함수 + 슬랙 + 알림 서비스
+                             슬랙 알림까지는 쉽다
+                             국내 번호 전화 발신이 병목이다</div>
+
+<p>셋째가 이 결정의 실질적인 근거였어요. 자체 구현을 진짜로 그려보면 슬랙까지는 반나절입니다. 스케줄러가 시간을 재고, 함수가 담당자를 고르고, 슬랙으로 멘션을 보내면 되니까요.</p>
+
+<p>그런데 <b>전화가 다릅니다.</b> 국내 번호로 음성 발신을 하려면 별도 게이트웨이가 필요하고, 그러면 계약과 연동이 붙어요. 그리고 더 나쁜 게 있습니다. <span class="obsv-mark">그 게이트웨이가 온콜 신뢰성의 단일 장애점이 됩니다.</span> 새벽에 그게 조용히 실패하면 아무도 모르고, 그걸 감시할 장치를 또 만들어야 해요.</p>
+
+<p>정리하면 <b>온콜의 마지막 한 칸이 자체 구현으로 가장 어려운 칸</b>이었습니다. 슬랙 알림은 이미 있었으니 자체 구현으로 얻는 것은 그 한 칸뿐이고, 그 한 칸이 제일 비쌌어요.</p>
+
+<h3>시트 수는 팀 크기가 아니라 역할이 정합니다</h3>
+
+<p>과금이 유저 시트 단위라서, 처음에는 "인프라 담당이 몇 명인가"로 계산했어요. 그런데 시트를 소모하는 조건을 읽어보니 기준이 사람 수가 아니었습니다.</p>
+
+<div class="obsv-code">시트를 소모하는 사람
+  온콜 스케줄에 포함된 유저
+  에스컬레이션 폴리시에 포함된 유저
+  페이지 수신 설정을 한 유저
+
+시트가 필요 없는 사람
+  스케줄 · 폴리시 · 페이지를 조회만 하는 유저</div>
+
+<p>이 구분이 실무에서 크게 갈립니다. <b>조회만 하는 사람은 시트가 필요 없어요.</b> 그러니까 장애 상황을 같이 보고 싶은 사람, 사후에 기록을 읽는 사람, 대시보드를 확인하는 사람은 전부 시트 밖입니다. <span class="obsv-mark">시트는 전화를 받는 사람의 수예요.</span></p>
+
+<p>그래서 2시트로 시작했습니다. 인프라 담당 둘이 실제로 전화를 받는 사람이고, 나머지는 조회로 붙습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💰 비용 계산에서 실제 변수는 어디였나</div>
+  <b>AWS 측 인프라 비용은 무시할 수준입니다.</b> 알람과 암호화 키, 이벤트 규칙, 메시지 발행, 로그 적재를 다 합쳐도 그렇습니다. 알람 개수가 늘면 그 항목만 비례해서 커지는데, 다른 항목 대비 규모가 작아요.<br><br>
+  실제 변수는 둘이었습니다. <b>온콜 도구의 시트 수</b>, 그리고 <b>기존 관측 도구가 AWS 를 폴링하는 비용</b>입니다. 후자가 앞의 것보다 컸어요.<br><br>
+  그리고 다음 장의 결정이 여기에 부수 효과를 냅니다. 탐지를 CloudWatch 에 두면 <b>P1 호출이 폴링에 의존하지 않아요.</b> 그러면 폴링 주기를 늘리거나 대상을 줄여도 호출 경로가 흔들리지 않습니다. 비용을 깎을 여지가 그 결정에서 나왔습니다.
+</div>
+
+<h2>4. 설계가 뒤집혔습니다. 관측 도구는 탐지하지 않습니다</h2>
+
+<p>처음 설계는 이랬어요. 관측 도구의 AWS 인테그레이션이 지표를 수집하고, 그 도구의 모니터가 임계값을 판정하고, 그 판정이 온콜로 이어집니다. 도구 하나로 세 계층이 다 되는 그림이었죠.</p>
+
+<p>실제로 만들면서 뒤집혔습니다. <b>CloudWatch 가 전부 탐지하고, 그 도구는 전달과 호출만 합니다.</b> 이유가 셋이었어요.</p>
+
+<div class="obsv-code">지표가 이미 CloudWatch 에 있다
+  다른 도구로 넘기면 수집 지연이 붙고 폴링 비용이 붙는다
+  넘긴 다음에 판정하는 것은 같은 판정을 더 늦게 하는 것이다
+
+탐지를 코드로 관리할 수 있다
+  CloudWatch 알람은 Terraform 리소스다
+  콘솔에서 만든 모니터는 drift 감지가 못 본다
+  누가 임계값을 바꿨는지도, 지웠는지도 알 수 없다
+
+장애 경로가 짧다
+  그 도구가 흔들려도 CloudWatch 에서 SNS 를 거쳐 슬랙까지는 살아 있다
+  탐지를 그쪽에 두면 그 도구의 장애가 곧 감시 공백이다</div>
+
+<p>둘째가 실무에서 가장 크게 작용했어요. 이 저장소에는 코드와 실물이 어긋나면 매일 아침 그걸 잡는 장치가 있습니다. 그런데 그 장치는 <b>Terraform 이 아는 것만 볼 수 있어요.</b> 콘솔에서 만든 모니터는 애초에 시야 밖입니다. <span class="obsv-mark">탐지를 어디에 두는지가 곧 그 탐지를 누가 감시하는지를 정합니다.</span></p>
+
+<p>그렇다고 관측 도구가 할 일이 없어진 건 아니에요. 성격으로 나눴습니다.</p>
+
+<div class="obsv-code">성격                                     담당              지연
+------------------------------------------------------------------
+이진 조건 (터널 down, DLQ 적재, 정상    CloudWatch 알람    1~2분
+호스트 0)
+
+AWS 서비스 이벤트 (컨테이너, 확장       EventBridge 룰     1~2분
+그룹, 위협 탐지, 구성 변경)
+
+추세 · 이상탐지 · 지표 부재 · 합성 감시   관측 도구 모니터    10~20분</div>
+
+<p>기준은 <b>즉시성은 CloudWatch, 맥락은 관측 도구</b>입니다. 이진 조건은 판정에 추세가 필요 없으니 지표가 있는 곳에서 바로 판정하고, 추세와 이상탐지는 지연을 감수해도 되는 대신 판정이 정교해야 하니 그쪽에 둡니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="oc1b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="350" y="24" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#8a8272">처음 설계</text>
+
+      <path d="M28 38 C 96 35, 160 41, 200 37 C 203 58, 202 70, 201 86 C 160 89, 96 85, 30 87 C 27 70, 28 54, 28 38 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+      <text x="114" y="60" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">CloudWatch</text>
+      <text x="114" y="78" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">지표 보관만</text>
+
+      <path d="M203 62 C 232 60, 258 64, 284 62" fill="none" stroke="#8a8272" stroke-width="2" marker-end="url(#oc1b)"/>
+
+      <path d="M292 32 C 380 29, 460 35, 508 31 C 511 58, 510 76, 509 92 C 460 95, 380 91, 294 93 C 291 76, 292 50, 292 32 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="400" y="54" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">관측 도구가 다 한다</text>
+      <text x="400" y="76" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">수집 + 탐지 + 전달 + 호출</text>
+
+      <path d="M511 62 C 540 60, 566 64, 592 62" fill="none" stroke="#8a8272" stroke-width="2" marker-end="url(#oc1b)"/>
+      <text x="640" y="58" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">📟 전화</text>
+      <text x="640" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">계층 하나</text>
+
+      <path d="M28 116 C 200 113, 480 119, 672 115" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+      <text x="350" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">실제로 만든 것</text>
+
+      <path d="M28 160 C 116 157, 196 163, 244 159 C 247 190, 246 212, 245 232 C 196 235, 116 231, 30 233 C 27 212, 28 182, 28 160 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+      <text x="136" y="184" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">CloudWatch 가 탐지</text>
+      <text x="136" y="206" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">알람 · 룰 · 이벤트 구독</text>
+      <text x="136" y="224" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#2e6b41">전부 Terraform</text>
+
+      <path d="M247 196 C 276 194, 300 198, 326 196" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#oc1b)"/>
+
+      <path d="M334 160 C 400 157, 452 163, 494 159 C 497 190, 496 212, 495 232 C 452 235, 400 231, 336 233 C 333 212, 334 182, 334 160 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="414" y="184" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">SNS 가 라우팅</text>
+      <text x="414" y="206" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">p1 / p2 / p3</text>
+      <text x="414" y="224" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#2e6b41">토픽이 곧 티어</text>
+
+      <path d="M497 196 C 524 194, 546 198, 570 196" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#oc1b)"/>
+
+      <path d="M578 160 C 616 157, 646 163, 672 159 C 675 190, 674 212, 673 232 C 646 235, 616 231, 580 233 C 577 212, 578 182, 578 160 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="625" y="184" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">관측 도구</text>
+      <text x="625" y="206" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">전달 · 호출만</text>
+      <text x="625" y="224" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#c07f18">탐지 안 함</text>
+
+      <path d="M28 262 C 200 259, 480 265, 672 261" fill="none" stroke="#d8cfba" stroke-width="1.8" stroke-dasharray="2 8"/>
+
+      <text x="350" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">지표가 이미 있는 곳에서 판정하면 지연도 비용도 안 붙는다</text>
+      <text x="350" y="316" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">그리고 탐지가 Terraform 안에 있으면 drift 감지가 그것을 본다</text>
+      <text x="350" y="346" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 도구 하나로 세 계층을 덮으면 그 도구가 곧 감시 공백이다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 계층을 도구로 나누지 않고, 도구를 계층에 맞춰 잘랐다</div>
+
+<h3>다만 위임에는 빈칸이 하나 남았습니다</h3>
+
+<p>그 도구로 탐지하는 것을 앱 계층으로 좁혔고, 응답시간 같은 성능 지표도 그쪽에 위임했습니다. 그런데 <b>위임했다고 적은 것과 그쪽에 모니터가 실제로 있는 것은 다른 일</b>이에요.</p>
+
+<p>트레이스 데이터가 그 도구에 들어가고 있는 것은 확인했습니다. 그런데 그건 <b>데이터가 있다</b>는 뜻이고, <b>임계값을 넘으면 누가 알려준다</b>는 뜻은 아니에요. <span class="obsv-mark">모니터가 없으면 위임이 아니라 감시 공백입니다.</span> 이 확인은 아직 남아 있습니다.</p>
+
+<h2>5. 그리고 순서를 바꿨습니다. 온콜을 먼저 붙였어요</h2>
+
+<p>원래 계획은 이랬습니다. 1주차에 토픽과 암호화 키, 알람 넷을 만들고, 2주차에 이벤트를 슬랙으로만 흘려서 관찰하고, 노이즈를 실측한 뒤에 온콜 팀을 만들어 연결한다.</p>
+
+<p>실제로는 뒤집었습니다. <b>온콜 경로를 먼저 붙였어요.</b></p>
+
+<p>이유는 하나입니다. <span class="obsv-mark">경로가 검증되지 않은 상태에서 알람을 쌓아도 의미가 없어요.</span> 알람을 서른 개 만들어도 그것이 사람에게 닿는지 모르면 서른 개가 다 미지수입니다. 반대로 경로를 먼저 검증하면, 그 다음에 만드는 알람은 만드는 즉시 유효해집니다.</p>
+
+<p>그리고 그 판단이 곧바로 값을 했어요. 검증하다가 이걸 발견했습니다.</p>
+
+<div class="obsv-code">글로벌 리전 세트를 만든 이유
+  CloudWatch 알람은 같은 리전의 SNS 토픽만 액션으로 지정할 수 있다
+  인증서 만료, 비용 이상, 일부 헬스체크 지표는 그 리전에만 존재한다
+  그래서 토픽과 키를 그 리전에도 한 세트 더 만들었다
+
+그런데 확인해보니
+  그 리전에는 온콜 도구 구독이 아예 없었다
+  즉 그 리전의 P1 알람은 슬랙에만 가고 아무도 전화를 안 받는다</div>
+
+<p>토픽은 있고 알람도 있고 키 정책도 맞는데, <b>마지막 한 칸인 구독이 없었습니다.</b> 그 리전에 만든 알람들은 전부 이 상태로 대기하고 있었어요.</p>
+
+<p>더 나쁜 건 <b>그걸 확인한다고 만들어둔 검사도 틀려 있었다</b>는 겁니다. 매일 도는 검사가 "HTTPS 구독이 하나 이상 있는가"를 셌는데, 슬랙으로 카드를 보내는 챗봇 구독도 프로토콜이 https 예요. 그래서 온콜 구독이 없는데도 검사가 통과했습니다.</p>
+
+<p>이건 계획 순서대로 갔으면 <b>2주 뒤에 발견</b>했을 문제입니다. 그동안 만든 알람은 전부 "닿는지 모르는 알람"이었을 거고요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">✅ 전달 검증은 네 단계다. 1단계만 보고 넘어가면 안 된다</div>
+  더미 알람 하나를 만들고 상태를 강제로 바꿔서 확인합니다. 확인할 것이 넷이에요.<br><br>
+  <b>1. 관측 도구에 이벤트가 뜨는가.</b> 실패하면 SNS 에서 그쪽으로 가는 구간입니다. 구독 URL, 키, 원문 전달 옵션, 암호화 키 정책 중 하나예요<br>
+  <b>2. 전화가 실제로 오는가.</b> 이벤트는 생기는데 호출이 안 되는 상태가 따로 있습니다<br>
+  <b>3. 스케줄상 맞는 사람에게 오는가.</b> 팀 핸들과 에스컬레이션 폴리시입니다<br>
+  <b>4. 상태를 OK 로 되돌리면 페이지가 자동 종료되는가.</b> 복구 액션을 어디로 보낼지의 근거가 여기서 나옵니다<br><br>
+  <b>1단계만 확인하고 넘어가는 것이 이 설계의 가장 조용한 실패 모드입니다.</b> "이벤트가 잘 뜨네" 하고 알람을 수백 개 만들었는데 실제 장애에서 전화가 오지 않는 거예요. 이 시리즈가 계속 만나는 그 모양입니다.
+</div>
+
+<p>순서를 바꾼 것에 대한 반대 의견도 적어둘게요. <b>온콜을 먼저 세팅하면 무엇을 P1 으로 볼지 기준이 없어 새벽에 무의미한 전화를 받게 된다</b>는 우려는 유효합니다. 실제로 그렇게 됩니다.</p>
+
+<p>다만 그 기준을 노이즈 실측이 만들어주는 게 아니었어요. <b>런북이 만듭니다.</b> 그래서 규칙을 하나 걸었습니다. <span class="obsv-mark">런북에 할 수 있는 일이 없으면 P1 자격이 없습니다.</span> 이건 문서에 적어두는 것이 아니라 알람 모듈이 런북 링크를 필수 인자로 받게 해서 강제했어요.</p>
+
+<p>노이즈를 깎는 일은 알람을 올린 뒤에 합니다. 올리기 전에 깎으려면 상상으로 깎게 되고, 상상은 실측을 이길 수 없어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>온콜은 하나의 제품이 아니라 탐지, 라우팅, 호출 세 계층입니다. 대부분의 팀이 3번부터 세팅하다 실패하는데, 그게 눈에 보이는 유일한 계층이기 때문이에요. 탐지 계층이 없으면 온콜 도구는 스케줄도 폴리시도 갖춘 채로 아무 일도 하지 않습니다.</b><br><br>
+  호출 계층은 이미 쓰던 관측 도구의 기능으로 갔습니다. 탈락한 셋 중 자체 구현의 병목이 <b>국내 번호 전화 발신</b>이었어요. 슬랙까지는 반나절인데 그 한 칸이 계약과 연동을 부르고, 그 게이트웨이가 곧 온콜의 단일 장애점이 됩니다. 과금은 시트 단위이고 <b>조회만 하는 사람은 시트가 필요 없으니</b>, 시트 수는 팀 크기가 아니라 전화를 받는 사람의 수입니다.<br><br>
+  설계가 두 군데서 뒤집혔습니다. 하나는 <b>관측 도구가 탐지하지 않는다</b>는 것이에요. 지표가 이미 CloudWatch 에 있고, 탐지를 코드로 관리하면 drift 감지가 그것을 보고, 그 도구가 흔들려도 경로가 살아 있습니다. 다른 하나는 순서입니다. 2주 관찰 뒤에 온콜을 붙이려던 계획을 뒤집어 <b>온콜을 먼저 붙였어요.</b> 그 덕에 한 리전에 구독이 아예 없어 아무도 전화를 받지 않는 상태를 찾았고, 그것을 확인한다고 만든 검사까지 틀려 있었습니다.<br><br>
+  <b>탐지 없는 온콜은 조용하고, 검증 없는 알람은 미지수입니다. 그래서 먼저 만들어야 하는 것은 전화를 걸 도구가 아니라 전화가 실제로 오는지 확인하는 절차입니다.</b>
+</div>
+
+</div>

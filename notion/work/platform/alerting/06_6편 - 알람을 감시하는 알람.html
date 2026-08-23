@@ -1,0 +1,317 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔔 온콜 만들기 · 6편</div>
+  1편. 온콜 도구를 먼저 고르면 실패한다<br>
+  2편. 호출 경로에는 우리 코드를 두지 않았다<br>
+  3편. 페이지는 원인이 아니라 증상에 건다<br>
+  4편. 지표 부재가 장애인지 정상인지는 항목마다 다르다<br>
+  5편. 계획한 것 중 절반이 만들 수 없는 것이었다<br>
+  <b>6편. 알람을 감시하는 알람</b> &larr; 지금 이 글<br>
+  7편. 노이즈를 깎는 일은 알람을 올린 뒤에 온다
+</div>
+
+<p>알람이 이백 개를 넘겼을 때 이런 질문이 남았어요. <b>이 이백 개가 지금 살아 있는지 무엇으로 아나.</b></p>
+
+<p>답이 「Slack 에 알림이 오니까」라면 그건 답이 아닙니다. 알림이 오지 않는 상태와, 알림이 올 사건이 없는 상태가 <span class="obsv-mark">화면에서 완전히 같게 보이니까요.</span> 조용한 채널은 두 가지 뜻을 가지고, 둘 중 어느 쪽인지는 채널이 알려주지 않아요.</p>
+
+<p>그래서 감시 체계 자신을 감시하는 층을 따로 만들었습니다. 결론부터 적으면, <b>그 층도 조용히 실패했어요.</b> 이 글은 그 이야기예요.</p>
+
+<h2>1. 이 항목이 빠지면 위의 모든 알람이 무의미해질 수 있어요</h2>
+
+<p>알람은 발화하는 것만으로 일을 다 하지 않아요. 발화한 사실이 사람에게 닿아야 일이 끝납니다. 그 사이에 경로가 있고, 경로는 여러 조각으로 되어 있어요.</p>
+
+<div class="obsv-code">알람 · 이벤트 룰 · DB 이벤트 구독
+   -&gt; 티어별 알림 토픽 (암호화 키로 암호화)
+      -&gt; 채팅 연동  -&gt; 팀 채널
+      -&gt; 온콜 도구 구독  -&gt; 전화 · 문자 · 에스컬레이션
+
+조각마다 조용히 죽는 방식이 따로 있다</div>
+
+<p>이 경로의 어느 조각이 죽어도 <b>알람 쪽에서는 아무 증상이 없습니다.</b> 알람은 자기가 발화했다는 것만 알고, 그 뒤가 어떻게 됐는지는 모르니까요. 발화 기록만 보면 정상으로 보여요.</p>
+
+<p>그래서 이 항목은 우선순위 문제가 아니라 <b>전제 문제</b>입니다. 다른 이백 개가 전부 정확하게 걸려 있어도, 이 층이 없으면 이백 개가 동시에 아무 일도 못 하는 상태를 아무도 모를 수 있어요.</p>
+
+<h2>2. 배달이 실패한 것은 DLQ 가 잡고, 그 DLQ 에 다시 알람을 걸었어요</h2>
+
+<p>실패 메시지를 받는 큐를 왜 붙였는지와 재시도 정책을 어떻게 정했는지는 2편에서 적었어요. 여기서는 그 다음 칸을 씁니다. <b>그 큐의 깊이에 다시 알람을 거는 것</b>이요. 여기에 이벤트 룰의 타깃 호출 실패 알람을 더하면 배달 실패 계열이 덮입니다.</p>
+
+<p>그런데 이 알람들에는 다른 알람에 없는 문제가 하나 있습니다. <b>어디로 보낼 것인가.</b></p>
+
+<p>처음에는 전부 낮은 티어로 보냈어요. 그래서 이런 상태가 됐습니다. <span class="obsv-mark">그 티어의 배달이 깨졌다는 사실을 알리는 알림이 같은 티어로 나갔어요.</span> 깨진 경로로 「이 경로가 깨졌다」를 보내는 거죠. 주석에는 무한 루프를 경고하는 문장이 적혀 있었고, 아래 코드는 액션이 그대로 하드코딩돼 있었습니다.</p>
+
+<p>고친 규칙은 한 줄이에요. <b>감시 대상인 경로로는 절대 보내지 않는다.</b></p>
+
+<div class="obsv-code">p1 배달 실패  -&gt;  p2 로   전화 경로가 끊겼으니 채팅으로
+p2 배달 실패  -&gt;  p1 로   채팅이 끊겼으니 전화로
+p3 배달 실패  -&gt;  p2 로   하트비트 배달 실패는 급하지 않다</div>
+
+<p>3편에서 티어를 「얼마나 급한가」가 아니라 「어디로 보내는가」로 정의해뒀는데, 그 정의가 여기서 값을 했어요. <b>예외 장치를 만들지 않고 티어 값만 바꿔도 이 규칙이 성립합니다.</b> 티어가 급함이었다면 「p2 배달 실패는 급하지 않지만 전화로 보낸다」 같은 예외 처리를 코드에 넣어야 했을 거예요.</p>
+
+<p>대가가 있습니다. <b>두 번째 줄은 채팅 장애가 새벽에 사람을 깨울 수 있다는 뜻</b>이에요. 그래도 이렇게 둔 이유는 남은 선택지가 무한 루프거나 아무도 안 보는 곳뿐이었기 때문입니다. 알림 경로가 끊긴 것을 아무도 모르는 것보다는 낫다고 판단했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🕓 이 알람은 일부러 스스로 초록이 되지 않아요</div>
+  실패 메시지의 보존을 최대로 뒀습니다. 그래서 한 번 쌓이면 <b>사람이 비울 때까지 알람이 유지돼요.</b><br><br>
+  보통은 이게 나쁜 설계입니다. 상황이 지나갔으면 알람도 해제되는 게 맞으니까요. 그런데 자기 감시 알람에는 반대가 적용됩니다. <b>배달이 끊겼던 사실은 배달이 복구되면 사라지는 정보가 아니에요.</b> 몇 건이 사라졌는지, 어느 구간이었는지를 조사할 시간이 필요합니다.<br><br>
+  알람이 스스로 초록으로 돌아가면 그 조사 기회가 같이 사라져요.
+</div>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="al6a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="350" y="26" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">감시 대상인 경로로는 보내지 않아요</text>
+
+      <path d="M40 46 C 100 43, 190 49, 250 45 C 253 62, 252 82, 251 96 C 190 99, 100 95, 42 97 C 39 82, 40 62, 40 46 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="58" y="70" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">p1 배달 실패</text>
+      <text x="58" y="89" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">전화 경로가 끊겼다</text>
+
+      <path d="M40 126 C 100 123, 190 129, 250 125 C 253 142, 252 162, 251 176 C 190 179, 100 175, 42 177 C 39 162, 40 142, 40 126 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="58" y="150" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">p2 배달 실패</text>
+      <text x="58" y="169" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">채팅이 끊겼다</text>
+
+      <path d="M40 206 C 100 203, 190 209, 250 205 C 253 222, 252 242, 251 256 C 190 259, 100 255, 42 257 C 39 242, 40 222, 40 206 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+      <text x="58" y="230" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">p3 배달 실패</text>
+      <text x="58" y="249" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">하트비트 배달 실패</text>
+
+      <path d="M256 71 C 320 68, 380 74, 432 71" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#al6a)"/>
+      <path d="M256 151 C 320 148, 380 154, 432 151" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#al6a)"/>
+      <path d="M256 231 C 320 228, 380 234, 432 231" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#al6a)"/>
+
+      <path d="M440 46 C 500 43, 600 49, 660 45 C 663 62, 662 82, 661 96 C 600 99, 500 95, 442 97 C 439 82, 440 62, 440 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="458" y="70" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">p2 로 보낸다</text>
+      <text x="458" y="89" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">채팅 카드</text>
+
+      <path d="M440 126 C 500 123, 600 129, 660 125 C 663 142, 662 162, 661 176 C 600 179, 500 175, 442 177 C 439 162, 440 142, 440 126 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+      <text x="458" y="150" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">p1 로 보낸다</text>
+      <text x="458" y="169" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">전화가 온다</text>
+
+      <path d="M440 206 C 500 203, 600 209, 660 205 C 663 222, 662 242, 661 256 C 600 259, 500 255, 442 257 C 439 242, 440 222, 440 206 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+      <text x="458" y="230" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">p2 로 보낸다</text>
+      <text x="458" y="249" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">채팅 카드</text>
+
+      <text x="350" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">예전에는 전부 p2 로 갔고, p2 알람이 p2 로 발화했어요</text>
+      <text x="350" y="312" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">두 번째 줄의 대가: 채팅 장애가 새벽에 전화를 걸 수 있다</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 자기를 감시하는 알람은 라우팅 규칙이 반대예요</div>
+
+<h2>3. 배달 실패는 잡는데 「아무것도 오지 않는다」는 못 잡아요</h2>
+
+<p>여기까지 만들고 나서 목록을 다시 봤어요. 위의 두 장치가 잡는 것은 <b>「배달이 실패했다」</b>입니다. 그러면 잡히지 않는 게 뭔지 세어봤습니다.</p>
+
+<div class="obsv-code">이 둘이 못 잡는 것
+
+  온콜 스케줄이 비어 있다 (담당자 이동, 로테이션 만료)
+     -&gt; 수신 측이 정상 응답을 돌려주므로 실패 큐에도 안 걸린다
+  팀 핸들이 바뀌었다
+  이벤트 룰이 삭제됐다
+     -&gt; 발행 자체가 없으므로 실패도 없다
+  알림 토픽의 암호화 키가 비활성화됐다
+     -&gt; 발행이 전부 실패한다
+
+공통점: 배달 실패가 아니라 발행 자체가 없다.
+        실패한 메시지가 없으니 실패 큐는 계속 비어 있다</div>
+
+<p>정리하면 <span class="obsv-mark">배달 실패를 감시하는 장치는 아무것도 오지 않는 상태를 잡지 못합니다.</span> 오히려 그 상태에서는 두 장치가 다 초록불이에요. 실패 큐가 비어 있고 호출 실패 건수가 0이니까요.</p>
+
+<p>그래서 하트비트를 붙였습니다. 15분마다 신호 하나를 로그 전용 티어로 쏘고, <b>그 신호가 끊긴 것을 밖에서 셉니다.</b></p>
+
+<p>이 설계에서 핵심은 하나예요. <b>판단 주체가 클라우드 밖에 있다는 것.</b> 부재를 감지하는 쪽이 외부 도구라서, 리전 하나가 통째로 죽어도 동작합니다. 발행이 멈추면 그 쪽에서 「신호가 안 온다」를 세고 전화를 걸어요.</p>
+
+<p>그리고 하트비트를 만들려고 봤더니 이런 상태였습니다. <b>토픽과 실패 큐는 있는데 발행 주체가 없었어요.</b> 로그 전용 티어가 문서에는 「하트비트 용도」라고 적혀 있었는데, 실제로 그 토픽에 무언가를 넣는 것이 아무것도 없었습니다. 그릇만 있고 내용이 없는 상태였죠.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🔇 왜 사람이 안 보는 티어로 보내나</div>
+  하트비트를 채팅 채널이 붙은 티어로 보내면 <b>15분마다 카드가 뜹니다.</b> 그러면 채널이 죽어요.<br><br>
+  그리고 채널이 죽는 것으로 끝나지 않습니다. 사람이 채널을 뮤트하고, 그러면 <b>진짜 알람까지 같이 묻혀요.</b> 노이즈를 만드는 감시 장치는 자기 것만 망가뜨리지 않습니다.<br><br>
+  그래서 이 신호는 채팅 구독이 없는 티어로 보냅니다. 사람 눈에는 안 보이고 기계만 세요. 대가는 즉시성이에요. 부재를 판정하는 창이 네 주기라서, 최대 한 시간을 잃고 대신 확실성을 얻습니다.
+</div>
+
+<h2>4. 그 하트비트가 조용히 실패했어요</h2>
+
+<p>여기가 이 글의 중심입니다.</p>
+
+<p>하트비트는 <b>두 조각으로 되어 있어요.</b> 신호를 쏘는 쪽은 코드로 관리하고, 신호의 부재를 세는 쪽은 관측 도구에 손으로 만듭니다. 그쪽 프로바이더를 아직 도입하지 않았으니까요. 그래서 코드 파일 위에 이런 주석이 붙어 있습니다. <b>이 파일은 절반이다.</b></p>
+
+<p>실패한 쪽은 그 나머지 절반이었어요.</p>
+
+<p>발행하는 이벤트 본문에 우리가 식별용 필드를 넣었습니다. 그리고 부재를 세는 모니터의 조건도 그 필드 값으로 썼어요. 자연스러운 선택처럼 보였죠. 그런데 <span class="obsv-mark">본문 안의 그 필드는 태그가 되지 않습니다.</span> 수신 측은 자기가 붙이는 태그를 씁니다. 토픽 이름과 리전 같은 것들이요. 우리가 적은 필드는 그냥 본문 텍스트로만 남아요.</p>
+
+<div class="obsv-code">우리가 발행한 본문
+  { "source": "...-heartbeat", "env": "prod", "message": "..." }
+
+수신 측이 실제로 붙이는 태그
+  source:&lt;메시징 서비스&gt;   topic:&lt;토픽 이름&gt;   region:&lt;리전&gt;
+
+모니터 조건을 본문 필드 이름으로 쓰면
+  매치 0건. 세어야 할 신호를 하나도 세지 않는다</div>
+
+<p>그래서 이 상태였습니다. <b>룰은 정확히 15분마다 발행하고 있었고, 부재를 세는 쪽은 아무것도 세지 않고 있었어요.</b> 알람 이백 개가 사람에게 닿는지를 지키는 장치가, 자기가 지키려던 것과 똑같은 방식으로 고장 나 있었던 겁니다.</p>
+
+<p>고친 뒤에 남은 것도 적어둘게요. 지금 모니터의 조건은 <b>태그 하나와 본문 자유 텍스트 하나</b>입니다. 그러니까 토픽 이름을 바꾸거나 발행 문구를 바꾸면 모니터 조건도 함께 고쳐야 해요. 그리고 그 절반은 코드 밖에 있으니 <b>드리프트 검사가 못 봅니다.</b> 그 사실을 코드 주석에 적어두는 것 말고는 지금 할 수 있는 게 없어요.</p>
+
+<p>이 장의 결론이 이 글의 결론입니다. <b>감시를 감시하는 것도 틀릴 수 있어요.</b> 그리고 틀린 방식이 특별하지 않았습니다. 5편에서 나열한 「배포됐는데 아무것도 매치하지 않는」 목록에 그대로 들어가는 사례였어요.</p>
+
+<h2>5. 코드의 목록과 실물을 대조하는 검사</h2>
+
+<p>자기 감시의 세 번째 층입니다. 이건 알람이 아니라 스크립트예요.</p>
+
+<p>배경은 이렇습니다. 「전수에 걸었다」고 적혀 있는 알람들이 실제로는 <b>손으로 적은 리소스 목록</b>을 봅니다. 5편의 3장에서 말한 그 상태예요. 기준은 태그인데 결과 목록은 코드 안의 리터럴이죠. 그러면 두 방향으로 어긋납니다.</p>
+
+<div class="obsv-code">감시 밖   실물에 있는데 코드에 없다
+            새 리소스에 알람이 안 붙는다
+            plan 은 +0, CI 는 초록불. 아무 신호가 없다
+
+유령      코드에 있는데 실물에 없다
+            지워진 리소스가 목록에 남는다
+            지표 부재를 장애로 보는 알람이면 그 순간부터 영구 발화
+
+중복      두 스택이 같은 대상을 본다
+            경고만 한다. 알람을 옮기는 중에는 정상이다</div>
+
+<p>이게 가설이 아니라 실제로 네 번 났어요. 사흘 사이에 세 번, 그리고 며칠 뒤에 한 번이요.</p>
+
+<div class="obsv-code">VPN 3세트인 줄 알았는데       실제 8개
+DB 2대인 줄 알았는데          실제 13대 (11대가 감시 밖)
+ASG 7개에 걸었는데            계정에 12개
+연결 하나가 삭제됐는데         코드에는 남아 있었다 (아무것도 알려주지 않았다)</div>
+
+<p>네 번째가 이 검사를 만든 계기였습니다. 앞의 셋은 사람이 조회하다가 우연히 발견한 것이고, 네 번째는 <b>발견하는 경로가 아예 없었어요.</b></p>
+
+<p>검사는 단순합니다. 코드의 목록을 파싱해서 계정의 실물 목록과 양방향으로 비교해요. 그런데 만들면서 결정한 것 두 개가 있습니다.</p>
+
+<p><b>첫째, 경로를 하나로 박지 않고 여러 스택에서 모아 합집합을 만듭니다.</b> 알람은 감시 대상을 소유한 스택으로 옮겨가니까요. 경로를 박아두면 알람을 옮긴 순간 「감시 밖」을 오탐합니다. 알람은 멀쩡히 도는데 가드만 매일 우는 상태요. <span class="obsv-mark">매번 우는 가드는 꺼진 가드입니다.</span></p>
+
+<p><b>둘째, 실물 조회가 실패해서 빈 목록이 오면 검사 결과를 내지 않고 멈춥니다.</b> 빈 목록으로 계산하면 코드에 적힌 전부가 「유령」이 돼요. 그건 검사 결과가 아니라 조회 실패인데, 출력만 보면 구분이 안 됩니다. 그래서 그 경우는 실패로 끝내고 조회를 확인하라고 말해요.</p>
+
+<h2>6. 그 스크립트는 자기 자신에 대한 경고를 주석에 적어뒀어요</h2>
+
+<p>둘째 결정과 짝인 문제가 하나 더 있습니다. 이번엔 조회가 아니라 <b>파싱</b> 쪽이에요. 스크립트에 적혀 있는 문장을 그대로 옮길게요.</p>
+
+<div class="obsv-code"># ── 자기검사 ────────────────────────────────────────
+# 파서가 조용히 빈 목록을 내면 "감시 밖 0개" 로 보이고, 그건 통과와 구분되지 않는다.
+# 그 경우가 이 검사에서 가장 나쁜 실패다.</div>
+
+<p>구조를 보면 왜 이게 가장 나쁜지 보여요. 이 검사는 <b>코드의 목록과 실물의 차집합</b>을 냅니다. 코드 목록이 비면 차집합 한쪽이 0이 되고, 출력은 「감시 밖 0개」예요. 그리고 그 출력은 <b>전부 일치할 때의 출력과 똑같습니다.</b></p>
+
+<p>그러니까 파서가 정규식 하나 어긋나서 아무것도 못 읽으면, 이 검사는 <b>매일 초록불을 내면서 아무것도 대조하지 않아요.</b> 3장의 실패 큐, 4장의 하트비트와 같은 모양입니다.</p>
+
+<p>그래서 자기검사를 붙였습니다. 자격증명 없이 도는 검사에 넣어서 매번 돌게 했어요. 확인하는 항목이 이런 것들입니다.</p>
+
+<div class="obsv-code">맵과 집합 두 형태를 각각 파싱하는가
+주석 안에 남아 있는 옛 식별자를 목록으로 주워오지 않는가
+   -&gt; 주워오면 지워진 리소스가 계속 코드에 있는 것처럼 보여
+      유령 판정이 조용히 사라진다
+없는 목록을 찾았다고 대답하지 않는가
+같은 키가 서로 다른 값을 가리키면 오류로 멈추는가
+저장소에서 각 종류의 목록을 실제로 하나 이상 찾는가
+   -&gt; 파일 패턴이 아무것도 못 잡으면 이 검사는 조용히 통과한다</div>
+
+<p>마지막 항목이 재미있어요. 자기검사가 <b>자기 자신의 탐색 범위가 비어 있지 않은지</b>를 확인합니다. 이런 검사가 필요한 이유는 하나예요. <span class="obsv-mark">가드가 통과한 화면과 가드가 아무것도 안 본 화면이 같으면, 그 가드는 없는 것과 같습니다.</span></p>
+
+<h2>7. 이 검사에도 한계가 있어요</h2>
+
+<p>정직하게 남은 구멍을 적을게요. 이 대조 검사는 <b>하루 한 번 도는 드리프트 잡에 붙어 있습니다.</b> 계정을 읽어야 하니 자격증명 없이 도는 검사에는 넣을 수 없었어요.</p>
+
+<p>그러면 <b>주기가 사건보다 길면 못 잡습니다.</b> 알람이 사라진 창이 몇 시간이면, 다음 실행이 오기 전에 창이 닫혀요. 실행 시점에는 코드와 실물이 다시 맞아 있으니 검사는 통과합니다. 그 사이에 일어난 일은 어디에도 안 남아요.</p>
+
+<p>그리고 두 방향의 성질이 다릅니다. <b>유령은 흔적을 남겨요.</b> 지표가 끊긴 알람이 계속 발화하니까 사람이 알게 됩니다. 반면 <b>감시 밖은 흔적을 안 남깁니다.</b> 새 리소스에 알람이 없는 상태는 그 리소스가 조용한 동안 아무것도 알려주지 않아요. 하필 그동안 사건이 나면 그때 알게 되죠.</p>
+
+<p>그래서 세 층을 다 만들고 나서 남은 결론은 이렇습니다.</p>
+
+<div class="obsv-code">가드가 실패하는 방식 세 가지
+
+  못 봄       감시 대상 자체가 목록에 없거나 발행 주체가 없다
+  틀린 답     매치 0건인데 출력이 통과와 같다
+  주기가 김   사건이 실행 간격 안에서 열리고 닫힌다
+
+그리고 우리 자기 감시가 각각 그 셋에 하나씩 걸렸다
+
+  실패 큐 알람   -&gt;  발행이 없는 상태를 못 본다
+  하트비트       -&gt;  세는 쪽의 조건이 달라 매치 0건이었다
+  목록 대조      -&gt;  하루 한 번 돈다</div>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="al6b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <text x="350" y="26" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">가드는 세 가지 방식으로 실패해요</text>
+
+      <path d="M24 46 C 80 43, 172 49, 226 45 C 229 68, 228 96, 227 118 C 172 121, 80 117, 26 119 C 23 96, 24 68, 24 46 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="125" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">못 봄</text>
+      <text x="125" y="98" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">대상이 목록에 없다</text>
+      <text x="125" y="112" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">발행 주체가 없다</text>
+
+      <path d="M248 46 C 304 43, 396 49, 450 45 C 453 68, 452 96, 451 118 C 396 121, 304 117, 250 119 C 247 96, 248 68, 248 46 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="349" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">틀린 답</text>
+      <text x="349" y="98" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">매치 0건인데</text>
+      <text x="349" y="112" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">출력이 통과와 같다</text>
+
+      <path d="M472 46 C 528 43, 620 49, 676 45 C 679 68, 678 96, 677 118 C 620 121, 528 117, 474 119 C 471 96, 472 68, 472 46 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+      <text x="574" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">주기가 김</text>
+      <text x="574" y="98" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">사건이 실행 간격</text>
+      <text x="574" y="112" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">안에서 닫힌다</text>
+
+      <path d="M125 122 C 128 140, 122 156, 125 172" fill="none" stroke="#8a8272" stroke-width="2" marker-end="url(#al6b)"/>
+      <path d="M349 122 C 352 140, 346 156, 349 172" fill="none" stroke="#8a8272" stroke-width="2" marker-end="url(#al6b)"/>
+      <path d="M574 122 C 577 140, 571 156, 574 172" fill="none" stroke="#8a8272" stroke-width="2" marker-end="url(#al6b)"/>
+
+      <path d="M24 180 C 80 177, 172 183, 226 179 C 229 200, 228 222, 227 240 C 172 243, 80 239, 26 241 C 23 222, 24 200, 24 180 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+      <text x="125" y="204" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">배달 실패 알람</text>
+      <text x="125" y="228" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">발행 없음을 못 본다</text>
+
+      <path d="M248 180 C 304 177, 396 183, 450 179 C 453 200, 452 222, 451 240 C 396 243, 304 239, 250 241 C 247 222, 248 200, 248 180 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+      <text x="349" y="204" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">하트비트</text>
+      <text x="349" y="228" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">세는 쪽 조건이 달랐다</text>
+
+      <path d="M472 180 C 528 177, 620 183, 676 179 C 679 200, 678 222, 677 240 C 620 243, 528 239, 474 241 C 471 222, 472 200, 472 180 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+      <text x="574" y="204" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">목록 대조</text>
+      <text x="574" y="228" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">하루 한 번 돈다</text>
+
+      <text x="350" y="280" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">자기 감시도 그 셋 중 하나에 걸려요</text>
+    </g>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 층을 쌓아도 실패 방식은 남아요. 다만 같은 방식으로 다 죽지는 않아요</div>
+
+<p>그럼 층을 쌓는 게 의미가 없느냐면 그렇지 않아요. 세 층이 <b>서로 다른 방식으로</b> 실패하니까요. 실패 큐가 못 보는 것을 하트비트가 보고, 하트비트가 놓친 목록 문제를 대조 검사가 봅니다. 셋이 같은 원인으로 동시에 죽는 경로는 줄어들어요.</p>
+
+<p>다만 <b>「자기 감시를 만들었으니 이제 안심이다」로 끝내면 안 된다</b>는 게 이 글의 요점입니다. 자기 감시는 항목이 아니라 <b>계속 의심해야 하는 대상</b>이에요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>배달 실패는 실패 큐가 잡고, 그 큐에 다시 알람을 걸었어요. 그런데 그것들은 「배달이 실패했다」만 잡고 「아무것도 오지 않는다」는 잡지 못합니다.</b> 그래서 하트비트를 붙였는데, 부재를 세는 쪽의 조건이 실제 이벤트에 붙는 태그와 달라서 아무것도 세지 않고 있었어요.<br><br>
+  세 번째 층인 목록 대조 검사는 자기 자신에 대한 경고를 주석에 적어뒀습니다. 파서가 조용히 빈 목록을 내면 「감시 밖 0개」로 보이고, 그 출력은 통과와 구분되지 않는다는 문장이요. 그리고 그 검사는 하루 한 번 돌기 때문에 주기보다 짧은 사건을 놓칩니다.<br><br>
+  <b>가드는 세 가지로 실패해요. 못 보거나, 틀린 답을 내면서 통과처럼 보이거나, 주기가 사건보다 깁니다. 감시를 감시하는 장치도 그 셋에서 예외가 아니에요.</b>
+</div>
+
+</div>
