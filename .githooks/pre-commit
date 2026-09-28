@@ -1,0 +1,9 @@
+#!/bin/sh
+# 공개 저장소다. 커밋에 들어갈 내용과 경로를 마스킹 검사한다.
+# 조직 목록이 없으면 통과시키지 않는다 — 목록 없는 검사는 회사명을 못 잡는다.
+EXTRA="${BLOG_MASK_FILE:-$HOME/.config/blog-mask.txt}"
+if [ ! -f "$EXTRA" ]; then
+  echo "pre-commit: 조직 목록($EXTRA)이 없어 마스킹 검사를 할 수 없다. 커밋을 막는다." >&2
+  exit 1
+fi
+exec python3 .claude/skills/blog-post-pipeline/assets/mask-check.py --staged --extra "$EXTRA"

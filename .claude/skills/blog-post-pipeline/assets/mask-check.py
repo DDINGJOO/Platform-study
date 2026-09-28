@@ -12,12 +12,22 @@
     python3 mask-check.py 글.html                          # 일반 패턴만 검사
     python3 mask-check.py 글.html --extra ~/.config/blog-mask.txt
     python3 mask-check.py 글.html --extra ... --apply      # 치환까지
+    python3 mask-check.py --staged --extra ...             # pre-commit: 스테이징된 내용 + 경로
+    python3 mask-check.py --all --extra ...                # 추적 중인 전 파일 + 경로
+
+--staged / --all 은 **경로도 검사한다.** 폴더명에 조직 약어가 남아 공개된 적이 있다(f11ab62).
+PNG 같은 바이너리는 내용을 읽을 수 없으므로 경로만 본다.
+
+오탐(임계값·날짜 등)은 저장소의 `.mask-allow` 에 한 줄씩 적어 통과시킨다.
+허용 목록은 [일반] 패턴에만 적용된다. 조직 목록(--extra) 적중은 언제나 막는다.
 
 원칙: 값을 지우지 말고 **자리표시자로 바꿔 모양이 보이게** 한다.
 `repo:{조직}@{조직ID}/{저장소}@{저장소ID}` 는 실제 값보다 독자에게 더 유용하다.
 """
 import argparse
+import os
 import re
+import subprocess
 import sys
 
 # 무설정으로 도는 일반 위험 패턴. 오탐이 있어도 사람이 판정하면 되므로 넓게 잡는다.
@@ -44,14 +54,78 @@ def load_extra(path):
     return pairs
 
 
+def load_allow(path):
+    if not path or not os.path.exists(path):
+        return set()
+    return {l.split("#")[0].strip() for l in open(path, encoding="utf-8")} - {""}
+
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, check=True).stdout
+
+
+def git_sources(staged):
+    """(경로, 내용 또는 None) 을 낸다. 내용이 None 이면 바이너리라 경로만 본다."""
+    if staged:
+        paths = git("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+    else:
+        paths = git("ls-files", "-z")
+    for p in paths.decode("utf-8").split("\0"):
+        if not p:
+            continue
+        raw = git("show", f":{p}") if staged else open(p, "rb").read()
+        try:
+            yield p, raw.decode("utf-8")
+        except UnicodeDecodeError:
+            yield p, None
+
+
+def scan(text, extra, allow):
+    hits = []
+    for label, pat in GENERIC:
+        for m in sorted(set(re.findall(pat, text)) - allow):
+            hits.append(f"  [일반] {label}: {m}")
+    for needle, placeholder in extra:
+        n = text.count(needle)
+        if n:
+            hits.append(f"  [조직] {needle}: {n}회  -> {placeholder or '(자리표시자 미지정)'}")
+    return hits
+
+
+def main_git(a, extra, allow):
+    found_any = False
+    for path, text in git_sources(a.staged):
+        hits = [h.replace("  [", "  [경로·", 1) for h in scan(path, extra, allow)]
+        if text is not None:
+            hits += scan(text, extra, allow)
+        if hits:
+            found_any = True
+            print(f"\n[{path}]")
+            print("\n".join(hits))
+    if found_any:
+        print("\n※ 막았다. 자리표시자로 바꾸거나, 오탐이면 .mask-allow 에 값을 추가할 것.")
+        sys.exit(1)
+    print("마스킹 검사 통과")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("files", nargs="+")
+    ap.add_argument("files", nargs="*")
     ap.add_argument("--extra", help="조직 고유 목록 파일 (저장소 밖에 둘 것)")
     ap.add_argument("--apply", action="store_true", help="자리표시자로 치환한다")
+    ap.add_argument("--staged", action="store_true", help="스테이징된 내용과 경로를 검사한다")
+    ap.add_argument("--all", action="store_true", help="추적 중인 전 파일과 경로를 검사한다")
+    ap.add_argument("--allow", default=".mask-allow", help="[일반] 오탐 허용 목록")
     a = ap.parse_args()
 
     extra = load_extra(a.extra) if a.extra else []
+    allow = load_allow(a.allow)
+
+    if a.staged or a.all:
+        return main_git(a, extra, allow)
+    if not a.files:
+        ap.error("파일을 주거나 --staged / --all 을 쓸 것")
+
     found_any = False
 
     for f in a.files:
@@ -59,7 +133,7 @@ def main():
         hits = []
 
         for label, pat in GENERIC:
-            for m in set(re.findall(pat, h)):
+            for m in sorted(set(re.findall(pat, h)) - allow):
                 hits.append(f"  [일반] {label}: {m}")
 
         changed = h
