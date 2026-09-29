@@ -10,6 +10,10 @@ on:
     branches: [main]
     paths: ["posts/**", "tistory-series.json"]
   workflow_dispatch:
+  # 하루 새 글 50개 제한을 넘긴 글은 다음 날 이어서 올린다. 제한이 자정에 풀리므로 00:10 KST.
+  # 올릴 것이 없으면 plan 만 보고 끝난다
+  schedule:
+    - cron: "10 15 * * *"
 
 concurrency:
   group: tistory-sync
@@ -39,7 +43,7 @@ jobs:
           if [ $code -eq 3 ]; then
             echo "::error::티스토리 로그인이 만료됐다. 러너 Mac 에서 'tistory-upload.py login' 을 실행할 것"
           elif [ $code -eq 4 ]; then
-            echo "::warning::티스토리 하루 50편 제한에 걸렸다. 남은 글은 다음 실행(내일 수동 실행)에서 올라간다"
+            echo "::warning::티스토리 하루 50편 제한에 걸렸다. 남은 글은 내일 00:10 KST 정기 실행에서 올라간다"
             code=0
           fi
           echo "code=$code" >> "$GITHUB_ENV"
