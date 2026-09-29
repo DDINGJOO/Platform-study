@@ -182,14 +182,29 @@ def ensure_login(page):
     page.wait_for_load_state("networkidle")
     if "auth/login" not in page.url:
         return
-    # 카카오 간편로그인이 살아 있으면 버튼 한 번으로 돌아온다
+    # TSSESSION 은 몇 시간 만에도 끊긴다. 카카오 간편로그인(_kawlt, 약 1개월)이 살아 있으면
+    # 간편로그인 화면에 저장된 계정이 뜨고, 그 계정을 누르면 비밀번호 없이 돌아온다.
+    # 계정을 누르지 않고 기다리기만 하면 복구되지 않는다 (2026-09-29 두 번 그랬다)
     page.get_by_text("카카오계정으로 로그인").first.click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(3000)
+    page.wait_for_timeout(2000)
+    if "login/simple" in page.url:
+        picked = page.evaluate("""() => {
+            const e = [...document.querySelectorAll('a.wrap_profile, li, button, a')]
+                .find(e => e.offsetParent && e.innerText.includes('@') && !e.innerText.includes('삭제'));
+            if (e) e.setAttribute('data-pick', '1');
+            return !!e }""")
+        if picked:
+            page.click("[data-pick='1']")
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
     page.goto(f"{BLOG}/manage/newpost/")
     page.wait_for_load_state("networkidle")
+    if "auth/login" not in page.url and "kakao.com" not in page.url:
+        keep_state(page.context)
+        print("  (간편로그인으로 세션 복구)")
     if "auth/login" in page.url or "kakao.com" in page.url:
-        print(f"재로그인 필요: {sys.argv[0]} login", file=sys.stderr)
+        print(f"재로그인 필요(간편로그인도 만료): {sys.argv[0]} login", file=sys.stderr)
         sys.exit(EXIT_RELOGIN)
 
 
