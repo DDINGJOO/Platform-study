@@ -314,28 +314,23 @@ assert html.count('<div') == html.count('</div>')
 통과하면 사용자에게 라운드 요약과 함께 전달하고, 커밋/푸시는 사용자 확인 후 진행한다.
 (이 저장소는 DDINGJOO 계정으로 푸시 — `gh auth status`로 활성 계정 확인)
 
-### 이미지판을 재생성했으면 장수를 대조한다
+### 발행 — 커밋하면 업로더가 올린다
 
-`notion/` 에서 `blog/` 를 만든 뒤(`assets/make-image-version.py`), 스크립트가 출력한
-"그림 N장"과 실제 PNG 파일 수가 **같은지 반드시 확인한다.**
+원본은 `posts/<카테고리>/<시리즈>/NN_N편 - 제목.html` 하나다. 시리즈 폴더의 부모 경로가
+곧 티스토리 카테고리이고(`posts/Work/IaC/iac-log/` → `Work/IaC`), `posts/_archive/` 는 올리지 않는다.
+새 시리즈를 만들면 `tistory-series.json` 에 제목 접두어를 넣고, 카테고리가 티스토리에 있는지 확인한다.
 
 ```bash
-python3 - <<'PY'
-import re
-from pathlib import Path
-ref = sum(len(re.findall(r'<img src="images/', p.read_text(encoding='utf-8')))
-          for p in Path('blog').rglob('*.html'))
-print('img 참조', ref, '/ PNG', len(list(Path('blog').rglob('*.png'))))
-PY
+V=~/.local/share/tistory-uploader/venv/bin/python
+A=.claude/skills/tistory-sketch-post/assets/tistory-upload.py
+$V $A plan                     # 무엇이 새 글·수정인지. 아무것도 쓰지 않는다
+caffeinate -i $V $A sync       # 새 글은 비공개로. 공개 전환은 사람이 한다
 ```
 
-두 수가 다르면 **그림이 덮어써졌다.** 참조가 깨지지 않으니 눈에 안 띄는데,
-글 A 의 자리에 글 B 의 그림이 들어가 있는 상태다. 링크 검사로는 절대 안 잡힌다.
+`sync` 는 한 편마다 글 페이지를 열어 SVG 개수·본문 길이·공개 범위를 검증하고
+`tistory-manifest.json` 에 글 번호를 적는다. 그 파일을 같이 커밋해야 다음 실행이 중복을 만들지 않는다.
+하루 새 글 50개 제한(종료 코드 4), 로그인 만료(종료 코드 3)에서 멈춘다.
 
-2026-08-23에 실제로 났던 사고다. 이미지 폴더 이름을 글 번호로만 만들던 탓에
-`study/MSA_SRE/ch2` 의 `01_` 세 편이 같은 `images/01/` 을 쓰면서 서로의
-`fig1.png` 를 덮었다. **필요 23장 중 8장만 남아 있었고, 그 상태로 커밋돼 있었다.**
-스크립트는 이제 같은 폴더에 번호가 겹칠 때만 `01a`·`01b` 로 갈라준다.
-
-교훈은 검사기 쪽이다. "깨진 참조 0건"과 "미참조 PNG 0건"을 둘 다 통과해도
-내용이 뒤바뀐 건 못 잡는다. **개수 보존을 따로 세야 한다.**
+**PNG 이미지판(`blog/`)은 2026-09-29 에 없앴다.** 손으로 붙여넣을 때만 SVG 가 사라졌고,
+업로더 경로에서는 인라인 SVG 가 그대로 렌더된다. 손으로 올려야 할 때만
+`assets/make-image-version.py` 로 스크래치 디렉터리에 뽑아 쓰고 커밋하지 않는다.

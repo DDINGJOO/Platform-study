@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""notion/**/*.html 을 티스토리에 올린다 — 오픈 API 가 2024-02 에 닫혀 브라우저를 조작한다.
+"""posts/**/*.html 을 티스토리에 올린다 — 오픈 API 가 2024-02 에 닫혀 브라우저를 조작한다.
 
     tistory-upload.py login                 # 창을 띄워 사람이 로그인한다 (최초 1회, 만료 시)
     tistory-upload.py plan                  # 무엇을 올릴지 보여 준다. 아무것도 쓰지 않는다
@@ -7,7 +7,10 @@
     tistory-upload.py sync [--limit N] [--only 경로조각] [--update-linked] [--visibility private|public]
 
 상태는 저장소의 두 파일이 전부다.
-  tistory-series.json    폴더 -> 제목 접두어·카테고리·titles(파일명 -> 제목 덮어쓰기)·skip(올리지 않음).
+  posts/<카테고리>/<시리즈>/NN_제목.html
+                         카테고리는 경로에서 나온다: 시리즈 폴더의 부모 경로가 곧 블로그 카테고리
+                         (posts/Work/IaC/iac-log/ -> Work/IaC). posts/_archive/ 아래는 올리지 않는다.
+  tistory-series.json    시리즈 폴더 -> 제목 접두어·titles(파일명 -> 제목 덮어쓰기).
                          제목 = "접두어 " + 파일명(번호_ 뒤). 파일명을 못 바꿀 때 titles 로 고친다
   tistory-manifest.json  경로 -> 글 번호·제목·카테고리·내용 해시. 하나라도 다르면 수정, 없으면 새 글.
                          그래서 제목(파일명·접두어)이나 카테고리를 나중에 바꿔도 같은 글이 고쳐진다.
@@ -38,7 +41,7 @@ HOME = Path.home() / ".local/share/tistory-uploader"
 PROFILE, STATE = HOME / "profile", HOME / "state.json"
 MASK_EXTRA = Path.home() / ".config/blog-mask.txt"
 ROOT = Path(__file__).resolve().parents[4]
-SRC = ROOT / "notion"
+SRC = ROOT / "posts"
 SERIES = ROOT / "tistory-series.json"
 MANIFEST = ROOT / "tistory-manifest.json"
 MASK_CHECK = ROOT / ".claude/skills/blog-post-pipeline/assets/mask-check.py"
@@ -62,6 +65,15 @@ def load_json(p, default):
 
 def save_manifest(m):
     MANIFEST.write_text(json.dumps(dict(sorted(m.items())), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def archived(path):
+    return path.relative_to(SRC).parts[0] == "_archive"
+
+
+def category_of(path, series):
+    """시리즈 폴더의 부모 경로 = 블로그 카테고리. 경로와 카테고리를 두 곳에 적지 않기 위해서다."""
+    return series.get(rel(path.parent), {}).get("category") or path.parent.parent.relative_to(SRC).as_posix()
 
 
 def title_of(path, series):
@@ -96,7 +108,7 @@ def order_key(files):
 
 def plan(series, manifest, update_linked=False):
     """(동작, 경로, 제목, 해시, 기존 항목) 목록. 동작: new / update / rename / skip-linked."""
-    files = [f for f in SRC.rglob("*.html") if not series.get(rel(f.parent), {}).get("skip")]
+    files = [f for f in SRC.rglob("*.html") if not archived(f)]
     key = order_key(files)
     files.sort(key=key.get)
     present = {rel(f) for f in SRC.rglob("*.html")}
@@ -111,7 +123,7 @@ def plan(series, manifest, update_linked=False):
     for f in files:
         text = f.read_text(encoding="utf-8")
         h, key, title = sha(text), rel(f), title_of(f, series)
-        category = series.get(rel(f.parent), {}).get("category")
+        category = category_of(f, series)
         entry = manifest.get(key)
         if entry is None:
             if h in orphans:
@@ -379,7 +391,7 @@ def cmd_sync(a):
                     sys.exit(f"같은 제목의 글 /{post_id} 가 이미 다른 파일에 배정돼 있다. 매니페스트를 확인할 것: {title}")
                 if post_id:
                     act = "adopt"
-            category = series.get(rel(f.parent), {}).get("category")
+            category = category_of(f, series)
             visibility = (prev[1].get("visibility") if prev else None) or \
                 (current_visibility(page, post_id) if post_id else a.visibility)
             print(f"… {act} {title}" + (f" (/{post_id})" if post_id else ""))
@@ -418,7 +430,7 @@ def cmd_reorder(a):
     slots = sorted((e["id"] for e in manifest.values() if e.get("sha256") is not None), key=int)
     linked = {k for k, e in manifest.items() if e.get("sha256") is None}
     files = [f for f in SRC.rglob("*.html")
-             if not series.get(rel(f.parent), {}).get("skip") and rel(f) not in linked]
+             if not archived(f) and rel(f) not in linked]
     key = order_key(files)
     files.sort(key=key.get)
     new = {k: e for k, e in manifest.items() if k in linked}
