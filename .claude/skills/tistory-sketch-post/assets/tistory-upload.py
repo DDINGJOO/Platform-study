@@ -4,6 +4,7 @@
     tistory-upload.py login                 # 창을 띄워 사람이 로그인한다 (최초 1회, 만료 시)
     tistory-upload.py plan                  # 무엇을 올릴지 보여 준다. 아무것도 쓰지 않는다
     tistory-upload.py reorder [--apply]     # 이미 만든 글 번호를 발행 순서대로 재배정 (매니페스트만)
+    tistory-upload.py keepalive             # 세션 유지. launchd 가 15분마다 부른다
     tistory-upload.py sync [--limit N] [--only 경로조각] [--update-linked] [--visibility private|public]
 
 상태는 저장소의 두 파일이 전부다.
@@ -20,12 +21,19 @@
 새 글은 기본 비공개로 저장한다. 공개 발행은 사람이 한다.
 기존 글을 수정할 때는 공개 범위를 건드리지 않는다.
 
+TSSESSION 은 30~40분 쓰지 않으면 끊긴다(연속으로 쓰는 동안은 몇 시간도 버틴다).
+카카오 간편로그인 복구는 될 때도 있고 비밀번호 화면으로 갈 때도 있어 믿을 수 없다.
+그래서 keepalive 가 15분마다 관리 페이지를 한 번 열어 세션을 살려 둔다.
+
 틀리기 쉬운 두 가지 (둘 다 겉으로는 성공처럼 보인다):
   - TSSESSION 은 세션 쿠키라 브라우저를 닫으면 사라진다. state.json 에 저장했다가 매번 복원한다.
   - CodeMirror.setValue() 로 넣으면 화면만 바뀌고 **빈 본문으로 저장된다.**
     포커스 후 keyboard.insert_text 로 넣어야 한다. 그래서 저장 뒤 글 페이지를 열어 검증한다.
 """
 import argparse
+import fcntl
+import http.cookiejar
+import urllib.request
 import hashlib
 import json
 import re
@@ -161,6 +169,20 @@ def open_ctx(p, headless=True):
     if STATE.exists():
         ctx.add_cookies(json.loads(STATE.read_text())["cookies"])
     return ctx
+
+
+LOCK = HOME / ".lock"
+
+
+def hold_lock(blocking):
+    """sync 와 keepalive 가 state.json 을 동시에 쓰지 않게 한다. 잡지 못하면 None."""
+    fd = open(LOCK, "w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        return fd
+    except BlockingIOError:
+        fd.close()
+        return None
 
 
 def keep_state(ctx):
@@ -330,6 +352,43 @@ def verify(page, post_id, html, visibility):
 
 # ---------------------------------------------------------------- 명령
 
+def cmd_keepalive(_):
+    """브라우저 없이 쿠키만으로 관리 페이지를 열고, 새로 받은 쿠키를 state.json 에 되쓴다."""
+    lock = hold_lock(blocking=False)
+    if lock is None:
+        return  # sync 가 도는 중이면 그쪽이 세션을 쓰고 있다
+    state = json.loads(STATE.read_text())
+    jar = http.cookiejar.CookieJar()
+    for c in state["cookies"]:
+        jar.set_cookie(http.cookiejar.Cookie(
+            0, c["name"], c["value"], None, False, c["domain"], True, c["domain"].startswith("."),
+            c["path"], True, c.get("secure", False), None if c["expires"] < 0 else int(c["expires"]),
+            c["expires"] < 0, None, None, {"HttpOnly": None} if c.get("httpOnly") else {}))
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener.addheaders = [("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                                        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")]
+    stamp = datetime.now().isoformat(timespec="seconds")
+    try:
+        final = opener.open(f"{BLOG}/manage/", timeout=30).geturl()
+    except Exception as e:
+        print(f"{stamp} 네트워크 오류, 다음 주기에 다시: {e}")
+        return
+    if "auth/login" in final:
+        print(f"{stamp} 세션 만료. 사람이 '{sys.argv[0]} login' 해야 한다")
+        sys.exit(EXIT_RELOGIN)
+    known = {(c["name"], c["domain"], c["path"]): c for c in state["cookies"]}
+    for k in jar:
+        key = (k.name, k.domain, k.path)
+        if key in known:
+            known[key]["value"] = k.value
+            if k.expires:
+                known[key]["expires"] = float(k.expires)
+    state["cookies"] = list(known.values())
+    STATE.write_text(json.dumps(state))
+    STATE.chmod(0o600)
+    print(f"{stamp} 세션 유지됨")
+
+
 def cmd_login(_):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
@@ -368,6 +427,7 @@ def cmd_plan(a):
 def cmd_sync(a):
     from playwright.sync_api import sync_playwright
     series, manifest = load_json(SERIES, {}), load_json(MANIFEST, {})
+    lock = hold_lock(blocking=True)  # keepalive 가 state.json 을 쓰는 중이면 기다린다
     rows = [r for r in plan(series, manifest, a.update_linked) if r[0] != "skip-linked"]
     if a.only:
         rows = [r for r in rows if a.only in rel(r[1])]
@@ -465,6 +525,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("login")
+    sub.add_parser("keepalive")
     sub.add_parser("reorder").add_argument("--apply", action="store_true")
     for name in ("plan", "sync"):
         s = sub.add_parser(name)
@@ -475,7 +536,8 @@ def main():
                    help="새 글의 공개 범위. 기존 글은 매니페스트의 visibility, 없으면 현재 값을 유지한다")
     s.add_argument("--interval", type=int, default=15, help="글 사이 대기(초)")
     a = ap.parse_args()
-    {"login": cmd_login, "plan": cmd_plan, "sync": cmd_sync, "reorder": cmd_reorder}[a.cmd](a)
+    {"login": cmd_login, "plan": cmd_plan, "sync": cmd_sync, "reorder": cmd_reorder,
+     "keepalive": cmd_keepalive}[a.cmd](a)
 
 
 if __name__ == "__main__":
