@@ -536,7 +536,7 @@ def main():
     s.add_argument("--limit", type=int)
     s.add_argument("--only", help="경로에 이 문자열이 든 파일만")
     s.add_argument("--visibility", choices=["private", "public"], default="private",
-                   help="새 글의 공개 범위. 기존 글은 매니페스트의 visibility, 없으면 현재 값을 유지한다")
+                   help="새 글의 공개 범위. 기존 글은 블로그의 현재 값을 읽어 유지한다")
     s.add_argument("--interval", type=int, default=15, help="글 사이 대기(초)")
     a = ap.parse_args()
     {"login": cmd_login, "plan": cmd_plan, "sync": cmd_sync, "reorder": cmd_reorder,
