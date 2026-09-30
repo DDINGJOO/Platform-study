@@ -1,0 +1,248 @@
+<!-- ============================================================
+  Datadog 설정을 코드로 1편: 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다
+  tistory-sketch-post 스타일 · 단일 HTML
+  이 <style> 블록은 수정 없이 그대로 복사해서 쓴다.
+  구조 스켈레톤의 [대괄호] 부분만 내용으로 교체한다.
+============================================================ -->
+<!-- tags: Terraform import, import 블록, drift 감지, generate-config, 콘솔 편집 정책 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Datadog 설정을 코드로 · 1편</div>
+  <b>1편. 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다</b> &larr; 지금 이 글<br>
+  2편. service 는 앱이 정하고 team 은 호출 단위다<br>
+  3편. 필수 모니터가 헬스체크를 세고 있었다<br>
+  4편. 데이터 없음은 장애인가<br>
+  5편. APM 을 떼는 순서<br>
+  6편. 로그가 사라진 건 샘플링이 아니었다
+</div>
+
+<p>2026년 9월 27일, Datadog API 로 우리 계정의 모니터를 전부 받아 세어 봤어요. 68개였습니다. 만든 사람은 열 명이 넘었어요. 38개에는 어느 팀 것인지 적는 <code style="font-family:Menlo,monospace;font-size:14px;">team</code> 태그가 없었고, 13개에는 알림을 받을 대상이 적혀 있지 않았습니다(그중 일부는 알림을 일부러 두지 않는 복합 모니터의 하위 조건이었어요). 같은 9월 27일 기준으로 19개가 음소거 상태였는데, 언제 풀지 적어 둔 기록은 찾지 못했어요.</p>
+<p>이상한 점은 따로 있었습니다. 저희 인프라 저장소에는 매일 오전 9시에 모든 스택을 점검하는 잡이 이미 돌고 있었어요. 코드와 실제 인프라가 어긋나면 이슈를 올리는 잡입니다. 그런데 이 잡은 68개 중 어느 것도 한 번도 본 적이 없었어요. 모니터가 전부 Datadog 콘솔(웹 화면)에서 만들어졌기 때문입니다.</p>
+<p>이 시리즈는 그 68개를 Terraform 코드로 옮긴 기록이에요. 1편의 질문은 하나입니다. <b>"모니터를 코드로 옮긴다면, 콘솔에서 고치는 사람은 어떻게 해야 하는가."</b></p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 매일 도는 점검 잡은 왜 콘솔에서 만든 모니터를 못 봤을까?<br>
+&middot; 코드로 옮긴 뒤 콘솔 편집을 막아야 할까?<br>
+&middot; 실제 모니터를 한 글자도 안 바꾸고 코드로 옮겼다는 건 어떻게 확인할까?<br>
+&middot; 옮기는 도중에 무엇이 드러났을까?</p>
+
+<h2>1. 매일 도는 점검 잡이 68개를 한 번도 보지 못했다</h2>
+
+<p>먼저 "모니터"가 무엇인지부터 짚을게요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 모니터 (Datadog monitor)</div>
+  Datadog 이 지표나 로그를 정해진 주기로 조회해서, 조건을 넘으면 알림을 보내는 규칙이에요. "10분간 요청이 1건 미만이면 온콜 담당자를 호출한다" 같은 쿼리, 임계값, 알림 대상, 메시지가 한 모니터에 들어 있습니다.
+</div>
+<p>저희 저장소는 AWS 자원을 Terraform 으로 관리해요. Terraform 은 코드를 실제 인프라에 반영하기 전에 무엇이 바뀔지 먼저 보여 주고, 사람이 확인한 뒤에 반영합니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: plan 과 apply</div>
+  <code style="font-family:Menlo,monospace;font-size:14px;">terraform plan</code> 은 코드와 실물을 비교해 "몇 개를 만들고, 몇 개를 고치고, 몇 개를 지울지"를 보여 주기만 해요. 실제로 바꾸는 건 <code style="font-family:Menlo,monospace;font-size:14px;">terraform apply</code> 입니다. 저희는 PR 에서 plan 을 보고, 머지한 뒤 사람이 apply 를 누릅니다.
+</div>
+<p>매일 오전 9시의 점검 잡은 모든 스택에서 plan 을 돌려요. 변경이 0이 아니면 대개 누군가 콘솔에서 무언가를 고쳤다는 뜻이라, 이슈를 올립니다. 문제는 plan 이 비교하는 범위였어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: state 와 drift</div>
+  state 는 Terraform 이 관리하는 자원 목록과 각 자원의 실물 ID 를 적어 두는 파일이에요. drift 는 state 에 있는 자원의 실물이 코드와 달라진 상태를 말합니다. plan 은 state 에 있는 자원만 실물과 비교해요.
+</div>
+<p>콘솔에서 새로 만든 모니터는 state 에 없습니다. 그러니 plan 이 비교할 대상에 들어가지 않고, drift 로도 잡히지 않아요. <span class="obsv-mark">콘솔에서 새로 만든 모니터는 아무리 오래 있어도 drift 가 되지 않습니다.</span> 68개는 그렇게 쌓인 것이었어요.</p>
+<p>옮기기로 한 이유가 이것만은 아니었습니다. 9월 20일에 앱이 재시작을 반복하는 장애가 있었는데, 알림이 누구에게 어떤 경로로 갔는지 추적하느라 대응이 늦어졌어요. 알림 설정의 일부가 코드 밖에 있었기 때문입니다. 그 일은 결정 문서(ADR-0054)에 "한 서비스의 모니터를 코드 절반, 콘솔 절반으로 두지 않는다"는 근거로 남았습니다.</p>
+
+<h2>2. 옮기더라도 콘솔은 잠그지 않는다</h2>
+
+<p>9월 28일에 결정 문서부터 썼어요. 정할 것은 두 가지였습니다. 누구의 모니터를 가져오는가, 그리고 가져온 뒤 누군가 콘솔에서 고치면 어떻게 되는가.</p>
+<p>첫째에 대한 답은 "68개 전부"였어요. 플랫폼팀 모니터만 가져오면 경계는 선명하지만, 새벽에 온콜 호출을 보내던 인증 장애 모니터들이 추적 범위 밖에 남습니다. 대신 한 번에 전부 가져오지는 않기로 했어요. 68개를 한 PR 로 옮기면 공백이나 기본값 차이로 생긴 가짜 변경이 쌓여서, 그 안에 섞인 진짜 변경을 plan 에서 사람이 골라낼 수 없기 때문입니다.</p>
+<p>그리고 소유를 둘로 나눴어요. <span class="obsv-mark">플랫폼팀이 소유하는 것은 코드와 반영 경로이고, 모니터 내용의 책임은 원래 나뉘어 있던 대로 둡니다.</span> 호스트 CPU·디스크는 플랫폼팀, 커넥션 풀이나 API 에러율은 앱팀이에요. 모니터가 플랫폼팀 저장소로 들어온다고 플랫폼팀이 인증 에러율을 책임지게 되지는 않습니다. 책임 팀은 파일 위치가 아니라 모니터마다 붙이는 <code style="font-family:Menlo,monospace;font-size:14px;">team</code> 태그로 적어요. 알림을 누구에게 보낼지(온콜 라우팅, Slack 채널 연동)는 알림 전용 스택이 따로 소유하기로 했습니다.</p>
+<p>둘째 질문에서 선택지는 셋이었어요.</p>
+<div class="obsv-code">1. 코드로 옮긴 모니터는 콘솔에서 편집 잠금      → 탈락
+2. "코드 관리 중"이라고 표시만 하고 허용          → 탈락 (지금 상태가 이것)
+3. 잠그지 않고, 달라진 것을 drift 로 찾아 흡수    → 채택</div>
+<p>&rarr; ADR-0054 가 검토한 콘솔 편집 정책 세 가지와 결론이에요.</p>
+<p>잠금을 뺀 이유는 세 가지였습니다. 장애 중에 임계값 하나를 고치는 일은 콘솔에서 몇 초면 끝나는데, 잠그면 PR, plan, apply 를 거쳐야 해요. 또 그때까지 편집 제한이 걸린 모니터는 0개였습니다. 잠그면 만든 사람들의 작업 방식이 하루 만에 바뀌고, 사람들은 잠긴 모니터 대신 새 모니터를 만들 거예요. 그렇게 만든 새 모니터는 1절에서 본 대로 drift 에 잡히지 않습니다. 마지막으로, 잠그려면 CI 가 쓰는 계정을 허용 목록에 넣어야 하는데, 그때는 CI 계정만 허용 목록에 넣었는지 검증할 수단이 없었어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="dd1a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="32" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">콘솔에서 누가 고치면 어디서 잡히나</text>
+<path d="M24 62 C 80 60, 140 63, 196 61 C 197 85, 195 110, 197 134 C 140 136, 80 133, 25 135 C 23 110, 26 85, 24 62 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="92" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18" text-anchor="middle">✏️ 콘솔에서 수정</text>
+<text x="110" y="118" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">장애 중 비상 경로</text>
+<path d="M202 98 C 222 96, 234 99, 252 98" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dd1a)"/>
+<path d="M258 61 C 320 63, 382 60, 444 62 C 445 86, 443 110, 444 135 C 382 133, 320 136, 259 134 C 257 110, 260 86, 258 61 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="351" y="92" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle">⏰ 매일 09:00 drift 잡</text>
+<text x="351" y="118" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">차이를 이슈로만 올린다</text>
+<path d="M450 90 C 474 82, 488 76, 506 72" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dd1a)"/>
+<path d="M450 108 C 474 116, 488 122, 506 128" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dd1a)"/>
+<path d="M512 46 C 562 44, 622 47, 676 45 C 677 62, 675 80, 676 96 C 622 98, 562 95, 513 97 C 511 80, 514 62, 512 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="594" y="68" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">기본: 코드로 흡수</text>
+<text x="594" y="89" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">편입 기간: 주 1회 플랫폼팀</text>
+<path d="M512 104 C 562 106, 622 103, 676 105 C 675 122, 677 140, 676 156 C 622 154, 562 157, 513 155 C 511 140, 514 122, 512 104 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="594" y="126" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">되돌리기</text>
+<text x="594" y="147" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">책임 팀 동의 시 PR → apply</text>
+<path d="M24 180 C 250 182, 460 178, 676 181" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="8 8" stroke-linecap="round"/>
+<path d="M24 206 C 80 204, 140 207, 196 205 C 197 229, 195 254, 197 278 C 140 280, 80 277, 25 279 C 23 254, 26 229, 24 206 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="236" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18" text-anchor="middle">🆕 콘솔에서 새로 만듦</text>
+<text x="110" y="262" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">state 에 없다</text>
+<path d="M202 242 C 222 240, 234 243, 252 242" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dd1a)"/>
+<path d="M258 205 C 320 207, 382 204, 444 206 C 445 230, 443 254, 444 279 C 382 277, 320 280, 259 278 C 257 254, 260 230, 258 205 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="351" y="236" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">drift 잡은 못 본다</text>
+<text x="351" y="262" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">plan 은 state 안만 비교</text>
+<path d="M450 242 C 470 240, 486 243, 506 242" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dd1a)"/>
+<path d="M512 205 C 562 207, 622 204, 676 206 C 677 230, 675 254, 676 279 C 622 277, 562 280, 513 278 C 511 254, 514 230, 512 205 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="594" y="236" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">ADR 의 방향</text>
+<text x="594" y="262" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">찾는 일은 인벤토리 쪽에</text>
+<text x="350" y="326" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 잠금은 이미 옮긴 것만 지킨다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 콘솔에서 고친 것과 새로 만든 것은 다른 경로로 봐야 한다</div>
+
+<p>그림 1 의 윗줄이 채택한 흐름이에요. 콘솔 수정을 비상 경로로 인정하고, drift 잡이 차이를 찾으면 기본 처리는 "콘솔에서 바뀐 값을 코드에 반영하는 것"입니다. 되돌리는 건 책임 팀이 동의할 때만, PR 과 plan 과 apply 를 거쳐서 해요. 편입 기간(1부) 동안은 플랫폼팀이 주 1회 몰아서 흡수합니다. drift 잡은 apply 를 실행하지 않습니다. 사람이 누르는 apply 가 저희 저장소의 게이트이기 때문이에요.</p>
+<p>아랫줄은 잠금으로도 풀리지 않는 문제예요. 잠금은 이미 옮긴 모니터만 지키고, 콘솔에서 새로 만드는 모니터는 막지 못합니다. ADR 은 새로 생긴 것을 찾는 일을 계정 인벤토리 쪽에 두는 방향을 적었어요.</p>
+<p>이 결정의 약점도 문서에 적었습니다. 흡수가 기본이면 코드가 콘솔을 따라 적는 사본이 될 수 있어요. 그래서 재검토 조건을 달았습니다. 다운타임은 처음부터 코드 밖에 두기로 했는데, 종료 시각이 있는 다운타임을 코드가 들고 있으면 만료 뒤 drift 가 날마다 뜨기 때문이에요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 잠그지 않는 결정에는 다시 잠글 조건을 같이 적는다</div>
+  &bull; 1부(편입 기간)가 끝났는데 drift 흡수를 여전히 플랫폼팀만 하고 있으면 잠금을 다시 검토한다<br>
+  &bull; 사고가 아닌데도 콘솔 수정이 반복되면 같은 이유로 다시 검토한다<br>
+  &bull; 반복되는 정기 점검 창(반복 다운타임)이 생기면 "다운타임은 코드 밖" 결정에 예외를 둔다
+</div>
+<p>세 번째 조건은 사실 결정 당시에 이미 해당돼 있었어요. 9월 27일 집계에서는 반복 다운타임이 0개로 나왔지만, 모니터가 판정하는 시간대를 정하는 반복 다운타임 3개가 9월 22~23일부터 있었습니다. v1 API 로는 v2 로 만든 반복 스케줄이 보이지 않아서 첫 집계에서 빠진 것이에요. 9월 30일에 이 셋을 다시 세어 바로잡았고, 새 결정(ADR-0057)으로 코드에 편입했습니다.</p>
+
+<h2>3. 파일럿: 모니터 넷을 옮기고 아무것도 바꾸지 않기</h2>
+
+<p>콘솔에 있는 모니터를 코드로 옮긴다고 해 볼게요. 코드에 똑같이 적고 apply 하면 Terraform 은 그걸 새 자원으로 취급해 하나 더 만듭니다. 이미 있는 실물을 관리 대상으로 state 에 올리는 절차가 따로 필요해요. 그게 import 입니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Terraform import 와 import 블록</div>
+  import 는 이미 존재하는 실물 자원을 새로 만들지 않고 state 에 등록하는 작업이에요. Terraform 1.5 부터는 명령어 대신 코드에 <code style="font-family:Menlo,monospace;font-size:14px;">import { to = ..., id = ... }</code> 블록을 적어 두면, 다음 plan 과 apply 에서 그 실물을 가져옵니다. PR 로 리뷰할 수 있다는 점이 명령어와 다릅니다.
+</div>
+<p>9월 28일 오전, 파일럿으로 배치 서버의 모니터 넷을 골랐어요. 서비스 다운, 배치 잡 실패, DB 커넥션 고갈, 5xx 에러율입니다. 플랫폼팀이 직접 맡는 서비스이고, 다른 모니터를 참조하는 복합 모니터가 없어서였어요. 머지 조건은 하나였습니다. plan 이 <code style="font-family:Menlo,monospace;font-size:14px;">0 to add, 0 to change, 0 to destroy</code> 이고 import 만 있어야 한다는 것이에요. 이 저장소 CI 는 import 블록 수와 plan 의 import 건수를 대조해서, 다 쓴 블록을 남기면 plan 이 실패해요(2편).</p>
+<div class="obsv-code">import {
+  to = datadog_monitor.batch_server_down
+  id = "{모니터 ID}"
+}
+
+resource "datadog_monitor" "batch_server_down" {
+  name    = "[P1] 배치 서버 서비스 다운"
+  type    = "query alert"
+  query   = "sum(last_10m):sum:trace.servlet.request.hits{service:...}.as_count() &lt; 1"
+  message = "..."   # 콘솔 원본 문자열 그대로
+}</div>
+<p>&rarr; 위 블록은 "이 ID 의 실물을 아래 resource 로 가져오라"는 뜻이고, 아래 resource 는 콘솔 원본을 API 로 받아 그대로 옮긴 내용이에요.</p>
+<p>그런데 첫 plan 은 조건을 통과하지 못했어요. 결과가 4 import, 4 change 였습니다. 콘솔 원본을 한 글자도 빼지 않고 옮겼는데도 plan 은 모니터 넷 모두에 change 를 표시했어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: provider</div>
+  Terraform 이 특정 서비스의 API 를 부르게 해 주는 플러그인이에요. 여기서는 Datadog provider 가 <code style="font-family:Menlo,monospace;font-size:14px;">datadog_monitor</code> 같은 자원을 Datadog API 호출로 바꿉니다. 코드에 적지 않은 속성에는 provider 가 정한 기본값을 넣어요.
+</div>
+<div class="obsv-code">require_full_window   false -&gt; true    # provider 기본값이 true
+notify_no_data        null  -&gt; false
+new_host_delay        null  -&gt; 300     # DB 모니터에만</div>
+<p>&rarr; 콘솔 원본에는 값이 없거나 false 인데, 코드에 안 적었더니 provider 가 기본값을 채워 넣어서 "바꾸겠다"고 나온 세 필드예요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 원본에 없는 값은 provider 기본값으로 채워진다</div>
+  첫 번째 <code style="font-family:Menlo,monospace;font-size:14px;">require_full_window</code> 는 무시하면 안 되는 차이였어요. 평가 창이 데이터로 꽉 차야 판정하는지를 정하는 값이라, true 로 바뀌면 모니터가 판정하는 방식이 달라집니다. 그래서 코드에 false 를 명시했어요. 나머지 둘 중 <code style="font-family:Menlo,monospace;font-size:14px;">notify_no_data</code> 는 <code style="font-family:Menlo,monospace;font-size:14px;">on_missing_data</code> 가 대체한 필드이고 <code style="font-family:Menlo,monospace;font-size:14px;">new_host_delay</code> 는 폐기 예정(deprecated) 필드라 <code style="font-family:Menlo,monospace;font-size:14px;">ignore_changes</code> 로 비교에서 뺐습니다. 이 수정조차 한 번에 끝나지 않았어요. 일괄 치환이 정렬 공백 때문에 한 곳에서만 맞아서, 커밋을 한 번 더 해야 했습니다.
+</div>
+<p>세 필드를 맞추자 plan 이 0 change 가 됐고, 머지 뒤 apply 결과는 <code style="font-family:Menlo,monospace;font-size:14px;">4 imported · 0 changed · 0 destroyed</code> 였어요. plan 만 믿지 않고 Datadog 쪽도 확인했습니다. 모니터 넷의 마지막 수정 시각이 7월 그대로였어요. <span class="obsv-mark">0 change 는 plan 의 결과일 뿐이고, 실물이 그대로인지는 Datadog 쪽 수정 시각으로 따로 확인해야 합니다.</span></p>
+<p>이 apply 에는 확인할 것이 하나 더 있었어요. 앞 단계에서 Datadog 키를 읽기용과 쓰기용으로 나눠 발급했습니다. plan 은 PR 의 코드를 실행하므로 쓰기 키가 들어가면 PR 하나로 모니터를 지울 수 있어서, 쓰기 키는 prod 배포 환경의 apply 잡에만 넣었어요. 그 앞 단계에서는 plan 만 돌아서 쓰기 키가 실제로 동작하는지 확인하지 못했고, 이 파일럿 apply 가 쓰기 키를 처음 쓴 실행이 됐습니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: import PR 은 revert 하지 않는다</div>
+  import 를 되돌리고 싶어 PR 을 revert 하면, 코드에서 resource 가 사라지니 plan 에 destroy 가 뜹니다. 그대로 apply 하면 실물 모니터가 지워져요. 되돌릴 때는 <code style="font-family:Menlo,monospace;font-size:14px;">removed { lifecycle { destroy = false } }</code> 블록으로 state 에서만 빼기로 ADR 에 적었습니다. 재생성도 같은 이유로 막았어요. 모니터가 다시 만들어지면 ID 가 바뀌고, 상태 이력과 그 ID 를 참조하던 복합 모니터가 한꺼번에 끊깁니다.
+</div>
+
+<h2>4. 55개, 그리고 11개: import 블록을 넣고 다음 PR 에서 내린다</h2>
+
+<p>파일럿에서 방식이 검증되자 같은 날 배치 1 로 55개를 옮겼어요. 메인 API 의 인증 모니터 35개와 API 모니터 10개, 에이전트 API 9개, 배치 서버 1개였습니다. 이번에는 서비스 계정의 읽기 키를 로컬에 두고 Terraform 이 원본에서 코드를 생성하게 했어요(<code style="font-family:Menlo,monospace;font-size:14px;">terraform plan -generate-config-out</code>, import 대상의 resource 코드를 써 주는 옵션). 그 키로 쓰기를 시도하면 403 으로 막히는 것도 확인했습니다. 생성된 코드에도 차이가 남았어요. 알림 메시지를 여러 줄 문법(heredoc)으로 적으니 줄 끝 공백이 사라져 diff 가 났고, 메시지를 API 원본 문자열로 바꿔 해결했습니다. 리소스 이름은 모니터 ID 로 지었어요. 누가 콘솔에서 모니터 이름을 바꿔도 코드 속 주소는 그대로이도록요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 복합 모니터 (composite monitor)</div>
+  다른 모니터 여러 개의 상태를 조합해 판정하는 모니터예요. "A 도 Alert 이고 B 도 Alert 이면" 같은 조건을 하위 모니터의 ID 로 적습니다. 하위 모니터가 지워지거나 ID 가 바뀌면 판정할 수 없게 돼요.
+</div>
+<p>배치 1 에서 하나를 뺐습니다. 하위 모니터 둘이 이미 지워진 복합 모니터였어요. Datadog 이 이 정의를 검증 단계에서 거부했고(<code style="font-family:Menlo,monospace;font-size:14px;">Some monitor IDs are invalid</code>, 참조한 모니터 ID 가 없다는 뜻), 8월 19일부터 음소거돼 있었습니다. 코드로 옮길 수 없는 모니터라 삭제 후보로 따로 올렸고, 9월 30일에 콘솔에서 지웠어요.</p>
+<p>다음 날인 9월 29일, 배치 2 로 코드 밖에 남은 11개를 옮겼습니다. 여러 서비스가 함께 쓰는 인프라 모니터 6개(RDS CPU, 호스트 메모리·디스크, EC2 상태, Redis 연결 에러, 하트비트), 메인 API 스택의 웹(CloudFront) 모니터 1개, 제휴 API 1개, 에이전트 API 3개였어요. 그런데 에이전트 API 의 3개는 9월 27일의 68개에 없던 모니터였습니다. 9월 28일에 콘솔에서 새로 만든 것들이었어요. ADR 을 쓴 바로 그날에도 콘솔에서 모니터가 생기고 있었던 거예요. 배치 2 가 끝난 뒤 콘솔에만 있는 모니터는 앞에서 말한 깨진 복합 모니터 하나였습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="dd1b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="32" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">옮기는 PR 과 고치는 PR 을 나눈다</text>
+<path d="M22 62 C 70 60, 118 63, 164 61 C 165 100, 163 140, 165 178 C 118 180, 70 177, 23 179 C 21 140, 24 100, 22 62 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="93" y="92" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle">① 편입 PR</text>
+<text x="93" y="118" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">import 블록</text>
+<text x="93" y="136" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">+ resource</text>
+<text x="93" y="162" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">plan: 0 change</text>
+<path d="M170 120 C 180 118, 188 121, 196 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dd1b)"/>
+<path d="M202 61 C 250 63, 298 60, 344 62 C 345 100, 343 140, 344 179 C 298 177, 250 180, 203 178 C 201 140, 204 100, 202 61 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="273" y="92" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">② apply</text>
+<text x="273" y="118" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">N imported</text>
+<text x="273" y="136" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">0 changed</text>
+<text x="273" y="162" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">실물 수정 시각 확인</text>
+<path d="M350 120 C 360 118, 368 121, 376 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dd1b)"/>
+<path d="M382 62 C 430 60, 478 63, 524 61 C 525 100, 523 140, 525 178 C 478 180, 430 177, 383 179 C 381 140, 384 100, 382 62 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="453" y="92" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">③ 다음 PR</text>
+<text x="453" y="118" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">import 블록</text>
+<text x="453" y="136" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">삭제</text>
+<text x="453" y="162" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">apply 결과를 본문에</text>
+<path d="M530 120 C 540 118, 548 121, 556 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dd1b)"/>
+<path d="M562 61 C 600 63, 640 60, 678 62 C 679 100, 677 140, 678 179 C 640 177, 600 180, 563 178 C 561 140, 564 100, 562 61 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="620" y="92" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18" text-anchor="middle">④ 수정 PR</text>
+<text x="620" y="118" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">알림 대상</text>
+<text x="620" y="136" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">태그 · 임계값</text>
+<text x="620" y="162" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">한 번에 하나씩</text>
+<text x="93" y="208" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">#683 · #685 · #760</text>
+<text x="273" y="208" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">4 · 55 · 11</text>
+<text x="453" y="208" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">#684 · #686 · #761</text>
+<text x="620" y="208" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">#736 · #761 · #763</text>
+<text x="350" y="262" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 가져오는 PR 에 수정이 섞이면 plan 의 진짜 변경을 가려낼 수 없다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 편입, apply, import 블록 정리, 수정을 나눈다. 정리와 수정을 한 PR 에서 한 경우도 있었다(#761, #686)</div>
+
+<p>세 배치 모두 같은 순서로 돌았어요. 편입 PR 에는 import 블록과 resource 만 넣습니다. apply 가 끝나면 다음 PR 에서 import 블록을 내리고, 그 PR 본문에 apply 결과를 적어요. 배치 1 의 정리 PR(#686)에는 "Datadog 쪽에서 오늘 수정된 모니터 0개"를 확인한 기록이 남아 있습니다. 알림 대상이나 태그 같은 수정은 그 뒤에 따로 해요. <span class="obsv-mark">가져오는 PR 과 고치는 PR 을 나눠야 plan 에 뜬 변경이 전부 의도한 것인지 확인할 수 있습니다.</span></p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: import 블록은 apply 뒤 다음 PR 에서 지운다</div>
+  import 블록은 한 번 가져오고 나면 할 일이 없어요. 남겨 두면 이미 state 에 있는 자원을 또 가리키는 코드가 쌓이고, 어느 것이 편입 중인지 코드만 보고 알 수 없게 됩니다. 배치 2 부터는 import 블록을 <code style="font-family:Menlo,monospace;font-size:14px;">imports.tf</code> 파일 하나에 모으고, 첫 줄에 "apply 가 끝나면 이 파일을 지운다"고 적었어요. 정리 PR 은 그 파일을 지우기만 하면 됩니다.
+</div>
+
+<h2>5. 옮기는 일이 곧 감사였다</h2>
+
+<p>편입의 머지 조건은 0 change 였어요. 0 change 를 만들려면 모니터마다 쿼리, 메시지, 알림 대상을 필드 하나하나 원본과 맞춰야 합니다. 그러다 보니 그동안 아무도 열어 보지 않은 모니터를 한 줄씩 읽게 됐어요. 그리고 고장 난 모니터가 나왔습니다.</p>
+<div class="obsv-code">알림 대상 없음    CPU 모니터 둘. 조건을 넘어도 아무에게도 가지 않았다
+죽은 조건         사라진 container_id 를 제외하는 필터가 남아 있었다
+잘못된 분모       소셜 로그인 A 의 에러율을 로그인 B 의 요청 수로 나눴다
+템플릿 문구       RDS CPU 의 알림 대상이 "@slack-당신의-온콜-채널-이름"
+발동할 수 없음     서비스 이름이 바뀌어 6월 이후 로그가 0건인 로그 모니터 넷</div>
+<p>&rarr; #733, #736, #761 에서 찾아 고치거나 지운 것들이에요. 잘못된 분모 때문에 에러율은 실제의 약 1/19 로 눌려 보였습니다.</p>
+<p>9월 29일에 정리를 두 번에 나눠 했어요. #733 에서 중복과 고장 모니터 26개를 지웠습니다. 새로 만든 모니터가 이미 같은 것을 보고 있는 중복이 20개, 서비스 이름 변경으로 조건이 발동할 수 없게 된 로그 모니터가 4개, 경보로 쓸 수 없는 JVM 힙 모니터가 2개였어요. 9월 29일 정리 시점에 음소거돼 있던 20개 중 19개가 이때 함께 삭제됐습니다. 이어서 #736 에서 알림 대상, 죽은 조건, 분모가 잘못된 모니터 넷을 고쳤어요. 알림 대상을 새로 붙인 CPU 모니터는 7일 최대치가 임계값과 멀어서, 붙이자마자 알림이 나가지 않는다는 것도 확인했습니다.</p>
+<p>ADR 에는 "사전 정리에서 삭제로 확정된 것만 빼고 편입한다"고 적었지만, 실제로는 순서가 반대였어요. 먼저 코드로 옮기고, 지울 것은 코드에서 지웠습니다. 결과적으로 이 순서가 나았어요. 삭제도 PR 과 plan 을 거치고, 지운 모니터의 정의가 git 에 남습니다. 되돌릴 수 없는 건 모니터의 상태 이력 하나였어요. <span class="obsv-mark">코드로 옮기지 않았다면 이 모니터들은 알림이 필요한 순간까지 고장 난 줄 몰랐을 거예요.</span></p>
+
+<h2>6. 코드로 고치자 알림 채널에 공지가 갔다</h2>
+
+<p>정리가 끝난 9월 29일 오후, 고친 모니터 하나에서 예상하지 못한 메시지가 나갔어요. EC2 호스트 상태 모니터에 알림 대상을 붙이는 수정(#761)을 apply 하자, <code style="font-family:Menlo,monospace;font-size:14px;">#{인프라 채널}</code> 에 "Monitor Modified" 공지가 올라왔습니다.</p>
+<p>원인은 <code style="font-family:Menlo,monospace;font-size:14px;">notify_audit = true</code> 였어요. 이 옵션이 켜진 모니터는 정의가 바뀔 때마다 알림 대상에게 수정 공지를 보냅니다. 콘솔에서 가끔 고칠 때는 쓸모가 있었겠지만, 코드로 관리하면 수정이 잦아서 그대로 노이즈가 돼요. 같은 옵션이 켜진 인증 P1 모니터 셋은 직전의 team 태그 정규화(#763)에서 팀 채널로 공지가 나갔을 것으로 봤습니다.</p>
+<div class="obsv-code">-  notify_audit             = true
++  notify_audit             = false</div>
+<p>&rarr; #769 에서 모니터 넷의 수정 공지를 껐어요. 이 수정 자체의 공지가 마지막 공지였고, 수정 이력은 Datadog 의 Audit Trail 과 git 이 남깁니다.</p>
+<p>편입 전에는 옵션 하나가 문제가 되지 않았어요. 모니터를 고치는 사람이 드물었기 때문입니다. <span class="obsv-mark">코드로 옮기면 모니터를 고치는 횟수가 늘고, 수정 한 번에 딸린 동작도 그만큼 자주 일어납니다.</span> 편입 PR 이 0 change 여도, 그 뒤의 첫 수정 PR 에서 모니터의 부수 동작을 다시 봐야 했어요.</p>
+<p>9월 27일의 68개 중 67개는 이렇게 코드로 들어왔고, 깨진 복합 모니터 1개는 지웠습니다. 9월 28일에 새로 만든 3개도 함께 편입했어요. 태그 규약, 서비스마다 붙이는 필수 모니터 모듈, "데이터 없음"을 장애로 볼지, APM 을 떼는 순서, 그리고 사라진 로그 이야기는 2~6편에서 이어 갈게요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>plan 은 state 안만 본다. 콘솔에서 만든 모니터 68개가 매일 도는 drift 잡에 한 번도 잡히지 않은 이유다.</b><br><br>
+  그래서 전부 코드로 옮기되 콘솔은 잠그지 않았다. 고친 것은 drift 로 찾아 흡수하고, 흡수를 플랫폼팀만 하게 되면 잠금을 다시 본다. 파일럿의 첫 plan 은 provider 기본값 탓에 4 change 였고, 필드를 맞춰 0 change 로 옮기는 동안 알림 대상 없음, 죽은 조건, 잘못된 분모가 드러났다. 코드로 옮기는 일이 곧 모니터 감사였다.
+</div>
+
+</div>

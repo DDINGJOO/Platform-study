@@ -1,0 +1,231 @@
+<!-- ============================================================
+  Datadog 설정을 코드로 6편: 로그가 사라진 건 샘플링이 아니었다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: multi_line, JSON 로그, 로그 파이프라인, 로그 아카이브, 로그 기반 지표 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Datadog 설정을 코드로 · 6편</div>
+  1편. 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다<br>
+  2편. service 는 앱이 정하고 team 은 호출 단위다<br>
+  3편. 필수 모니터가 헬스체크를 세고 있었다<br>
+  4편. 데이터 없음은 장애인가<br>
+  5편. APM 을 떼는 순서<br>
+  <b>6편. 로그가 사라진 건 샘플링이 아니었다</b> &larr; 지금 이 글
+</div>
+
+<p>배치 서버 호스트에 들어가 로그 파일을 열면 분명히 있는 줄이, Datadog 로그 화면에서는 보이지 않았어요. 전부 빠지는 것도 아니었습니다. 어떤 줄은 들어오고 어떤 줄은 들어오지 않았어요. 일부만 들어오는 로그를 보면 먼저 떠오르는 말이 있습니다. "샘플링이 걸려 있나 보다."</p>
+<p>9월 29일, 호스트의 원본 로그와 Datadog 에 들어온 로그를 줄 단위로 맞춰 보고 나서야 그 짐작이 틀렸다는 걸 알았어요. 원인은 로그 수집 설정 한 줄이었고, 같은 주에 로그 쪽에서 비슷한 모양의 문제를 네 개 더 만났습니다. 에러가 전부 info 로 분류되고 있었고, 새 모니터에 흔히 쓰는 태그와 status 조건에 맞는 로그가 한 줄도 없었고, 백업 필터가 서비스 이름 하나에 묶여 있었고, 옛 서비스 이름을 보던 지표와 모니터는 몇 달째 0 을 세고 있었어요. 시리즈 마지막 편인 이 글의 질문은 이것입니다. <b>"로그가 보이지 않을 때, 없는 것인지 못 보는 것인지 어떻게 가리는가."</b></p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 일부 줄만 빠지는 로그는 정말 샘플링 때문일까?<br>
+&middot; ERROR 라고 찍힌 줄이 왜 Datadog 에서는 info 였을까?<br>
+&middot; 모니터 조건이 실제 로그를 잡는지 배포 전에 어떻게 확인할까?<br>
+&middot; 태그를 정리하기 전에 무엇부터 코드로 옮겨야 할까?<br>
+&middot; 경고 없이 0 을 세던 지표와 모니터는 어떻게 찾고 지울까?</p>
+
+<h2>1. 빠진 줄에는 규칙이 있었다</h2>
+
+<p>처음 의심한 것은 샘플링이었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 샘플링 (sampling)</div>
+  데이터가 너무 많을 때 일부만 골라 보내거나 저장하는 방식이에요. 트레이스에서는 흔히 쓰지만, 샘플링이 원인이라면 빠지는 줄은 특정 조건 없이 흩어져 있어야 합니다.
+</div>
+<p>그래서 추측을 더 세우는 대신 비교를 했어요. 호스트에 남은 원본 로그 파일과 같은 시간대에 Datadog 에 들어온 로그를 한 줄씩 짝지어 본 거예요. 결과는 샘플링과 맞지 않았습니다. <span class="obsv-mark">빠진 줄은 흩어져 있지 않고, 바로 앞 줄과 1초 안에 연달아 찍힌 줄이었어요.</span> 앞 줄과 1초 넘게 떨어져 찍힌 줄은 따로 들어왔고, 1초 안에 이어진 줄만 보이지 않았습니다.</p>
+<p>줄이 버려진 것도 아니었어요. 연달아 찍힌 줄들이 Datadog 에서 로그 한 건으로 합쳐져 있었습니다. 원인은 배치 서버 컨테이너에 붙어 있던 multi_line 규칙이었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: multi_line (로그 수집 규칙)</div>
+  Datadog 에이전트가 여러 줄을 한 로그로 묶게 하는 처리 규칙이에요. "새 로그는 이런 모양으로 시작한다"는 패턴을 주면, 그 패턴에 맞지 않는 줄은 앞 로그의 뒷부분으로 붙입니다. 한 에러가 수십 줄로 찍히는 자바 스택 트레이스 같은 평문 로그를 위해 쓰는 설정이에요. 이 규칙은 컨테이너 라벨로 붙어 있었습니다.
+</div>
+<p>문제는 이 서비스의 로그가 평문이 아니라 한 줄에 JSON 하나씩 찍는 형식이었다는 점이에요. 새 로그의 시작을 알아보는 패턴이 JSON 줄의 첫머리와 맞지 않았습니다. 그러면 에이전트 기준으로는 어떤 줄도 "새 로그의 시작"이 아니에요. 에이전트는 줄을 계속 이어 붙이다가, 일정 시간(기본 1초) 동안 다음 줄이 오지 않으면 모아 둔 것을 한 건으로 보냅니다. 그래서 1초 안에 이어진 줄은 전부 로그 한 건이 됐어요.</p>
+
+<div class="obsv-code"># 호스트의 로그 파일 (형태를 보이려고 만든 예시)
+{"time":"09:12:03.101","level":"INFO","msg":"요청 처리 시작"}
+{"time":"09:12:03.240","level":"ERROR","msg":"외부 호출 실패"}
+{"time":"09:12:03.388","level":"INFO","msg":"재시도 예약"}
+
+# Datadog 에 들어온 것: 로그 1건
+status: info   message: 요청 처리 시작   (뒤의 두 줄은 이 한 건의 뒷부분으로 붙음)</div>
+<p>&rarr; 합쳐진 로그를 원본과 대조해 보니 맨 앞 JSON 의 값만 속성으로 잡혀 있었어요. 레벨도 첫 줄 것만 남아서, 가운데의 ERROR 는 에러로 세어지지 않았습니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr61" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <text x="150" y="36" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">호스트 로그 파일 (3줄)</text>
+    <path d="M30 56 C 110 53, 200 58, 272 55 C 275 80, 273 96, 274 110 C 200 113, 110 109, 32 111 C 29 94, 31 76, 30 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="44" y="80" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">.101 INFO 요청 처리 시작</text>
+    <text x="44" y="100" font-family="Menlo, monospace" font-size="11" fill="#8a8272">첫 줄: 새 로그?</text>
+    <path d="M30 128 C 110 125, 200 130, 272 127 C 275 150, 273 166, 274 182 C 200 185, 110 181, 32 183 C 29 166, 31 148, 30 128 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="44" y="152" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">.240 ERROR 외부 호출 실패</text>
+    <text x="44" y="172" font-family="Menlo, monospace" font-size="11" fill="#8a8272">139ms 뒤, 패턴 불일치</text>
+    <path d="M30 200 C 110 197, 200 202, 272 199 C 275 222, 273 238, 274 254 C 200 257, 110 253, 32 255 C 29 238, 31 220, 30 200 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="44" y="224" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">.388 INFO 재시도 예약</text>
+    <text x="44" y="244" font-family="Menlo, monospace" font-size="11" fill="#8a8272">148ms 뒤, 패턴 불일치</text>
+    <path d="M285 155 C 330 150, 370 152, 410 156" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arr61)"/>
+    <text x="348" y="138" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">1초 안에 이어짐</text>
+    <text x="555" y="36" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">Datadog 로그 (1건)</text>
+    <path d="M422 70 C 500 67, 600 72, 676 68 C 679 130, 677 190, 678 246 C 600 249, 500 245, 424 247 C 421 190, 423 130, 422 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6" stroke-linejoin="round"/>
+    <text x="438" y="100" font-family="Menlo, monospace" font-size="13" fill="#2e6b41">status: info</text>
+    <text x="438" y="124" font-family="Menlo, monospace" font-size="13" fill="#2e6b41">msg: 요청 처리 시작</text>
+    <path d="M436 142 C 500 140, 600 143, 662 141" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <text x="438" y="170" font-family="Menlo, monospace" font-size="12" fill="#b3502f">+ ERROR 외부 호출 실패</text>
+    <text x="438" y="194" font-family="Menlo, monospace" font-size="12" fill="#b3502f">+ INFO 재시도 예약</text>
+    <text x="438" y="228" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">속성은 첫 JSON 것만</text>
+    <text x="350" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 줄은 들어왔지만 에러로 세어지지 않는다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 시작 패턴에 맞는 줄이 없으면, 1초 안에 이어진 줄은 한 건이 된다</div>
+
+<p>조치는 9월 30일에 했어요. JSON 로그는 한 줄이 이미 완결된 로그 하나라 여러 줄을 묶을 필요가 없습니다. 그래서 multi_line 라벨을 지우고, 앱 컨테이너와 배치 컨테이너를 다시 만들었어요. 컨테이너 라벨은 컨테이너를 만들 때 정해지는 값이라, 설정 파일만 고치고 재시작하면 옛 라벨이 그대로 남습니다.</p>
+<p>수정에 앞서 숫자를 다시 셌어요. 이 서비스의 <code style="font-family:Menlo,monospace;font-size:14px;">status:error</code> 로그는 3일에 27건이었는데, 합쳐져 있던 줄을 풀어 세면 같은 3일 기준 약 142건이 될 것으로 봤어요. 에러가 늘어나는 게 아니라 원래 있던 에러가 보이게 되는 거예요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 잘 보이게 되면 임계가 틀려진다</div>
+  이 서비스에는 5편에서 APM 을 대신하려고 세운 "에러 로그 10분 4건 이상" 모니터가 있었어요. 기준은 에러가 합쳐져 있던 시절의 평소값(9월 28일에 센 값, 3일에 10건)으로 잡은 것이었습니다. 합쳐진 줄을 풀어 센 예상 분포를 보니 10분 최댓값이 8, 5, 3 순이었고, 4건 이상 기준이면 3일에 두 번 넘어요. 그래서 수집 수정과 같은 날 기준을 "10분 6건 이상"으로 올렸습니다(#803). 관측을 고치면 그 관측으로 정한 기준도 같이 다시 봐야 해요.
+</div>
+
+<h2>2. 모니터 조건은 쌓인 로그에 먼저 돌렸다</h2>
+
+<p>9월 30일 낮에는 제휴 API 에 로그 모니터를 새로 만들고 있었어요. 이 서비스는 APM 이 없고, CloudWatch 알람은 호스트와 로드밸런서 상태만 봐서, 앱이 외부 연동에 실패해도 그걸 세는 감시가 없었습니다. 그래서 조건을 정하기 전에 이 서비스의 로그가 어떤 태그와 status 로 들어오는지부터 이미 쌓인 로그로 확인했어요(#799).</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: status (Datadog 로그의 레벨)</div>
+  Datadog 이 로그마다 매기는 심각도 값이에요(error, warn, info 등). 로그 화면의 색과 <code style="font-family:Menlo,monospace;font-size:14px;">status:error</code> 같은 검색이 이 값을 씁니다. 로그 원문에 ERROR 라고 적혀 있어도, 수집하면서 그 글자를 읽어 status 로 옮기지 않으면 기본값 info 가 붙어요.
+</div>
+<p>확인한 것은 두 가지였어요. 첫째, 이 서비스의 로그에는 <code style="font-family:Menlo,monospace;font-size:14px;">env</code> 태그가 아예 없었습니다. 둘째, 원문에 ERROR 라고 찍힌 줄도 status 는 info 였어요. 7일 동안 들어온 로그가 한 줄도 빠짐없이 info 였습니다. <span class="obsv-mark">운영 환경(<code style="font-family:Menlo,monospace;font-size:14px;">env:prod</code>)과 에러(<code style="font-family:Menlo,monospace;font-size:14px;">status:error</code>)로 거르는 흔한 조건을 이 서비스에 그대로 쓰면, 장애가 나도 0건이 됩니다.</span></p>
+<p>그래서 조건을 실측에 맞춰 정했어요. 없는 <code style="font-family:Menlo,monospace;font-size:14px;">env</code> 와 믿을 수 없는 <code style="font-family:Menlo,monospace;font-size:14px;">status</code> 는 쓰지 않고, 실패 문구로 셉니다. 실패 1건에 ERROR 줄이 약 4줄 찍히는 것도 확인해서, 요청마다 한 번만 찍히는 문구를 골랐어요. 줄 수로 세면 실패 1건이 4건으로 부풀어 임계가 의미를 잃습니다.</p>
+
+<div class="obsv-code">logs("service:{제휴 API} \"{요청당 한 번 찍히는 실패 문구}\"").last("10m") &gt;= 3</div>
+<p>&rarr; 최근 10분 동안 이 서비스의 로그 중 그 실패 문구가 들어간 것이 3건 이상이면 알림을 보낸다는 뜻이에요. 같은 조건을 9월 28일부터 30일까지의 로그에 돌려 보니 27건이 잡혔습니다.</p>
+
+<p>이런 쿼리는 문법만 맞으면 Datadog 의 검증을 통과해요. 검증은 쿼리가 올바른 모양인지를 볼 뿐이고, 그 조건에 맞는 로그가 실제로 있는지는 보지 않습니다. 그래서 조건은 배포하기 전에 쌓인 로그에 먼저 돌려 보는 게 안전해요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 모니터 쿼리는 로그 화면에서 먼저 돌린다</div>
+  &bull; 모니터에 넣을 조건을 로그 검색창에 그대로 넣고, 지난 며칠 동안 몇 건이 잡히는지 먼저 봅니다<br>
+  &bull; 0 이면 조건을 하나씩 빼 보며 어느 조건이 0 을 만드는지 찾아요. 태그 누락과 status 가 가장 흔했습니다<br>
+  &bull; 반대로 너무 많이 잡히면 한 사건이 몇 줄로 찍히는지 세어 보고, 한 번만 찍히는 문구를 고릅니다
+</div>
+
+<h2>3. ERROR 라고 찍혀도 info 였던 이유</h2>
+
+<p>2절의 "ERROR 줄이 전부 info"는 제휴 API 만의 일이 아니었어요. 오후에 다른 서비스를 세어 보니 메인 API 는 3일 동안 ERROR 줄이 수만 개였는데 <code style="font-family:Menlo,monospace;font-size:14px;">status:error</code> 는 23건이었습니다. 약 0.05% 만 에러로 분류된 거예요. status 로 에러를 거르는 로그 모니터는 에러를 거의 보지 못하고 있었던 거예요.</p>
+<p>원인은 로그의 줄 모양이었어요. Datadog 이 자바 로그에 기본으로 적용하는 해석 규칙은 "날짜, 스레드, 레벨, 로거, 메시지" 순서를 기대합니다. 그런데 앱들의 로그는 레벨이 맨 앞에 오고 날짜가 없는 모양이었어요. 문서 팩스 서비스와 메시지 발송 서비스는 Spring Boot 기본 모양이라 역시 맞지 않았습니다.</p>
+
+<div class="obsv-code">기대하는 모양   2026-09-30 13:58:15.783 [exec-1] ERROR …  - 메시지   (날짜, 스레드, 레벨)
+앱 logback     ERROR 13:58:15.783 [exec-1] …  - 메시지              (레벨, 시각)
+Spring Boot    2026-09-30T11:04:40.003+09:00 ERROR 1 --- [app] …</div>
+<p>&rarr; 첫 줄의 모양을 기대하는 규칙에 아래 두 모양이 들어오면 해석에 실패하고, 레벨을 뽑지 못한 로그에는 info 가 붙어요.</p>
+
+<p>고치는 길은 둘이었어요. 앱의 로그 모양을 바꾸거나, 수집 쪽에서 지금 모양을 읽도록 하거나요. 앱 저장소는 각 팀이 소유하고 있어서 앱을 바꾸려면 여러 팀의 배포가 필요합니다. 그래서 앱은 그대로 두고, 수집 쪽에 로그 파이프라인을 하나 만들어 코드로 두었어요(#803).</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 로그 파이프라인 (log pipeline)</div>
+  Datadog 이 로그를 받아 저장하기 전에 거치는 처리 단계의 묶음이에요. 원문에서 값을 뽑아 속성으로 만들거나(파서), 뽑은 값을 status 같은 표준 속성으로 옮기는(리매퍼) 처리를 차례로 둡니다. 앱을 고치지 않고도 로그를 읽는 방식을 바꿀 수 있는 곳이에요.
+</div>
+
+<div class="obsv-code">app_logback %%{regex("(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)"):level}\s+%%{regex("[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}")}\s+%%{data}
+spring_boot %%{notSpace}\s+%%{regex("(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)"):level}\s+%%{integer}\s+---\s+%%{data}</div>
+<p>&rarr; 줄 머리에서 레벨 단어를 뽑아 <code style="font-family:Menlo,monospace;font-size:14px;">level</code> 속성에 담는 규칙 두 개예요(<code style="font-family:Menlo,monospace;font-size:14px;">%%</code> 는 Terraform 문자열 안에서 <code style="font-family:Menlo,monospace;font-size:14px;">%</code> 를 쓰려고 겹친 것). 뒤이어 둔 리매퍼가 이 <code style="font-family:Menlo,monospace;font-size:14px;">level</code> 을 status 로 옮깁니다.</p>
+
+<p>규칙이 줄 머리만 보고 나머지를 <code style="font-family:Menlo,monospace;font-size:14px;">%{data}</code> 로 받는 데는 이유가 있어요. Datadog 의 해석 규칙은 로그 한 줄 전체가 규칙에 맞아야 적용되기 때문에, 메시지 부분까지 모양을 정하면 조금만 달라도 빠집니다. 적용 전에 서비스마다 하루치 로그에서 500건을 뽑아 맞춰 보니, 규칙에 맞는 비율이 76.8%에서 100% 사이였어요. 맞지 않은 줄은 스택 트레이스의 이어지는 줄과 기동 배너였습니다. 이런 줄에는 원래 레벨이 없으니 info 로 남는 게 맞아요.</p>
+<p>이 파이프라인이 켜지면 <code style="font-family:Menlo,monospace;font-size:14px;">status:error</code> 로 거르는 로그 모니터 넷이 영향을 받는다는 것도 코드 주석에 적어 두었습니다. <span class="obsv-mark">1절과 3절은 원인이 다르지만 증상이 같았어요. 로그는 들어오는데, 에러가 에러로 세어지지 않았습니다.</span></p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 검색 결과 0건은 "로그가 없다"는 뜻이 아니다</div>
+  이 조직의 로그 인덱스(검색할 수 있게 로그를 담아 두는 저장 공간)는 3일만 보관돼요. 인덱스 제외 필터(수집은 하되 인덱스에는 넣지 않을 로그를 고르는 조건)로 검색에서 빠지는 로그도 있습니다. 그래서 검색이 0건이라고 수집이 끊겼다고 판정하면 틀릴 수 있어요. 수집이 되는지는 검색이 아니라 로그 수집량 지표로 봐야 합니다.
+</div>
+
+<h2>4. 태그를 바꾸기 전에 백업부터</h2>
+
+<p>로그 이야기의 시작은 사실 1절의 대조보다 하루 앞선 9월 28일이었어요. 2편에서 태그 규약을 정리하면서, 서비스 이름을 바꾸면 그 이름을 보던 것들이 오류 없이 멈춘다는 걸 확인했습니다. 그 "보던 것들" 중에 가장 되돌리기 어려운 것이 로그 아카이브였어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 로그 아카이브 (log archive)</div>
+  Datadog 에 들어온 로그를 조건에 맞춰 S3 같은 외부 저장소에 계속 복사해 두는 설정이에요. 인덱스 보관 기간이 지나 검색에서 사라진 로그도 여기서 다시 불러올 수 있습니다.
+</div>
+<p>인덱스 보관이 3일이라, 그보다 오래된 로그는 아카이브에만 남아요. 사실상 유일한 백업입니다. 그런데 아카이브 다섯 개의 필터가 전부 <code style="font-family:Menlo,monospace;font-size:14px;">service:&lt;이름&gt;</code> 이었어요. 태그를 정리하다 서비스 이름이 하나라도 바뀌면, 그 서비스의 로그는 오류 하나 없이 백업 밖으로 빠집니다. 그래서 순서를 정했어요. <span class="obsv-mark">태그를 손대기 전에 아카이브부터 코드로 옮긴다.</span></p>
+<p>첫 PR(#698)은 콘솔에 있던 아카이브 다섯 개를 설정 그대로 코드로 가져왔어요. plan 결과는 가져오기 5건, 변경 0건이었습니다. 이제 누가 콘솔에서 필터를 바꿔도 다음 plan 에서 코드와의 차이로 드러나요. 두 번째 PR(#701)에서는 백업되지 않던 문서 팩스 서비스와 메시지 발송 서비스의 아카이브를 새로 만들었습니다. 필터는 기대하는 이름이 아니라 실제로 로그가 들어오는 이름으로 걸었어요. 그 이름의 로그가 어디서 나오는지 하루치 로그로 먼저 확인한 뒤였습니다.</p>
+<p>여기서 제 판단 하나가 틀렸어요. 오전에 문서 팩스 서비스를 "수집량 상위권"으로 보고 백업이 급하다고 적었습니다. 아카이브별로 걸리는 로그를 세어 보니 그 서비스 이름으로 잡히던 수집량은 개발 서버 로그였어요. 그래서 세 번째 PR(#703)에서 필터를 운영 로그(<code style="font-family:Menlo,monospace;font-size:14px;">env:prod</code>)로 좁혔습니다. 백업 필터를 만들 때도 2절과 같은 방법이 통했어요. 조건을 걸고 실제로 무엇이 걸리는지 세어 보는 것입니다.</p>
+
+<h2>5. 옛 이름을 보던 지표와 모니터</h2>
+
+<p>9월 30일 오후, 아직 콘솔에만 있던 로그 설정을 훑다가 로그 기반 지표 네 개를 찾았어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 로그 기반 지표 (log-based metric)</div>
+  조건에 맞는 로그의 건수 등을 세어 시계열 지표로 만들어 두는 설정이에요. 로그는 검색 보존 기간이 지나 사라져도, 지표는 더 오래 남아 대시보드와 모니터에 쓸 수 있습니다.
+</div>
+<p>네 개 모두 메인 API 의 옛 서비스 이름으로 로그를 거르고 있었어요. 로그의 서비스 이름은 6월 말에 바뀌었고, 그날부터 이 지표들은 0 을 셌습니다. 모니터와 대시보드에서 이 지표를 참조하는 곳이 있는지 전부 찾아봤는데 없었어요. 그래서 지웠습니다.</p>
+<p>지우는 방법은 두 단계였어요. #806 에서 네 지표를 코드로 가져오고, 바로 다음 #807 에서 코드에서 지웠습니다. 콘솔에서 누르면 한 번에 끝날 일이지만, 그러면 무엇을 왜 지웠는지가 어디에도 남지 않아요.</p>
+
+<div class="obsv-code"># 지우기 전 필터 (네 개 모두 같은 모양)
+filter { query = "service:{옛 이름} \"{연동} 에러 발생\"" }</div>
+<p>&rarr; 서비스 이름이 바뀐 뒤로는 이 조건에 맞는 로그가 들어오지 않아서, 지표는 에러가 나도 0 이었다는 뜻이에요.</p>
+
+<p>이 오후의 마지막 수정(#809)은 조금 더 무거웠어요. 배치 서버에서 매일 새벽 3시에 도는 배치의 실패 알림 모니터였습니다. 이 모니터도 옛 서비스 이름을 보고 있었어요. 배치의 로그 서비스 이름이 7월에 바뀌면서 조건에 맞는 로그가 사라졌고, 옛 조건에 맞는 로그는 0건이었어요. 배치가 실패해도 울리지 않는 상태였다는 뜻이에요. 먼저 최근 로그로 배치가 매일 새벽 정상 완료되고 있음을 확인했고, 그런 다음 조건을 새 이름으로 바꾸면서 실패 문구를 셋(작업 전체 실패, 건 단위 실패, 실패 기록)으로 넓혔어요.</p>
+<p>그리고 조건에서 <code style="font-family:Menlo,monospace;font-size:14px;">status:error</code> 를 뺐습니다. 이 수정은 같은 날 저녁 1절의 multi_line 라벨을 지우기 전이었어요. 그때까지 배치 서버 로그의 status 는 믿을 수 없었기 때문에, 문구로만 거르게 했습니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr62" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <path d="M40 40 C 110 37, 180 42, 240 39 C 243 60, 241 76, 242 92 C 180 95, 110 91, 42 93 C 39 76, 41 58, 40 40 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="141" y="66" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#b3502f">service:{옛 이름}</text>
+    <text x="141" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">로그가 더는 안 온다</text>
+    <path d="M40 200 C 110 197, 180 202, 240 199 C 243 220, 241 236, 242 252 C 180 255, 110 251, 42 253 C 39 236, 41 218, 40 200 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="141" y="226" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#2e6b41">service:{새 이름}</text>
+    <text x="141" y="244" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">로그는 여기로 온다</text>
+    <path d="M430 30 C 520 27, 600 32, 670 29 C 673 48, 671 60, 672 74 C 600 77, 520 73, 432 75 C 429 60, 431 46, 430 30 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="551" y="58" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">📟 모니터: 울리지 않음</text>
+    <path d="M430 110 C 520 107, 600 112, 670 109 C 673 128, 671 140, 672 154 C 600 157, 520 153, 432 155 C 429 140, 431 126, 430 110 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="551" y="138" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">📈 로그 기반 지표: 0</text>
+    <path d="M430 190 C 520 187, 600 192, 670 189 C 673 208, 671 220, 672 234 C 600 237, 520 233, 432 235 C 429 220, 431 206, 430 190 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="551" y="218" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">💾 아카이브: 백업 빠짐</text>
+    <path d="M248 58 C 320 52, 380 50, 424 52" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr62)"/>
+    <path d="M248 70 C 320 80, 380 110, 424 128" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr62)"/>
+    <path d="M248 82 C 320 110, 380 170, 424 206" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr62)"/>
+    <text x="330" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">셋 다 옛 이름을 본다</text>
+    <text x="350" y="285" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 오류는 없고, 0 만 남는다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 이름이 바뀌면 그 이름으로 찾던 쪽은 아무것도 찾지 못한다</div>
+
+<p>2편에서 "이미 쓰이는 service 이름은 바꾸지 않는다"를 규약으로 정한 이유가 이 오후에 다시 드러났어요. 규약 문서에는 이름이 바뀌어 데이터가 갈라진 일을 "세 번 겪었다"고 적었는데, 이 지표 네 개와 새벽 배치의 실패 알림 모니터는 그중 두 번에서 생긴 것이었습니다. 이름이 바뀐 날 알림도 오류도 없었어요. <span class="obsv-mark">0 을 세는 설정은 아무 경고도 내지 않습니다.</span></p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 콘솔에만 있는 것은 가져온 뒤에 지운다</div>
+  콘솔에만 있는 설정을 지울 때도 한 번 코드로 가져오고(import), 다음 PR 에서 코드에서 지웠어요. 그러면 지운 설정의 원래 모양과 지운 이유가 커밋에 남고, 지우는 변경도 plan 과 리뷰를 거칩니다.
+</div>
+
+<h2>6. 여섯 편을 묶으면</h2>
+
+<p>이 시리즈는 콘솔에만 있던 Datadog 설정을 Terraform 으로 옮긴 9월 마지막 주의 기록이에요. 1편에서는 옮기되 콘솔을 잠그지 않기로 한 이유를, 2편에서는 태그를 누가 정하는지를 적었습니다. 3편부터 이번 편까지는 옮기면서 드러난 것들이었어요. 헬스체크를 세던 필수 모니터, 데이터가 끊기면 알림을 내지 않던 다운 감시, APM 을 떼는 순서, 그리고 에러를 에러로 세지 못하던 로그입니다.</p>
+<p>이번 편에서 만난 문제는 모두 같은 방법으로 찾았어요. 설정이 무엇을 보고 있는지 실제 데이터로 세어 본 것입니다. 지금까지 모니터 대부분과 로그 아카이브, 반복 다운타임을 코드로 옮겼고, 알림 경로와 서비스 카탈로그, 대시보드, 로그 파이프라인 전체의 편입은 11월까지의 로드맵에 남아 있어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>일부만 빠지는 로그의 원인은 샘플링이 아니라 multi_line 규칙과 JSON 로그 형식의 불일치였다. 1초 안에 이어진 줄이 한 건으로 합쳐지고, 첫 JSON 의 레벨만 남았다.</b><br><br>
+  에러가 info 로 분류되던 평문 로그, env 태그도 에러 status 도 없던 제휴 API 로그, 서비스 이름에 묶인 백업 필터, 옛 이름을 보던 지표와 모니터도 모양이 같았다. 로그는 들어오는데 세는 쪽이 다른 것을 보고 있었다. 그래서 모니터든 백업이든, 조건을 만들면 먼저 실제 로그에 돌려 무엇이 걸리는지 센다. 0 은 경고를 내지 않지만, 없다는 뜻이 아닐 수 있다.
+</div>
+
+</div>

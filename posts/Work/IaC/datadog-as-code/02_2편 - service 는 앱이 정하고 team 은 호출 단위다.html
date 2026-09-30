@@ -1,0 +1,239 @@
+<!-- ============================================================
+  Datadog 설정을 코드로 2편: service 는 앱이 정하고 team 은 호출 단위다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: unified service tagging, service 태그, team 태그, import 블록, state 분리 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Datadog 설정을 코드로 · 2편</div>
+  1편. 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다<br>
+  <b>2편. service 는 앱이 정하고 team 은 호출 단위다</b> &larr; 지금 이 글<br>
+  3편. 필수 모니터가 헬스체크를 세고 있었다<br>
+  4편. 데이터 없음은 장애인가<br>
+  5편. APM 을 떼는 순서<br>
+  6편. 로그가 사라진 건 샘플링이 아니었다
+</div>
+
+<p>9월 28일, Datadog 모니터를 Terraform 으로 옮기기 시작하면서 로그 쪽을 먼저 조사했어요. 메인 API 의 로그를 보는 모니터 4개가 6월 29일부터 조건에 맞는 로그를 하나도 받지 못하고 있었습니다. 모니터가 고장 난 것은 아니었어요. 조건은 멀쩡했고, 그 조건이 찾는 서비스 이름이 그날부터 들어오지 않았을 뿐이에요. 앱 컨테이너에 로그 라벨이 없어서 이미지 이름이 서비스 이름으로 쓰이고 있었는데, 누군가 라벨을 추가하면서 이름이 바뀐 거예요.</p>
+<p>1편에서 모니터마다 책임 팀을 <code style="font-family:Menlo,monospace;font-size:14px;">team</code> 태그로 적기로 했습니다. 그런데 막상 적으려고 보니 태그 두 개의 성격이 전혀 달랐어요. <code style="font-family:Menlo,monospace;font-size:14px;">service</code> 는 제가 정하는 값이 아니었고, AWS 의 <code style="font-family:Menlo,monospace;font-size:14px;">Team</code> 태그는 값이 셋뿐이라 누구를 호출할지 가를 수 없었습니다. 이 글은 그 두 태그의 규칙을 정하고, 그 규칙이 드러낸 스택 구조 문제까지 고친 기록이에요. 질문은 이것입니다. <b>"태그 값은 누가 정하고, 언제 바꿔도 되는가."</b></p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 서비스 이름을 바꾸면 모니터는 왜 에러 없이 멈추나?<br>
+&middot; AWS 의 Team 태그를 Datadog 에도 그대로 쓰면 안 되는 이유는?<br>
+&middot; team 이 없거나 틀린 모니터 36개에는 무엇을 기준으로 팀을 붙였나?<br>
+&middot; 한 스택에 섞여 있던 AWS 와 Datadog 을 왜 갈랐고, 109개를 어떻게 옮겼나?</p>
+
+<h2>1. 서비스 이름이 바뀌면 모니터가 데이터를 못 찾는다</h2>
+
+<p>Datadog 에서 모니터가 데이터를 찾는 방법부터 볼게요. 모니터 조건에는 보통 <code style="font-family:Menlo,monospace;font-size:14px;">service:&lt;서비스 이름&gt;</code> 같은 문자열이 들어갑니다. 로그 아카이브(로그를 S3 에 백업하는 설정)의 필터도, 서비스 카탈로그도, 대시보드도 같은 문자열로 데이터를 골라요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 태그 (Datadog tag)</div>
+  Datadog 에 들어오는 지표·로그·트레이스와 모니터 같은 설정에 붙는 <code style="font-family:Menlo,monospace;font-size:14px;">키:값</code> 문자열이에요. <code style="font-family:Menlo,monospace;font-size:14px;">service</code>, <code style="font-family:Menlo,monospace;font-size:14px;">env</code>, <code style="font-family:Menlo,monospace;font-size:14px;">version</code>, <code style="font-family:Menlo,monospace;font-size:14px;">team</code> 이 대표적이고, 모니터와 검색은 이 태그로 대상을 고릅니다.
+</div>
+<p>문제는 이 문자열을 누가 정하느냐였어요. 조직 저장소 수십 개를 읽기 전용으로 훑어보니, 앱이 태그를 직접 정하는 저장소가 7개였습니다. 결정 지점은 시작 스크립트의 JVM 옵션(<code style="font-family:Menlo,monospace;font-size:14px;">-Ddd.service</code>), ECS 태스크 정의의 <code style="font-family:Menlo,monospace;font-size:14px;">DD_*</code> 환경변수와 로그 라벨이었어요. 저장소 밖에 있는 곳도 있었어요. EC2 배포 스크립트와 호스트 에이전트 설정이 그랬습니다. 그리고 Terraform 은 태스크 정의를 소유하지 않아요. 제가 Terraform 쪽에서 service 이름을 아무리 정해도, 실제로 들어오는 이름은 앱이 정합니다.</p>
+<p>이름이 바뀐 일은 한 번이 아니었어요. 6월 29일의 메인 API 에 이어, 7월 28일에는 에이전트 API 와 배치 서버의 이름이 같은 방식으로 바뀌었습니다. ADR 에는 "세 번 겪었다"고 적었어요. 옛 이름을 보던 모니터는 그때마다 에러 한 줄 없이 멈췄고, 아카이브 필터도 <code style="font-family:Menlo,monospace;font-size:14px;">service:&lt;이름&gt;</code> 이라 이름이 바뀐 서비스의 로그는 백업에서 빠져 있었습니다. 로그 인덱스 보존 기간이 짧아 아카이브가 사실상 유일한 백업이었는데도요. 그래서 태그를 건드리기 전인 9월 28일, 기존 아카이브 다섯을 먼저 코드로 편입하고(#698) 빠져 있던 두 서비스의 아카이브를 추가했어요(#701).</p>
+<p><span class="obsv-mark">service 이름은 설명용 라벨이 아니라 데이터를 고르는 검색 조건이었습니다.</span> 이름이 바뀌면 그 이름으로 데이터를 고르던 모니터·아카이브·대시보드가 전부 데이터를 못 찾게 돼요. 그래서 규약이 먼저 막아야 할 것은 이름이 제각각인 상태보다 이름이 바뀌는 사건이라고 봤습니다.</p>
+
+<h2>2. 같은 단어를 세 곳이 다르게 쓰고 있었다</h2>
+
+<p>team 태그는 반대 방향의 문제였어요. 1편의 결정(ADR-0054)에서는 team 값을 회사 태깅 정책 문서의 Team 어휘로 쓰려고 했습니다. 문서를 읽어 보니 그 전제가 성립하지 않았어요. 태깅 정책 초안, 저장소가 실제로 AWS 에 붙인 태그(ADR-0013), Datadog 실물이 서로 다른 말을 쓰고 있었습니다.</p>
+
+<div class="obsv-code">                 태깅 정책 초안          저장소 AWS 태그         Datadog 실물
+책임 팀 키       Owner                   Team                    team
+제품/모듈        Service=제품            Application=제품        service=APM 서비스 이름
+                 Domain=모듈             Service=컴포넌트
+팀 값            "팀명" (목록 없음)      platform · product      모니터 태그 8종
+                                         · new-business          Datadog Team 6개</div>
+<p>&rarr; 세 곳이 키 이름부터 다르고, <code style="font-family:Menlo,monospace;font-size:14px;">Service</code> 는 한쪽에서 제품, 다른 쪽에서 컴포넌트를 뜻한다는 표예요. 실제로 리소스에 붙어 있는 것은 가운데 열이었습니다.</p>
+
+<p>가운데 열의 AWS <code style="font-family:Menlo,monospace;font-size:14px;">Team</code> 은 운영 주체 기준이라 개발팀이 전부 <code style="font-family:Menlo,monospace;font-size:14px;">product</code> 였어요. 비용을 나누는 데는 맞는 값이지만, <span class="obsv-mark">새벽에 장애가 나면 누구를 부를지는 이 값으로 가를 수 없습니다.</span> 게다가 Datadog 화면은 <code style="font-family:Menlo,monospace;font-size:14px;">team</code> 태그를 Datadog Team 과 이어 주는데, <code style="font-family:Menlo,monospace;font-size:14px;">product</code> 라는 Team 은 없었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 온콜 (on-call)</div>
+  정해진 기간 동안 장애 알림을 받고 대응하기로 한 당번이에요. 모니터가 울리면 온콜 대상에게 호출이 갑니다. 이 글에서 "호출 단위"는 호출이 한 번에 가는 사람들의 묶음, 곧 Datadog Team 하나를 뜻해요.
+</div>
+<p>검토한 선택지는 셋이었습니다. 태깅 정책 어휘로 통일하는 안은 탈락했어요. 실제로 적용된 AWS 태그와 키부터 달라서, 따르려면 AWS 리소스 태그 전체를 다시 달아야 했고 그건 이 프로젝트가 정할 일이 아니었습니다. AWS <code style="font-family:Menlo,monospace;font-size:14px;">Team</code> 값을 Datadog 에도 쓰는 안도 탈락했어요. 값이 셋뿐이라 모니터 책임과 호출을 가를 수 없었으니까요. 남은 안이 도구마다 자기 어휘를 쓰고, 둘을 잇는 곳은 매핑표 한 곳에 두는 것이었습니다.</p>
+
+<h2>3. 규약: service 는 앱이 정하고, team 은 호출 단위다</h2>
+
+<p>그렇게 정한 것이 ADR-0055 예요. 결정은 네 줄로 줄일 수 있습니다.</p>
+<p>&middot; <b>service</b> 는 앱이 내보내는 APM 서비스 이름이고, Terraform 쪽(모니터·카탈로그·아카이브)은 그 값을 따른다. 이미 쓰이는 이름은 바꾸지 않는다<br>
+&middot; <b>로그의 service 는 APM 의 service 와 같아야 한다</b>. 어긋나면 이름을 새로 짓지 않고 APM 쪽에 맞춘다<br>
+&middot; <b>team</b> 은 Datadog Team 의 핸들이다. 모니터의 책임 팀과 온콜 호출 대상이 같은 이름이 된다<br>
+&middot; <b>AWS 와는 매핑표로 잇는다</b>. Datadog Team 이 AWS <code style="font-family:Menlo,monospace;font-size:14px;">Team</code> 의 어느 값에 해당하는지를 표 한 곳에 둔다</p>
+<p>team 을 앱에 요구하지 않은 이유는 변경 비용이 달라서였어요. service·env·version 은 앱을 배포해야만 바뀝니다. team 은 조직이 바뀔 때마다 바뀌고요. team 을 앱이 들고 있으면 조직 개편이 있을 때마다 7개 저장소를 배포해야 해요. <span class="obsv-mark">바뀌는 주기가 다른 값은 같은 곳에 두지 않는다</span>는 것이 두 태그를 가른 기준입니다. 그래서 서비스의 소유 팀은 서비스 카탈로그에 적고, 텔레메트리에는 team 을 붙이라고 요구하지 않기로 했어요.</p>
+<p>매핑표는 결정으로 정했고, 지금까지 코드에 들어간 것은 그 표의 기준이 될 Datadog Team 핸들 목록까지입니다. ADR 에는 이 결정을 다시 봐야 할 조건도 두 개 적었어요. 회사가 태깅 정책을 확정해 AWS 태그를 다시 달기로 하면 매핑표의 AWS 쪽 키가 바뀌고, Datadog 에서 텔레메트리의 team 을 요구하는 기능을 쓰게 되면 "앱에 요구하지 않는다"를 다시 봐야 해요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 이름을 꼭 바꿔야 한다면 같은 날에</div>
+  규약은 "절대 바꾸지 않는다"가 아니라 "바꾸려면 그 이름을 참조하는 모니터·아카이브·카탈로그를 같은 날 바꾸는 계획을 먼저 세운다"예요. 앞선 세 번은 앱 쪽만 바뀌고 참조하는 쪽이 남았습니다. 그 흔적은 9월 30일에도 나왔어요. 옛 이름을 보던 로그 기반 지표 4개가 데이터 0 인 채로 남아 있어 코드로 가져온 뒤 지웠고(#806, #807), 옛 이름으로 배치 실패를 찾던 모니터도 새 이름으로 고쳤습니다(#809). 자세한 이야기는 6편에서 다룹니다.
+</div>
+
+<h2>4. team 이 없거나 틀린 모니터 36개에 팀을 붙인 규칙</h2>
+
+<p>규약을 정한 다음 날인 9월 29일, 기존 모니터에 규약을 적용했어요(#763). team 태그가 아예 없거나, 있어도 Datadog Team 이 아닌 값(<code style="font-family:Menlo,monospace;font-size:14px;">backend</code>, <code style="font-family:Menlo,monospace;font-size:14px;">dev-team</code>, <code style="font-family:Menlo,monospace;font-size:14px;">auth</code>)이던 모니터가 36개였습니다. 이 36개는 9월 29일, 앞선 정리를 마친 뒤의 모니터 목록에서 센 값이에요. 1편의 38개는 9월 27일 모니터 68개를 기준으로 센 값이라 시점이 다릅니다.</p>
+
+<div class="obsv-code">- tags = []
++ tags = ["team:플랫폼팀"]
+
+- tags = ["env:prod", "service:{메인 API}", ..., "team:auth", "window:day"]
++ tags = ["env:prod", "service:{메인 API}", ..., "window:day", "team:{개발팀 핸들}"]</div>
+<p>&rarr; 태그가 비어 있던 모니터에는 팀을 새로 붙이고, Team 이 아닌 값은 실제 Team 핸들로 바꿨다는 뜻이에요. service 값은 건드리지 않았습니다.</p>
+
+<p>36개를 한 개씩 판단하면 사람마다 답이 달라질 수 있어서, 기계적으로 적용할 규칙을 먼저 정했어요.</p>
+<p>1. 알림 메시지에 <code style="font-family:Menlo,monospace;font-size:14px;">@oncall-&lt;핸들&gt;</code> 이 있으면 그 핸들을 쓴다. 11개가 여기서 정해졌다<br>
+2. 없으면 같은 Slack 채널에서 호출을 거는 다른 모니터의 팀을 따른다. 나머지 25개다. 복합 모니터의 하위 조건은 상위를 따른다<br>
+3. 여러 팀을 부르는 공용 인프라 장애(Redis 등)는 플랫폼팀으로 둔다</p>
+<p>규칙 2가 핵심이었어요. 호출을 거는 모니터가 이미 "이 채널의 알림은 이 팀이 받는다"는 사실을 담고 있었으니까요. <span class="obsv-mark">새로 판단하지 않고, 이미 동작하던 호출 관계를 태그로 옮겨 적었어요.</span> 이것으로 "소유자 불명" 모니터가 목록에서 사라졌습니다. Team 핸들 자체에 중복이 있었는데(하이픈 유무만 다른 두 핸들), 그 정리는 온콜 재편 단계로 미뤘어요. 규약상 Team 이름이 바뀌어도 Terraform 쪽만 고치면 되고 앱 배포는 필요 없습니다.</p>
+
+<h2>5. 태그를 정하다 보니 스택 구조가 걸렸다</h2>
+
+<p>여기까지는 태그 이야기였어요. 그런데 같은 날 모니터를 코드로 옮기면서 다른 문제가 드러났습니다. 스택 8곳의 prod 에 Datadog 리소스 약 110개가 AWS 리소스와 같은 state 에 들어갔어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: state</div>
+  Terraform 이 "코드의 이 리소스가 실제로는 이 ID 다"를 적어 두는 파일이에요. 이 저장소는 스택마다 S3 에 state 파일 하나를 두고, 그 경로(키)를 <code style="font-family:Menlo,monospace;font-size:14px;">versions.tf</code> 에 문자열로 적습니다. 두 스택이 같은 키를 쓰면 state 파일 하나를 함께 쓰게 되고, 한쪽 plan 이 다른 쪽 리소스를 삭제 대상으로 보여 줍니다.
+</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: provider</div>
+  Terraform 이 외부 API 를 호출하는 플러그인이에요. AWS 리소스는 aws provider 가, Datadog 모니터는 datadog provider 가 만듭니다. provider 를 선언한 스택을 plan 하려면 그 provider 의 자격 증명(여기서는 Datadog API 키)이 있어야 해요.
+</div>
+<p>한 스택에 provider 가 둘이면 곤란한 점이 두 가지였어요. 첫째, AWS 만 바꾸는 작업에도 Datadog 키를 넘겨야 합니다. 둘째, 목표였던 셀프서비스(개발팀이 자기 서비스의 Datadog 설정만 직접 고치는 것)를 열 수 없어요. 권한과 plan 범위를 스택 단위로 가르는데, 모니터와 로드밸런서가 한 스택에 있으면 모니터만 열어 줄 방법이 없습니다.</p>
+<p>그래서 ADR-0056 으로 스택을 <code style="font-family:Menlo,monospace;font-size:14px;">stacks/&lt;서비스&gt;/&lt;env&gt;/{aws,dd}</code> 로 나누기로 했어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 계층 (layer)</div>
+  이 저장소에서 한 서비스·환경 아래를 다루는 대상에 따라 나눈 하위 스택이에요. <code style="font-family:Menlo,monospace;font-size:14px;">aws</code> 계층은 AWS 리소스만, <code style="font-family:Menlo,monospace;font-size:14px;">dd</code> 계층은 Datadog 리소스만 가집니다. 계층마다 state 와 provider 가 따로예요.
+</div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="32" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">서비스 하나의 prod 스택을 두 계층으로</text>
+<path d="M30 62 C 110 60, 220 63, 305 61 C 307 110, 304 190, 306 262 C 220 264, 110 261, 31 263 C 28 190, 31 110, 30 62 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="168" y="92" font-family="Menlo, monospace" font-size="13" fill="#b3502f" text-anchor="middle" font-weight="bold">stacks/&lt;서비스&gt;/prod</text>
+<text x="168" y="130" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">AWS 리소스 + Datadog 리소스</text>
+<text x="168" y="162" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">state 하나에 함께</text>
+<text x="168" y="194" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">provider 둘 (aws · datadog)</text>
+<text x="168" y="226" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">Datadog 키가 AWS 작업에도 간다</text>
+<path d="M314 162 C 334 159, 354 163, 378 161" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+<path d="M390 62 C 480 60, 580 63, 670 61 C 672 90, 669 120, 671 150 C 580 152, 480 149, 391 151 C 388 120, 391 90, 390 62 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="530" y="88" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle" font-weight="bold">prod/aws</text>
+<text x="530" y="113" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">AWS 리소스만 · aws provider 만</text>
+<text x="530" y="137" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">env/prod/&lt;서비스&gt;.tfstate (키 그대로)</text>
+<path d="M390 172 C 480 170, 580 173, 670 171 C 672 200, 669 232, 671 262 C 580 264, 480 261, 391 263 C 388 232, 391 200, 390 172 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="530" y="198" font-family="Menlo, monospace" font-size="13" fill="#2e6b41" text-anchor="middle" font-weight="bold">prod/dd</text>
+<text x="530" y="223" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">Datadog 리소스만 · 키는 여기에만</text>
+<text x="530" y="247" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">env/prod/&lt;서비스&gt;-dd.tfstate (새 키)</text>
+<text x="350" y="304" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 키와 provider 의 경계를 디렉터리 경계에 맞춘다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 서비스는 한 디렉터리에 남고, 계층이 하위 디렉터리로 갈라진다</div>
+<p>여기에는 뒤집은 결정이 둘 있었어요. 예전 ADR-0012 는 "디렉터리를 한 단계 더 나누지 마라"였고, 모니터 파일을 하위 디렉터리로 나누는 안도 ADR-0051 에서 기각했었습니다. 금지한 이유는 스택 탐색 스크립트가 깊이를 고정해 두어서, 더 깊은 스택은 경고 없이 plan 에서 빠진다는 것이었어요. 이유를 다시 읽어 보니 고칠 수 있는 문제였습니다. 탐색 스크립트를 고치고, 대신 <b>찾은 스택이 0개면 실패하는 가드</b>를 그 자리에 두면 금지할 근거가 사라져요.</p>
+<p>거부한 대안도 있었어요. 형제 스택(<code style="font-family:Menlo,monospace;font-size:14px;">stacks/&lt;서비스&gt;-dd/</code>)은 스크립트 수정이 거의 없지만 서비스 하나가 두 이름으로 흩어집니다. Datadog 이 있는 8곳만 나누는 안은 깊이 2 와 3 이 영구히 섞여 모든 스크립트가 두 깊이를 처리해야 했어요. 결국 전 스택을 같은 모양으로 맞추기로 했습니다. dev 도 <code style="font-family:Menlo,monospace;font-size:14px;">dev/aws</code> 로 옮겼어요. <span class="obsv-mark">AWS 쪽 state 키는 경로가 아니라 파일 안의 문자열이라, 디렉터리를 옮겨도 state 는 그 자리에 그대로 있었습니다.</span></p>
+
+<h2>6. 109개를 옮기면서 아무것도 바꾸지 않기</h2>
+
+<p>옮길 때 가장 두려운 사고는 모니터가 지워지거나 두 벌이 되는 것이었어요. 그래서 9월 28일 오후, PR 네 개로 나눠서 단계마다 "바뀐 것이 없다"를 확인하고 넘어갔습니다.</p>
+<p><b>PR0 (#704) 가드와 스크립트.</b> 두 깊이가 공존해도 동작하게만 하고 실물은 건드리지 않았어요. 새로 만든 <code style="font-family:Menlo,monospace;font-size:14px;">check-state-keys.py</code> 는 경로에서 state 키를 계산해 실제 키와 비교하고, 키 중복과 계층 경계 위반(<code style="font-family:Menlo,monospace;font-size:14px;">*/aws</code> 의 datadog, <code style="font-family:Menlo,monospace;font-size:14px;">*/dd</code> 의 aws 리소스)을 막습니다. 복사로 만든 새 스택이 키를 안 바꾸면 그 스택의 plan 이 남의 리소스 전부를 destroy 로 보여주기 때문이에요. 일부러 기존 스택의 키를 복사한 가짜 dd 스택을 만들어 봤더니, 키 불일치·중복·스택 겹침 세 겹으로 잡혔습니다.</p>
+<p><b>PR1 (#706) 순수 이동.</b> 32개 스택의 파일을 전부 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;env&gt;/aws/</code> 로 옮겼어요. 경로가 한 단계 깊어져 모듈 참조 117곳을 고쳤고, 머지 조건은 전 스택 plan <code style="font-family:Menlo,monospace;font-size:14px;">No changes</code> 였습니다.</p>
+<p><b>PR2 (#707) dd 계층으로 옮기기.</b> 여기가 본 작업이었어요. 같은 state 안에서 주소만 바꿀 때는 <code style="font-family:Menlo,monospace;font-size:14px;">moved</code> 블록을 쓰면 되지만, 이번에는 리소스가 다른 state 로 넘어가야 했습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: import 블록과 removed 블록</div>
+  <code style="font-family:Menlo,monospace;font-size:14px;">import</code> 블록은 "이미 존재하는 이 ID 의 리소스를 이 코드 주소로 state 에 넣어라"는 선언이에요. <code style="font-family:Menlo,monospace;font-size:14px;">removed</code> 블록은 반대로 "이 주소를 state 에서 빼라"는 선언이고, <code style="font-family:Menlo,monospace;font-size:14px;">destroy = false</code> 를 주면 실물은 지우지 않습니다. <code style="font-family:Menlo,monospace;font-size:14px;">moved</code> 블록은 한 state 안에서만 주소를 바꿀 수 있어서, state 간 이동에는 이 둘을 짝지어 써요.
+</div>
+
+<div class="obsv-code"># stacks/&lt;서비스&gt;/prod/dd/imports.tf        (dd 계층: state 에 넣는다)
+import {
+  to = module.dd_&lt;서비스&gt;.datadog_monitor.down[0]
+  id = "{모니터 ID}"
+}
+
+# stacks/&lt;서비스&gt;/prod/aws/removed-datadog.tf  (aws 계층: state 에서만 뺀다)
+removed {
+  from = module.dd_&lt;서비스&gt;
+  lifecycle {
+    destroy = false
+  }
+}</div>
+<p>&rarr; dd 계층은 기존 모니터를 ID 로 찾아 자기 state 에 넣고, aws 계층은 같은 모니터를 state 에서만 빼고 실물은 남겨 둔다는 뜻이에요.</p>
+
+<p>옮긴 것은 8개 스택의 109개였습니다. 메인 API 51, 에이전트 API 16, 제휴 서비스 12, 배치 서버 10, 메시지 발송 서비스 7, 공용 platform 스택의 로그 아카이브 7, 문서 팩스 서비스 6, 그리고 Team 목록만 가진 alerting 0 이에요. <span class="obsv-mark">적용 순서는 스택마다 dd 먼저, aws 나중이었습니다.</span> import 가 실패해도 옛 aws 스택이 계속 소유하고 있으니 관리 공백이 생기지 않아요. 반대로 하면 removed 가 먼저 적용되고 import 가 실패했을 때 어느 state 에도 없는 모니터가 생깁니다.</p>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="32" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">9월 28일 하루 동안 옮긴 순서</text>
+<text x="435" y="60" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="middle">스택마다 dd 먼저, aws 나중</text>
+<path d="M20 72 C 70 70, 120 73, 170 71 C 172 100, 169 140, 171 168 C 120 170, 70 167, 21 169 C 18 140, 21 100, 20 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="100" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle" font-weight="bold">PR0 가드</text>
+<text x="95" y="130" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">스크립트·린트만</text>
+<text x="95" y="153" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">실물 변경 없음</text>
+<text x="95" y="200" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">확인</text>
+<text x="95" y="222" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">가짜 dd 스택으로</text>
+<text x="95" y="242" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">잡히는지 재현</text>
+<path d="M190 72 C 240 70, 290 73, 340 71 C 342 100, 339 140, 341 168 C 290 170, 240 167, 191 169 C 188 140, 191 100, 190 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="265" y="100" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle" font-weight="bold">PR1 순수 이동</text>
+<text x="265" y="130" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">전 스택 파일을</text>
+<text x="265" y="153" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">aws/ 아래로</text>
+<text x="265" y="200" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">확인</text>
+<text x="265" y="222" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">전 스택 plan</text>
+<text x="265" y="242" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">No changes</text>
+<path d="M360 72 C 410 70, 460 73, 510 71 C 512 100, 509 140, 511 168 C 460 170, 410 167, 361 169 C 358 140, 361 100, 360 72 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="435" y="100" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18" text-anchor="middle" font-weight="bold">PR2 dd 옮기기</text>
+<text x="435" y="130" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">dd: import 109</text>
+<text x="435" y="153" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">aws: removed</text>
+<text x="435" y="200" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">확인</text>
+<text x="435" y="222" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">N import · 0 add</text>
+<text x="435" y="242" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">0 change · 0 destroy</text>
+<path d="M530 72 C 580 70, 630 73, 680 71 C 682 100, 679 140, 681 168 C 630 170, 580 167, 531 169 C 528 140, 531 100, 530 72 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="605" y="100" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#5a9e6f" text-anchor="middle" font-weight="bold">PR3 정리</text>
+<text x="605" y="130" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">옮기기용 블록 삭제</text>
+<text x="605" y="153" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">aws 의 provider 제거</text>
+<text x="605" y="200" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">확인</text>
+<text x="605" y="222" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">남은 게 있으면</text>
+<text x="605" y="242" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">plan 이 실패한다</text>
+<path d="M172 120 C 177 118, 182 122, 188 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+<path d="M342 120 C 347 118, 352 122, 358 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+<path d="M512 120 C 517 118, 522 122, 528 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+<text x="350" y="285" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 단계마다 바뀐 게 없다는 것을 plan 으로 보이고 나서 다음으로 간다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 옮기는 각 단계에는 다음으로 넘어가기 전에 확인할 숫자가 있었다</div>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: "옮겨도 바뀐 것 없음"을 숫자로 확인한다</div>
+  &bull; PR 을 올리기 전 로컬 plan(읽기 키를 쓰고, state 를 원격 저장소에서 읽지 않고 로컬에서만 돌린 plan)으로 dd 7곳 모두 <code style="font-family:Menlo,monospace;font-size:14px;">N import · 0 add · 0 change · 0 destroy</code> 를 확인했어요. import 개수가 옮긴 개수와 같고, 나머지가 전부 0 이어야 합니다<br>
+  &bull; aws 쪽 plan 에서는 destroy 0 을 봤어요. <code style="font-family:Menlo,monospace;font-size:14px;">destroy = false</code> 가 빠진 removed 가 있으면 여기서 드러나요<br>
+  &bull; 가드는 destroy 를 막지만 중복 생성(<code style="font-family:Menlo,monospace;font-size:14px;">add</code>)은 막지 못해요. 그래서 add 0 은 사람이 plan 을 읽어 확인했습니다
+</div>
+<p><b>PR3 (#720) 정리.</b> 옮기기 apply 16건(dd import 109 · aws 쪽 state 에서 빼기)이 전부 성공한 뒤, 옮기기용 <code style="font-family:Menlo,monospace;font-size:14px;">imports.tf</code> 와 <code style="font-family:Menlo,monospace;font-size:14px;">removed-datadog.tf</code> 를 지우고 aws 계층 8곳의 datadog provider 를 걷어냈어요. 가드도 최종 형태로 조였습니다. 이제 <code style="font-family:Menlo,monospace;font-size:14px;">*/aws</code> 가 datadog provider 를 선언하기만 해도 실패해요. 이 정리 자체가 마지막 확인이기도 했습니다. aws state 에 Datadog 리소스가 하나라도 남아 있었다면, provider 를 지운 순간 plan 이 provider 누락으로 실패해 드러났을 거예요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 이 저장소 CI 에서는 다 쓴 import 블록이 plan 을 실패시킨다</div>
+  Terraform 자체는 이미 state 에 있는 대상을 가리키는 import 블록을 아무 일 없이 넘깁니다. 실패는 이 저장소 CI 의 검사에서 나와요. 옮기는 중에 한 번 걸린 곳이 있었습니다. 두 스택의 dd 계층은 다른 PR(#715)에서 먼저 import 블록을 지웠는데, 그 커밋 본문에 이유가 적혀 있습니다. 이 저장소의 CI 는 import 블록 수와 plan 의 import 건수를 대조하는데, 이미 적용된 블록이 남아 있으면 "블록 10개인데 import 0건"으로 실패해요. 옮기기용 import 블록은 적용이 끝나면 바로 지울 파일로 다뤄야 합니다.
+</div>
+<p>키 전달도 ADR 과 다르게 끝났어요. ADR-0056 은 옮기기가 끝나면 Datadog 키를 전용 GitHub Environment 에 두기로 했었습니다. 그런데 쓰기 키는 이미 prod Environment 의 apply 잡에만 있었고, Environment 를 하나 더 두면 승인 게이트만 둘이 돼요. 그래서 잡 단위 조건으로 dd 스택에만 키를 넘기고, ADR 에 이행 기록을 남겼습니다.</p>
+
+<div class="obsv-code">DD_APP_KEY: ${{ endsWith(inputs.dir, '/dd') &amp;&amp; secrets.DATADOG_APP_KEY_WRITE || '' }}</div>
+<p>&rarr; 작업 대상 디렉터리가 <code style="font-family:Menlo,monospace;font-size:14px;">/dd</code> 로 끝날 때만 Datadog 키를 넣고, aws 계층 작업에는 빈 값을 넘긴다는 뜻이에요. 셀프서비스를 실제로 열 때 전용 Environment 로 옮기기로 했습니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>service 는 앱이 정하고 데이터를 고르는 조건이라서 바꾸지 않고, team 은 조직을 따라 바뀌는 호출 단위라서 Terraform 쪽에 둔다.</b><br><br>
+  바뀌는 주기와 바꾸는 사람이 다른 값을 한곳에 두지 않는다는 기준은 스택에도 그대로 적용됐다. AWS 와 Datadog 을 계층으로 가르고 109개를 옮기는 동안 단계마다 확인한 것은 하나였다. 바뀐 것이 없다는 plan 을 보고 나서야 다음 단계로 넘어갔다.
+</div>
+
+</div>

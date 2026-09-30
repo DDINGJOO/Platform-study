@@ -1,0 +1,322 @@
+<!-- ============================================================
+  Datadog 설정을 코드로 4편: 데이터 없음은 장애인가
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: 데이터 없음, on_missing_data, treat_missing_data, 반복 다운타임, AWS DMS -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Datadog 설정을 코드로 · 4편</div>
+  1편. 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다<br>
+  2편. service 는 앱이 정하고 team 은 호출 단위다<br>
+  3편. 필수 모니터가 헬스체크를 세고 있었다<br>
+  <b>4편. 데이터 없음은 장애인가</b> &larr; 지금 이 글<br>
+  5편. APM 을 떼는 순서<br>
+  6편. 로그가 사라진 건 샘플링이 아니었다
+</div>
+
+<p>9월 27일 새벽 3시 42분(한국 시각), 데이터 복제 서버의 메모리 부족 알람이 울렸어요. 받은 메모리 값은 정상이었습니다. 알람을 울린 것은 값이 아니라 값이 없던 3분이었어요. 그날 아침 7시 반에 저는 이 알람에서 "지표가 안 들어오면 위반으로 친다"는 설정을 끄는 커밋을 올렸습니다.</p>
+<p>그리고 다음 날인 9월 28일 오후, 이번에는 정반대 커밋을 두 개 올렸어요. 서비스가 죽었는지 보는 다운 모니터 3개가 "지표가 안 들어오면 알림을 보내지 않는다"로 설정돼 있었는데, 그걸 "지표가 안 들어오면 온콜(그 시간에 장애 대응을 맡은 당번)을 호출한다"로 바꿨습니다. 이틀 사이에 한 번은 빈칸을 무시하게 했고, 한 번은 빈칸을 장애로 보게 한 거예요.</p>
+<p>둘 다 맞는 판단이었다고 생각해요. 이 글은 그 이유를 적습니다. 질문은 하나예요. <b>"지표가 안 들어오는 것은 장애인가, 아닌가."</b></p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 앱이 죽었는데 "요청 0건" 알람이 울리지 않는 이유는 무엇일까?<br>
+&middot; 같은 빈칸을 관리형 서비스에서는 왜 무시하기로 했을까?<br>
+&middot; 두 판단을 가른 기준은 무엇이었을까?<br>
+&middot; 매일 정해진 시간에 판정하지 않는 창은 왜 코드에 있어야 할까?<br>
+&middot; 그 창을 코드로 옮기면서 읽기 키에 무엇이 따라왔을까?</p>
+
+<h2>1. 앱이 죽으면 요청 수는 0 이 아니라 사라진다</h2>
+
+<p>다운 모니터의 쿼리는 단순했어요. "최근 10분 동안 들어온 요청 수의 합이 1보다 작으면 알람." 요청 수는 APM(앱 안에서 요청 하나하나를 추적하는 Datadog 기능)이 트레이스(요청 하나가 거친 경로와 시간 기록)에서 세어 보내는 지표(<code style="font-family:Menlo,monospace;font-size:14px;">trace.servlet.request.hits</code>)입니다.</p>
+
+<div class="obsv-code">query = "sum(last_10m):sum:trace.servlet.request.hits{service:&lt;서비스&gt;}.as_count() &lt; 1"</div>
+<p>&rarr; 해당 서비스로 10분 동안 들어온 요청을 모두 더해서 1건 미만이면 경보를 낸다는 뜻이에요.</p>
+
+<p>앱이 살아 있으면 이 쿼리에는 늘 값이 들어와요. 사용자 요청이 없는 시간에도 헬스체크 요청이 꾸준히 들어오고, 그 요청도 트레이스로 잡혀 요청 수에 더해지니까요. 문제는 앱이 죽은 경우입니다. 요청을 받고 트레이스를 만드는 주체가 앱이라서, 앱이 죽으면 헬스체크 요청도 트레이스를 남기지 못하고 0 이라는 값도 오지 않아요. 시계열 자체가 끊깁니다. Datadog 은 이 상태를 "0"이 아니라 "데이터 없음"으로 봐요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 데이터 없음 (no data)</div>
+  모니터가 평가하려는 구간에 지표 값이 하나도 들어오지 않은 상태예요. "값이 0"과는 다릅니다. 0 은 누군가 세어서 보낸 결과이고, 데이터 없음은 세어서 보낸 값 자체가 없다는 뜻이에요. 모니터는 이 상태를 경보·정상과 별도로 다루며, 어떻게 다룰지는 설정으로 정합니다.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: on_missing_data (Datadog 모니터)</div>
+  Datadog 모니터가 데이터 없음을 어떻게 처리할지 정하는 설정이에요. <code style="font-family:Menlo,monospace;font-size:14px;">show_and_notify_no_data</code> 로 두면 데이터 없음 상태를 표시하고 알림도 보냅니다. 이 글의 모니터 3개는 <code style="font-family:Menlo,monospace;font-size:14px;">default</code> 였고, 이 설정에서는 데이터 없음이 알림으로 나가지 않았어요.
+</div>
+
+<p>그러니 이 모니터가 경보를 낼 일은 거의 없었고, 정작 가장 심각한 "앱이 죽었다"에서는 알림이 나가지 않았던 거예요. 9월 27일에 센 모니터 68개를 코드로 편입하던 9월 28일에 이 설정을 발견했어요. 세 모니터 중 하나가 감시하던 배치 서버가 특히 걸렸습니다. 그 서버는 스왑 없이 메모리 여유가 약 0.6GB 라서 메모리 부족으로 앱이 종료될 수 있었고, 그 경우가 바로 데이터 없음이었습니다. <span class="obsv-mark">서비스가 죽은 순간을 잡으려고 만든 모니터가, 죽은 순간에만 울리지 않는 설정이었어요.</span></p>
+
+<p>9월 28일에 배치 서버(#695), 이어서 메인 API 와 에이전트 API(#697)의 다운 모니터를 고쳤어요. 바꾼 것은 두 가지뿐입니다.</p>
+
+<div class="obsv-code">on_missing_data = "default"                  # 전
+on_missing_data = "show_and_notify_no_data"  # 후
+
+message 에 추가:
+{{#is_no_data}}
+[P1] 신호 없음 - 트레이스가 들어오지 않는다 (앱이 죽었을 수 있다)
+{{/is_no_data}}</div>
+<p>&rarr; 데이터 없음도 알림을 보내게 하고, 그때 나가는 메시지에 "요청 0건"이 아니라 "신호 없음"이라고 적어 받는 사람이 두 상황을 구분하게 했다는 뜻이에요.</p>
+
+<p>쿼리와 알림 채널은 건드리지 않았어요. 1편에서 정한 "import(콘솔에 이미 있는 실물을 Terraform 관리 대상으로 가져오는 절차)와 수정은 PR 을 나누고, 수정은 한 번에 하나씩"을 따른 거예요. 메시지 블록을 따로 둔 이유도 있습니다. 새벽에 호출을 받은 사람이 "요청이 0건"을 보면 트래픽 경로부터 의심하고, "신호가 없다"를 보면 앱 프로세스부터 봐야 해요. 원인이 다르면 첫 번째로 열어 볼 화면도 달라집니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 데이터 없음을 호출로 바꾸면, 지표를 끄는 작업의 순서가 생긴다</div>
+  이 모니터들은 APM 지표를 봐요. 그래서 나중에 APM 을 떼면 앱이 멀쩡해도 트레이스가 끊기고, 이제는 그 데이터 없음이 곧바로 온콜 호출이 됩니다. 데이터 없음을 장애로 보게 한 모니터는 그 지표를 끄기 <b>전에</b> 지우거나 다른 신호로 바꿔야 해요. 이 순서 문제는 5편에서 다룹니다.
+</div>
+
+<h2>2. 하루 전에는 반대로 고쳤다: 유지보수 재기동이 알람을 울렸다</h2>
+
+<p>이제 하루 전으로 돌아갈게요. 이쪽은 Datadog 이 아니라 AWS CloudWatch 알람이고, 감시 대상은 우리가 띄운 앱이 아니라 AWS 가 운영하는 데이터 복제 서비스(DMS)의 복제 인스턴스 두 대였어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 관리형 서비스 (managed service)</div>
+  서버 운영(패치, 재기동, 장애 교체)을 클라우드 업체가 맡는 서비스예요. DMS 는 DB 의 변경분을 다른 곳으로 계속 복제해 주는 AWS 관리형 서비스이고, AWS 가 정해 둔 유지보수 창에 인스턴스를 재기동합니다. 우리가 그 재기동을 막거나 시각을 정확히 고를 수는 없어요.
+</div>
+
+<p>알람은 복제 인스턴스의 여유 메모리(<code style="font-family:Menlo,monospace;font-size:14px;">FreeableMemory</code>)가 1.5GiB(약 1.6GB) 아래로 내려가면 울리게 되어 있었어요. 인스턴스 크기를 줄인 뒤의 안전망으로 둔 알람입니다. 그리고 지표가 안 들어오는 구간은 위반으로 치게 해 뒀어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: treat_missing_data (CloudWatch 알람)</div>
+  CloudWatch 알람이 평가 구간에 비어 있는 데이터포인트를 어떻게 셀지 정하는 설정이에요. <code style="font-family:Menlo,monospace;font-size:14px;">breaching</code> 이면 빈칸을 임계 위반으로, <code style="font-family:Menlo,monospace;font-size:14px;">notBreaching</code> 이면 정상으로 셉니다. 이 저장소의 알람 모듈에서는 <code style="font-family:Menlo,monospace;font-size:14px;">missing_data</code> 라는 이름의 입력값으로 받아요.
+</div>
+
+<p>그 설정이 틀린 것은 아니었어요. 알람 모듈에는 이 값의 기본값이 일부러 없고, 주석에 고르는 규칙이 적혀 있습니다.</p>
+
+<div class="obsv-code"># modules/cw-alarm/variables.tf (요지)
+# 기본값을 주지 않는다. 알람을 추가할 때마다 판단을 강제하기 위해서다.
+#
+# - breaching    상태 게이지. 값이 계속 보고되는 메트릭. 없어지면 진짜 이상이다
+# - notBreaching 이벤트 카운터. 호출이 없으면 데이터포인트 자체가 없다
+#
+# 일괄 breaching 을 적용하면 야간에 오탐이 난다:
+#   새벽 3시, 트래픽 0 -&gt; Lambda 호출 없음 -&gt; Throttles 메트릭 미발행
+#   -&gt; breaching -&gt; ALARM -&gt; P1 전화</div>
+<p>&rarr; 항상 값이 나와야 하는 지표(상태 게이지)는 빈칸을 이상으로, 일이 있을 때만 나오는 지표(이벤트 카운터)는 빈칸을 정상으로 보라는 규칙이에요.</p>
+
+<p>여유 메모리는 인스턴스가 떠 있는 한 계속 보고되는 상태 게이지예요. 규칙대로라면 <code style="font-family:Menlo,monospace;font-size:14px;">breaching</code> 이 맞고, 실제로 그렇게 설정돼 있었습니다. 그런데 이 규칙이 한 가지 경우를 빠뜨리고 있었어요. 커밋(#673)에 남긴 두 번의 오탐은 이렇습니다.</p>
+
+<div class="obsv-code">복제 인스턴스 A  9월 24일  APP_SHUTDOWN 20:01 -&gt; APP_RESTART 20:11   ALARM 20:12 ~ OK 20:30 (UTC)
+복제 인스턴스 B  9월 26일  APP_SHUTDOWN 18:30 -&gt; APP_RESTART 18:40   ALARM 18:42 ~ OK 18:45 (UTC)</div>
+<p>&rarr; AWS 정기 유지보수로 인스턴스가 약 10분 동안 재기동했고, 재기동이 끝난 직후 알람이 울렸다가 잠시 뒤 정상으로 돌아왔다는 기록이에요.</p>
+
+<p>인스턴스 B 의 경우, 알람이 판정한 5분 가운데 받은 값은 2개(4.48GB, 4.90GB)뿐이었어요. 임계는 약 1.6GB 이니 둘 다 한참 위입니다. 알람은 "5개 중 3개가 위반이면 발화"로 설정돼 있었는데, 비어 있던 3분이 위반으로 계산되면서 3개가 채워졌어요. 스왑은 14일 동안 0 이었고, 복제 태스크 둘도 계속 돌고 있었습니다. <span class="obsv-mark">메모리가 부족해서가 아니라, 재기동 동안 메모리를 잴 수 없어서 울린 알람이었어요.</span></p>
+
+<p>9월 27일, 이 알람을 <code style="font-family:Menlo,monospace;font-size:14px;">notBreaching</code> 으로 바꿨습니다. 평가 창을 늘려 재기동 시간을 흡수하는 방법도 있었지만 쓰지 않았어요. 재기동 시간은 정해져 있지 않았고, 인스턴스 A 는 재기동 뒤에도 18분 동안 지표가 드문드문 들어왔기 때문입니다. 창을 얼마로 늘려야 충분한지 정할 근거가 없었어요.</p>
+
+<h2>3. 두 판단을 가른 것: 끊김의 원인을 다른 신호가 잡는가</h2>
+
+<p>그런데 여기서 걸리는 게 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">notBreaching</code> 으로 바꾸면, 복제 인스턴스가 진짜로 죽거나 삭제돼서 지표가 끊겨도 이 알람은 울리지 않습니다. 1절의 다운 모니터에서 막으려던 바로 그 상황이에요. 이틀 사이에 한쪽에서는 이 상황을 호출로 바꾸고 다른 쪽에서는 알림을 보내지 않게 두었으니, 둘을 가른 이유가 있어야 했습니다.</p>
+<p>이유는 DMS 쪽에 이미 다른 감시가 있었다는 점이에요. 복제 서비스는 인스턴스와 태스크의 상태가 바뀔 때마다 이벤트를 발행하고, 알람 스택에는 그 이벤트를 받아 알림을 보내는 규칙이 따로 있었습니다. 이 규칙은 유지보수 재기동이 만드는 <code style="font-family:Menlo,monospace;font-size:14px;">APP_SHUTDOWN</code>, <code style="font-family:Menlo,monospace;font-size:14px;">APP_RESTART</code>, 재개 이벤트만 이름으로 빼고 나머지는 모두 통과시켜요. 그래서 인스턴스 실패, 삭제, 태스크 중단 같은 진짜 이상은 이벤트 쪽에서 잡힙니다.</p>
+<p>그러니 메모리 알람이 빈칸을 위반으로 세는 것은 중복 감시였고, 그 중복이 이벤트 규칙이 일부러 걸러 낸 재기동을 지표 쪽에서 다시 알람으로 만들고 있었어요. 커밋 주석에는 이렇게 적었습니다. "이 알람은 값만 본다."</p>
+<p>다운 모니터는 사정이 반대였어요. 앱이 죽었다는 사실을 잡는 다른 신호가 없었습니다. 앱은 관리형 서비스가 아니라서 "앱이 종료됐다"는 이벤트가 따로 발행되지 않고, 트레이스가 끊긴 것 자체가 유일한 증상이었어요. <span class="obsv-mark">빈칸을 장애로 볼지는 지표 종류가 아니라, 그 빈칸의 원인을 이 모니터 말고 누가 잡고 있느냐로 정해졌습니다.</span></p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="nd4a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+
+    <text x="30" y="36" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#4a7fb5">다운 모니터 (Datadog) · 앱이 보내는 요청 수</text>
+    <path d="M40 110 C 120 108, 200 112, 280 110" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
+    <path d="M280 110 C 300 111, 310 109, 318 110" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
+    <path d="M322 96 L 330 110 L 322 124" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="300" y="80" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">앱 종료 🔥</text>
+    <path d="M340 110 C 400 112, 460 108, 520 110" fill="none" stroke="#8a8272" stroke-width="2.4" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <text x="370" y="140" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">시계열이 끊김 = 데이터 없음</text>
+    <path d="M528 106 C 548 100, 560 96, 574 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#nd4a)"/>
+    <path d="M580 64 C 620 62, 660 65, 682 63 C 684 80, 683 100, 682 116 C 650 118, 610 115, 580 117 C 578 100, 579 80, 580 64 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+    <text x="631" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">호출 📟</text>
+    <text x="631" y="108" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">다른 신호 없음</text>
+    <text x="40" y="170" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">앱 종료를 따로 잡는 신호가 없다. 끊김 자체가 유일한 증상</text>
+
+    <path d="M30 196 C 250 198, 450 194, 670 197" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+
+    <text x="30" y="232" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#c07f18">DMS 여유 메모리 (CloudWatch) · 관리형 서비스 지표</text>
+    <path d="M40 300 C 110 298, 180 302, 230 300" fill="none" stroke="#e5a33c" stroke-width="3" stroke-linecap="round"/>
+    <path d="M238 300 C 280 302, 330 298, 372 300" fill="none" stroke="#8a8272" stroke-width="2.4" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <path d="M380 300 C 440 298, 500 302, 560 300" fill="none" stroke="#e5a33c" stroke-width="3" stroke-linecap="round"/>
+    <text x="236" y="332" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">유지보수 재기동 약 10분</text>
+    <path d="M226 268 C 290 264, 330 265, 384 268 C 386 276, 385 282, 384 288 C 330 290, 290 289, 226 288 C 225 282, 225 276, 226 268 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+    <text x="305" y="283" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">APP_SHUTDOWN / RESTART</text>
+    <path d="M388 270 C 440 250, 520 250, 574 256" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#nd4a)"/>
+    <path d="M580 232 C 620 230, 660 233, 682 231 C 684 250, 683 270, 682 290 C 650 292, 610 289, 580 291 C 578 270, 579 250, 580 232 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+    <text x="631" y="256" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">이벤트 규칙이</text>
+    <text x="631" y="276" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">이상을 잡는다</text>
+    <text x="40" y="360" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">알람은 값만 본다 (notBreaching). 인스턴스 실패·삭제는 이벤트 쪽 몫</text>
+
+    <text x="350" y="384" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 같은 빈칸이라도, 원인을 다른 신호가 잡으면 무시하고 아무도 안 잡으면 호출한다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 빈칸의 판정은 지표 종류가 아니라 "그 원인을 누가 따로 보고 있는가"로 갈렸다</div>
+
+<p>돌아보면 모듈 주석의 규칙("상태 게이지는 breaching")은 앱이나 우리가 띄운 인프라에서는 잘 맞아요. 값이 끊기는 이유가 대부분 이상이니까요. 관리형 서비스는 사정이 다릅니다. 업체가 예정된 작업으로 인스턴스를 내렸다 올리고, 그동안 지표가 끊기는 것은 정상 동작이에요. 그래서 이 알람의 주석에는 "상태 게이지이긴 하지만 유지보수 중에는 지표가 끊긴다"를 적어 두었습니다.</p>
+
+<h2>4. 판정하지 않는 시간도 판정 조건이다</h2>
+
+<p>데이터 없음에는 세 번째 모양이 있었어요. 데이터가 아예 없지는 않은데, 판정할 만큼 모이지 않는 경우입니다. 인증 관련 모니터 몇 개가 그랬어요. 밤 8시부터 아침 8시까지는 인증 시도 표본이 너무 적어서, 비율이나 "지난주 대비 변화율"로 판정하면 숫자 몇 개에 결과가 크게 흔들렸습니다. 기록된 근거를 보면 21시대부터 지난주 대비 -70% 이하가 14일 동안 9번 관측됐고, 전부 야간에 들어가는 구간이었어요.</p>
+<p>이 모니터들은 반복 다운타임으로 야간 판정을 끄고 있었어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 다운타임 (Datadog downtime)</div>
+  정해진 시간 동안 모니터의 알림을 멈추는 Datadog 기능이에요. 점검 한 번에 쓰는 일회성 다운타임과, 매일 같은 시각에 되풀이되는 반복 다운타임이 있습니다. 대상 모니터는 ID 나 태그로 고르고, 여기서는 <code style="font-family:Menlo,monospace;font-size:14px;">window:night</code> 같은 태그를 붙인 모니터가 그 창에 들어가요.
+</div>
+
+<p>9월 30일 기준으로 반복 다운타임은 3개였어요.</p>
+
+<div class="obsv-code">다운타임         대상 태그        알림을 멈추는 시간(KST)   쓰는 모니터
+window_day      window:day      23~07시                  인증 P1 (주간용)
+window_night    window:night    07~23시                  인증 P1 (야간용)
+silence_night   silence:night   20~08시                  인증 P2, 서비스 기본 모니터의 트래픽 급감</div>
+<p>&rarr; 같은 인증 모니터를 주간용과 야간용으로 나눠 서로 다른 시간에만 판정하게 하고, 표본이 적은 야간에는 급감 판정을 쉬게 하는 창이라는 뜻이에요.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 258" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <path d="M150 196 C 300 198, 480 194, 672 197" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+    <text x="150" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">0시</text>
+    <text x="297" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">7</text>
+    <text x="328" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">8</text>
+    <text x="410" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">12</text>
+    <text x="585" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">20</text>
+    <text x="650" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">23</text>
+
+    <text x="20" y="62" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">window:day</text>
+    <path d="M152 57 C 200 56, 260 58, 301 57" fill="none" stroke="#bfb6a3" stroke-width="12" stroke-dasharray="6 5" stroke-linecap="butt"/>
+    <path d="M305 57 C 400 55, 540 59, 648 57" fill="none" stroke="#5a9e6f" stroke-width="12" stroke-linecap="round"/>
+    <path d="M652 57 C 660 56, 666 58, 670 57" fill="none" stroke="#bfb6a3" stroke-width="12" stroke-dasharray="6 5" stroke-linecap="butt"/>
+
+    <text x="20" y="112" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">window:night</text>
+    <path d="M152 107 C 200 106, 260 108, 301 107" fill="none" stroke="#4a7fb5" stroke-width="12" stroke-linecap="round"/>
+    <path d="M305 107 C 400 105, 540 109, 648 107" fill="none" stroke="#bfb6a3" stroke-width="12" stroke-dasharray="6 5" stroke-linecap="butt"/>
+    <path d="M652 107 C 660 106, 666 108, 670 107" fill="none" stroke="#4a7fb5" stroke-width="12" stroke-linecap="round"/>
+
+    <text x="20" y="162" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">silence:night</text>
+    <path d="M152 157 C 220 156, 280 158, 323 157" fill="none" stroke="#bfb6a3" stroke-width="12" stroke-dasharray="6 5" stroke-linecap="butt"/>
+    <path d="M327 157 C 420 155, 520 159, 583 157" fill="none" stroke="#e5a33c" stroke-width="12" stroke-linecap="round"/>
+    <path d="M587 157 C 620 156, 650 158, 670 157" fill="none" stroke="#bfb6a3" stroke-width="12" stroke-dasharray="6 5" stroke-linecap="butt"/>
+
+    <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">색칠한 구간에서만 판정한다 · 점선 구간은 다운타임</text>
+    <text x="350" y="250" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 창이 바뀌면 모니터 코드는 그대로인데 판정 결과가 바뀐다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 반복 다운타임 3개가 정한 하루 중 판정 시간 (KST)</div>
+
+<p>이 창들은 콘솔에만 있었어요. 1편에서 정한 정책(ADR-0054, ADR 은 설계 결정과 그 이유를 적어 두는 문서)이 다운타임을 코드 밖에 두기로 했기 때문입니다. 이유는 일회성 다운타임에 있었어요. 종료 시각이 있는 다운타임을 코드가 들고 있으면 만료된 뒤 매일 drift(코드와 실제 설정이 어긋난 상태)로 뜨고, 누군가 apply(코드를 실제 설정에 반영하는 명령)를 다시 돌리면 끝난 음소거가 되살아납니다. 당시 반복 다운타임도 함께 검토했지만 "대상이 0개라 생기면 그때 다룬다"로 남겨 두었어요. 그런데 9월 30일에 다시 세어 보니 3개가 있었습니다. 셋 다 9월 22~23일부터 있었는데, v1 API 로는 v2 로 만든 반복 스케줄이 보이지 않아 첫 집계(9월 27일)에서 빠졌어요.</p>
+<p>이 3개는 음소거가 아니었어요. <span class="obsv-mark">모니터가 언제 판정하는지를 정하는 창이라서, 판정 조건의 일부였습니다.</span> 누가 콘솔에서 <code style="font-family:Menlo,monospace;font-size:14px;">silence_night</code> 를 지우면 야간 오탐이 쏟아지는데, 모니터 코드는 한 줄도 바뀌지 않았으니 git 이력에서 원인을 찾을 수 없어요. 임계값은 PR 리뷰를 거치는데 "야간에는 판정하지 않는다"는 조건은 리뷰 밖에 있던 거예요.</p>
+<p>그래서 9월 30일 ADR-0057 로 선을 새로 그었어요. 반복 다운타임은 코드로 편입하고(#795), 일회성 다운타임은 계속 코드 밖에 둡니다. 반복 스케줄에는 종료 시각이 없어서, ADR-0054 가 걱정한 만료 뒤 drift 와 부활이 생기지 않기 때문이에요. 창을 여러 스택의 모니터가 쓰므로 공용 알람 스택에 두었고, <code style="font-family:Menlo,monospace;font-size:14px;">silence_night</code> 의 근거 문장도 다운타임 메시지째로 코드에 들어왔습니다.</p>
+
+<div class="obsv-code">resource "datadog_downtime_schedule" "silence_night" {
+  scope = "*"
+  monitor_identifier { monitor_tags = ["silence:night"] }
+  recurring_schedule {
+    timezone = "Asia/Seoul"
+    recurrence {
+      rrule    = "FREQ=DAILY;INTERVAL=1;BYHOUR=20;BYMINUTE=0"
+      start    = "2026-09-22T20:00:00"
+      duration = "12h"
+    }
+  }
+}</div>
+<p>&rarr; <code style="font-family:Menlo,monospace;font-size:14px;">silence:night</code> 태그가 붙은 모니터는 매일 서울 시각 20시부터 12시간 동안 알림을 멈춘다는 뜻이에요.</p>
+
+<p>편입 방식은 모니터 때와 같았어요. import 블록(가져올 실물을 적는 코드)으로 실물을 state(Terraform 이 관리하는 자원과 실물 ID 를 적어 두는 파일)에 가져오고, PR 의 plan(반영하면 무엇이 바뀌는지 미리 보여 주는 명령)으로 코드와 실물을 대조했습니다. 이 대조에서 콘솔의 반복 규칙에 <code style="font-family:Menlo,monospace;font-size:14px;">BYHOUR</code> 가 붙어 있다는 것과 <code style="font-family:Menlo,monospace;font-size:14px;">silence_night</code> 에 근거 메시지가 달려 있다는 것을 확인해 코드에 맞췄어요. 3개를 import 한 뒤 import 블록은 다음 PR(#796)에서 지웠습니다.</p>
+
+<h2>5. 읽기 키에 다운타임 변경 권한이 따라왔다</h2>
+
+<p>편입하다가 plan 이 403 으로 멈췄어요. 1편에서 키를 둘로 나눠 두었습니다. PR 의 plan 과 매일 도는 drift 검사는 읽기 키로, 실제 반영(apply)은 쓰기 키로요. 그런데 읽기 키로는 반복 다운타임을 읽을 수 없었어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 스코프 (API 키)</div>
+  API 키가 할 수 있는 일의 범위예요. Datadog 의 애플리케이션 키는 스코프를 골라 발급할 수 있고, 목록에 없는 API 를 부르면 403 으로 거절됩니다. 읽기 키에는 조회 스코프만, 쓰기 키에는 변경 스코프까지 주는 식으로 나눠요.
+</div>
+
+<p>원인은 API 버전이었어요. Terraform 의 <code style="font-family:Menlo,monospace;font-size:14px;">datadog_downtime_schedule</code> 은 v2 다운타임 API 를 쓰는데, v2 는 조회에도 <code style="font-family:Menlo,monospace;font-size:14px;">monitors_downtime</code> 스코프를 요구합니다. 이 스코프는 "읽기 전체"에 들어 있지 않아요. v1 API 는 읽기 스코프로 읽히지만, v2 로 만든 반복 스케줄은 v1 에서 보이지 않았습니다. 9월 30일에 이 스코프를 읽기 키에 더해 plan 을 다시 돌게 했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 이 스코프는 읽기와 쓰기가 나뉘지 않는다</div>
+  <code style="font-family:Menlo,monospace;font-size:14px;">monitors_downtime</code> 은 조회 권한만 따로 떼어 줄 수 없어요. 이 스코프를 읽기 키에 넣으면 조회에 쓰기 권한이 함께 따라옵니다. 1편에서 쓰기 권한을 apply 잡에만 두려고 키를 나눴는데, 이 스코프만큼은 그 경계가 무너진 거예요.
+</div>
+
+<p>그래도 읽기 키를 넓히는 쪽을 택했어요. 판정 창 3개가 리뷰 밖에 있는 위험이 더 컸다고 봤고, 읽기 키는 PR plan 과 매일 도는 drift 검사에서 쓰는 저장소 시크릿이라 외부로 나가는 경로가 좁았기 때문입니다. 대신 ADR 에 다시 볼 조건을 두 개 적었어요. 읽기 키가 PR 밖(외부 기여, 포크)으로 노출될 경로가 생기면 이 결정을 다시 봅니다. 그리고 Datadog 이 v2 다운타임 조회를 읽기 스코프로 열어 주면 이 스코프를 뗍니다. <span class="obsv-mark">권한을 넓힐 때는 넓힌 이유와 함께 되돌릴 조건을 같이 적어 두었어요.</span></p>
+
+<h2>6. 데이터 없음은 하나의 값이 아니다</h2>
+
+<p>9월 27일부터 30일까지의 판단을 한 표로 모으면 이렇게 됩니다. 기준은 "빈칸이 생겼다"가 아니라 "누가, 왜 안 보냈는가"예요.</p>
+
+<table style="width:100%;border-collapse:collapse;font-size:15px;margin:0 0 18px;background:#fffdf7;">
+  <tr style="background:#f3edd9;">
+    <th style="border:1.5px solid #d8cfba;padding:8px;text-align:left;">누가 안 보냈나</th>
+    <th style="border:1.5px solid #d8cfba;padding:8px;text-align:left;">왜</th>
+    <th style="border:1.5px solid #d8cfba;padding:8px;text-align:left;">그 원인을 따로 잡는 신호</th>
+    <th style="border:1.5px solid #d8cfba;padding:8px;text-align:left;">판정</th>
+  </tr>
+  <tr>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">우리 앱 (다운 모니터)</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">앱이 죽었다</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">없다. 끊김이 유일한 증상</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;"><b>장애로 호출</b> (<code style="font-family:Menlo,monospace;font-size:13px;">show_and_notify_no_data</code>)</td>
+  </tr>
+  <tr>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">관리형 서비스 (DMS 메모리)</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">예정된 유지보수 재기동</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">있다. 상태 변경 이벤트 규칙</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;"><b>정상으로 센다</b> (<code style="font-family:Menlo,monospace;font-size:13px;">notBreaching</code>), 알람은 값만 본다</td>
+  </tr>
+  <tr>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">이벤트 카운터 (Throttles, 5XX)</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">셀 일이 없었다</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">필요 없다</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;"><b>정상으로 센다</b> (<code style="font-family:Menlo,monospace;font-size:13px;">notBreaching</code>)</td>
+  </tr>
+  <tr>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">사용자 (야간 인증)</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">표본이 너무 적어 판정할 수 없다</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">해당 없음</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;"><b>판정하지 않는 창</b>을 두고, 그 창을 코드로 관리</td>
+  </tr>
+  <tr>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">우리 자신 (APM 제거)</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">수집을 일부러 껐다</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">대체 감시를 먼저 세운다</td>
+    <td style="border:1.5px solid #d8cfba;padding:8px;">데이터 없음을 호출하는 모니터를 <b>먼저 지운다</b> (5편)</td>
+  </tr>
+</table>
+<p>&rarr; 같은 "값이 없다"도 보내는 쪽이 누구이고 왜 멈췄는지에 따라 호출, 무시, 판정 보류, 선행 삭제로 갈린다는 정리예요.</p>
+
+<p>표를 만들고 나서 알게 된 것이 있어요. 두 커밋 모두 원래 설정이 "틀린 값"은 아니었습니다. <code style="font-family:Menlo,monospace;font-size:14px;">default</code> 는 대부분의 지표 모니터에 무난한 값이고, <code style="font-family:Menlo,monospace;font-size:14px;">breaching</code> 은 모듈 규칙이 권하는 값이었어요. 틀린 것은 그 값을 고를 때 "이 지표가 끊기면 무슨 일이 일어난 것인가"를 묻지 않았다는 점이었습니다. 알람 모듈이 <code style="font-family:Menlo,monospace;font-size:14px;">missing_data</code> 에 기본값을 두지 않은 이유도 이것이에요. 알람을 하나 추가할 때마다 이 질문에 답하게 하려는 거죠. <span class="obsv-mark">데이터 없음 설정은 지표의 성질이 아니라 그 지표를 보내는 쪽의 사정을 적는 칸이었습니다.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 데이터 없음 설정을 고를 때 묻는 세 가지</div>
+  &bull; 이 지표를 보내는 주체는 누구인가 (우리 앱, 클라우드 업체, 사용자 트래픽, 우리가 켠 수집기)<br>
+  &bull; 그 주체가 멈추는 경우 중 정상인 것이 있는가 (예정된 재기동, 호출 0, 야간 트래픽 감소)<br>
+  &bull; 멈춘 것이 이상일 때, 그 이상을 이 모니터 말고 잡는 신호가 있는가. 없으면 이 모니터가 데이터 없음을 호출해야 한다
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>9월 27일에는 관리형 서비스의 메모리 알람이 빈칸을 무시하게 했고, 28일에는 다운 모니터 3개가 빈칸을 장애로 호출하게 했다.</b> 복제 인스턴스의 재기동은 이벤트 규칙이 따로 잡고 있었고, 앱의 종료는 아무도 따로 잡고 있지 않았다. 9월 30일에는 판정하지 않는 반복 창 3개도 판정 조건으로 보고 코드로 옮겼고, 그 대가로 읽기 키에 다운타임 스코프를 더했다.<br><br>
+  <b>데이터 없음은 하나의 값이 아니다. 누가 왜 안 보냈는지, 그 원인을 누가 따로 보고 있는지를 알아야 장애인지 판정할 수 있다.</b>
+</div>
+
+</div>

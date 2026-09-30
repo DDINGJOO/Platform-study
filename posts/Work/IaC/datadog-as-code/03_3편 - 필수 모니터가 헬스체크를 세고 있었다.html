@@ -1,0 +1,242 @@
+<!-- ============================================================
+  Datadog 설정을 코드로 3편: 필수 모니터가 헬스체크를 세고 있었다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: 골든 시그널, 복합 모니터, 저트래픽 가드, 헬스체크 제외, 사이드카 컨테이너 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Datadog 설정을 코드로 · 3편</div>
+  1편. 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다<br>
+  2편. service 는 앱이 정하고 team 은 호출 단위다<br>
+  <b>3편. 필수 모니터가 헬스체크를 세고 있었다</b> &larr; 지금 이 글<br>
+  4편. 데이터 없음은 장애인가<br>
+  5편. APM 을 떼는 순서<br>
+  6편. 로그가 사라진 건 샘플링이 아니었다
+</div>
+
+<p>9월 28일 오후 4시 18분, <code style="font-family:Menlo,monospace;font-size:14px;">#{인프라 채널}</code> 에 P2 알림이 하나 떴어요. "배치 서버 응답 지연". 그날 낮에 새로 만든 필수 모니터 가운데 하나였습니다. 그런데 배치 서버에는 느려진 곳이 없었어요. 느린 요청은 2주 내내 같은 속도로 느렸고, 그날 특별히 달라진 것은 없었습니다.</p>
+<p>원인을 따라가 보니 이 모니터가 "요청이 충분히 들어오는가"를 판단할 때 센 요청의 70%가 헬스체크와 OPTIONS 요청이었어요. 이틀 뒤에는 CPU 모니터가 앱 컨테이너가 아니라 옆에 붙은 Datadog 에이전트 컨테이너를 재고 있었다는 것도 알게 됐습니다. 두 쿼리 모두 문법은 맞았고, Datadog 의 validate 도 통과했어요.</p>
+<p>이 글은 서비스마다 똑같이 붙는 필수 모니터 세트를 만들고, 만든 직후 드러난 결함을 고친 기록이에요. 질문은 하나입니다. <b>"모니터가 재는 값이 정말 재고 싶었던 값인지, 무엇으로 확인하는가."</b></p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 서비스마다 모니터가 다르면 무엇이 곤란할까?<br>
+&middot; 새벽에 요청 세 건 중 한 건이 실패하면 에러율 모니터는 울려야 할까?<br>
+&middot; 요청 수를 셀 때 헬스체크를 빼면 무엇이 달라질까?<br>
+&middot; 컨테이너를 태그로 골랐는데 엉뚱한 컨테이너가 잡힌 이유는 무엇일까?<br>
+&middot; 알림을 받은 사람이 메시지만 보고 움직이려면 무엇이 적혀 있어야 할까?</p>
+
+<h2>1. 서비스마다 모니터가 들쭉날쭉했다</h2>
+
+<p>9월 28일, 콘솔에 있던 모니터를 코드로 옮기면서(1편) 스택별로 개수를 세어 봤어요. 메인 API 스택으로 옮긴 모니터가 45개였고, 에이전트 API 는 9개, 배치 서버는 파일럿 4개에 1개를 더해 5개였습니다. 문서 팩스 서비스와 메시지 발송 서비스 스택에는 Datadog provider 설정이 아예 없었어요. 코드로 관리하는 Datadog 모니터가 그 두 스택에는 없었다는 뜻입니다.</p>
+<p>개수보다 곤란한 건 무엇을 재는지가 서비스마다 달랐다는 점이에요. 예를 들어 메인 API 와 에이전트 API 에는 이름에 "ERROR%"가 붙은 옛 모니터가 있었는데, 이 모니터는 서비스가 받은 요청이 아니라 서비스가 밖으로 보낸 호출(<code style="font-family:Menlo,monospace;font-size:14px;">trace.http</code>)을 1분 창으로 보고 있었어요. 90일 동안 1,686번 울렸습니다. 이 모니터는 다음 날 정리 작업에서 지웠어요. <span class="obsv-mark">서비스 하나가 죽었을 때 "무엇이 울리는가"라는 질문에 서비스마다 답이 달랐고, 어떤 서비스는 답이 없었습니다.</span></p>
+<p>그래서 모든 서비스가 같은 질문 네 개에 답하게 하기로 했어요. 요청이 들어오는가, 실패하는가, 느린가, 자원이 차 가는가. 이 네 가지를 흔히 골든 시그널이라고 부릅니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 골든 시그널 (golden signals)</div>
+  Google SRE 책이 "사용자에게 닿는 서비스라면 최소한 이것은 보라"고 꼽은 네 가지 신호예요. 지연(latency), 트래픽(traffic), 에러(errors), 포화(saturation)입니다. 이 글의 필수 모니터는 이 네 칸을 서비스마다 채우는 것을 목표로 했어요.
+</div>
+
+<h2>2. 모듈 하나를 아홉 번 부른다</h2>
+
+<p>같은 모니터 세트를 서비스마다 손으로 복사하면, 한 서비스에서 고친 것이 다른 서비스에는 반영되지 않아요. 1절의 들쭉날쭉함이 코드 안에서 다시 생기는 거예요. 그래서 모니터 세트를 Terraform 모듈로 만들었습니다(#688).</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 모듈 (Terraform module)</div>
+  여러 리소스 정의를 한 폴더에 묶고, 서비스 이름이나 임계값을 변수로 받게 만든 것이에요. 쓰는 쪽은 <code style="font-family:Menlo,monospace;font-size:14px;">module</code> 블록 하나로 부르면서 변수만 바꿉니다. 모듈 안의 쿼리를 한 번 고치면 그 모듈을 부르는 모든 서비스에 같이 반영돼요.
+</div>
+<p>모듈 <code style="font-family:Menlo,monospace;font-size:14px;">dd-service-baseline</code> 이 만드는 모니터는 이렇습니다.</p>
+<div class="obsv-code">트래픽  서비스 다운  10분 요청 0 + 데이터 없음도 알림   P1 · 온콜 호출
+에러    에러율       서비스가 받은 요청 기준            P2 · #{인프라 채널}
+지연    p95          서비스별 임계                      P2
+포화    메모리       컨테이너 또는 호스트, 15분 평균    P2
+(배치)  실행 침묵    정해진 시간 동안 실행 흔적 없음    P2</div>
+<p>&rarr; 골든 시그널 네 칸에 모니터를 하나씩 두고, 요청을 받지 않는 배치에는 "돌았는가"만 보는 모니터를 따로 둔다는 뜻이에요.</p>
+<p>이 모듈을 메인 API, 에이전트 API, 배치 서버, 문서 팩스 서비스, 메시지 발송 서비스, 제휴 서비스와 그 중계 서버에 붙였어요. 커밋 제목은 "7개 서비스"라고 적었고, 코드에서는 모듈을 아홉 번 부릅니다. 배치 서버에 딸린 배치 작업과 에이전트 API 에 딸린 배치 작업을 따로 한 번씩 부르기 때문이에요. 이 커밋의 모듈 호출을 세면 모니터가 43개 나오고, 그중 2개는 제휴 서비스에 있던 모니터를 모듈 안으로 옮긴 것이라 새로 생긴 모니터는 41개였어요. 3절에서 설명할 알림 없는 하위 모니터까지 센 숫자입니다. 이미 다운 모니터가 있던 세 서비스에는 다운을 만들지 않았어요. 같은 장애에 온콜 전화가 두 번 오기 때문입니다.</p>
+<p><span class="obsv-mark">임계는 7일 실측으로 정했습니다.</span> p95(응답 100건을 빠른 순으로 세웠을 때 95번째 응답시간)의 정상 범위가 서비스마다 100배 넘게 달랐기 때문이에요. 문서 팩스 서비스와 메시지 발송 서비스는 500ms, 에이전트 API 는 1.5초, 메인 API 와 배치 서버는 3초로 잡았어요. 제휴 서비스는 평소 p95 중앙값이 2.96초라서 15초로 잡았는데, 이 값은 느린 상태를 정상으로 인정한 값이라고 코드 주석에 적어 뒀습니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 넣지 않은 이유도 코드에 적는다</div>
+  실측을 해 보면 넣으려던 신호가 쓸모없다는 것도 드러나요. JVM 힙은 에이전트 API 가 평소 99%까지 차서(GC 가 정상적으로 도는 상태) 경보로 쓸 수 없어 뺐습니다. 배치 서버의 호스트 메모리는 평소 90%대 초반이라서 임계를 97%로 두고, 여유가 거의 없다는 사실 자체를 발견 사항으로 남겼어요. 그날 저녁 배치 서버의 힙을 줄인 설정이 반영되자 사용률이 절반 아래로 내려갔고, 다음 날 임계를 90%로 되돌렸습니다(#729). 컨테이너 CPU 는 사용량과 한도의 단위가 맞지 않아 그날 측정을 무효로 보고 보류했습니다. 뺀 이유를 적어 두지 않으면 다음 사람이 같은 신호를 다시 넣고 같은 소음을 겪게 돼요.
+</div>
+
+<h2>3. 새벽의 요청 세 건 중 한 건이 실패하면</h2>
+
+<p>에러율 모니터를 그대로 두면 곤란한 시간대가 있어요. 새벽 3시에 10분 동안 요청이 3건 들어왔고 그중 1건이 실패했다고 해 볼게요. 에러율은 33%입니다. 임계 5%를 한참 넘지만, 이걸로 사람을 깨울 일은 아니에요. 요청이 적을 때는 한두 건 실패만으로 비율이 크게 튑니다.</p>
+<p>그래서 에러율과 지연은 요청이 충분할 때만 판정하게 했어요. 10분 요청이 20건 미만이면 판정하지 않습니다. 이 조건을 저트래픽 가드라고 불렀고, 복합 모니터로 구현했어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 복합 모니터 (composite monitor)</div>
+  다른 모니터 여러 개의 상태를 <code style="font-family:Menlo,monospace;font-size:14px;">&amp;&amp;</code>, <code style="font-family:Menlo,monospace;font-size:14px;">||</code>, <code style="font-family:Menlo,monospace;font-size:14px;">!</code> 로 엮어서 판정하는 Datadog 모니터예요. 재료가 되는 모니터는 알림을 보내지 않게 두고, 복합 모니터만 알림을 보내게 할 수 있습니다.
+</div>
+<p>여기서 논리를 한 번 뒤집어야 했어요. 처음 떠오르는 방식은 "요청 20건 이상"을 조건 모니터로 만드는 것이에요. 그런데 그렇게 만들면 이 조건 모니터는 평소에 늘 경보 상태가 됩니다. 요청이 많은 게 정상인데 모니터 화면에는 빨간 불이 켜져 있게 돼요. 그래서 "요청 20건 미만"을 조건으로 만들고, 복합 모니터에서 그 조건이 아닐 때만 판정하게 했습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M30 30 C 110 27, 190 32, 262 29 C 265 55, 264 80, 263 108 C 190 111, 110 107, 32 109 C 29 82, 31 56, 30 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="146" y="58" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">A. 에러율 5% 초과</text>
+  <text x="146" y="86" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">[sub] 알림 없음</text>
+  <path d="M30 170 C 110 167, 190 172, 262 169 C 265 196, 264 222, 263 250 C 190 253, 110 249, 32 251 C 29 224, 31 197, 30 170 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="146" y="198" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">B. 저트래픽</text>
+  <text x="146" y="222" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">10분 요청 20건 미만</text>
+  <text x="146" y="240" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">[sub] 평소 OK · 끊기면 데이터 없음</text>
+  <path d="M268 72 C 310 80, 340 110, 372 132" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <path d="M268 208 C 310 200, 340 175, 372 160" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <text x="330" y="212" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">NOT</text>
+  <path d="M380 110 C 440 107, 500 112, 556 109 C 559 130, 558 160, 557 184 C 500 187, 440 183, 382 185 C 379 160, 381 132, 380 110 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="468" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">복합 모니터</text>
+  <text x="468" y="166" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">A &amp;&amp; !B</text>
+  <path d="M560 146 C 590 144, 610 146, 636 147" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <text x="662" y="152" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">🔔 P2</text>
+  <text x="350" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">새벽 요청 3건 중 1건 실패: A는 켜지지만 B도 켜져서 알림이 가지 않는다</text>
+  <text x="350" y="316" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">서비스가 죽으면 시계열이 끊긴다: 이 경우는 다운 모니터가 맡는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 저트래픽 조건은 평소 OK 이고, 요청이 적을 때 켜져 에러율·지연 판정을 막는다</div>
+
+<p>그럼 서비스가 통째로 죽으면 어떻게 될까요. 요청이 0건이라는 값이 찍히는 게 아니라, 요청 수 시계열 자체가 끊깁니다. 이때 B 는 데이터 없음 상태가 되고, 모듈은 이때를 저트래픽으로 보고 판정을 막도록 두었어요. 모듈 코드에서 B 는 <code style="font-family:Menlo,monospace;font-size:14px;">on_missing_data = "show_no_data"</code> 로 두고, "신호가 없으면 다운 모니터가 본다"고 주석을 달았습니다. 에러율은 분모인 요청 수가, 지연은 재료가 되는 요청이 사라져서 판정할 값이 없어요(지연 조건은 데이터가 없으면 OK 로 돌아가게 뒀습니다). 그래서 두 복합 모니터는 울리지 않고, 신호가 끊긴 것은 데이터 없음에도 알리게 설정한 다운 모니터가 받습니다. 가드는 요청이 적을 때 튀는 비율을 막고, 죽은 서비스의 호출은 다운 모니터가 합니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 데이터 없음 (No Data)</div>
+  모니터가 판정할 값 자체를 받지 못한 상태예요. 경보(Alert)도 정상(OK)도 아닌 별도 상태입니다. 앱이 죽으면 값이 0 으로 찍히는 게 아니라 시계열이 사라지기 때문에, 이 상태를 알릴지 말지는 모니터마다 따로 정해야 해요. 살아 있는 앱에는 헬스체크 요청이 늘 트레이스로 들어오니, 다운 모니터가 이 상태가 되면 앱이 응답하지 않는다는 뜻입니다.
+</div>
+<p><span class="obsv-mark">가드는 "언제 판정하지 않을지"를 정하는 장치이고, 그래서 가드가 세는 숫자가 틀리면 판정 전체가 틀립니다.</span> 이 문장이 바로 그날 오후에 확인됐어요.</p>
+
+<h2>4. 가드가 헬스체크를 세고 있었다</h2>
+
+<p>9월 28일 오후 4시 18분의 배치 서버 지연 알림으로 돌아가 볼게요. 원인은 두 가지였습니다(#719).</p>
+<p>첫째는 지연이에요. 배치 서버에는 파일 업로드 엔드포인트가 두 개 있는데, 하나는 p95 가 40~70초, 다른 하나는 5~20초였어요. 2주 내내 이 속도였습니다. 배치 서버는 요청이 적어서, 업로드 한 건만 10분 창에 끼어도 서비스 전체 p95 가 3초를 넘었어요. 업로드는 원래 느린 작업이라 이 두 엔드포인트를 지연 판정에서 뺐습니다.</p>
+<p>둘째가 더 중요했어요. 요청이 적은 서비스인데 왜 저트래픽 가드가 판정을 막지 않았을까요. 가드가 헬스체크와 OPTIONS 요청까지 세고 있었기 때문입니다. 배치 서버는 10분 요청의 70%가 이것이었어요. 실제 사용자가 거의 없는 시간에도 가드 기준 20건을 넘겼고, 그래서 판정이 켜졌습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 헬스체크 (health check)</div>
+  로드밸런서나 오케스트레이터가 "이 앱이 살아 있는가"를 확인하려고 몇 초마다 보내는 요청이에요. Spring 앱에서는 보통 <code style="font-family:Menlo,monospace;font-size:14px;">/actuator/health</code> 를 부릅니다. 사용자가 없어도 일정하게 들어오기 때문에, 요청 수에 섞이면 사용자가 없는 시간에도 요청이 있는 것으로 세어져요. OPTIONS 는 다른 도메인으로 보내는 일부 요청(사용자 정의 헤더를 붙이거나 PUT 을 쓰는 경우 등) 앞에 브라우저가 보내는 사전 확인 요청(CORS preflight)이에요.
+</div>
+<p>그래서 가드와 에러율(분자와 분모 모두)에서 둘을 뺐어요.</p>
+<div class="obsv-code">traffic_scope = join(",", [
+  local.scope,
+  "!resource_name:get_/actuator/health",
+  "!resource_name:head_/actuator/health",
+  "!resource_name:options_*",
+])</div>
+<p>&rarr; 요청 수를 세는 범위에서 GET·HEAD 헬스체크와 모든 OPTIONS 요청을 뺀다는 뜻이에요. <code style="font-family:Menlo,monospace;font-size:14px;">!</code> 가 붙은 태그는 "이것은 제외"입니다.</p>
+<p>어디서 빼고 어디서는 빼지 않을지도 따로 정했어요. <span class="obsv-mark">헬스체크를 빼는 곳은 "사용자가 있는가"를 묻는 가드와 에러율뿐입니다.</span> 다운 모니터는 헬스체크를 그대로 셉니다. 헬스체크에 응답한다면 앱은 살아 있는 것이니까요. 지연 p95 에서도 헬스체크를 빼지 않았어요. 빠른 요청을 빼면 p95 가 올라가서, 2절에서 실측으로 정한 임계를 다시 봐야 하기 때문입니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 와일드카드 <code style="font-family:Menlo,monospace;font-size:14px;">*health*</code> 는 쓰지 않았다</div>
+  헬스체크를 뺀다고 <code style="font-family:Menlo,monospace;font-size:14px;">*health*</code> 로 쓰면 편해 보여요. 그런데 메인 API 에는 경로에 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/health/</code> 가 들어가는 업무 API 가 있었습니다. 와일드카드를 쓰면 그 API 의 실제 사용자 요청까지 사라져요. 그래서 7일 동안 실제로 들어온 resource 이름 목록을 확인하고, 정확한 이름으로만 뺐습니다.
+</div>
+<p>고친 뒤의 영향도 7일 실측으로 확인했어요. 배치 서버와 메시지 발송 서비스는 업무 시간에는 가드 기준을 넘지만, 야간과 주말에는 거의 0건이라 그 시간에는 판정하지 않습니다. 의도한 결과예요. 메인 API, 에이전트 API, 제휴 서비스는 늘 가드 기준을 크게 넘어서 영향이 없었습니다. 문서 팩스 서비스는 APM 에 잡힌 요청이 전부 헬스체크여서 에러율과 지연이 아예 판정되지 않게 됐어요. 이 서비스는 그날 로그와 큐 지표로 세운 대체 감시가 따로 봅니다.</p>
+
+<h2>5. 받은 사람이 바로 움직이게, 그리고 빠진 두 칸</h2>
+
+<p>9월 29일에는 두 가지를 더했어요. 먼저 알림 메시지입니다(#746). 처음 메시지에는 "무엇이 몇인지"만 있었어요. 새벽에 메시지를 받은 사람은 거기서부터 무엇을 볼지 스스로 정해야 했습니다. 그래서 모든 필수 모니터의 메시지를 같은 순서로 다시 썼어요.</p>
+<div class="obsv-code">⚠️ [P2] {서비스} 에러율 증가 : 10분 에러율이 5% 를 넘었습니다
+요청이 10분에 20건 이상일 때만 판정합니다(헬스체크 제외).
+
+먼저 볼 것
+1. 어느 엔드포인트에서 나는가 : APM 의 Resources 를 에러 순으로 정렬
+2. 에러 로그의 예외 종류 : 한 종류면 코드·외부 연동, 흩어지면 인프라
+3. 직전 배포 여부
+
+📈 에러율 그래프(판정 조건) · APM · 에러 로그 링크</div>
+<p>&rarr; 무슨 일인가(값·임계·판정 창), 영향, 먼저 볼 것 세 가지, 바로 가기 링크 순서예요. 복구 메시지에는 무엇을 확인해야 하는지도 적었습니다.</p>
+<p>작은 함정도 두 개 있었어요. 복합 모니터는 Slack 알림에 그래프가 붙지 않아서, 그래프가 있는 조건 모니터 화면으로 가는 링크를 따로 넣었습니다. 그리고 에러율을 %로 보여 주려고 메시지 안에서 <code style="font-family:Menlo,monospace;font-size:14px;">0.05*100</code> 을 그대로 찍었더니 <code style="font-family:Menlo,monospace;font-size:14px;">5.00…01</code>(소수점 아래 열다섯째 자리에 1 이 붙은 값)이 나왔어요. Terraform 이 숫자를 계산해 문자열로 바꾸는 과정에서 붙은 끝자리라서, <code style="font-family:Menlo,monospace;font-size:14px;">format</code> 으로 출력 형식을 지정해 정수로 찍게 했습니다.</p>
+<p>같은 날 오후에는 모듈을 기준표와 대조했어요(#753). 골든 시그널 네 칸, 그리고 USE 세 칸입니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: USE (Utilization · Saturation · Errors)</div>
+  서비스가 아니라 CPU, 메모리, 디스크 같은 자원 하나하나를 볼 때 쓰는 점검표예요. 얼마나 쓰고 있는가(사용률), 처리하지 못하고 밀린 일이 있는가(포화), 자원 자체가 오류를 내는가(에러)를 봅니다. 골든 시그널이 사용자 쪽에서 본 증상이라면, USE 는 그 증상의 원인이 될 자원 쪽을 봐요.
+</div>
+<p>대조해 보니 빠진 칸이 둘 있었어요. CPU 포화, 그리고 0건은 아닌데 급격히 줄어든 트래픽입니다. <span class="obsv-mark">다운 모니터는 요청이 0건이거나 신호가 끊길 때만 울리므로, 요청이 평소의 10분의 1로 줄어도 울리지 않아요.</span> 그래서 30분 요청이 지난주 같은 시각의 20% 미만이면 울리는 트래픽 급감 모니터를 더했어요. 추석 연휴에도 에이전트 API 는 지난주의 35~40%였으니, 20%는 명절에 울리지 않는 기준입니다. 야간(20시~08시)은 반복 다운타임이 판정을 막아요. 메시지 발송 서비스는 같은 2시간 창에서도 요청이 거의 없는 때와 몰리는 때의 차이가 커서, 지난주 대비 비율을 기준으로 쓸 수 없었어요. 그래서 이 모니터를 켜지 않았습니다.</p>
+<p>CPU 포화는 임계 90%(경고 80%)로 잡았어요. ECS 서비스는 컨테이너 한도 대비 비율로, EC2 에서 docker 로 도는 서비스는 호스트 CPU 로 봅니다. docker 에 CPU 한도를 주지 않아서 컨테이너 비율이 87~95%로 나오는데, 같은 때 호스트는 최대 8.6%였기 때문이에요. 문서 팩스 서비스의 호스트 CPU 는 일주일 동안 16%에서 28%로 한 번도 내려가지 않고 올랐는데, 자바 에이전트를 뗀 재배포 뒤 5%로 내려갔습니다. 이 모니터는 그 증상이 다시 생기는지 봐요.</p>
+<p>이때 커밋에 적은 7일 최대 CPU 에는 에이전트 API 5%도 있었어요. 임계 90%와 한참 떨어져 있으니 노이즈가 없다고 판단했습니다. 이 숫자가 다음 날 틀린 것으로 드러났어요.</p>
+
+<h2>6. 반전: 모니터는 사이드카를 재고 있었다</h2>
+
+<p>9월 30일 아침, 모니터 쿼리를 하나씩 실측 데이터와 대조했어요. 모니터가 보고 있는 값과, 같은 대상을 다른 경로로 직접 잰 값을 나란히 놓는 작업입니다. 에이전트 API 의 앱 컨테이너 CPU 는 7일 최대 약 70%였어요. 그런데 모니터가 보고 있던 값은 1% 미만이었습니다(#779).</p>
+<p>원인은 컨테이너를 고르는 조건에 있었어요. 모듈은 <code style="font-family:Menlo,monospace;font-size:14px;">service:&lt;서비스&gt;</code> 태그로 컨테이너를 골랐는데, 그 태그는 앱 컨테이너가 아니라 같은 태스크에 붙은 Datadog 에이전트 사이드카에만 붙어 있었습니다. 앱 컨테이너에는 service 태그가 없었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 사이드카 (sidecar)</div>
+  앱 컨테이너와 같은 태스크(또는 파드)에 함께 떠서 로그 수집, 지표 전송 같은 보조 일을 맡는 컨테이너예요. ECS 에서는 Datadog 에이전트를 사이드카로 두는 경우가 많습니다. 같은 호스트에 있으니 호스트 단위 지표는 섞이고, 태그가 어느 컨테이너에 붙는지는 설정에 따라 달라져요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M200 20 C 350 17, 520 22, 675 19 C 678 110, 677 200, 676 290 C 520 293, 350 289, 202 291 C 199 200, 201 110, 200 20 Z" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+  <text x="215" y="286" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">한 태스크(같은 호스트)</text>
+  <path d="M220 62 C 290 59, 370 63, 432 61 C 435 120, 434 200, 433 270 C 370 273, 290 269, 222 271 C 219 200, 221 120, 220 62 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="326" y="96" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">☕ 앱 컨테이너</text>
+  <text x="326" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">service 태그 없음</text>
+  <text x="326" y="148" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">short_image:{앱 이미지}</text>
+  <text x="326" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#b3502f">CPU 최대 약 70%</text>
+  <text x="326" y="226" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">재고 싶은 것</text>
+  <path d="M458 62 C 520 59, 600 63, 656 61 C 659 120, 658 200, 657 270 C 600 273, 520 269, 460 271 C 457 200, 459 120, 458 62 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="557" y="96" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">🐶 Datadog 에이전트</text>
+  <text x="557" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">(사이드카)</text>
+  <text x="557" y="148" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#e5533c">service:{서비스}</text>
+  <text x="557" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#3d3a34">CPU 1% 미만</text>
+  <text x="557" y="226" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">재기 쉬운 것</text>
+  <path d="M22 110 C 70 107, 130 111, 182 109 C 185 130, 184 150, 183 168 C 130 171, 70 167, 24 169 C 21 150, 23 130, 22 110 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="102" y="134" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">처음 쿼리</text>
+  <text x="102" y="156" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">service:{서비스}</text>
+  <path d="M120 106 C 250 20, 470 20, 548 58" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <path d="M22 200 C 70 197, 130 201, 182 199 C 185 220, 184 240, 183 258 C 130 261, 70 257, 24 259 C 21 240, 23 220, 22 200 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="102" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">고친 쿼리 (#779)</text>
+  <text x="102" y="246" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">short_image:{앱 이미지}</text>
+  <path d="M186 230 C 196 228, 206 228, 216 226" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <text x="350" y="330" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 문법도 맞고 validate 도 통과했지만, 고른 컨테이너가 틀렸다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 태그가 붙어 있던 컨테이너는 앱이 아니라 에이전트였다</div>
+
+<p>앱이 CPU 를 다 써도 이 모니터는 울리지 않았을 거예요. 5절의 "에이전트 API 5%"도 결국 앱을 잰 숫자가 아니었습니다. 그래서 고친 것은 다음과 같아요.</p>
+<p>&middot; 모듈에 <code style="font-family:Menlo,monospace;font-size:14px;">container_scope</code> 변수를 더하고, 기본값에서 Datadog 에이전트와 ECS 에이전트 이미지를 뺐어요.<br>
+&middot; 메인 API 와 에이전트 API 는 이미지 이름(<code style="font-family:Menlo,monospace;font-size:14px;">short_image</code>)으로 앱 컨테이너를 골랐습니다. 두 앱에는 메모리 하드 한도가 없어서 "한도 대비 비율"을 계산할 수 없었어요. 그래서 컨테이너 메모리 모니터는 지우고, 호스트 메모리를 보는 공용 모니터에 맡겼습니다.<br>
+&middot; 에이전트 API 에 딸린 배치 작업(2절에서 따로 부른 배치 둘 중 하나)의 컨테이너는 CPU 2코어, 메모리 3.75GB 한도가 있어서 CPU·메모리 모니터를 새로 붙였어요.<br>
+&middot; 제휴 서비스는 앱 컨테이너 이미지로 골랐고, 그 중계 서버의 CPU·메모리 모니터는 지웠습니다. 제휴 서비스와 같은 컨테이너를 중복으로 보고 있었고, nginx 컨테이너까지 섞여 있었어요.</p>
+<p>이 방식으로 옛 CPU 모니터 두 개도 다시 봤어요(#786). 필수 모듈이 앱 컨테이너를 제대로 재게 되면서 둘은 중복이 됐는데, 실측으로 보니 둘 다 앱 포화를 잡지 못하고 있었습니다. 메인 API 의 옛 모니터는 사용량과 한도를 호스트 단위 최댓값으로 나눠서 7일 최대 2.8%로 읽혔어요. 같은 기간 앱 컨테이너는 최대 45.8%였습니다. 에이전트 API 의 옛 모니터는 호스트의 모든 컨테이너(앱, Datadog 에이전트, ECS 에이전트)를 평균해서 24시간 최대 9.9%로 읽혔고, 같은 기간 앱은 68.4%였어요. 둘 다 지웠습니다.</p>
+<p>옛 모니터에서 쓸 만한 설정이 하나 있었어요. 복구 임계입니다. 이것은 모듈의 CPU·메모리 모니터로 옮겼어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 히스테리시스 (복구 임계)</div>
+  경보가 켜지는 값과 꺼지는 값을 다르게 두는 설정이에요. CPU 가 90%에서 울렸다면 85% 아래로 내려와야 복구로 봅니다. 15분 평균이 임계 부근에서 오르내릴 때 "경보, 복구, 경보, 복구" 알림이 반복되는 것을 막아요. Datadog 에서는 <code style="font-family:Menlo,monospace;font-size:14px;">critical_recovery</code> 로 지정합니다.
+</div>
+<p>임계에서 5%p(메모리는 0.05) 아래로 내려와야 복구하게 했는데, 이것도 한 번에 끝나지 않았어요. Terraform 에서 메모리 <code style="font-family:Menlo,monospace;font-size:14px;">0.90 - 0.05</code> 가 <code style="font-family:Menlo,monospace;font-size:14px;">0.8499…</code> 로 계산돼서 소수 둘째 자리로 맞췄습니다. 그랬더니 이번에는 경고 쪽 복구 임계 <code style="font-family:Menlo,monospace;font-size:14px;">"0.80"</code>(경고 0.85 에서 0.05 를 뺀 값)을 Datadog 이 <code style="font-family:Menlo,monospace;font-size:14px;">0.8</code> 로 저장해서, plan 을 돌릴 때마다 차이가 났어요. 끝자리 0 을 떼서 해결했습니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 저도 여기서 틀렸어요. 태그로 고르면 그 태그가 붙은 것이 잡혀요</div>
+  <code style="font-family:Menlo,monospace;font-size:14px;">service:&lt;서비스&gt;</code> 로 고르면 그 서비스의 컨테이너가 잡힐 거라고 생각했어요. 실제로 잡히는 것은 "그 태그가 붙은 컨테이너"입니다. 앱에 태그가 없고 사이드카에만 있으면 사이드카만 잡혀요. 쿼리 결과에 <code style="font-family:Menlo,monospace;font-size:14px;">by {container_name}</code> 을 붙여 어떤 컨테이너가 잡히는지 한 번 펼쳐 보면 바로 드러나는 문제였습니다.
+</div>
+<p>돌아보면 만든 직후의 필수 모니터 두 곳에서 같은 일이 있었어요. 가드는 "사용자가 보낸 요청"을 세고 싶었지만 세기 쉬운 "들어온 요청 전부"를 셌고, CPU 모니터는 "앱의 CPU"를 재고 싶었지만 고르기 쉬운 "service 태그가 붙은 컨테이너"를 쟀습니다. <span class="obsv-mark">만든 직후의 모니터는 재고 싶은 것이 아니라 재기 쉬운 것을 재고 있었어요.</span> 문법 검사와 validate 는 이 차이를 잡지 못합니다. 쿼리가 올바른 형식인지만 보기 때문이에요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 모니터 쿼리를 다른 경로로 잰 값과 나란히 놓는다</div>
+  9월 30일에 쓴 방식은 단순해요. 모니터 쿼리의 결과를 먼저 그대로 뽑고, 같은 대상을 다른 경로(컨테이너 단위 지표, 이미지 이름, 호스트 원본)로 직접 잰 값과 비교합니다. 둘이 크게 다르면 쿼리가 다른 대상을 보고 있는 거예요. 같은 날 로그 모니터 설계안도 같은 구조의 쿼리를 기존 로그로 먼저 돌려 봤고, 태그 누락과 status 매핑 때문에 절대 울리지 않는 구조라는 것을 배포 전에 찾았습니다.
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>서비스마다 들쭉날쭉하던 모니터를 골든 시그널 모듈 하나로 맞췄고, 저트래픽 가드로 요청이 적은 시간대의 오탐을 막았다. 죽은 서비스는 데이터 없음에도 알리는 다운 모니터가 맡는다.</b><br><br>
+  그런데 만든 직후의 모니터는 가드가 헬스체크를 세고 CPU 가 사이드카를 재는, 재기 쉬운 값을 재고 있었다. 이를 잡은 것은 validate 가 아니라 모니터가 보는 값을 다른 경로로 잰 실측과 나란히 놓는 대조였다. 모니터를 만드는 일은 쿼리를 쓰는 데서 끝나지 않고, 그 쿼리가 무엇을 잡는지 확인하는 데서 끝난다.
+</div>
+
+</div>

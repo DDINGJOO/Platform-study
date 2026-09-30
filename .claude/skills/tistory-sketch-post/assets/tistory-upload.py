@@ -163,6 +163,19 @@ def plan(series, manifest, update_linked=False):
     return sorted(out, key=lambda r: r[0] == "new")  # 안정 정렬: 순서는 유지하고 수정을 앞으로
 
 
+def header_leak(html):
+    """스타일 태그 앞에 주석 밖 글자가 있으면 그 글자를 돌려준다. 없으면 빈 문자열.
+    템플릿 머리 주석을 잘라 붙이다 주석이 일찍 닫혀, 안내문이 본문 글자로 보이고
+    가짜 스타일 태그가 폰트 규칙을 망가뜨린 글이 여러 편 나왔다(2026-09-30)."""
+    m = re.search(r"<style>\s*\n\s*@import", html)
+    if not m:
+        return "(스타일 블록을 찾지 못했다)"
+    pre = html[:m.start()]
+    if pre.count("<!--") != pre.count("-->"):
+        return "(머리 주석의 여닫이 수가 맞지 않는다)"
+    return re.sub(r"<!--.*?-->", "", pre, flags=re.S).strip()[:80]
+
+
 def mask_ok(path):
     if not MASK_EXTRA.exists():
         sys.exit(f"조직 목록({MASK_EXTRA})이 없어 마스킹 검사를 할 수 없다. 올리지 않는다.")
@@ -494,6 +507,11 @@ def cmd_sync(a):
             if i:
                 time.sleep(a.interval)
             key, html = rel(f), f.read_text(encoding="utf-8")
+            leak = header_leak(html)
+            if leak:
+                print(f"✗ 머리 주석 밖에 글자가 있다, 건너뜀: {key} → {leak!r}")
+                failed += 1
+                continue
             if not mask_ok(f):
                 print(f"✗ 마스킹 검사 실패, 건너뜀: {key}")
                 failed += 1

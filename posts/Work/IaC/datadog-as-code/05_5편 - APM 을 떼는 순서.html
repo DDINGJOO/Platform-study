@@ -1,0 +1,239 @@
+<!-- ============================================================
+  Datadog 설정을 코드로 5편: APM 을 떼는 순서
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: APM 끄기, 자바 에이전트, 호스트 단위 과금, DD_TRACE_ENABLED, 트레이스 모니터 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Datadog 설정을 코드로 · 5편</div>
+  1편. 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다<br>
+  2편. service 는 앱이 정하고 team 은 호출 단위다<br>
+  3편. 필수 모니터가 헬스체크를 세고 있었다<br>
+  4편. 데이터 없음은 장애인가<br>
+  <b>5편. APM 을 떼는 순서</b> &larr; 지금 이 글<br>
+  6편. 로그가 사라진 건 샘플링이 아니었다
+</div>
+
+<p>9월 28일 오후 4시 26분에 머지한 PR 에는 순서가 적혀 있었어요. 대체 감시를 세운다, 1주일 동안 기존 모니터와 나란히 본다, 앱에서 APM 을 끈다, 마지막으로 트레이스 기반 모니터를 지운다. 그 밑에 경고도 한 줄 달아 두었습니다. "뒤집으면 감시 공백이 생긴다."</p>
+<p>1시간 18분 뒤, 저는 그 순서의 3번과 4번을 뒤집는 PR 을 올렸어요. 트레이스 모니터 다섯 개를 APM 보다 먼저 지우는 PR 이었습니다. 이유는 그날 낮 1시에 제가 고친 다른 모니터에 있었어요.</p>
+<p>이 글은 두 서비스에서 APM 을 떼어 낸 기록입니다. 질문은 하나예요. <b>"관측 도구를 뗄 때, 무엇을 어떤 순서로 치워야 아무도 새벽에 깨지 않는가."</b></p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 도구를 바꾸지 않기로 했는데, 왜 일부 서비스에서는 APM 을 뗐을까?<br>
+&middot; APM 이 보던 것을 APM 없이 보려면 무엇을 먼저 세워야 할까?<br>
+&middot; 트레이스 모니터는 왜 APM 보다 먼저 지워야 했을까?<br>
+&middot; 켜 둔 APM 이 사실 헬스체크만 기록하고 있었다면?<br>
+&middot; 뗐다는 것은 무엇으로 확인할까? 서비스로 볼까, 호스트로 볼까?</p>
+
+<h2>1. 도구는 그대로 두고, 필요 없는 곳에서만 뗀다</h2>
+
+<p>출발점은 Datadog 비용 검토였어요. 줄일 수 있는 항목을 크기 순으로 늘어놓고, APM 을 다른 제품으로 바꾸는 안도 같이 비교했습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: APM (Application Performance Monitoring)</div>
+  앱 안에서 요청 하나하나가 어디서 얼마나 걸렸는지, 에러가 났는지를 기록해 보여 주는 기능이에요. 이 글에서 "APM 을 뗀다"는 말은 앱이 이 기록을 더 이상 Datadog 에 보내지 않게 만든다는 뜻입니다.
+</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 트레이스 (trace)</div>
+  요청 하나가 들어와서 응답이 나갈 때까지 거친 구간을 순서대로 적은 기록이에요. 트레이스가 쌓이면 "10분 동안 요청 몇 건, 그중 에러 몇 건, p95 응답시간이 몇 초" 같은 지표(p95 는 응답 100건을 빠른 순으로 세웠을 때 95번째 응답시간)가 나오고, 트레이스 기반 모니터는 그 지표로 울립니다.
+</div>
+<p>요금 구조를 뜯어보니 호스트 단위 제품의 비중이 컸어요. 인프라 모니터링, APM, 프로파일러 세 제품이 모두 호스트 한 대마다 따로 과금됩니다. 7월 사용량을 공개 단가로 환산해 보면 이 세 제품이 전체의 4분의 3쯤이었고, 로그는 작은 몫이었어요. APM 을 켠 호스트 수도 인프라 호스트 수의 90% 에 이르렀습니다. 서버를 한 대 띄우면 거의 자동으로 APM 과 프로파일러가 같이 붙어 있었다는 뜻이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 프로파일러 (Continuous Profiler)</div>
+  실행 중인 앱의 CPU·메모리를 어떤 함수가 얼마나 쓰는지 계속 표본으로 떠서 보여 주는 기능이에요. 트레이스가 "어느 요청이 느린가"를 알려 준다면, 프로파일은 "그때 어느 코드가 시간을 썼나"를 알려 줍니다. Datadog 에서는 APM 과 같은 자바 에이전트가 수집해요.
+</div>
+<p>APM 을 다른 제품으로 옮기는 안은 받아들이지 않았어요. 다른 SaaS 로 옮기면 지금 쓰는 온콜 연동과 맞을지 걱정이 있었고, 오픈소스를 직접 운영하는 안(Pinpoint, ELK)은 사람 손과 저장 공간이 더 든다는 판단이었습니다. 결론은 현행 유지였어요. 도구를 바꾸지 않는다면 남는 절감 방법은 쓰는 양을 줄이는 것뿐입니다. 호스트, APM, 로그요.</p>
+<p>이 검토에서 제가 한 번 틀렸어요. 초안에서는 프로파일러를 통째로 끄는 안을 1순위로 올렸습니다. "열어 보는 사람이 없을 것"이라는 추측이 근거였어요. Audit Trail(누가 언제 어떤 화면과 API 를 썼는지 남는 Datadog 감사 기록)을 조회해 보니, 개발자 두 명이 바로 전날 프로파일 화면을 열어 봤습니다. 그대로 껐다면 두 사람이 전날까지 쓰던 도구를 말없이 없앴을 거예요. 그 뒤로 이 검토에는 규칙이 하나 생겼습니다. <span class="obsv-mark">쓰는지 안 쓰는지를 추측하지 말고 기록으로 확인한다.</span></p>
+<p>그래서 전부가 아니라 두 서비스만 골랐어요. 하나는 배치 서버입니다. 요청이 적은 데다 파일 업로드가 섞여 있어서, 트레이스로 잰 지연 지표가 자꾸 흔들렸습니다. 9월 28일 오후에도 업로드 요청 한 건이 서비스 전체 p95 를 3초 위로 올려 지연 경보가 잘못 울렸어요. 다른 하나는 문서 팩스 서비스입니다. 이 서비스는 4절에서 다룰 이유로 APM 이 거의 아무것도 보고 있지 않았어요. 나머지 서비스의 APM 과 프로파일러는 그대로 둡니다.</p>
+
+<h2>2. 떼기 전에, APM 없이 감시할 신호부터 세운다</h2>
+
+<p>APM 을 떼면 트레이스로 만든 지표가 사라지고, 그 지표를 보던 모니터도 볼 것이 없어져요. 그러니 먼저 할 일은 그 모니터들이 무엇을 보고 있었는지 적고, 각각을 APM 없이 볼 방법을 정하는 것이었습니다. 9월 28일의 PR(#715)이 이 단계예요. 이때 대체 감시 네 개를 새로 만들었습니다. 아래 표의 ALB 는 AWS 의 로드밸런서(Application Load Balancer)예요.</p>
+
+<div class="obsv-code">배치 서버
+  다운      트레이스 요청 수      → ALB 의 정상 대상 수 (기존 CloudWatch 알람, P1)
+  에러율    트레이스 5xx 비율     → ALB 가 센 대상 5xx 비율      (신설, P2)
+  에러      (없었음)              → 에러 로그 10분 4건 이상      (신설, P2)
+  지연      트레이스 p95          → 대체하지 않음
+
+문서 팩스 서비스
+  다운      트레이스 요청 수      → 작업 큐의 가장 오래된 메시지 15분 초과 (신설, P1)
+  에러      (없었음)              → 에러 로그, env:prod 한정    (신설, P2)</div>
+<p>&rarr; 왼쪽은 APM 이 있어야 볼 수 있는 신호, 오른쪽은 로드밸런서·로그·큐 지표만으로 보는 신호예요. 셋 다 앱 안의 에이전트 없이 들어오는 값입니다.</p>
+
+<p>배치 서버의 5xx 비율에는 손을 하나 더 댔어요. 요청이 적은 시간에는 5xx 한두 건만 나와도 비율이 확 튑니다. 그래서 분모에 20 을 더했어요. 15분 동안 요청이 거의 없으면 분모가 20 가까이 되어, 5xx 가 2건 이상일 때만 5% 를 넘습니다. AWS 지표가 10분 안팎 늦게 들어오니 평가도 15분 늦췄어요.</p>
+<p>지연은 일부러 대체하지 않았습니다. 로드밸런서 기준으로 최대 58초 걸리는 파일 업로드가 섞여서, 로드밸런서가 잰 p95 는 평소에도 5~13초를 오갔어요. 이 값으로는 "느려졌다"는 선을 그을 수 없었습니다. 대체할 수 없는 신호를 억지로 대체하는 것보다, 대체하지 않았다고 주석에 적어 두는 쪽을 골랐어요.</p>
+<p>에러 로그 감시는 5xx 비율과 겹쳐 보이지만 둘 다 남겼습니다. 로드밸런서를 거치지 않는 호출도 있어서 따로 봤어요. 그런 호출은 로드밸런서 지표에 없으니, 그쪽 에러는 로그로만 잡힙니다.</p>
+<p>문서 팩스 서비스 쪽에서는 이 단계에서 더 큰 것을 발견했어요. 이 서비스가 실제로 하는 일은 큐(SQS)에서 메시지를 꺼내 팩스 파일을 처리하는 것입니다. 그 처리는 웹 요청이 아니라서 트레이스에 잡히지 않았어요. 그래서 큐가 막히는지를 보는 감시가 이 서비스의 진짜 다운 신호가 됐습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 가장 오래된 메시지의 나이 (ApproximateAgeOfOldestMessage)</div>
+  SQS 가 내주는 지표로, 큐에 남은 메시지 중 가장 오래 기다린 것이 몇 초째 기다리는지를 뜻해요. 소비하는 쪽(컨시머)이 멈추면 메시지가 빠지지 않아 이 값이 계속 커집니다. 이 큐는 정상이면 몇 초 안에 비워지므로 15분(900초)을 넘으면 멈춘 것으로 봐요. 큐가 비어 있어 지표가 안 나오는 때는 정상으로 칩니다.
+</div>
+
+<h2>3. 트레이스 모니터를 먼저 지운다</h2>
+
+<p>대체 감시를 세운 뒤, 원래 계획은 1주일 동안 옛 모니터와 새 모니터가 같이 울리는지 보고 나서 APM 을 끄는 것이었어요. 그런데 APM 을 끄는 순간 트레이스 기반 다운 모니터가 무엇을 할지 따져 보다가 걸렸습니다.</p>
+<p>같은 날 낮 1시, 저는 배치 서버의 다운 모니터를 고쳤어요(#695, 4편에서 다룹니다). 앱이 죽으면 요청 수가 0 으로 찍히는 것이 아니라 시계열 자체가 사라집니다. 그런데 이 모니터는 데이터가 없으면 울리지 않게 되어 있었어요. 앱이 죽는 가장 나쁜 경우에 울리지 않는 모니터였던 거예요. 그래서 데이터가 없을 때도 온콜을 부르도록 바꿨습니다.</p>
+
+<div class="obsv-code">query            = "sum(last_10m):sum:trace.servlet.request.hits{service:...}.as_count() &lt; 1"
+on_missing_data  = "show_and_notify_no_data"   # 그날 낮에 default 에서 바꿨다</div>
+<p>&rarr; 10분 동안 트레이스로 센 요청이 1건 미만이면 울리고, 트레이스가 아예 안 들어와도 울린다는 설정이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 데이터 없음 (no data) 처리</div>
+  모니터가 보는 지표가 한동안 아예 들어오지 않을 때 어떻게 할지 정하는 설정이에요. Terraform 의 Datadog 모니터에서는 <code style="font-family:Menlo,monospace;font-size:14px;">on_missing_data</code> 로 정하고, <code style="font-family:Menlo,monospace;font-size:14px;">show_and_notify_no_data</code> 로 두면 데이터 없음 상태를 표시하고, 그 상태에서도 알림을 보냅니다. 데이터 없음은 Alert 와 다른 별도 상태예요.
+</div>
+<p>이제 APM 을 끈다고 해 볼게요. 트레이스가 끊기고, 이 모니터에는 데이터가 들어오지 않아요. 낮에 고친 대로 모니터는 온콜을 부릅니다. 앱은 멀쩡한데 P1 전화가 가는 거예요. 1주일을 나란히 보는 동안에는 문제가 없지만, 3번 단계에서 APM 을 끄는 순간 반드시 오탐이 납니다. <span class="obsv-mark">계획은 그날 낮의 제 고침을 반영하지 못한 채 쓰여 있었어요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="arr51" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="30" y="36" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="start">계획한 순서 (9월 28일 오후, 대체 감시 PR 의 주석)</text>
+<path d="M25 58 C 71 59, 118 59, 165 56 C 167 84, 164 111, 163 138 C 118 137, 71 136, 26 140 C 24 111, 27 84, 25 58 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="92" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">대체 감시</text>
+<text x="95" y="120" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">세우기</text>
+<path d="M195 58 C 241 56, 288 57, 335 56 C 334 84, 337 111, 336 138 C 288 137, 241 140, 194 136 C 194 111, 197 84, 195 58 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="265" y="92" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">APM 끄기</text>
+<text x="265" y="120" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">(자바 에이전트)</text>
+<path d="M365 58 C 411 57, 458 57, 505 56 C 503 84, 504 111, 504 138 C 458 137, 411 137, 366 139 C 364 111, 364 84, 365 58 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="435" y="92" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">트레이스 끊김</text>
+<text x="435" y="120" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">= 데이터 없음</text>
+<path d="M535 58 C 581 57, 628 57, 675 60 C 676 84, 673 111, 676 138 C 628 140, 581 137, 534 139 C 533 111, 536 84, 535 58 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="605" y="92" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">📟 P1 전화</text>
+<text x="605" y="120" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">(장애 아님)</text>
+<path d="M169 98 C 175 95, 182 100, 189 98" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr51)"/>
+<path d="M339 98 C 345 95, 352 100, 359 98" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr51)"/>
+<path d="M509 98 C 515 95, 522 100, 529 98" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr51)"/>
+<text x="350" y="166" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">다운 모니터가 이미 「데이터 없음」에도 온콜을 부르도록 고쳐져 있었다</text>
+<path d="M30 190 C 200 188, 480 193, 670 190" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8"/>
+<text x="30" y="226" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41" text-anchor="start">실제로 한 순서 (3번과 4번을 뒤집었다)</text>
+<path d="M25 248 C 71 249, 118 246, 165 249 C 163 274, 166 301, 166 328 C 118 329, 71 330, 26 327 C 27 301, 27 274, 25 248 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="282" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">대체 감시</text>
+<text x="95" y="310" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">세우기</text>
+<path d="M195 248 C 241 247, 288 246, 335 249 C 333 274, 336 301, 337 328 C 288 326, 241 330, 196 330 C 193 301, 197 274, 195 248 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="265" y="282" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">트레이스 모니터</text>
+<text x="265" y="310" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">먼저 지우기</text>
+<path d="M365 248 C 411 246, 458 247, 505 247 C 503 274, 504 301, 507 328 C 458 329, 411 329, 366 330 C 363 301, 366 274, 365 248 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="435" y="282" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">APM 끄기</text>
+<text x="435" y="310" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">(자바 에이전트)</text>
+<path d="M535 248 C 581 249, 628 246, 675 250 C 673 274, 674 301, 676 328 C 628 329, 581 327, 536 329 C 533 301, 536 274, 535 248 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="605" y="282" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">✅ 오탐 없음</text>
+<text x="605" y="310" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">호출 없음</text>
+<path d="M169 288 C 175 285, 182 290, 189 288" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr51)"/>
+<path d="M339 288 C 345 285, 352 290, 359 288" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr51)"/>
+<path d="M509 288 C 515 285, 522 290, 529 288" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr51)"/>
+<text x="350" y="364" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">= 신호가 끊기면 울리는 모니터는 신호를 끊기 전에 치운다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 계획대로 APM 을 먼저 끄면, 그날 낮에 고친 다운 모니터가 멀쩡한 앱을 두고 전화를 건다</div>
+
+<p>그래서 순서를 뒤집었어요(#721). 배치 서버에서 트레이스 기반 모니터 다섯 개를 먼저 지웠습니다. 다운(P1), 5xx 에러율(P1), 그리고 지연 p95 와 거기 딸린 저트래픽 조건·복합 모니터 셋이에요. 다운은 로드밸런서의 정상 대상 수가, 에러율은 2절의 5xx 비율이 이어받습니다. 메모리 모니터는 남겼어요. 트레이스가 아니라 호스트 에이전트가 보내는 지표라서 APM 을 꺼도 영향이 없거든요. 1주일 나란히 보는 단계는 하지 않고, 이 순서로 대신했습니다.</p>
+<p>지우면 되돌릴 수 없는 것도 PR 에 적었어요. 모니터의 상태 이력은 사라집니다. 정의는 git 에 남아서 다시 만들 수는 있지만, 과거에 언제 울렸는지는 돌아오지 않아요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 머지됐다고 적용된 것은 아니에요</div>
+  9월 29일에 다시 보니, 모니터를 지운 9월 28일 저녁에 서버에 반영된 것은 다른 변경(힙 축소)뿐이었고 APM 을 끄는 변경은 아직 서버에 반영 전이었어요. 그사이 오탐은 날 일이 없었지만, APM 과금은 그대로 이어지고 있었어요. 모니터 쪽과 앱 쪽은 저장소도 배포 경로도 다르니, 한쪽이 끝났다는 사실로 다른 쪽을 짐작하면 안 됩니다.
+</div>
+
+<h2>4. 켜 둔 것과 쓰는 것이 달랐다</h2>
+
+<p>문서 팩스 서비스는 같은 순서를 다음 날 밟았어요(#731). 그런데 이 서비스의 트레이스 모니터를 지우기 전에 먼저 답해야 할 질문이 있었습니다. 노트에는 "판정 불가 모니터 정리 여부 결정"이라고 적어 두었어요.</p>
+<p>이 서비스에도 필수 모니터 세트(다운·에러율·지연)를 붙여 두었습니다. 그런데 이 서비스가 받는 웹 요청은 10초마다 한 번 오는 헬스체크뿐이었어요. 10분에 60건, 전부 헬스체크입니다. 3편에서 쓴 대로, 필수 모니터의 가드는 "사용자 요청이 너무 적으면 에러율과 지연을 판정하지 않는다"는 조건이고, 여기서 헬스체크는 빼고 셉니다. 그러면 이 서비스의 가드는 늘 "요청 부족"이에요. 에러율과 지연은 한 번도 판정될 수 없는 모니터였습니다. 다운 모니터는 판정은 됐지만 헬스체크가 들어오는지만 보고 있었어요. 큐를 읽는 부분이 멈춰도 헬스체크는 계속 성공하니, 이 모니터는 실제 장애를 잡을 수 없었습니다.</p>
+<p>그래서 이 모니터들은 지우기로 했어요. 다운·에러율·지연과 거기 딸린 조건까지 여섯 개예요. 이 다운 모니터도 필수 모듈이라 데이터 없음에 온콜을 부르니, 3절과 같은 이유로 에이전트보다 먼저 지워야 했어요. 실제 감시는 2절의 큐 정체 감시가 맡고 있었습니다. 다시 붙이지 말라는 주석도 남겼어요. 필수 모니터 모듈을 이 서비스에 다시 붙이면 가드가 늘 "요청 부족"에 머물고, 똑같이 판정하지 못하는 모니터가 생기기 때문입니다. 이 주석은 그 시점의 판단이에요. 같은 날 오후 필수 모니터에 CPU 포화 감시가 더해졌을 때(#753), 이 서비스에는 다운·에러율·지연은 켜지 않고 CPU 모니터만 다시 켰습니다.</p>
+<p>돌아보면 이 서비스의 APM 은 켜져 있었지만, 트레이스로 남는 것은 헬스체크뿐이었어요. <span class="obsv-mark">APM 을 켜 두었다는 것과 APM 이 서비스를 보고 있다는 것은 다른 이야기였습니다.</span> 비용 검토에서 이 서비스를 고른 이유도 여기에 있어요. 떼어도 잃는 정보가 거의 없었습니다.</p>
+
+<h2>5. 앱에서 뗀다: 자바 에이전트만, 호스트 에이전트는 남긴다</h2>
+
+<p>모니터를 치운 다음에야 앱 쪽을 건드렸어요. 여기서 "에이전트"가 두 가지라는 점을 먼저 구분해야 합니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 에이전트 (Datadog Agent / 자바 에이전트)</div>
+  Datadog 에 데이터를 보내는 프로그램이 두 층으로 있어요. <b>호스트 에이전트</b>는 서버마다 하나씩 돌면서 CPU·메모리 같은 호스트 지표와 컨테이너 로그를 모으고, 앱이 보낸 트레이스를 받아 Datadog 으로 넘깁니다. ECS 에서는 앱 컨테이너 옆에 붙는 사이드카 컨테이너로 돌기도 해요. <b>자바 에이전트</b>(<code style="font-family:Menlo,monospace;font-size:14px;">-javaagent</code> 로 JVM 에 붙이는 라이브러리)는 앱 프로세스 안에서 트레이스와 프로파일을 만들어 호스트 에이전트로 보냅니다.
+</div>
+<p>뗄 것은 자바 에이전트였어요. 호스트 에이전트는 남겼습니다. 호스트 에이전트를 떼면 2절에서 세운 에러 로그 감시와 메모리 모니터가 같이 데이터를 잃어요. APM 을 대신하려고 세운 감시가 바로 이 에이전트에 기대고 있었습니다. 그래서 인프라 모니터링 과금은 그대로 두고, APM 과 프로파일러 과금만 빼는 것이 목표였어요.</p>
+<p>배치 서버는 이미지를 다시 만들지 않아도 끌 수 있는 경로를 골랐어요. 설정만 바꾸면 되는 방법입니다. 그때 이 서비스는 main 에 머지될 때마다 같은 태그의 이미지가 새로 빌드되는 구조라서, 무심코 새 이미지를 받으면 아직 내보내기로 하지 않은 코드까지 딸려 나가요. 설정만으로 끄면 이미지와 상관없이 APM 만 끌 수 있습니다. 그래서 서버의 compose 파일(docker compose 가 컨테이너 구성을 읽는 YAML 파일)에서 Datadog 줄만 고쳤어요.</p>
+
+<div class="obsv-code"># 앱 · 배치 컨테이너
+DD_TRACE_ENABLED: "false"    # 트레이스를 만들지 않는다
+DATA_DOG: ""                 # 시작 스크립트가 -javaagent 를 붙이지 않게 비운다
+
+# 호스트 에이전트 컨테이너
+DD_APM_ENABLED: "false"      # 트레이스 수신을 끈다. 지표·로그 수집은 그대로</div>
+<p>&rarr; 앱은 트레이스를 만들지 않고, 자바 에이전트도 붙이지 않아요. 호스트 에이전트는 트레이스를 받지 않을 뿐 지표와 로그는 계속 모읍니다.</p>
+
+<p>파일을 통째로 덮지 않은 이유가 하나 더 있어요. 준비하다 보니 외부 연동에 쓰는 환경 변수 몇 개가 서버의 compose 에만 있고 저장소에는 없었습니다. 저장소 파일로 덮었다면 앱은 정상 기동하는데 그 기능만 깨졌을 거예요. 그 변수는 저장소에 옮겨 두었고, 이번 반영은 해당 줄만 고치는 방식으로 했습니다.</p>
+<p>반영은 9월 29일에 했어요. 그때는 종료 대기 설정이 없어서, 컨테이너를 다시 만들 때마다 짧은 중단이 생겼습니다. 그래서 처음에는 이미지를 받지 않고 설정만 반영하려던 계획을 바꿔, 그때 main 에 쌓인 미배포 변경 두 개를 내용을 확인한 뒤 같이 내고 재시작을 한 번으로 줄였어요. 모르는 코드가 딸려 나가는 것과 확인한 코드를 같이 내는 것은 다른 일입니다. 스레드 덤프로 앱 코드를 실행 중인 스레드가 0 인 순간을 잡아 재생성했고, 중단은 26초, 끊긴 요청은 0건이었습니다. 종료 대기(그레이스풀 종료, 받은 요청을 마저 처리한 뒤 내려가는 설정)는 다음 날인 9월 30일에 앱 쪽에 들어갔어요.</p>
+<p>문서 팩스 서비스는 앱 저장소에서 자바 에이전트를 기본으로 끄는 변경을 머지했습니다. 이 저장소는 머지하면 운영에 자동으로 배포돼요.</p>
+
+<h2>6. 뗐는지는 서비스가 아니라 호스트로 확인한다</h2>
+
+<p>마지막은 검증이에요. 처음에는 "그 서비스의 트레이스가 0 이면 끝"이라고 생각하기 쉽습니다. 그런데 APM 과 프로파일러는 서비스가 아니라 호스트 단위로 과금돼요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 호스트 단위 과금</div>
+  트레이스를 보낸 서비스 수가 아니라, 트레이스나 프로파일을 보낸 호스트 수로 요금을 매기는 방식이에요. 한 호스트에서 컨테이너 하나만 트레이스를 보내도 그 호스트는 통째로 APM 호스트로 잡힙니다. 호스트 수는 한 달 동안 시간마다 세고, 그중 가장 높은 1% 를 뺀 값(99백분위)으로 과금돼요. 그래서 달 중간에 줄여도 그달 대부분을 켠 채로 보냈다면 청구에는 줄기 전 수량이 남습니다.
+</div>
+<p>그래서 9월 30일의 검증은 호스트를 기준으로 했어요. 두 호스트 각각에서 트레이스가 0건인지, 프로파일이 0건인지, 그리고 같은 호스트에 아직 트레이스를 보내는 다른 서비스가 남아 있지 않은지 봤습니다. 이 확인은 특히 문서 팩스 서비스의 호스트에서 중요했어요. 이 호스트에는 다른 앱도 같이 돌고 있었습니다. 9월 29일에 확인해 보니 트레이스와 프로파일을 보내는 것은 문서 팩스 서비스의 컨테이너들뿐이었고, 다른 앱은 원래 보내지 않았어요. 그 확인이 있었기에 "이 서비스의 자바 에이전트만 떼면 이 호스트의 APM·프로파일러 과금이 빠진다"고 말할 수 있었습니다. <span class="obsv-mark">과금 단위가 호스트이니, 확인 단위도 호스트여야 했어요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="arr52" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M25 30 C 160 31, 295 31, 430 29 C 428 120, 429 210, 431 300 C 295 302, 160 299, 23 298 C 27 210, 23 120, 25 30 Z" fill="#fdfaf3" stroke="#3d3a34" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="40" y="60" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="start">🖥️ 문서 팩스 서비스가 도는 호스트 (EC2)</text>
+<path d="M45 78 C 166 77, 288 79, 410 79 C 412 94, 412 111, 409 128 C 288 126, 166 126, 47 129 C 44 111, 44 94, 45 78 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="227" y="110" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">문서 팩스 서비스 컨테이너들: 자바 에이전트 뗌 ✂️</text>
+<path d="M45 142 C 166 141, 288 144, 410 140 C 409 158, 412 175, 411 192 C 288 191, 166 190, 47 193 C 44 175, 47 158, 45 142 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="227" y="174" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272" text-anchor="middle">같은 호스트의 다른 앱: 원래 트레이스를 안 보냄</text>
+<path d="M45 212 C 166 211, 288 214, 410 214 C 411 234, 412 257, 411 280 C 288 281, 166 282, 47 279 C 43 257, 47 234, 45 212 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="227" y="240" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle">호스트 에이전트: 남김</text>
+<text x="227" y="266" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">호스트 지표 · 로그 수집 (대체 감시가 여기에 기댄다)</text>
+<path d="M436 165 C 450 162, 464 167, 478 165" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr52)"/>
+<path d="M485 70 C 550 69, 615 72, 680 71 C 679 130, 678 190, 682 250 C 615 251, 550 251, 483 251 C 483 190, 486 130, 485 70 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="582" y="100" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41" text-anchor="middle">호스트 기준으로 센다</text>
+<text x="500" y="136" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="start">&#9744; 트레이스 0건</text>
+<text x="500" y="168" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="start">&#9744; 프로파일 0건</text>
+<text x="500" y="200" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="start">&#9744; 남은 추적 서비스 없음</text>
+<text x="582" y="236" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">셋 다 맞아야 과금이 빠진다</text>
+<text x="582" y="280" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="middle">하나라도 남으면</text>
+<text x="582" y="302" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="middle">호스트째 APM 호스트로 잡힌다</text>
+<text x="350" y="344" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">= 과금 단위가 호스트면, 검증 단위도 호스트다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 한 컨테이너라도 트레이스를 보내면 호스트째 과금된다. 그래서 호스트 안을 전부 세어 본다</div>
+
+<div class="obsv-code">호스트                    마지막 트레이스(KST)   이후 트레이스   이후 프로파일
+배치 서버 호스트          9월 29일 15:13         0건            0건
+문서 팩스 서비스 호스트   9월 29일 15:31         0건            0건
+(두 호스트 모두 남은 APM · 프로파일러 서비스 없음, 9월 30일 확인)</div>
+<p>&rarr; 반영 시각 뒤로 두 호스트에서 트레이스와 프로파일이 한 건도 들어오지 않았고, 같은 호스트에서 추적을 이어 가는 서비스도 없었다는 기록이에요.</p>
+
+<p>곁가지로 보인 변화도 있어요. 배치 서버 호스트의 메모리 사용률은 반영 전후로 41% 에서 31% 로 내려갔습니다. 힙 축소가 이미 반영된 뒤의 41%에서 내려간 것이라, 자바 에이전트 몫이 빠진 것으로 보여요.</p>
+<p>청구서로 확인하는 일은 아직 남아 있어요. 시간별 호스트 수의 99백분위로 과금되니, 9월 대부분을 APM 을 켠 채로 보낸 두 호스트는 9월 청구에 그대로 잡힙니다. 절감은 다음 달 청구부터 보여요. 지금까지 확인한 것은 "과금 대상에서 빠질 조건을 갖췄다"까지이고, 실제로 빠졌는지는 10월 청구에서 APM·프로파일러 호스트 수로 봅니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: APM 을 뗄 때의 체크리스트</div>
+  &bull; 트레이스 기반 모니터를 전부 적고, 각각의 대체 신호를 정해요. 대체할 수 없는 것은 "대체 안 함"으로 적어요<br>&bull; 대체 감시가 호스트 에이전트에 기대는지 봐요. 기댄다면 호스트 에이전트는 남겨요<br>&bull; 트레이스 모니터 중 "데이터 없음"에도 울리는 것이 있으면, 에이전트보다 먼저 지워요<br>&bull; 모니터 쪽과 앱 쪽이 각각 실제로 반영됐는지 따로 확인해요<br>&bull; 검증은 호스트 단위로 해요. 트레이스 0, 프로파일 0, 같은 호스트에 남은 추적 서비스 0
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>APM 을 떼는 순서는 대체 감시, 트레이스 모니터 삭제, 자바 에이전트 제거, 호스트 단위 검증이다.</b><br><br>
+  처음 계획은 에이전트를 먼저 끄고 모니터를 나중에 지우는 것이었지만, 그보다 앞서 다운 모니터를 "데이터 없음에도 울리게" 고쳐 둔 탓에 그 순서로는 오탐 전화가 갈 수밖에 없었다. 한 서비스의 APM 은 헬스체크만 기록하고 있었고, 과금은 호스트 단위라 검증도 호스트로 했다. 무엇을 떼든, 그 신호가 끊겼을 때 누가 울릴지부터 따져야 한다.
+</div>
+
+</div>
