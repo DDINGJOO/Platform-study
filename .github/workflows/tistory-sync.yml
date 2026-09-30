@@ -38,7 +38,8 @@ jobs:
       - name: 업로드
         run: |
           set +e
-          ~/.local/share/tistory-uploader/venv/bin/python -u .claude/skills/tistory-sketch-post/assets/tistory-upload.py sync
+          # 러너는 노트북이다. 새벽에 잠자기에 들어가면 러너 연결이 끊겨 잡이 취소된다(2026-09-30 00:26)
+          caffeinate -i ~/.local/share/tistory-uploader/venv/bin/python -u .claude/skills/tistory-sketch-post/assets/tistory-upload.py sync
           code=$?
           if [ $code -eq 3 ]; then
             echo "::error::티스토리 로그인이 만료됐다. 러너 Mac 에서 'tistory-upload.py login' 을 실행할 것"
@@ -51,13 +52,18 @@ jobs:
       # 실패해도 이미 올린 글의 번호는 남겨야 다음 실행이 중복을 만들지 않는다
       - name: 매니페스트 커밋
         if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git diff --quiet tistory-manifest.json && exit 0
           git config user.name "tistory-sync"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add tistory-manifest.json
           git commit -m "tistory-manifest 갱신 — ${GITHUB_SHA::7} 업로드 결과"
-          git pull --rebase && git push
+          # 러너가 사용자 계정으로 돌아 전역 git 자격증명 도우미가 checkout 토큰보다 먼저 잡힌다.
+          # 토큰을 URL 에 직접 넣어 그 설정을 거치지 않는다
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git pull --rebase "$remote" main && git push "$remote" HEAD:main
 
       - name: 결과
         run: exit "${code:-1}"
