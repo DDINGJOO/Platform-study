@@ -19,7 +19,7 @@
                          내용이 저장소와 다를 수 있어 --update-linked 없이는 건드리지 않는다.
 
 새 글은 기본 비공개로 저장한다. 공개 발행은 사람이 한다.
-기존 글을 수정할 때는 공개 범위를 건드리지 않는다.
+기존 글을 수정할 때는 블로그의 현재 공개 범위를 읽어 그대로 다시 고르고, 저장 뒤 검증한다.
 
 TSSESSION 은 30~40분 쓰지 않으면 끊긴다(연속으로 쓰는 동안은 몇 시간도 버틴다).
 카카오 간편로그인 복구는 될 때도 있고 비밀번호 화면으로 갈 때도 있어 믿을 수 없다.
@@ -461,14 +461,17 @@ def cmd_sync(a):
             post_id = prev[1]["id"] if prev else None
             if not post_id:
                 # 앞선 실행이 저장 후 멈췄다면 글은 이미 있다. 다시 만들지 않고 그 글을 고친다
-                post_id = find_post_id(page, title)
+                post_id = find_post_id(page, title, tries=3)  # 목록 반영이 늦으면 한 번으로는 놓친다
                 if post_id in {e["id"] for e in manifest.values()}:
                     sys.exit(f"같은 제목의 글 /{post_id} 가 이미 다른 파일에 배정돼 있다. 매니페스트를 확인할 것: {title}")
                 if post_id:
                     act = "adopt"
             category = category_of(f, series)
-            visibility = (prev[1].get("visibility") if prev else None) or \
-                (current_visibility(page, post_id) if post_id else a.visibility)
+            # 기존 글은 블로그의 현재 공개 범위를 그대로 지킨다. 매니페스트 값을 쓰면 사람이 공개로
+            # 바꾼 글을 다음 수정 때 비공개로 되돌리고, 검증도 그 값과 비교하니 통과해 버린다
+            visibility = current_visibility(page, post_id) if post_id else a.visibility
+            if post_id and not visibility:
+                sys.exit(f"/{post_id} 의 공개 범위를 읽지 못했다. 글이 있는지 확인할 것")
             print(f"… {act} {title}" + (f" (/{post_id})" if post_id else ""))
             try:
                 got = write_post(page, html, title, category, post_id, visibility)
