@@ -11,7 +11,8 @@
   posts/<카테고리>/<시리즈>/NN_제목.html
                          카테고리는 경로에서 나온다: 시리즈 폴더의 부모 경로가 곧 블로그 카테고리
                          (posts/Work/IaC/iac-log/ -> Work/IaC). posts/_archive/ 아래는 올리지 않는다.
-  tistory-series.json    시리즈 폴더 -> 제목 접두어·titles(파일명 -> 제목 덮어쓰기).
+  tistory-series.json    시리즈 폴더 -> 제목 접두어·titles(파일명 -> 제목 덮어쓰기)·tags(시리즈 공통 태그).
+                         글마다 더할 태그는 HTML 첫머리 `<!-- tags: a, b -->`. 합쳐서 10개까지
                          제목 = "접두어 " + 파일명(번호_ 뒤). 파일명을 못 바꿀 때 titles 로 고친다
   tistory-manifest.json  경로 -> 글 번호·제목·카테고리·내용 해시. 하나라도 다르면 수정, 없으면 새 글.
                          그래서 제목(파일명·접두어)이나 카테고리를 나중에 바꿔도 같은 글이 고쳐진다.
@@ -73,6 +74,22 @@ def load_json(p, default):
 
 def save_manifest(m):
     MANIFEST.write_text(json.dumps(dict(sorted(m.items())), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+MAX_TAGS = 10  # 티스토리 한 글의 태그 상한
+
+
+def tags_of(path, series, html=None):
+    """태그 = 시리즈 공통(tistory-series.json 의 tags) + 글 첫머리 주석 `<!-- tags: a, b -->`.
+    검색 유입을 위한 것이라 글에 맞는 구체적인 말을 앞에 둔다. 중복을 빼고 10개까지."""
+    html = html if html is not None else path.read_text(encoding="utf-8")
+    m = re.search(r"<!--\s*tags:\s*(.*?)-->", html[:4000], re.S)
+    own = [t.strip() for t in m.group(1).split(",")] if m else []
+    out = []
+    for t in own + series.get(rel(path.parent), {}).get("tags", []):
+        if t and t.lower() not in {x.lower() for x in out}:
+            out.append(t)
+    return out[:MAX_TAGS]
 
 
 def archived(path):
@@ -140,7 +157,8 @@ def plan(series, manifest, update_linked=False):
                 out.append(("new", f, title, h, None))
         elif entry.get("sha256") is None:
             out.append(("update" if update_linked else "skip-linked", f, title, h, (key, entry)))
-        elif entry["sha256"] != h or entry.get("title") != title or entry.get("category") != category:
+        elif (entry["sha256"] != h or entry.get("title") != title or entry.get("category") != category
+              or entry.get("tags", []) != tags_of(f, series, text)):
             out.append(("update", f, title, h, (key, entry)))
     return sorted(out, key=lambda r: r[0] == "new")  # 안정 정렬: 순서는 유지하고 수정을 앞으로
 
@@ -279,7 +297,24 @@ def fill_editor(page, html):
     raise RuntimeError(f"에디터에 넣은 내용이 원문과 다르다 ({len(got)}/{len(html)}자)\n" + "\n".join(l[:160] for l in diff))
 
 
-def write_post(page, html, title, category, post_id=None, visibility="private"):
+def set_tags(page, tags):
+    """기존 태그를 전부 지우고 다시 넣는다. 입력 후 Enter 로 한 개씩 확정된다."""
+    for _ in range(40):
+        btn = page.query_selector(".editor_tag .txt_tag .btn_delete")
+        if not btn:
+            break
+        btn.click()
+        page.wait_for_timeout(100)
+    for t in tags:
+        page.fill("#tagText", t)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(150)
+    got = page.evaluate("() => [...document.querySelectorAll('.editor_tag .txt_tag a:not(.btn_delete)')].map(a => a.innerText.trim().replace(/^#/, ''))")
+    if sorted(x.lower() for x in got) != sorted(x.lower() for x in tags):
+        raise RuntimeError(f"태그 입력이 어긋났다: {got} / {tags}")
+
+
+def write_post(page, html, title, category, post_id=None, visibility="private", tags=()):
     url = f"{BLOG}/manage/newpost/{post_id}?type=post&returnURL=ENTRY" if post_id else f"{BLOG}/manage/newpost/"
     page.goto(url)
     page.wait_for_load_state("networkidle")
@@ -294,6 +329,7 @@ def write_post(page, html, title, category, post_id=None, visibility="private"):
     page.fill("#post-title-inp", title)
     pick_category(page, category)
     fill_editor(page, html)
+    set_tags(page, list(tags))
     page.click("#publish-layer-btn")
     page.wait_for_timeout(1200)
     # 발행 창의 기본값은 그 글의 현재 공개 범위가 아니라 직전에 저장한 설정일 때가 있다.
@@ -335,11 +371,15 @@ def current_visibility(page, post_id):
     return {"private": "private", "protected": "protected", "public": "public"}.get(v)
 
 
-def verify(page, post_id, html, visibility):
+def verify(page, post_id, html, visibility, tags=()):
     want_svg, want_len = expected(html)
-    got_vis = current_visibility(page, post_id)
+    got_vis = current_visibility(page, post_id)  # 글 페이지를 연다
     if got_vis != visibility:
         return False, f"공개 범위가 {got_vis} 다 (목표 {visibility})"
+    got_tags = page.evaluate("() => [...document.querySelectorAll('.box-tag a[rel=tag]')].map(a => a.innerText.trim())")
+    got_tags = sorted({t.lower() for t in got_tags})
+    if got_tags != sorted({t.lower() for t in tags}):
+        return False, f"태그가 다르다: {got_tags} / {sorted(tags)}"
     got = page.evaluate("""() => { const a = document.querySelector('.contents_style');
         if (!a) return null;
         const c = a.cloneNode(true); c.querySelectorAll('svg,style,script').forEach(e => e.remove());
@@ -467,6 +507,7 @@ def cmd_sync(a):
                 if post_id:
                     act = "adopt"
             category = category_of(f, series)
+            tags = tags_of(f, series, html)
             # 기존 글은 블로그의 현재 공개 범위를 그대로 지킨다. 매니페스트 값을 쓰면 사람이 공개로
             # 바꾼 글을 다음 수정 때 비공개로 되돌리고, 검증도 그 값과 비교하니 통과해 버린다
             visibility = current_visibility(page, post_id) if post_id else a.visibility
@@ -474,7 +515,7 @@ def cmd_sync(a):
                 sys.exit(f"/{post_id} 의 공개 범위를 읽지 못했다. 글이 있는지 확인할 것")
             print(f"… {act} {title}" + (f" (/{post_id})" if post_id else ""))
             try:
-                got = write_post(page, html, title, category, post_id, visibility)
+                got = write_post(page, html, title, category, post_id, visibility, tags)
             except RuntimeError:
                 if refused:
                     print(f"✗ 티스토리가 저장을 거부했다: {refused[-1]}")
@@ -485,11 +526,11 @@ def cmd_sync(a):
             if not post_id:
                 print("✗ 저장 후 글 번호를 못 찾았다. 중복을 막기 위해 여기서 멈춘다.")
                 sys.exit(1)
-            ok, detail = verify(page, post_id, html, visibility)
+            ok, detail = verify(page, post_id, html, visibility, tags)
             if act == "rename":
                 manifest.pop(prev[0], None)
             # 검증 실패여도 글은 이미 있으므로 번호는 기록한다. 해시를 비워 다음 sync 에서 다시 쓰게 한다.
-            manifest[key] = {"id": post_id, "title": title, "category": category, "visibility": visibility,
+            manifest[key] = {"id": post_id, "title": title, "category": category, "visibility": visibility, "tags": tags,
                              "sha256": h if ok else "",
                              "synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
             save_manifest(manifest)
