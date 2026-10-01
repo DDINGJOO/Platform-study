@@ -32,6 +32,7 @@ TSSESSION 은 30~40분 쓰지 않으면 끊긴다(연속으로 쓰는 동안은 
     포커스 후 keyboard.insert_text 로 넣어야 한다. 그래서 저장 뒤 글 페이지를 열어 검증한다.
 """
 import argparse
+import difflib
 import fcntl
 import http.cookiejar
 import urllib.request
@@ -133,7 +134,7 @@ def order_key(files):
 
 def plan(series, manifest, update_linked=False):
     """(동작, 경로, 제목, 해시, 기존 항목) 목록. 동작: new / update / rename / skip-linked."""
-    files = [f for f in SRC.rglob("*.html") if not archived(f)]
+    files = post_files()
     key = order_key(files)
     files.sort(key=key.get)
     present = {rel(f) for f in SRC.rglob("*.html")}
@@ -147,7 +148,8 @@ def plan(series, manifest, update_linked=False):
     out = []
     for f in files:
         text = f.read_text(encoding="utf-8")
-        h, key, title = sha(text), rel(f), title_of(f, series)
+        # 해시는 렌더 결과로 잰다. 다른 글이 새로 올라가 목차 링크가 생기면 이 글도 다시 쓰게 된다
+        h, key, title = sha(render(f, text, manifest, files)), rel(f), title_of(f, series)
         category = category_of(f, series)
         entry = manifest.get(key)
         if entry is None:
@@ -174,6 +176,81 @@ def header_leak(html):
     if pre.count("<!--") != pre.count("-->"):
         return "(머리 주석의 여닫이 수가 맞지 않는다)"
     return re.sub(r"<!--.*?-->", "", pre, flags=re.S).strip()[:80]
+
+
+# ---------------------------------------------------------------- 올리기 직전 변환
+# 저장소 파일은 그대로 두고 블로그에 올라가는 HTML 만 바꾼다. 두 변환 모두 다른 글의 글 번호나
+# 글의 내용에서 나오는 값이라, 파일에 적어 두면 번호가 바뀔 때마다 여러 파일을 손으로 고쳐야 한다.
+
+def _toc_key(s):
+    """목차 줄과 파일명을 같은 모양으로 맞춘다: 태그·"N편." 같은 머리·" : 부제" 를 떼고 글자만 남긴다."""
+    s = re.sub(r"<[^>]+>|&[a-z]+;", "", s).strip()
+    s = re.sub(r"^.{0,20}?\d+편\s*[-.·:]\s*", "", s)
+    return re.sub(r"[\s\W_]+", "", s.split(" : ")[0]).lower()
+
+
+def _toc_target(line, here, files):
+    """목차 한 줄이 가리키는 파일. 같은 폴더를 먼저, 없으면 전체에서 찾는다. 못 찾으면 None."""
+    m = re.match(r"\s*(\d+)~\d+편", re.sub(r"<[^>]+>", "", line))
+    if m:  # "8~11편. 둘째 날…" 은 묶음의 첫 편으로
+        return next((f for f in files if f.parent == here.parent
+                     and re.match(rf"\d+[a-z]?_{m.group(1)}편\b", f.stem)), None)
+    want = _toc_key(line)
+    if len(want) < 4:
+        return None
+    for pool in ([f for f in files if f.parent == here.parent], files):
+        best = max(pool, key=lambda f: difflib.SequenceMatcher(None, want, _toc_key(_stem(f))).ratio(), default=None)
+        if best and difflib.SequenceMatcher(None, want, _toc_key(_stem(best))).ratio() >= 0.8:
+            return best
+    return None
+
+
+def _stem(f):
+    return re.sub(r"^\d+[a-z]?_", "", f.stem)
+
+
+def link_series(path, html, manifest, files):
+    """시리즈 목차의 각 줄을 그 글로 가는 링크로 바꾼다. 매니페스트에 번호가 있는 글만.
+    아직 안 올린 글은 글자로 남고, 그 글이 올라가면 이 글의 렌더 결과가 바뀌어 다음 sync 가 다시 쓴다."""
+    def box(m):
+        out = []
+        for line in re.split(r"(<br\s*/?>)", m.group(2)):
+            if "obsv-st" in line or "지금 이 글" in line or "<a " in line or not line.strip() or line.startswith("<br"):
+                out.append(line)
+                continue
+            t = _toc_target(line, path, files)
+            post = manifest.get(rel(t)) if t and t != path else None
+            if not post:
+                out.append(line)
+                continue
+            lead, body = re.match(r"(\s*)(.*?)\s*$", line, re.S).groups()
+            out.append(f'{lead}<a href="{BLOG}/{post["id"]}" style="color:inherit">{body}</a>')
+        return m.group(1) + "".join(out) + m.group(3)
+    return re.sub(r'(<div class="obsv-series">)(.*?)(\n</div>)', box, html, count=1, flags=re.S)
+
+
+def add_lead(html):
+    """글 첫머리 주석 `<!-- lead: … -->` 를 목차 앞 첫 문단으로 꺼낸다.
+    티스토리는 본문 첫 글자들을 목록·검색 미리보기 문구로 쓴다. 목차가 맨 앞이면 미리보기가
+    "1편. … 2편. …" 이 돼서, 검색 결과에서 글이 무엇에 관한 것인지 보이지 않았다."""
+    m = re.search(r"<!--\s*lead:\s*(.*?)\s*-->", html[:6000], re.S)
+    if not m or 'class="obsv-lead"' in html:
+        return html
+    p = (f'<p class="obsv-lead" style="font-size:17px;line-height:1.75;color:#5f594d;margin:0 0 20px">'
+         f'{m.group(1)}</p>\n\n')
+    i = html.find('<div class="obsv-series">')
+    if i < 0:
+        i = html.find('<div class="obsv-wrap">')
+        i = html.find("\n", i) + 1 if i >= 0 else -1
+    return html[:i] + p + html[i:] if i >= 0 else html
+
+
+def render(path, html, manifest, files):
+    return add_lead(link_series(path, html, manifest, files))
+
+
+def post_files():
+    return [f for f in SRC.rglob("*.html") if not archived(f)]
 
 
 def mask_ok(path):
@@ -477,18 +554,31 @@ def cmd_plan(a):
         print("tistory-series.json 에 없는 폴더(접두어 없이 파일명만 제목이 된다):", *missing, sep="\n  ")
 
 
+def _drain(queue, refill):
+    """큐를 하나씩 꺼낸다. 비면 refill() 로 한 번 더 채워 본다. 꺼낸 항목의 처리가 끝난 뒤에
+    다음을 달라고 할 때 refill 이 불리므로, 마지막 항목의 결과까지 보고 채울 수 있다."""
+    while True:
+        if not queue:
+            queue += refill()
+        if not queue:
+            return
+        yield queue.pop(0)
+
+
 def cmd_sync(a):
     from playwright.sync_api import sync_playwright
     series, manifest = load_json(SERIES, {}), load_json(MANIFEST, {})
     lock = hold_lock(blocking=True)  # keepalive 가 state.json 을 쓰는 중이면 기다린다
-    rows = [r for r in plan(series, manifest, a.update_linked) if r[0] != "skip-linked"]
-    if a.only:
-        rows = [r for r in rows if a.only in rel(r[1])]
+    def todo():
+        rows = [r for r in plan(series, manifest, a.update_linked) if r[0] != "skip-linked"]
+        return [r for r in rows if a.only in rel(r[1])] if a.only else rows
+    rows = todo()
     rows = rows[: a.limit] if a.limit else rows
     if not rows:
         print("올릴 것 없음")
         return
-    failed = 0
+    failed, created = 0, False
+    files = post_files()
     with sync_playwright() as p:
         ctx = open_ctx(p)
         page = ctx.new_page()
@@ -503,11 +593,21 @@ def cmd_sync(a):
                     refused.append(f"HTTP {r.status}")
         page.on("response", on_response)
         ensure_login(page)
-        for i, (act, f, title, h, prev) in enumerate(rows):
+        def refill():
+            # 새 글이 생기면 같은 시리즈 다른 편의 목차에 그 글 링크가 생긴다. 이번 실행에서 같이 고친다
+            nonlocal created
+            if not created or a.limit:
+                return []
+            created = False
+            return [r for r in todo() if r[0] == "update"]
+
+        for i, (act, f, title, _, prev) in enumerate(_drain(list(rows), refill)):
             if i:
                 time.sleep(a.interval)
-            key, html = rel(f), f.read_text(encoding="utf-8")
-            leak = header_leak(html)
+            key, raw = rel(f), f.read_text(encoding="utf-8")
+            html = render(f, raw, manifest, files)
+            h = sha(html)  # 앞에서 올린 글 때문에 렌더 결과가 plan 때와 달라졌을 수 있다
+            leak = header_leak(raw)
             if leak:
                 print(f"✗ 머리 주석 밖에 글자가 있다, 건너뜀: {key} → {leak!r}")
                 failed += 1
@@ -540,6 +640,7 @@ def cmd_sync(a):
                     ctx.close()
                     sys.exit(EXIT_DAILY_LIMIT if "최대" in refused[-1] else 1)
                 raise
+            created |= not post_id
             post_id = post_id or got or find_post_id(page, title, tries=5)
             if not post_id:
                 print("✗ 저장 후 글 번호를 못 찾았다. 중복을 막기 위해 여기서 멈춘다.")
