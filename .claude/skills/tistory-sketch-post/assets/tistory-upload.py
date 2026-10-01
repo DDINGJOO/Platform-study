@@ -182,11 +182,12 @@ def header_leak(html):
 # 저장소 파일은 그대로 두고 블로그에 올라가는 HTML 만 바꾼다. 두 변환 모두 다른 글의 글 번호나
 # 글의 내용에서 나오는 값이라, 파일에 적어 두면 번호가 바뀔 때마다 여러 파일을 손으로 고쳐야 한다.
 
-def _toc_key(s):
-    """목차 줄과 파일명을 같은 모양으로 맞춘다: 태그·"N편." 같은 머리·" : 부제" 를 떼고 글자만 남긴다."""
+def _toc_key(s, subtitle=False):
+    """목차 줄과 파일명을 같은 모양으로 맞춘다: 태그·"N편." 같은 머리를 떼고 글자만 남긴다.
+    목차에는 파일명에 없는 " : 부제" 가 붙기도 한다. subtitle=False 면 그 부제를 뗀다."""
     s = re.sub(r"<[^>]+>|&[a-z]+;", "", s).strip()
     s = re.sub(r"^.{0,20}?\d+편\s*[-.·:]\s*", "", s)
-    return re.sub(r"[\s\W_]+", "", s.split(" : ")[0]).lower()
+    return re.sub(r"[\s\W_]+", "", s if subtitle else s.split(" : ")[0]).lower()
 
 
 def _toc_target(line, here, files):
@@ -195,12 +196,15 @@ def _toc_target(line, here, files):
     if m:  # "8~11편. 둘째 날…" 은 묶음의 첫 편으로
         return next((f for f in files if f.parent == here.parent
                      and re.match(rf"\d+[a-z]?_{m.group(1)}편\b", f.stem)), None)
-    want = _toc_key(line)
-    if len(want) < 4:
+    wants = {_toc_key(line), _toc_key(line, subtitle=True)}  # "StatsD : UDP로…" ↔ 파일명 "StatsD, UDP로…"
+    if min(map(len, wants)) < 4:
         return None
+
+    def score(f):
+        return max(difflib.SequenceMatcher(None, w, _toc_key(_stem(f))).ratio() for w in wants)
     for pool in ([f for f in files if f.parent == here.parent], files):
-        best = max(pool, key=lambda f: difflib.SequenceMatcher(None, want, _toc_key(_stem(f))).ratio(), default=None)
-        if best and difflib.SequenceMatcher(None, want, _toc_key(_stem(best))).ratio() >= 0.8:
+        best = max(pool, key=score, default=None)
+        if best and score(best) >= 0.8:
             return best
     return None
 
@@ -213,8 +217,11 @@ def link_series(path, html, manifest, files):
     """시리즈 목차의 각 줄을 그 글로 가는 링크로 바꾼다. 매니페스트에 번호가 있는 글만.
     아직 안 올린 글은 글자로 남고, 그 글이 올라가면 이 글의 렌더 결과가 바뀌어 다음 sync 가 다시 쓴다."""
     def box(m):
-        out = []
-        for line in re.split(r"(<br\s*/?>)", m.group(2)):
+        # 시리즈 이름 줄(<div class="obsv-st">)은 첫 편 줄과 <br> 없이 붙어 있으므로 먼저 떼어 낸다
+        head = re.match(r'\s*<div class="obsv-st">.*?</div>', m.group(2), re.S)
+        out = [head.group(0)] if head else []
+        rest = m.group(2)[head.end():] if head else m.group(2)
+        for line in re.split(r"(<br\s*/?>)", rest):
             if "obsv-st" in line or "지금 이 글" in line or "<a " in line or not line.strip() or line.startswith("<br"):
                 out.append(line)
                 continue
