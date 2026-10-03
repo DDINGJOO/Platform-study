@@ -1,0 +1,253 @@
+<!-- ============================================================
+  Datadog 설정을 코드로 8편: 약 30개라던 서비스는 11개였다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: 서비스 카탈로그, 서비스 등급, prevent_destroy, ignore_changes, Datadog 대시보드 -->
+<!-- lead: Datadog 서비스 카탈로그에 약 30개 서비스를 올리려다 세어 보니 데이터를 보내는 앱은 11개였어요. 카탈로그·대시보드·사용자를 변경 0으로 옮긴 순서와 6주 계획이 5일에 끝난 이유를 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Datadog 설정을 코드로 · 8편</div>
+  1편. 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다<br>
+  2편. service 는 앱이 정하고 team 은 호출 단위다<br>
+  3편. 필수 모니터가 헬스체크를 세고 있었다<br>
+  4편. 데이터 없음은 장애인가<br>
+  5편. APM 을 떼는 순서<br>
+  6편. 로그가 사라진 건 샘플링이 아니었다<br>
+  7편. 없는 채널로 보낸 알림은 plan 을 통과한다<br>
+  <b>8편. 약 30개라던 서비스는 11개였다</b> &larr; 지금 이 글<br>
+  9편. 음소거된 P1 하나가 배치 실패 감시를 껐다<br>
+  10편. 지연 오탐 68건은 느린 게 정상인 요청이 만들었다
+</div>
+
+<p>10월 1일 낮 12시 10분, 서비스 카탈로그 PR 을 하나 올렸어요. 로드맵 표에서 이 단계는 10월 12일부터 이틀짜리 일이었고, 내용 칸에는 "기존 3 편입 + 실제 서비스 약 30 정의"라고 적혀 있었습니다. 서른 개 서비스마다 소유 팀과 등급과 저장소를 정해야 하니 이틀도 빠듯해 보였어요.</p>
+<p>그런데 서른 개를 하나씩 적으려고 목록을 다시 세어 보니, Datadog 에 실제로 데이터를 보내는 앱은 11개였습니다. 그날 저녁 6시까지 카탈로그 11개, 대시보드 12개, 로그 인덱스와 AWS 연동, 사용자 12명이 코드로 들어갔어요. 10월 23일로 잡아 둔 마일스톤 "콘솔에만 있는 Datadog 설정 0"도 그날 넘었습니다. 결국 6주로 잡은 계획은 이튿날까지, 5일 만에 한 단계만 남기고 끝났어요. 이 글은 그 하루를 적은 기록이고, 계획이 왜 그렇게까지 틀렸는지도 함께 따져 봅니다.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 서비스 카탈로그에는 어떤 서비스를 올려야 할까?<br>
+&middot; 콘솔 값이 틀린 걸 알면서 왜 그대로 가져왔을까?<br>
+&middot; 콘솔 대시보드 19개 중 7개는 왜 남겼을까?<br>
+&middot; 사용자와 역할을 코드로 옮길 때 누가 잠길 수 있을까?<br>
+&middot; 6주 계획이 5일에 끝났다면, 계획이 틀린 걸까 일을 덜 한 걸까?</p>
+
+<h2>1. 약 30개라던 서비스는 11개였다</h2>
+
+<p>9월 27일에 API 로 전수 조회했을 때 Datadog 콘솔의 서비스 카탈로그에는 항목이 41개 있었어요. 그중 소유 팀 같은 메타데이터가 붙은 것은 3개뿐이었습니다. 나머지는 이름만 있고 아무 정보도 붙지 않은 항목이었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 서비스 카탈로그 (service catalog)</div>
+  Datadog 안에서 서비스마다 "누가 맡는지, 얼마나 중요한지, 코드는 어디 있는지"를 적어 두는 목록이에요. 알림을 받은 사람이 이 서비스가 누구 것인지 찾을 때, 그리고 모니터를 서비스별로 모아 볼 때 이 정보를 씁니다.
+</div>
+<p>계획서의 "약 30"은 계측이 없는 서비스까지 센 숫자였어요. 정의를 쓰려고 서비스를 하나씩 확인해 보니 그 안에는 Datadog 에 아무것도 보내지 않는 서비스가 섞여 있었습니다. 에이전트도 없고 로그도 트레이스도 오지 않는 서비스예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 계측 (instrumentation)</div>
+  앱이 지표·로그·트레이스를 모니터링 도구로 보내도록 에이전트나 라이브러리를 붙이는 일이에요. 계측이 없는 서비스는 Datadog 입장에서는 존재하지 않는 서비스입니다.
+</div>
+<p>카탈로그 항목은 Datadog 에 들어오는 데이터에 소유 정보를 붙이는 자리예요. 데이터가 오지 않는 서비스에 항목을 만들면 소유 팀과 등급은 적혀 있는데 연결된 모니터도 그래프도 없는 빈 페이지가 됩니다. 그래서 기준을 바꿨어요. <span class="obsv-mark">카탈로그에 올리는 기준은 "운영하는 서비스인가"가 아니라 "Datadog 에 데이터를 보내는가"다.</span> 이 기준으로 세니 11개였고, 이미 메타데이터가 있던 3개를 빼면 새로 쓸 정의는 8개였어요.</p>
+<p>계측이 없는 나머지 서비스는 버리지 않았어요. 로드맵의 11단계, CMDB 의 서비스 목록에서 카탈로그와 모니터를 한꺼번에 만드는 표준 모듈 단계로 넘겼습니다(#823 커밋 본문).</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: CMDB (Configuration Management Database)</div>
+  회사가 운영하는 서비스와 자원을 한곳에 적어 두는 원장이에요. 이 프로젝트의 최종 목표는 CMDB 에 서비스를 한 줄 등록하면 인프라, 배포, 모니터링이 한 번에 만들어지는 상태입니다.
+</div>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr81" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <path d="M28 110 C 90 107, 150 112, 200 109 C 203 140, 201 170, 202 200 C 150 203, 90 199, 30 201 C 27 170, 29 140, 28 110 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="115" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">계획서: 약 30</text>
+    <text x="115" y="166" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">계측 없는 서비스까지</text>
+    <text x="115" y="186" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">함께 센 숫자</text>
+    <path d="M210 155 C 235 153, 250 154, 268 155" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr81)"/>
+    <path d="M345 95 C 380 120, 410 140, 425 155 C 410 170, 380 190, 345 215 C 310 190, 280 170, 268 155 C 280 140, 310 120, 345 95 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="346" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">Datadog 에</text>
+    <text x="346" y="172" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">데이터가 오나?</text>
+    <path d="M425 150 C 450 120, 465 95, 486 80" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr81)"/>
+    <text x="440" y="100" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">예</text>
+    <path d="M425 162 C 450 190, 465 215, 486 232" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr81)"/>
+    <text x="440" y="222" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">아니오</text>
+    <path d="M492 40 C 560 37, 620 42, 678 39 C 681 70, 679 100, 680 122 C 620 125, 560 121, 494 123 C 491 100, 493 70, 492 40 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="586" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">카탈로그 11개</text>
+    <text x="586" y="90" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">기존 3 가져오기</text>
+    <text x="586" y="110" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">+ 새로 8</text>
+    <path d="M492 195 C 560 192, 620 197, 678 194 C 681 220, 679 250, 680 272 C 620 275, 560 271, 494 273 C 491 250, 493 220, 492 195 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="8 8" stroke-linejoin="round"/>
+    <text x="586" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">계측 없는 서비스</text>
+    <text x="586" y="248" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">11단계 CMDB 표준 모듈로</text>
+    <text x="350" y="310" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 무엇을 세는지 정하자 일의 크기가 바뀌었다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 카탈로그에 올릴지는 "데이터가 오는가" 하나로 가렸다</div>
+
+<h2>2. 틀린 값도 일단 그대로 가져온다</h2>
+
+<p>기존 3개는 콘솔에서 누군가 만들어 둔 정의였어요. 메인 API, 배치 서버, 그리고 배치 서버에 딸린 배치 작업입니다. 열어 보니 고칠 곳이 바로 보였어요. 배치 서버 두 항목의 소유 팀은 Datadog 팀 핸들이 아닌 옛 이름이었고, 연락처에는 템플릿 문구 <code style="font-family:Menlo,monospace;font-size:14px;">#팀채널명</code> 이 그대로 남아 있었습니다. 메인 API 의 소유 팀도 Datadog 팀 목록에 없는 이름이었어요.</p>
+<p>그래도 첫 PR(#820, 12:10)은 값을 하나도 고치지 않고 가져왔어요. 1편에서 모니터를 옮길 때 정한 순서를 그대로 따른 거예요. 가져오는 PR 의 plan 은 "가져오기 N 건, 변경 0 건"이어야 하고, 고치는 일은 다음 PR 에서 합니다.</p>
+
+<div class="obsv-code"># #820 의 plan (두 스택의 plan 을 합쳐 형태만 보인 것)
+Plan: 3 to import, 0 to add, 0 to change, 0 to destroy.
+
+# 같은 PR 에서 소유 팀과 연락처까지 고쳤다면
+Plan: 3 to import, 0 to add, 2 to change, 0 to destroy.</div>
+<p>&rarr; 아래 plan 의 "2 to change" 는 제가 고친 두 곳일 수도 있고, 코드로 옮기면서 생긴 형식 차이일 수도 있어요. plan 결과만으로는 둘을 가를 수 없습니다.</p>
+
+<p>이 위험은 가정이 아니었어요. 카탈로그 정의는 YAML 문자열인데, Terraform 이 생성해 준 코드에서는 이 문자열이 한 줄로 길게 나왔습니다. 읽을 수 있게 YAML 블록으로 바꾸면서도 키 순서와 들여쓰기는 생성된 형식을 그대로 따랐어요. 순서 하나만 달라도 Datadog 이 돌려주는 값과 코드가 계속 다르게 보이는 diff 가 남기 때문입니다(#823 커밋 본문). 형식을 옮기는 일만으로도 변경이 생길 수 있으니, 그 PR 에서 값까지 고치면 어느 변경이 어디서 왔는지 알 수 없어요. <span class="obsv-mark">가져오는 PR 의 "변경 0" 은 코드가 실물과 같다는 증명이고, 고치는 PR 의 변경은 전부 의도한 것이라는 증명이 됩니다.</span></p>
+<p>9분 뒤 #821 에서 import 블록을 지우면서 배치 서버 두 항목의 소유 팀을 팀 핸들로 맞추고 템플릿 연락처를 실제 채널(<code style="font-family:Menlo,monospace;font-size:14px;">#{알림 채널}</code>)로 바꿨어요. 메인 API 의 소유 팀은 누가 맡는지 확인을 받은 뒤 17분 뒤의 #823 에서 고쳤고, 같은 PR 에서 배치 작업에 빠져 있던 등급도 채웠습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 고치는 PR 은 눈에 띈 것만 고친다</div>
+  #823 의 제목은 "계측되는 앱 전부에 소유 팀 · 등급 · 저장소"였어요. 그런데 다음 날(10월 2일) 다시 보니 배치 작업 항목에는 저장소 링크가 없었습니다. 콘솔에서 만든 원래 정의에 링크가 빠져 있었고, 그대로 가져온 뒤 고치는 PR 들은 소유 팀, 연락처, 등급만 봤던 거예요. 11개 중 저장소가 비어 있던 항목은 이것 하나였고, #849 에서 채웠어요. 가져온 값을 고칠 때는 눈에 띈 칸이 아니라 모든 항목의 모든 필수 칸을 표로 놓고 확인해야 했습니다.
+</div>
+
+<h2>3. 소유 팀, 등급, 저장소</h2>
+
+<p>새로 쓴 8개를 포함해 11개 항목에는 같은 세 가지를 적었어요. 소유 팀은 2편에서 정한 대로 알림을 받는 Datadog 팀 핸들이고, 저장소는 코드가 있는 곳의 링크입니다. 셋째가 등급이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 등급 (tier)</div>
+  서비스가 멈췄을 때 얼마나 급한지를 숫자로 적은 값이에요. 같은 에러율이라도 등급 1 서비스면 바로 사람을 깨우고, 등급 3 이면 다음 업무 시간에 봐도 되는 식으로 판단의 기준이 됩니다.
+</div>
+<p>등급은 회사 사정이 아니라 서비스가 하는 일로 나눴어요. 기준은 세 줄이었습니다.</p>
+
+<div class="obsv-code">등급 1  장애 시 매출·제휴에 바로 영향   메인 API, 에이전트 API, 제휴 서비스                 (3)
+등급 2  지연을 견딜 수 있음             배치 서버, 제휴 API, 제휴 서비스의 중계 서버,
+                                        메시지 발송 서비스(API · 워커), 에이전트 API 의 배치 작업 (6)
+등급 3  내부용 · 배치                   배치 서버의 배치 작업, 문서 팩스 서비스             (2)</div>
+<p>&rarr; 사용자 요청을 직접 받아 매출과 제휴로 이어지는 앱이 1, 늦게 처리돼도 결과가 나오면 되는 앱이 2, 사내에서만 쓰거나 정해진 시각에 도는 작업이 3 이에요.</p>
+
+<p>소유 팀과 등급은 제가 초안을 쓰고 10월 1일에 확인을 받은 값 그대로 넣었어요. 개발팀이 맡는 항목이 6개, 플랫폼팀이 맡는 항목이 5개입니다. 카탈로그는 메타데이터라서 모니터 쿼리나 알림에는 영향이 없어요. apply 뒤에 카탈로그가 걸친 7개 스택을 다시 plan 해서 전부 <code style="font-family:Menlo,monospace;font-size:14px;">No changes</code> 인 것도 확인했습니다. 소유 팀 칸이 비거나 없는 팀을 가리키는 PR 을 CI 가 막게 한 것은 같은 날 오후의 일로, 7편에서 다룬 가드 작업의 일부예요.</p>
+
+<h2>4. 대시보드 19개 중 12개만 가져왔다</h2>
+
+<p>오후 3시 27분, 대시보드로 넘어갔어요(#831). 콘솔의 커스텀 대시보드는 19개였는데, 그중 지금도 쓰는 12개만 각 서비스 스택으로 가져왔습니다. 메인 API 5개, 배치 서버 2개, 에이전트 API 2개, 제휴 서비스 1개, 여러 서비스가 함께 보는 DB·VPN 대시보드 2개예요. 위젯 하나하나를 Terraform 문법으로 옮기지 않고, 대시보드 JSON 전체를 그대로 담는 리소스(<code style="font-family:Menlo,monospace;font-size:14px;">datadog_dashboard_json</code>)를 썼어요. plan 은 12 import, 0 change 였습니다.</p>
+<p>남긴 7개는 일부러 남겼어요. 위젯이 하나도 없는 것, 이름에 [SAMPLE] 이 붙은 것, 예시용으로 만든 것, 다른 대시보드를 복제만 해 둔 것이었습니다. 지울 후보로 보였지만 만든 사람이 각각 달라서, 확인을 받기 전에는 지우지도 코드로 가져오지도 않았어요. 코드로 가져오면 그 순간부터 지우는 일도 PR 이 되니, 쓸지 말지 정해지지 않은 것까지 저장소에 담을 이유가 없었습니다.</p>
+<p>가져온 12개에서도 2절과 같은 일이 있었어요. 한 대시보드의 소유 태그가 존재하지 않는 팀을 가리키고 있었습니다. 가져올 때는 그대로 두고, 저녁 6시의 #841 에서 실제 팀으로 고쳤어요. 같은 PR 에서 중복으로 보이던 팀 하나도 지웠습니다. 모니터, 온콜 라우팅, 에스컬레이션 정책, 대시보드 어디에서도 참조하지 않는 것을 확인한 뒤였어요.</p>
+
+<h3>로그 인덱스, 트레이스 연결, AWS 연동</h3>
+<p>4시 14분에는 플랫폼 스택에 세 개를 더 가져왔어요(#833). 로그 인덱스 하나(보존 3일, 제외 필터 6개), 로그에서 trace_id 와 span_id 를 뽑아 트레이스와 이어 주는 로그 파이프라인 하나, 그리고 AWS 연동입니다. 셋 다 읽기 키로 조회되는 것을 확인했고, plan 은 3 import, 0 change 였어요.</p>
+<p>"그대로 가져온다"에도 예외가 하나 있었어요. Terraform 이 생성한 로그 인덱스 코드에는 일일 한도가 <code style="font-family:Menlo,monospace;font-size:14px;">0</code> 으로 들어 있었는데, 이 값은 검증에서 실패했습니다. 실물에는 한도가 아예 없어서, 한도 줄을 빼고 "한도 없음"으로 적었어요. 생성된 코드도 실물과 같다는 보장은 없고, 그걸 확인해 주는 것이 결국 0 change 라는 plan 이었어요.</p>
+<p>AWS 연동에서 가장 신경 쓴 것은 값이 아니라 주석이었어요. Datadog 이 CloudWatch 에서 지표를 가져올 때 수집하지 않을 AWS 네임스페이스 목록이 콘솔에 길게 걸려 있었습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 네임스페이스 (CloudWatch namespace)</div>
+  CloudWatch 가 지표를 서비스별로 묶는 이름이에요. <code style="font-family:Menlo,monospace;font-size:14px;">AWS/EC2</code>, <code style="font-family:Menlo,monospace;font-size:14px;">AWS/SQS</code> 같은 단위로, Datadog 연동에서는 이 단위로 가져올지 말지를 정합니다.
+</div>
+
+<div class="obsv-code"># 🔴 namespace_filters.exclude_only 는 비용 결정이다. AWS/CloudFront · AWS/VPN · AWS/SQS · AWS/EC2 · AWS/ECS · AWS/Lambda 등이
+# 빠져 있어 Datadog 에는 그 지표가 없다. 해당 감시는 CloudWatch 알람(aws 계층)이 맡는다. 하나라도 빼면 지표 비용이 는다.
+# external_id 는 코드에 두지 않는다(IAM 신뢰 조건 값, 실물에서 계산됨).</div>
+<p>&rarr; 제외 목록에서 하나를 지우면 그 지표가 Datadog 으로 들어오기 시작하고 비용이 늘어난다는 뜻이에요. 그 지표는 Datadog 이 아니라 CloudWatch 알람이 보고 있다는 것도 함께 적었습니다.</p>
+
+<p>이 주석이 없으면 코드를 처음 읽는 사람에게 이 목록은 이상한 설정으로 보여요. 왜 EC2 와 SQS 지표가 Datadog 에 없는지 궁금해서 목록을 줄이는 PR 을 올리면, 리뷰어도 그 목록이 왜 있는지 모르니 통과시킬 수 있습니다. 9월 30일 작업 기록에 "CloudFront 지표는 비용 때문에 수집에서 뺐다(의도)"는 메모를 따로 적어 둔 것도 같은 이유였어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 비용 때문에 정한 값은 그 값 바로 옆에 이유를 적는다</div>
+  &bull; 콘솔에서는 설정 옆에 이유를 남길 곳이 없어서 결정이 사람의 기억에만 남아요. 코드로 옮길 때가 이유를 적을 기회입니다<br>
+  &bull; 이유와 함께 "그럼 그 감시는 누가 하는가"를 적어요. 빠진 지표를 보고 감시 공백을 의심할 다음 사람을 위한 답입니다<br>
+  &bull; 금액이 아니라 결정의 방향(무엇을 바꾸면 비용이 는다)을 적으면 단가가 바뀌어도 주석이 낡지 않아요
+</div>
+
+<h2>5. 아무도 잠기지 않게 사용자를 가져온다</h2>
+
+<p>오후 5시 46분, 마지막으로 사용자와 역할이 남았어요. 이건 다른 설정과 무게가 달랐습니다. 모니터 코드가 틀리면 알림이 하나 잘못 가지만, 역할 코드가 틀리면 apply 한 번에 사람의 권한이 바뀌어요. 그중에서도 Terraform 이 쓰는 서비스 계정이 위험했습니다. 이 계정은 9월 28일에 아카이브 권한 때문에 관리자 역할로 올려 둔 상태였어요. 코드가 이 계정의 역할을 낮추면, 그 apply 가 끝난 순간부터 다음 apply 를 할 권한이 사라집니다. 고치는 PR 도 apply 할 수 없게 돼요.</p>
+<p>그래서 #838 은 세 가지 장치를 두고 활성 사용자 12명(서비스 계정 1개 포함)을 지금 역할 그대로 가져왔어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: lifecycle 설정 (prevent_destroy, ignore_changes)</div>
+  Terraform 리소스마다 붙일 수 있는 안전장치예요. <code style="font-family:Menlo,monospace;font-size:14px;">prevent_destroy</code> 가 켜진 리소스는 plan 이 삭제를 계획하면 apply 가 거부되고, <code style="font-family:Menlo,monospace;font-size:14px;">ignore_changes</code> 에 적은 속성은 코드와 실물이 달라도 Terraform 이 바꾸지 않습니다.
+</div>
+
+<div class="obsv-code"># 형태를 보이려고 줄인 예시
+resource "datadog_service_account" "{서비스 계정}" {
+  roles = [data.datadog_role.admin.id]
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [roles]   # 이 계정의 역할은 코드가 바꾸지 않는다
+  }
+}
+
+resource "datadog_user" "{사용자}" {
+  roles = [data.datadog_role.standard.id]
+  lifecycle { prevent_destroy = true }
+}</div>
+<p>&rarr; 모든 사용자는 코드에서 지워도 apply 가 거부되고, 서비스 계정의 역할은 코드에 무엇이 적혀 있든 Terraform 이 손대지 않는다는 뜻이에요.</p>
+
+<p>첫째, 모든 사용자에 <code style="font-family:Menlo,monospace;font-size:14px;">prevent_destroy</code> 를 걸었어요. Datadog 은 사용자를 지울 수 없고 비활성화만 할 수 있어서, 코드에서 사용자를 빼면 그 사람이 조용히 비활성화됩니다. 둘째, 서비스 계정의 역할은 <code style="font-family:Menlo,monospace;font-size:14px;">ignore_changes</code> 로 코드 관리에서 뺐어요. 셋째, 역할 ID 를 숫자로 적지 않고 역할 이름으로 조회하는 data source(이미 있는 값을 읽어 오기만 하는 Terraform 블록)를 참조했습니다. 값이 같아서 diff 는 0 이었어요.</p>
+<p>비활성 사용자 19명은 가져오지 않았어요. 지울 수도 없고 이미 비활성이라 코드로 관리할 것이 없었습니다. plan 은 12 import, 0 change 였고, 코드 주석에는 하나를 더 적었어요. 역할을 줄이는 변경은 한 사람씩 별도 PR 로 하고, 플랫폼팀에 활성 관리자가 최소 한 명은 남아야 한다는 규칙입니다.</p>
+<p>그 직후 #840 에서 결정 하나를 주석으로 남겼어요. 외부 계정 3개는 Datadog 계약과 기술 지원 경로로 쓰이는 "계약·지원 계정"이라 지금 권한을 유지한다는 결정입니다. 사용자 목록을 볼 때마다 "회사 밖 계정이 왜 있지?"라는 질문이 다시 나올 테니, 그 답을 코드 옆에 둔 거예요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 권한을 코드로 옮기는 첫 PR 에서는 아무 권한도 바꾸지 않는다</div>
+  사용자를 가져오면서 "이 사람은 관리자가 아니어도 되는데" 싶은 계정이 눈에 들어와요. 그래도 가져오는 PR 에서는 하나도 바꾸지 않았습니다. 가져오기와 권한 변경이 섞이면, 잘못됐을 때 그걸 되돌릴 권한까지 함께 잃을 수 있어요.
+</div>
+
+<h2>6. 6주 계획이 5일에 끝난 이유</h2>
+
+<p>오후 4시가 넘어, 마일스톤 M2 를 확인하려고 콘솔과 코드를 대조했어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 마일스톤 (milestone)</div>
+  계획에서 "여기까지 오면 이 상태가 된다"고 미리 정해 둔 확인 지점이에요. 날짜보다 상태가 중요해서, 확인 방법을 함께 적어 둡니다.
+</div>
+<p>M2 는 "콘솔에만 있는 Datadog 운영 설정 0" 이었어요. 대조 결과는 모니터 90개 전부, 커스텀 로그 파이프라인 2개, 로그 아카이브 7개, 로그 인덱스, AWS 연동이 코드에 있었습니다. 대조하던 중에 모니터 하나가 보고 있는 스팬 지표(트레이스의 스팬을 세어 만든 지표) 1개가 코드 밖에 있는 것을 찾아서 그 자리에서 가져왔어요(#835). 콘솔에 남은 것은 일부러 남긴 대시보드 7개, 그리고 규칙상 코드 밖에 두는 일회성 다운타임 1개였습니다. 그 다운타임도 다음 날 취소돼 0 이 됐어요. 계획보다 22일 이른 10월 1일이었습니다. 이 대조에 사용자와 역할은 들어 있지 않았어요. 사용자는 10단계의 일로 따로 잡혀 있었고, 대조가 끝나고 한 시간 20분쯤 뒤에 5절의 #838 로 들어왔습니다.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr82" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <text x="30" y="40" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">계획 (13단계 · 약 6주)</text>
+    <path d="M60 90 C 200 88, 400 92, 662 89" fill="none" stroke="#e5a33c" stroke-width="3" stroke-linecap="round"/>
+    <path d="M122 80 C 121 86, 123 94, 122 100" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="122" y="122" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">M1 10-02</text>
+    <path d="M445 80 C 444 86, 446 94, 445 100" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="445" y="122" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">M2 10-23</text>
+    <path d="M507 80 C 506 86, 508 94, 507 100" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="520" y="70" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">M3 10-27</text>
+    <path d="M660 80 C 659 86, 661 94, 660 100" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="640" y="122" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">M4 11-06</text>
+    <text x="30" y="170" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">실제 (0~10 · 12단계 5일)</text>
+    <path d="M60 220 C 80 218, 100 222, 122 219" fill="none" stroke="#5a9e6f" stroke-width="5" stroke-linecap="round"/>
+    <path d="M60 210 C 59 216, 61 224, 60 230" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="60" y="252" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">M1 09-28</text>
+    <path d="M106 210 C 105 216, 107 224, 106 230" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="150" y="252" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">M2 · M3 10-01</text>
+    <path d="M140 220 C 300 218, 480 222, 640 219" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arr82)"/>
+    <text x="420" y="206" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">M4 (11단계): 날짜가 아니라 CMDB 결정을 기다린다</text>
+    <path d="M440 132 C 300 150, 180 180, 116 205" fill="none" stroke="#b3502f" stroke-width="1.8" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arr82)"/>
+    <text x="330" y="186" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">22일 앞당김</text>
+    <text x="350" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 남은 한 칸은 시간으로 줄어드는 일이 아니다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 계획과 실제. 0~10단계와 12단계가 5일에 끝났고, 11단계만 결정을 기다린다</div>
+
+<p>로드맵은 13단계, 22인일에 버퍼를 더해 약 6주였어요. 실제로는 9월 28일부터 10월 2일까지 5일 동안 0~10단계와 12단계가 끝났습니다. 빨리 끝났다고 좋아하기 전에 왜 이렇게 틀렸는지를 따져 봐야 했어요. 다음 계획도 같은 방식으로 세울 테니까요.</p>
+<p><b>첫째, 계획의 숫자가 실물보다 컸어요.</b> 카탈로그 "약 30"은 11이었습니다. 다만 모든 숫자가 작았던 것은 아니에요. 4단계의 Slack 채널은 계획서의 11개가 아니라 15개였습니다. 숫자가 줄어서만 빨라진 것은 아니라는 뜻이에요.</p>
+<p><b>둘째, 가져오기를 먼저 하는 방식이 단계를 짧게 만들었어요.</b> 옮기는 단계마다 할 일이 "생성된 코드를 다듬고, plan 이 N import, 0 change 인지 본다"로 같았습니다. 확인할 것이 plan 한 줄이라 리뷰가 짧았고, 고칠 것은 뒤로 미뤄 작은 PR 로 따로 냈어요. 카탈로그 3개를 가져와 고치고 8개를 새로 쓰는 데 커밋 시각 기준으로 26분이 걸렸습니다. 모니터는 계획과 순서가 아예 반대였어요. 계획에서는 2단계 사전 정리 뒤에 6단계 본편입이 왔는데, 실제로는 9월 28일에 68개 중 59개를 먼저 가져오고 다음 날 중복과 고장 26개를 지우는 정리를 코드 위의 PR 로 했습니다.</p>
+<p><b>셋째, 계획에 넣었던 기다림을 하지 않았어요.</b> 2단계 사전 정리는 개발팀 확인을 받는 일정이었는데, 모니터 점검은 회신을 기다리지 않고 플랫폼팀이 직접 판정하기로 바꿨습니다. 계획의 일정에는 이런 회신 대기가 들어 있었는데, 실제로는 그 시간이 빠졌어요.</p>
+<p>그리고 빨리 끝난 만큼 뒤로 미룬 것도 있어요. 남긴 대시보드 7개는 아직 만든 사람의 확인을 기다리고, 저장소 링크 하나는 다음 날에야 채웠습니다. 10월 2일에 세운 핵심 경로의 지연 임계와 SLO(서비스가 지켜야 할 목표 수준) 목표는 첫 기준이라 1~2주 운영한 뒤 실측으로 다시 맞춰야 해요. <span class="obsv-mark">"5일"은 일을 다 했다는 뜻이 아니라, 콘솔에만 있던 것을 코드로 옮기는 일이 5일이었다는 뜻이에요.</span></p>
+<p>남은 단계는 11단계 하나예요. CMDB 의 서비스 한 줄에서 카탈로그, 모니터, 대시보드를 만드는 표준 모듈입니다. 1절에서 넘긴 계측 없는 서비스도 여기서 다뤄요. 이 단계는 시간을 더 들인다고 끝나지 않습니다. CMDB 의 원본을 어디에 둘지, 어떤 항목을 적을지, 기존 목록을 어떻게 옮길지, 누가 쓸지가 먼저 정해져야 해요. 그래서 진행 요약에도 이 단계의 날짜 대신 기다리는 결정 네 가지를 적었습니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>계획서의 "약 30"은 계측 없는 서비스까지 센 숫자였고, 카탈로그에 올릴 서비스는 Datadog 에 데이터를 보내는 11개였다. 기존 3개는 틀린 값까지 그대로 가져오고 다음 PR 에서 고쳤으며, 8개는 소유 팀·등급·저장소를 붙여 새로 썼다.</b><br><br>
+  같은 날 대시보드 12개, 로그 인덱스와 트레이스 연결 파이프라인, AWS 연동, 사용자 12명이 모두 "변경 0" 으로 들어왔다. 비용 때문에 뺀 네임스페이스는 이유를 주석으로 남겼고, 사용자에는 삭제 거부와 서비스 계정 역할 고정을 걸었다. 6주 계획이 5일에 끝난 것은 숫자가 작았고, 단계마다 확인할 것이 plan 한 줄이었고, 기다림을 뺐기 때문이다. 남은 한 단계는 날짜가 아니라 결정을 기다린다.
+</div>
+
+</div>

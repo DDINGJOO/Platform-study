@@ -1,0 +1,399 @@
+<!-- ============================================================
+  IaC 작업일지 22편: 개수가 맞아도 같은 것인지는 모른다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: 계정 인벤토리, us-east-1, KMS 키 정책, 탄력적 IP, removed 블록 -->
+<!-- lead: AWS 계정의 실물과 Terraform state 를 종류별 개수로 비교했더니 숫자가 정확히 맞았어요. 개수 대신 식별자로 대조하자 리전 경계, 키 정책, 로드밸런서 주소, state 에만 남은 버킷이 드러난 과정을 정리했어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지, 다섯째 날 · 22편</div>
+  1~7편. 첫날: 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날: 같은 사실이 두 군데 적혀 있을 때<br>
+  12~15편. 셋째 날: 만든 가드를 의심한 날들<br>
+  16~21편. 넷째 날: 이름을 믿지 않고 자원을 판독하는 법<br>
+  <b>22편. 개수가 맞아도 같은 것인지는 모른다</b> &larr; 지금 이 글<br>
+  23편. 좁히는 라벨은 만들지 않았다<br>
+  24편. 소유하지 않겠다고 적은 지 한 달 만에 뒤집었다
+</div>
+
+<p>9월 27일 오후, 새로 만든 CI 잡이 두 번째로 돌았어요. 요약 화면에 숫자가 줄지어 떴습니다. 탄력적 IP 60, 보안그룹 67, S3 버킷 131, IAM 역할 154, 로그그룹 112, CloudFront 51, Lambda 24. <b>열하루 전에 손으로 셌던 숫자와 하나도 다르지 않았어요.</b> 수집 실패 0, 모르는 종류 0.</p>
+
+<p>저는 이 결과를 근거로 결정 기록의 상태를 "승인됨"으로 바꿨습니다. 커밋 제목에도 그렇게 적었어요. "두 번째 실행이 9/16 전수와 일치했다."</p>
+
+<p>그리고 같은 날 저녁, 그 숫자 밑에서 두 가지가 나왔습니다. 탄력적 IP 60개 중 54개는 우리가 관리할 대상이 아니었고, 실물이 없는 버킷 하나가 state 안에 남아 있었어요. 둘 다 <span class="obsv-mark">개수로는 절대 보이지 않는 종류의 사실</span>이었습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 다룰 것</div>
+  &bull; 개수로 비교한 표는 왜 멈췄고, 무엇을 말하지 못했나?<br>
+  &bull; 첫 실행에서 "state 에만 있는 것" 24건이 전부 한 리전에서 나온 이유는?<br>
+  &bull; KMS 키 하나 때문에 키 종류 전체의 수집이 실패한 이유는?<br>
+  &bull; 실물이 404 인 버킷이 state 에 있는데 plan 은 왜 No changes 인가?<br>
+  &bull; 숫자가 정확히 맞았다는 것은 무엇을 증명하고, 무엇을 증명하지 않나?
+</div>
+
+<h2>1. 손으로 센 표는 다시 셀 수 없었다</h2>
+
+<p>질문은 단순했어요. <b>"AWS 계정에 있는 모든 리소스가 이 저장소에 들어왔는가."</b> 편입을 몇 주째 하고 있었는데 이 질문에 답할 수 있는 사람이 없었습니다.</p>
+
+<p>9월 16일에 한 번 세긴 했어요. 터미널에서 종류별 개수를 뽑고, 저장소의 <code>resource</code> 블록 수를 세서 나란히 놓은 표였습니다. 그 표를 보고 편입 순서를 정했고, 다음 날 첫 배치를 끝냈어요. 그리고 <b>표는 거기서 멈췄습니다.</b> 그 뒤로 배치를 몇 개 더 편입했는데 표에는 반영되지 않았어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Terraform state</div>
+  Terraform 이 "내가 관리하는 리소스는 이것들이고, 실물의 ID 는 이것이다"라고 적어 두는 JSON 파일입니다. 이 저장소에는 스택마다 하나씩, 모두 33개가 S3 에 있어요. 코드 블록이 아니라 이 파일에 실제로 관리되는 인스턴스가 하나하나 적혀 있습니다.
+</div>
+
+<p>멈춘 이유를 적어 보니 세 가지였어요.</p>
+
+<div class="obsv-code">9/16 표의 한계
+
+  1. 다시 셀 수 없다
+     출력을 손으로 붙여 넣어 만든 표라 갱신 비용이 조사 비용과 같다
+
+  2. 개수로 비교했다
+     "S3 131 vs 92" 는 39개가 빠졌다는 것만 말한다. 어느 39개인지는 다시 찾아야 한다
+     코드 쪽은 resource 블록을 셌는데 for_each 블록 하나가 N 개를 만든다
+
+  3. 판정이 표 안의 문장이었다
+     "보안그룹 60: 공유, 소유 안 함" 은 다음 조사에 기계적으로 적용되지 않는다</div>
+
+<p>두 번째가 가장 근본적이에요. <code>for_each</code>(목록을 받아 같은 리소스를 항목 수만큼 만드는 문법)를 쓰면 블록 하나가 버킷 열 개를 만들 수 있어요. 그러니 "실물 131, 코드 92"는 <b>처음부터 같은 단위로 잰 숫자가 아니었습니다.</b> 차이 39도 정확한 값이 아니라 짐작이었던 거예요.</p>
+
+<p>사실 개수를 세자는 것 자체가 이전 실수에서 나온 처방이었어요. 이미지 저장소를 편입할 때 36개짜리 목록으로 시작했다가 실물이 47개라는 걸 나중에 알았거든요. 그래서 "종류별로 개수부터 센다"를 규칙으로 정했습니다. 이번 작업은 그 처방을 한 단계 더 미는 일이었어요. <span class="obsv-mark">개수가 맞아도 다른 것일 수 있다.</span></p>
+
+<h2>2. 개수 대신 이름표를 하나씩 맞춘다</h2>
+
+<p>그래서 CI 잡을 만들었어요. 결정 기록 번호로는 ADR-0052 입니다. 하는 일은 셋이에요. 실물 쪽에서 종류별로 목록 조회 API 를 불러 식별자를 모으고, state 33개에서 식별자만 뽑고, 둘을 하나씩 맞춥니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 식별자와 ARN</div>
+  식별자는 리소스 하나를 정확히 가리키는 값이에요. AWS 에서는 보통 ARN(<code>arn:aws:서비스:리전:{계정ID}:종류/이름</code> 형식의 전체 주소)이고, 버킷같이 이름이 곧 식별자인 종류도 있어요. 대조의 핵심은 종류마다 "실물의 어느 값"과 "state 의 어느 속성"이 같은 값인지 정해 두는 것입니다.
+</div>
+
+<p>예를 들어 로드밸런서는 ARN 끼리, 버킷은 버킷 이름끼리 맞춰요. state 를 보는 이유도 분명합니다. <code>for_each</code> 가 펼쳐진 뒤의 실제 인스턴스가 거기 있으니까요. state 에는 민감한 값도 평문으로 들어 있어서, 식별자만 뽑고 원문은 출력하지도 남기지도 않습니다.</p>
+
+<p>맞춘 뒤에는 규칙 파일이 분류를 해요. 9/16 표 안의 문장이던 판정을 데이터로 옮긴 겁니다.</p>
+
+<div class="obsv-code">분류          뜻
+managed       state 에 있다
+aws-managed   AWS 가 만든 것 (서비스 연결 역할, 기본 VPC, 자동 확장 그룹이 띄운 서버)
+excluded      개별 규칙으로 "담지 않는다" 가 정해졌다. 근거 ADR 을 같이 적는다
+excluded-kind 종류 통째로 담지 않는다 (시크릿, 공유 보안그룹 등)
+orphan?       삭제 후보로 보이는 것. 물음표는 판정이 아니라 신호라는 뜻
+candidate     어디에도 안 걸린다. 편입 대상</div>
+
+<p>그리고 두 가지 장치를 붙였어요. 하나는 <b>수집이 하나라도 실패하면 잡 전체를 실패시키는 것</b>입니다. 권한이 없어서 0개가 나온 것과 실제로 0개인 것을 구분하려고요. 다른 하나는 <b>"state 에만 있는 것" 목록</b>이에요. state 에는 있는데 실물 쪽에서 못 찾은 식별자를 따로 모읍니다. 콘솔에서 누가 지웠을 수도 있고, 제가 식별자 매핑을 틀렸을 수도 있어요. 어느 쪽이든 여기로 나옵니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr22a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="32" font-size="21" fill="#4a7fb5">탄력적 IP 60개를 두 방식으로 대조하면</text>
+
+<path d="M26 50 C 110 47, 220 53, 324 50 C 327 140, 326 230, 324 300 C 220 303, 110 297, 27 300 C 23 230, 25 140, 26 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.6"/>
+<text x="44" y="82" font-size="23" fill="#8a8272">🔢 개수로 대조 (9/16)</text>
+<text x="44" y="116" font-size="14" fill="#3d3a34" font-family="Menlo, monospace">실물 60   코드 0   차이 60</text>
+<path d="M44 140 C 120 137, 220 143, 306 140 C 309 170, 308 196, 306 220 C 220 223, 120 217, 45 220 C 41 196, 43 170, 44 140 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+<text x="58" y="168" font-size="18" fill="#c07f18">판정 문장 한 줄</text>
+<text x="58" y="194" font-size="16" fill="#3d3a34">"ALB 가 관리한다. 담지 않는다"</text>
+<text x="58" y="212" font-size="14" fill="#8a8272">60개 전부에 같은 문장</text>
+<text x="44" y="252" font-size="16" fill="#b3502f">어느 것이 예외인지 묻지 않는다</text>
+<text x="44" y="278" font-size="16" fill="#b3502f">새로 생긴 주소도 이 문장 아래 묻힌다</text>
+
+<path d="M344 60 C 342 140, 346 220, 344 292" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+
+<path d="M366 50 C 460 47, 580 53, 674 50 C 677 140, 676 230, 674 300 C 580 303, 460 297, 367 300 C 363 230, 365 140, 366 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="384" y="82" font-size="23" fill="#2e6b41">🔎 식별자로 대조 (9/27)</text>
+<text x="384" y="112" font-size="16" fill="#3d3a34">주소마다 붙은 네트워크 인터페이스를</text>
+<text x="384" y="132" font-size="16" fill="#3d3a34">누가 만들었는지 본다</text>
+<path d="M440 146 C 430 166, 420 180, 418 196" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr22a)"/>
+<path d="M590 146 C 600 166, 606 180, 608 196" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr22a)"/>
+<path d="M380 204 C 420 202, 470 206, 500 204 C 503 222, 502 240, 500 256 C 470 258, 420 254, 381 256 C 377 240, 379 222, 380 204 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="392" y="228" font-size="20" fill="#8a8272">54개</text>
+<text x="392" y="248" font-size="14" fill="#8a8272">로드밸런서가 만든 것</text>
+<path d="M540 204 C 580 202, 630 206, 660 204 C 663 222, 662 240, 660 256 C 630 258, 580 254, 541 256 C 537 240, 539 222, 540 204 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+<text x="552" y="228" font-size="20" fill="#b3502f">6개</text>
+<text x="552" y="248" font-size="14" fill="#b3502f">따로 판정할 것</text>
+<text x="384" y="284" font-size="16" fill="#2e6b41">판정이 주소 하나하나에 붙는다</text>
+
+<path d="M24 326 C 240 323, 460 329, 676 325" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="356" font-size="20" fill="#b3502f">두 방식 모두 60 을 센다. 다른 것은 "어느 60 인가" 다</text>
+<text x="24" y="382" font-size="15" fill="#8a8272">개수는 그대로인데 판정의 단위가 종류에서 리소스로 내려간다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 60 이어도 개수 대조에서는 예외 여섯 개가 문장 아래로 사라진다</div>
+
+<h2>3. 첫 실행: 잡이 찾은 것은 대부분 잡 자신의 결함이었다</h2>
+
+<p>첫 실행 결과를 열었을 때 눈에 띈 건 세 가지였어요. 셋 다 계정의 문제가 아니라 <b>제가 만든 수집기의 문제</b>였습니다.</p>
+
+<h3>"state 에만 있는 것" 24건이 전부 us-east-1 이었다</h3>
+
+<p>state 에는 있는데 실물이 없다는 항목이 24건 나왔어요. 처음엔 콘솔에서 지운 것들이 쌓였나 싶었는데, 리전을 보니 <b>24건이 하나도 빠짐없이 us-east-1</b> 이었습니다. 지운 흔적이 한 리전에만 몰릴 이유는 없어요. 원인은 제 쪽에 있었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: us-east-1 과 글로벌 서비스</div>
+  IAM 과 CloudFront 는 리전이 없는 서비스예요. 이런 서비스를 글로벌 서비스라고 해요. 그런데 이런 서비스에 딸린 리소스 중 일부는 미국 동부(us-east-1)에만 만들 수 있습니다. CloudFront 에 붙일 인증서와 웹 방화벽이 대표적이에요.
+</div>
+
+<p>첫 버전은 서울 리전을 전부 보고, us-east-1 에서는 <b>CloudFront 용 웹 방화벽과 인증서만</b> 봤어요. 그 둘만 거기 있다고 생각했거든요. 그런데 24건을 열어 보니 이런 것들이었습니다.</p>
+
+<div class="obsv-code">state 에만 있는 것 24건 (전부 us-east-1)
+
+  인증서 만료 알람 · 그 알람이 보내는 SNS 토픽 · 실패한 메시지를 받는 DLQ
+  루트 계정 · IAM 보안 이벤트를 잡는 이벤트 규칙
+  CloudFront 웹 방화벽의 로그그룹
+
+-&gt; 실물은 다 있었다. 수집기가 그 리전에서 이 종류들을 안 봤을 뿐이다</div>
+
+<p>하나씩 이유가 있어요. CloudFront 용 인증서는 us-east-1 에 있으니 만료 지표도 거기서 나오고, 알람은 지표와 같은 리전에 있어야 합니다. 알람이 보낼 토픽도 같이 따라가죠. IAM 은 글로벌 서비스라 그 이벤트가 us-east-1 의 이벤트 버스로 전달되고, 그래서 이벤트 규칙도 거기 만들어야 합니다. 웹 방화벽 로그그룹도 방화벽과 같은 리전에 있어야 하고요. <span class="obsv-mark">글로벌 서비스에 딸린 리소스는 us-east-1 에 만들어집니다.</span> 이 저장소가 이미 거기에 리소스를 만들고 있었는데, 수집기는 그걸 몰랐어요.</p>
+
+<p>고치면서 하나를 더 발견했어요. 알람, 로그그룹, 이벤트 규칙은 <b>이름이 리전 안에서만 유일합니다.</b> 서울과 us-east-1 에 같은 이름의 알람이 따로 있을 수 있어요. 그런데 첫 버전은 이름만 키로 썼습니다. 그러면 us-east-1 의 알람이 서울의 같은 이름 알람과 "일치"로 처리돼요. 실물은 둘인데 하나로 셈이 맞아 버리는 거죠. 그래서 이런 종류는 키 앞에 리전을 붙였습니다.</p>
+
+<div class="obsv-code">고친 뒤의 키
+
+  리전 안에서만 유일한 종류      ap-northeast-2|{알람 이름}
+  (알람 · 로그그룹 · 규칙 · Lambda 등) us-east-1|{알람 이름}      &lt;- 이제 서로 다른 것
+
+  ARN 이나 전역 유일 ID 로 맞추는 종류  그대로 (리전이 이미 값 안에 있다)
+  글로벌 종류 (IAM · CloudFront · 버킷) 서울에서 한 번만 센다</div>
+
+<p>us-east-1 은 전 종류를 보도록 넓혔어요. 콘솔의 기본 리전이라 실수로 만든 리소스가 쌓이기 쉬운 곳이기도 해서, 어차피 봐야 하는 리전이었습니다.</p>
+
+<h3>KMS 키 하나 때문에 키 종류 전체가 빠졌다</h3>
+
+<p>두 번째는 수집 실패였어요. KMS 키 수집기가 통째로 실패했습니다. 키 목록은 받아왔는데, 키마다 상세를 묻는 호출에서 하나가 거부됐어요.</p>
+
+<div class="obsv-code">수집 실패   kms_key
+  list_keys        성공 (키 목록은 다 받았다)
+  describe_key     키 하나에서 AccessDenied</div>
+
+<p>→ 잡의 역할로는 그 키 하나의 상세를 볼 수 없었다는 뜻이에요. 다른 키들은 다 보였습니다.</p>
+
+<p>잡이 쓰는 역할에는 AWS 의 읽기 전용 관리형 정책이 붙어 있어요. 거의 모든 서비스의 조회가 허용됩니다. 그런데도 막힌 이유는 KMS 의 권한 구조에 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: KMS 키 정책</div>
+  KMS 키마다 붙는 권한 문서예요. 다른 서비스와 달리 KMS 는 키 정책이 먼저입니다. 키 정책이 "이 계정의 IAM 정책도 따른다"고 허용해 두지 않으면, IAM 역할에 아무리 넓은 권한을 붙여도 그 키에는 적용되지 않아요.
+</div>
+
+<p>그 키의 키 정책은 우리 역할에 상세 조회를 허용하지 않았어요. 그래서 우리 역할의 IAM 권한은 그 키 앞에서 아무 효력이 없었습니다. 여기까지는 AWS 가 설계대로 동작한 거예요.</p>
+
+<p>문제는 제 코드였어요. 수집기가 <b>종류 단위로 예외를 잡고 있었습니다.</b> 키 하나에서 예외가 나면 그 종류의 수집 전체가 실패로 기록돼요. 그 결과 나머지 키도 전부 결과에서 빠졌고, "state 에만 있는 것" 판정도 그 종류는 건너뛰었습니다. 수집에 실패한 종류를 "없다"로 읽으면 안 되니까요. 즉 <span class="obsv-mark">키 하나가 KMS 키 전체를 보이지 않게 만들었어요.</span></p>
+
+<p>고친 방식은 키 단위로 받는 거예요. 상세 조회가 거부된 키는 실패가 아니라 "상세 조회 거부"라는 사실을 달아서 목록에 남깁니다. 권한이 없다는 것도 그 키에 대한 정보니까요.</p>
+
+<p>그리고 부끄러운 사실이 하나 있어요. 9/16 표의 "담지 않기로 정한 것" 절에 <b>이 키가 이미 적혀 있었습니다.</b> "우리가 접근할 수 없는 키다." 열하루 전에 알고 있었던 거예요. 그 판정은 규칙 파일로도 옮겨 뒀어요. 그런데 규칙은 수집이 끝난 뒤 분류할 때만 쓰입니다. "이 키는 우리가 읽을 수 없다"는 사실이 수집기를 짜는 단계에는 닿지 않았어요. 판정을 데이터로 옮겨도, 그 데이터를 읽는 곳이 분류 하나뿐이면 수집 단계는 그 사실을 모릅니다.</p>
+
+<h3>모르는 종류 15개</h3>
+
+<p>세 번째는 짧게 적을게요. 태그 조회 API 로 계정의 리소스 주소를 훑어서, 수집기가 없는 종류를 따로 세게 해 뒀어요. 첫 실행에서 15종이 나왔습니다. VPN 게이트웨이, 네트워크 방화벽, 키페어, 배포 서비스의 앱 같은 것들이에요. 수집기를 붙여서 79종이 94종이 됐습니다. 수집기를 빠뜨린 종류가 조용히 0 으로 보이는 것을 막으려고 만든 장치가 첫 실행에서 바로 15종을 찾아낸 거예요.</p>
+
+<h2>4. 두 번째 실행: 숫자가 정확히 맞았다</h2>
+
+<p>셋을 고치고 다시 돌렸어요. 결과는 도입에 적은 그대로입니다.</p>
+
+<div class="obsv-code">두 번째 실행
+
+  수집기 94종 · 규칙 37개 · 수집 실패 0 · 모르는 종류 0
+
+  managed  candidate  excluded-kind  aws-managed  excluded  orphan?   전체
+      802        638            172          113        41       36  1,802
+
+  9/16 손으로 센 개수와 비교
+  EIP 60 · SG 67 · S3 131 · IAM 역할 154 · 로그그룹 112 · CloudFront 51 · Lambda 24
+  -&gt; 일곱 종류 전부 같다</div>
+
+<p>이 일치가 무엇을 증명했는지 정확히 적어 볼게요. 증명한 것도 있습니다. <b>수집기가 손으로 센 것과 같은 모집단을 보고 있다</b>는 거예요. 첫 실행에서 본 것과 같이 종류 하나가 통째로 빠지거나, 페이지를 넘기지 않아서 목록이 잘렸다면 숫자가 달랐을 겁니다. 그런 결함이 없다는 것은 이 일치가 보여 줬어요.</p>
+
+<p>하지만 두 숫자는 <b>사실상 같은 목록 조회 API 를 두 번 센 결과</b>입니다. 9/16 에는 터미널에서, 9/27 에는 CI 에서 같은 API 를 불렀어요. 둘이 같다는 건 "두 번 셌더니 같은 수가 나왔다"는 뜻이지, 그 안의 각 항목을 무엇으로 판정했는지와는 상관이 없습니다. <span class="obsv-mark">개수의 일치는 수집의 검증이지, 대조의 검증이 아니에요.</span></p>
+
+<p>더 걸리는 게 하나 있어요. 같은 날 로드맵 문서에 이런 문장도 적었거든요. us-east-1 에 이 저장소가 만든 것 24건이 있고, <b>9/16 표는 그것을 세지 않았다.</b> 두 번째 실행은 us-east-1 을 전부 봅니다. 그리고 거기에는 웹 방화벽 로그그룹이 있어요. 그런데 로그그룹은 112 로 똑같았습니다. 리전별로 나눠서 비교했는지, 범위가 달랐는데 우연히 맞았는지, 지금 남은 기록으로는 가릴 수 없어요. 승인 근거로 쓴 일치 자체가 <b>같은 자로 잰 것인지 확인되지 않은 일치</b>였던 겁니다.</p>
+
+<p>16편에서 비슷한 이야기를 했어요. 이미지 저장소의 부품 수가 120 = 60 × 2 로 딱 맞았지만, 그 등식이 고아 0 을 증명하지는 않는다고요. 그때는 저장소 하나였고 이번에는 계정 전체였습니다. 같은 모양의 판단을 더 큰 규모에서 다시 한 거예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 일치를 승인 근거로 썼다</div>
+  &bull; 결정 기록을 "승인됨"으로 바꾼 커밋의 근거는 "개수가 9/16 과 일치했다" 한 줄이었어요<br>
+  &bull; 그 일치가 보장하는 건 <b>수집기가 빠뜨리지 않았다</b>까지입니다. <b>무엇이 누구 것인지</b>는 아무것도 보장하지 않아요<br>
+  &bull; 검증 결과를 적을 때는 "무엇이 일치했다"와 함께 <b>"그 일치가 배제하는 실패는 무엇인가"</b>를 같이 적어 두세요. 저는 그걸 안 적어서 그날 저녁에 바로 반례를 만났습니다
+</div>
+
+<h2>5. 같은 날 저녁, 개수 아래에서 나온 둘</h2>
+
+<p>승인 커밋을 올리고 몇 시간 뒤, 결과를 숫자가 아니라 항목 단위로 다시 봤어요. 걸리는 것은 터미널에서 실물에 직접 물어봤고요. 거기서 두 가지가 나왔습니다.</p>
+
+<h3>탄력적 IP 60개 중 54개는 로드밸런서 것이었다</h3>
+
+<p>9/16 표는 탄력적 IP 60개를 한 줄로 정리했어요. "ALB 가 관리한다. 담지 않는다." (ALB 는 애플리케이션 로드밸런서예요.) 그런데 그건 확인한 사실이 아니라 짐작이었습니다. 60개를 하나하나 열어 본 적은 없었어요. 이번에는 주소마다 어디에 붙어 있는지를 봤습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ENI (네트워크 인터페이스)</div>
+  VPC 안에서 IP 를 갖는 가상 네트워크 카드예요. 서버뿐 아니라 로드밸런서, NAT 게이트웨이도 서브넷마다 ENI 를 하나씩 만들어 씁니다. ENI 에는 "누가 만들었나"를 뜻하는 요청자 값이 남아요.
+</div>
+
+<p>탄력적 IP 가 서버가 아니라 ENI 에 붙어 있으면, 그 ENI 의 요청자를 물어봤어요. 결과는 이랬습니다.</p>
+
+<div class="obsv-code">탄력적 IP 60개
+
+  ENI 요청자가 로드밸런서 서비스     54   = ALB 27개 × 가용영역 2
+  그 밖                              6
+
+-&gt; 54개는 로드밸런서가 서브넷마다 만든 ENI 에 붙은 주소다
+   우리가 할당하고 붙인 것이 아니다. 편입하면 남의 자원을 소유하게 된다</div>
+
+<p>27 × 2 라는 등식이 이유를 말해 줘요. 로드밸런서는 가용영역마다 서브넷에 ENI 를 하나씩 둡니다. 27개가 두 영역씩 쓰니 54개예요. 21편에서 이런 주소 <b>하나</b>를 "우리가 붙였다가 잃은 고정 IP"로 오해했다가, 감사 기록을 보고 로드밸런서 서비스가 주체라는 걸 알았다고 썼죠. 그 오해의 범위가 계정 전체로는 54개였던 겁니다.</p>
+
+<p>그러면 9/16 의 문장 "ALB 가 관리한다"는 맞은 걸까요. <b>54개에 대해서는 맞고, 6개에 대해서는 틀렸습니다.</b> 그 여섯은 로드밸런서가 만든 것이 아니라서 따로 판정해야 해요. 그런데 개수 표에서는 60 이 한 줄이었으니 여섯이 섞여 있다는 사실 자체가 보일 수 없었어요. 그림 1 의 왼쪽이 이 상황입니다.</p>
+
+<p>고친 방식은 규칙 한 줄이에요. 이름이나 태그가 아니라 <b>"ENI 요청자가 로드밸런서 서비스다"라는 사실</b>로 aws-managed 를 판정합니다. 새 로드밸런서가 생기면 그 주소도 자동으로 같은 분류에 들어가요. 나머지 여섯은 이 규칙에 걸리지 않으니 연결 상태에 따라 각자 분류를 받아요. 적어도 "60개 전부 담지 않는다" 한 줄 아래 섞이지는 않습니다.</p>
+
+<h3>404 인 버킷이 state 에 있는데 plan 은 No changes 였다</h3>
+
+<p>두 번째는 "state 에만 있는 것" 목록에 남은 버킷 하나였어요. 개발 환경의 한 스택이 쓰던 버킷입니다. 실물에 직접 물어보니 404 가 왔어요.</p>
+
+<div class="obsv-code">HeadBucket {버킷 이름}   -&gt;  404 Not Found</div>
+
+<p>→ 그 이름의 버킷이 계정에 없다는 뜻이에요. 권한 문제였다면 403 이 옵니다.</p>
+
+<p>이력을 거슬러 가 보니 8월 중순에 그 스택의 구성을 바꾼 커밋이 있었어요. 버킷이 필요 없는 방식으로 옮기면서 코드에서 버킷 블록이 통째로 빠졌습니다. 그런데 state 에서는 빠지지 않았어요. 그리고 그 스택의 plan 은 <b>No changes</b> 였어요.</p>
+
+<p>이상하죠. 코드에 없고 state 에 있으면, 보통 plan 은 "이걸 지우겠다"고 말해야 합니다. 그런데 조용했어요. 이유는 plan 이 계산하기 전에 하는 일에 있습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: refresh</div>
+  plan 이 변경을 계산하기 전에, state 에 적힌 리소스마다 실물을 다시 조회해 최신 값으로 맞추는 단계예요. 이 결과는 그 plan 의 계산에만 쓰이고, plan 은 state 파일을 고쳐 쓰지 않습니다.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr22b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="32" font-size="21" fill="#4a7fb5">버킷이 없는데 plan 이 조용한 순서</text>
+
+<path d="M26 56 C 70 54, 120 58, 156 56 C 159 86, 158 116, 156 140 C 120 142, 70 138, 27 140 C 23 116, 25 86, 26 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="40" y="84" font-size="19" fill="#3d3a34">📄 state 파일</text>
+<text x="40" y="108" font-size="15" fill="#3d3a34">버킷이 적혀 있다</text>
+<text x="40" y="128" font-size="13" fill="#8a8272">8월부터 그대로</text>
+
+<path d="M162 98 C 176 96, 188 96, 198 98" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr22b)"/>
+
+<path d="M204 56 C 250 54, 300 58, 336 56 C 339 86, 338 116, 336 140 C 300 142, 250 138, 205 140 C 201 116, 203 86, 204 56 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+<text x="218" y="84" font-size="19" fill="#3d3a34">🔄 refresh</text>
+<text x="218" y="108" font-size="15" fill="#3d3a34">실물에 묻는다: 404</text>
+<text x="218" y="128" font-size="13" fill="#8a8272">이미 사라졌다고 본다</text>
+
+<path d="M342 98 C 356 96, 368 96, 378 98" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr22b)"/>
+
+<path d="M384 56 C 430 54, 480 58, 516 56 C 519 86, 518 116, 516 140 C 480 142, 430 138, 385 140 C 381 116, 383 86, 384 56 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+<text x="398" y="84" font-size="19" fill="#3d3a34">📝 코드</text>
+<text x="398" y="108" font-size="15" fill="#3d3a34">버킷 블록이 없다</text>
+<text x="398" y="128" font-size="13" fill="#8a8272">원하는 상태도 "없음"</text>
+
+<path d="M522 98 C 536 96, 548 96, 558 98" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr22b)"/>
+
+<path d="M564 56 C 600 54, 640 58, 674 56 C 677 86, 676 116, 674 140 C 640 142, 600 138, 565 140 C 561 116, 563 86, 564 56 Z" fill="#fbeee7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="576" y="84" font-size="19" fill="#2e6b41">✅ plan</text>
+<text x="576" y="108" font-size="15" fill="#2e6b41">없음 = 없음</text>
+<text x="576" y="128" font-size="13" fill="#8a8272">No changes</text>
+
+<path d="M610 150 C 560 196, 300 210, 110 158" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="8 8" marker-end="url(#arr22b)"/>
+<text x="200" y="222" font-size="18" fill="#b3502f">plan 은 state 파일을 고쳐 쓰지 않는다 → 기록은 그대로 남는다</text>
+
+<path d="M24 252 C 240 249, 460 255, 676 251" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="284" font-size="20" fill="#b3502f">plan 이 보는 것은 "코드와 실물의 차이" 다</text>
+<text x="24" y="310" font-size="16" fill="#8a8272">코드도 실물도 없다고 하면 state 의 낡은 줄은 어떤 경고도 만들지 않는다</text>
+<text x="24" y="336" font-size="16" fill="#8a8272">그래서 이건 plan 이 아니라 state 를 직접 읽는 대조에서만 보인다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 코드와 실물이 둘 다 "없다"고 하면, state 의 한 줄은 아무도 지적하지 않는다</div>
+
+<p>순서대로 보면 이래요. refresh 가 state 의 버킷을 실물에 물어보고 404 를 받습니다. 그러면 이번 plan 안에서는 "이미 사라진 것"으로 처리돼요. 코드에도 블록이 없으니 원하는 상태도 "없음"입니다. 없음과 없음 사이에 할 일이 없으니 No changes 예요. 그리고 plan 은 state 파일을 고쳐 쓰지 않으니, 다음 plan 에서도 똑같은 일이 반복됩니다.</p>
+
+<p>plan 의 관점에서는 틀린 게 없어요. 할 일이 정말 없으니까요. 문제는 <span class="obsv-mark">plan 이 초록이라는 것이 state 가 깨끗하다는 뜻이 아니라는 점</span>입니다. drift 점검은 매일 plan 을 돌리는데, 이 버킷은 그 점검에도 걸리지 않았습니다. state 를 직접 열어 실물과 식별자를 맞춰 본 이번 대조에서 처음 보였습니다.</p>
+
+<p>이 줄을 정리하는 방법은 <code>removed</code> 블록이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: removed 블록</div>
+  "이 주소의 리소스를 state 에서 빼라"고 코드로 적는 Terraform 문법이에요. <code>destroy = false</code> 를 같이 쓰면 실물은 건드리지 않고 기록만 지웁니다. 명령줄에서 state 를 직접 고치는 대신 PR 로 리뷰를 받을 수 있어요.
+</div>
+
+<div class="obsv-code">removed {
+  from = aws_s3_bucket.root
+  lifecycle {
+    destroy = false
+  }
+}</div>
+
+<p>→ "state 의 이 주소는 잊어라. 실물에는 손대지 마라"는 뜻이에요.</p>
+
+<p>그런데 이 블록을 쓰려면 <b>주소</b>가 필요합니다. 버킷 이름만으로는 어느 스택의 어느 모듈, 어느 <code>for_each</code> 키인지 알 수 없어요. 그래서 "state 에만 있는 것" 목록에 Terraform 주소를 같이 적도록 바꿨습니다. 목록에서 줄을 복사해 그대로 <code>from</code> 에 넣을 수 있게요.</p>
+
+<p>그리고 정직하게 적어 둘게요. 이 글을 쓰는 시점에 그 <code>removed</code> 블록은 <b>아직 커밋되지 않았습니다.</b> 로드맵에서 정리 배치는 "삭제 보류, 근거 수집과 판정표까지만"으로 정해 뒀어요. 찾은 것과 정리한 것은 다르다는 21편의 이야기가 여기서도 그대로입니다.</p>
+
+<h2>6. 두 대조가 각각 배제하는 실패</h2>
+
+<p>돌아보면 이날 한 검증은 두 층이었어요. 층마다 막아 주는 실패가 다릅니다.</p>
+
+<div class="obsv-code">검증                  배제하는 실패                    배제하지 못하는 실패
+개수가 9/16 과 같다   종류가 통째로 빠짐 · 목록 잘림     어느 항목이 누구 것인지 틀림
+                                                         같은 이름의 다른 리소스
+식별자 대조           위의 둘 + 항목 단위 소유 오판       state 에만 있는 기록
+                                                         (state 를 따로 읽어야 보인다)
+state 에만 있는 것    코드에서 빠졌는데 state 에 남음     -
+                      식별자 매핑 실수</div>
+
+<p>첫 실행의 결함 셋도 이 표로 다시 읽혀요. us-east-1 의 24건은 <b>수집 범위</b>의 실패였고, KMS 키는 <b>수집 실패를 종류 단위로 뭉갠</b> 실패였고, 리전 없는 이름 키는 <b>같은 이름의 다른 리소스</b>를 하나로 센 실패였어요. 세 번째는 개수로는 원리상 보일 수 없습니다. 하나로 셌으니 개수가 오히려 맞아 보이거든요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 인벤토리 수집기를 짤 때</div>
+  &bull; <b>예외는 항목 단위로 잡으세요.</b> 하나의 권한 거부가 종류 전체를 지우면, 그 종류는 "0개"가 아니라 "모름"이 됩니다. 거부된 항목은 사실로 남기세요<br>
+  &bull; <b>이름이 리전 안에서만 유일한 종류는 키에 리전을 붙이세요.</b> 알람, 로그그룹, 이벤트 규칙, Lambda 가 그렇습니다<br>
+  &bull; <b>us-east-1 은 빼지 마세요.</b> 서울만 쓰는 계정이어도 글로벌 서비스의 짝이 거기 생깁니다<br>
+  &bull; <b>state 쪽 결과에는 Terraform 주소를 같이 적으세요.</b> 찾은 다음 단계가 <code>removed</code> 블록이라면 주소가 없을 때 다시 찾아야 합니다<br>
+  &bull; 이 잡은 새 권한 없이 만들었어요. plan 역할이 이미 읽기 전용 권한과 state 버킷 읽기를 갖고 있었습니다
+</div>
+
+<p>잡은 지금 매주 월요일 아침, drift 점검 30분 뒤에 돕니다. 콘솔에서 누가 새로 만든 리소스는 다음 주 실행에서 candidate 로 이름과 함께 올라와요. 9/16 표가 갱신 비용 때문에 멈췄다면, 이건 다시 돌리는 비용이 0 이라서 멈출 이유가 없습니다. 다만 그 숫자를 볼 때는 이날 배운 걸 같이 봐야 해요. <span class="obsv-mark">숫자가 그대로인 주에도 그 안의 항목은 바뀌어 있을 수 있습니다.</span></p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>계정의 실물과 Terraform state 를 개수로 비교하면 "몇 개가 빠졌다"까지만 알 수 있어요. 식별자로 맞추자 개수로는 원리상 보일 수 없던 것이 나왔습니다.</b> us-east-1 에 있던 글로벌 서비스의 짝, 키 하나에 막혀 사라진 KMS 키 전체, 60개 중 54개가 로드밸런서 것이던 탄력적 IP, 그리고 404 인데도 state 에 남아 plan 을 조용히 통과하던 버킷이에요.<br><br>
+  두 번째 실행의 숫자가 열하루 전과 정확히 같았던 것은 <b>수집기가 빠뜨리지 않았다</b>는 증거였지, 대조가 맞았다는 증거는 아니었어요. 저는 그 일치를 승인 근거로 썼고, 같은 날 저녁에 반례를 만났습니다.<br><br>
+  개수의 일치는 같은 것을 두 번 셌다는 뜻일 뿐이에요. 그 안의 것들이 같은지는 하나씩 이름을 맞춰 봐야 압니다.
+</div>
+
+</div>

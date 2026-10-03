@@ -1,0 +1,322 @@
+<!-- ============================================================
+  IaC 작업일지 23편: 좁히는 라벨은 만들지 않았다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: PR 라벨, plan 범위, state 잠금, tflock, concurrency -->
+<!-- lead: 스크립트만 고친 PR 이 Terraform plan 을 스택 33개 전부에 돌렸어요. plan:skip 라벨을 만들지 않은 이유, 워크플로를 읽어 스크립트를 가른 방법, 취소된 plan 이 남긴 tflock 이 drift 점검을 막은 일을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지, 다섯째 날 · 23편</div>
+  1~7편. 첫날: 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날: 같은 사실이 두 군데 적혀 있을 때<br>
+  12~15편. 셋째 날: 만든 가드를 의심한 날들<br>
+  16~21편. 넷째 날: 이름을 믿지 않고 자원을 판독하는 법<br>
+  22편. 개수가 맞아도 같은 것인지는 모른다<br>
+  <b>23편. 좁히는 라벨은 만들지 않았다</b> &larr; 지금 이 글<br>
+  24편. 소유하지 않겠다고 적은 지 한 달 만에 뒤집었다
+</div>
+
+<p>일요일 오후에 PR 하나를 올렸어요. 계정의 리소스를 전수로 세는 인벤토리 스크립트를 새로 넣고, 린트 스크립트에 세 줄을 더한 PR 이었습니다. <b>Terraform 코드는 한 줄도 없었어요.</b> 그런데 체크 목록에 plan 이 서른세 개 떴습니다. 저장소에 있는 스택 전부였어요.</p>
+
+<p>나흘 전에도 같은 일이 있었어요. 파이썬 스크립트 한 줄을 고친 PR 이 체크 서른일곱 개를 돌렸습니다. 그때는 원인이 <code>.github/</code> 디렉터리였고, 이번에는 <code>scripts/</code> 디렉터리였어요. 두 디렉터리 모두 plan 을 고르는 스크립트가 <b>"무엇에 영향을 주는지 모르는 경로"</b>로 분류해 두고 있었습니다.</p>
+
+<p>고치는 방법으로 제일 먼저 떠오른 건 라벨이었어요. PR 에 <code>plan:skip</code> 을 붙이면 plan 을 건너뛰게 하자는 거죠. 결국 이 라벨은 만들지 않았습니다. 이 글은 <span class="obsv-mark">라벨이 plan 을 넓힐 수는 있어도 좁힐 수는 없게 만든 이유</span>에 대한 이야기예요. 그리고 같은 판정 스크립트를 머지 뒤 파이프라인에도 붙이게 된 계기, 남겨진 잠금 파일 하나가 drift 점검을 멈춘 일도 함께 적었습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 다룰 것</div>
+  &bull; 스크립트만 고친 PR 이 왜 전 스택 plan 을 돌렸나?<br>
+  &bull; plan 을 줄이는 라벨은 왜 만들지 않았나? 넓히는 라벨과 무엇이 다른가?<br>
+  &bull; 손으로 쓴 목록 없이 스크립트를 어떻게 분류하나?<br>
+  &bull; 취소된 plan 이 남긴 잠금 파일은 왜 다른 점검까지 멈추게 하나?
+</div>
+
+<h2>1. 경로만 보고는 스크립트가 무엇을 하는지 모른다</h2>
+
+<p>이 저장소의 PR 검사는 바뀐 파일 목록을 보고 plan 할 스택을 고릅니다. 판정은 <code>select-plan-stacks.py</code> 라는 스크립트 하나가 맡아요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: plan (terraform plan)</div>
+  코드와 실제 클라우드 상태를 비교해서 "적용하면 무엇이 생기고 바뀌고 지워지는지"를 미리 계산하는 명령입니다. 이 저장소에서는 PR 마다 plan 결과가 필수 체크로 붙고, 리뷰어는 그 결과를 보고 머지를 판단해요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 스택 (stack)</div>
+  state 파일 하나를 공유하는 Terraform 디렉터리 하나입니다. plan 과 apply 는 스택 단위로 돌아요. 이 글의 시점에 저장소에는 스택이 서른셋 있었습니다.
+</div>
+
+<p>규칙은 단순해요. 스택 디렉터리 안의 파일이 바뀌면 그 스택만 돌고, 문서만 바뀌면 아무것도 돌지 않습니다. 어느 스택에도 속하지 않는 파일이 바뀌면 <b>전 스택</b>을 돌려요. 공용 모듈이 대표적입니다. 모듈 하나를 고치면 그걸 쓰는 모든 스택의 plan 이 달라질 수 있으니까요.</p>
+
+<div class="obsv-code">바뀐 파일                         고른 스택
+stacks/&lt;서비스&gt;/prod/main.tf      그 스택 하나
+docs/adr/x.md                      없음
+modules/cw-alarm/main.tf           전 스택   (영향 범위를 모른다)
+scripts/아무거나                   전 스택   (영향 범위를 모른다)</div>
+<p>→ 마지막 줄이 문제였어요. <code>scripts/</code> 아래 파일은 하나도 빠짐없이 "모른다"로 떨어졌습니다.</p>
+
+<p>이 "모르면 전부 돌린다" 규칙은 한 달 반 전에 결정 기록(ADR)으로 남겨 둔 것이에요. 근거는 비용의 크기 차이였습니다. 좁히지 못하면 plan 을 몇 번 더 돌리는 비용이 들어요. 잘못 좁히면 <b>검증되지 않은 변경이 main 에 들어갑니다.</b> 두 비용은 같은 단위로 잴 수조차 없어요. 그래서 판정이 애매하면 무조건 넓은 쪽으로 기울게 해 두었습니다.</p>
+
+<p>이 원칙 자체는 지금도 맞다고 봐요. 문제는 <code>scripts/</code> 안에 성격이 다른 파일이 섞여 있었다는 점이에요. plan 결과를 정하는 스크립트도 있고, 린트 잡에서만 쓰는 검사 스크립트도 있습니다. plan 을 고르는 스크립트를 고치면 정말로 모든 스택의 plan 이 달라질 수 있어요. 반면 인벤토리 스크립트를 고친다고 plan 결과가 바뀌지는 않습니다. 그런데 판정은 둘을 구분하지 않았어요.</p>
+
+<p>나흘 전 <code>.github/</code> 사건은 이름 규약으로 풀었습니다. Terraform 을 실행하는 워크플로는 <code>terraform-</code> 접두사를 달고, 나머지 워크플로는 plan 과 무관한 것으로 본다는 규칙이에요(apply 워크플로가 불러 쓰는 공용 워크플로 하나만 예외로 따로 적었습니다). 이름과 내용이 어긋나면 린트가 잡게 했습니다. <code>scripts/</code> 에도 같은 방법을 쓸 수 있을까 고민하다가 라벨 이야기가 나왔어요.</p>
+
+<h2>2. 라벨이 좁히면 틀린 쪽이 초록불이 된다</h2>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: PR 라벨 (label)</div>
+  GitHub PR 에 사람이 붙이는 꼬리표입니다. 워크플로가 라벨을 읽고 동작을 바꿀 수 있어요. 이 저장소는 이미 삭제를 허락하는 <code>allow-destroy</code> 라벨을 쓰고 있었습니다(3편).
+</div>
+
+<p>결정 기록에는 검토한 선택지가 셋 남아 있어요.</p>
+
+<div class="obsv-code">1) scripts/ 에서 plan 과 무관한 파일을 목록으로 적는다
+   -&gt; 탈락. 목록은 파일이 늘면 낡고, 낡은 목록은 조용히 틀린다
+
+2) 라벨로 plan 범위를 정한다 (plan:skip, plan:stacks=... 포함)
+   -&gt; 좁히는 라벨은 탈락. plan:skip 을 잘못 붙이면
+      Terraform 변경이 plan 없이 초록불이 된다
+
+3) 파일이 바닥을 정하고, 라벨은 넓히기만 한다
+   scripts/ 는 워크플로를 읽어서 부르는 잡으로 가른다
+   -&gt; 채택</div>
+
+<p>두 번째 안을 버린 이유가 이 글의 중심이에요. 라벨은 사람이 붙입니다. 사람은 틀려요. 그러니 질문은 "틀리지 않게 하려면?"이 아니라 <b>"틀렸을 때 무슨 일이 생기나?"</b>가 됩니다.</p>
+
+<p>넓히는 라벨을 잘못 붙였다고 해 볼게요. 스택 하나만 바뀐 PR 에 누가 <code>plan:all</code> 을 붙였습니다. 결과는 plan 서른세 개예요. 몇 분이 더 걸리고 러너(CI 잡을 실행하는 머신) 시간이 더 듭니다. <b>그게 끝이에요.</b> 리뷰어가 보는 정보는 오히려 늘어납니다.</p>
+
+<p>좁히는 라벨을 잘못 붙이면 사정이 달라요. 스택 파일을 고친 PR 에 누가 <code>plan:skip</code> 을 붙였다고 해 볼게요. 지난 PR 에서 붙이던 버릇대로 붙였을 수도 있고, 스크립트만 고쳤다고 착각했을 수도 있습니다. 그러면 plan 이 하나도 돌지 않고 필수 체크는 통과해요. <span class="obsv-mark">리뷰어 화면에는 "변경 없음"과 구분되지 않는 초록불이 남습니다.</span> 이 저장소가 가장 피해야 할 사고가 바로 이것이에요. plan 을 거치지 않은 변경이 main 에 들어가고, apply 에서 처음 그 내용이 드러나는 것이죠.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr23a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="24" y="32" font-size="22" fill="#4a7fb5">같은 실수, 라벨 방향만 다르다: 잘못 붙였을 때 무엇이 남나</text>
+
+<path d="M26 54 C 120 51, 230 57, 326 54 C 329 90, 328 128, 326 160 C 230 163, 120 157, 27 160 C 23 128, 25 90, 26 54 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="44" y="86" font-size="22" fill="#2e6b41">넓히는 라벨 plan:all</text>
+<text x="44" y="114" font-size="16" fill="#3d3a34">스택 하나 바뀐 PR 에 잘못 붙였다</text>
+<text x="44" y="140" font-size="14" fill="#8a8272">plan 이 1개 대신 33개 돈다</text>
+
+<path d="M330 106 C 370 104, 400 107, 430 106" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr23a)"/>
+
+<path d="M446 54 C 520 51, 600 57, 674 54 C 677 90, 676 128, 674 160 C 600 163, 520 157, 447 160 C 443 128, 445 90, 446 54 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="462" y="86" font-size="20" fill="#2e6b41">대가: 몇 분과 러너 시간</text>
+<text x="462" y="114" font-size="16" fill="#3d3a34">리뷰어가 보는 정보는 늘어난다</text>
+<text x="462" y="140" font-size="14" fill="#8a8272">틀려도 안전한 쪽으로 틀린다</text>
+
+<path d="M24 184 C 240 181, 460 187, 676 183" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+
+<path d="M26 206 C 120 203, 230 209, 326 206 C 329 242, 328 280, 326 312 C 230 315, 120 309, 27 312 C 23 280, 25 242, 26 206 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="44" y="238" font-size="22" fill="#b3502f">좁히는 라벨 plan:skip</text>
+<text x="44" y="266" font-size="16" fill="#3d3a34">스택 파일 바뀐 PR 에 잘못 붙였다</text>
+<text x="44" y="292" font-size="14" fill="#8a8272">plan 이 0개 돈다</text>
+
+<path d="M330 258 C 370 256, 400 259, 430 258" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr23a)"/>
+
+<path d="M446 206 C 520 203, 600 209, 674 206 C 677 242, 676 280, 674 312 C 600 315, 520 309, 447 312 C 443 280, 445 242, 446 206 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="462" y="238" font-size="20" fill="#b3502f">대가: plan 없는 초록불</text>
+<text x="462" y="266" font-size="16" fill="#3d3a34">"변경 없음"과 구분되지 않는다</text>
+<text x="462" y="292" font-size="14" fill="#8a8272">apply 에서 처음 드러난다</text>
+
+<text x="24" y="350" font-size="20" fill="#b3502f">사람이 고르는 손잡이는 틀려도 안전한 방향으로만 달아 둔다</text>
+<text x="24" y="376" font-size="15" fill="#8a8272">좁히는 일은 기계가 근거를 갖고 할 때만 허용한다 (3장)</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 실수라도 방향에 따라 대가가 몇 분에서 사고까지 벌어진다</div>
+
+<p>그래서 라벨은 셋만 남았어요. <code>plan:all</code> 은 파일과 상관없이 전 스택을 돌립니다. <code>inventory</code> 는 그 PR 에서 계정 인벤토리를 돌려요. 편입 PR(콘솔로 만든 자원을 코드로 가져오는 PR)에서 아직 코드 밖에 있는 자원 목록이 실제로 줄었는지 보고 싶을 때 씁니다. 나머지 하나는 원래 있던 <code>allow-destroy</code> 예요. 셋 다 일을 더 시키는 라벨이고, 일을 덜 시키는 라벨은 없습니다.</p>
+
+<p>결정 기록의 마지막 줄에는 이런 문장도 적었어요. "좁히는 라벨이 필요하다는 요구가 생겨도 이 ADR 을 먼저 뒤집어야 한다. 그 자체로 결정이다." 편해 보인다는 이유로 라벨 하나를 슬쩍 더하는 일을 막으려고 남긴 문장입니다.</p>
+
+<h3>3편에서 뺀 트리거를 다시 넣었다</h3>
+
+<p>3편에서는 워크플로 트리거에 <code>labeled</code> 를 넣지 않았어요. 라벨을 붙일 때마다 plan 이 통째로 다시 도는 게 아깝다는 이유였습니다. 이번에는 넣었어요. <code>plan:all</code> 을 붙이는 행동 자체가 "전 스택을 돌려 달라"는 요청이기 때문입니다. 붙인 뒤에 Re-run 버튼을 누르라고 안내하면, 누르는 걸 잊은 사람의 요청은 조용히 무시돼요.</p>
+
+<p>대가도 결정 기록에 적었습니다. 이제 어떤 라벨을 붙여도 plan 이 다시 돌아요. 다만 같은 PR 의 이전 실행은 동시 실행 설정이 취소해 주고, 라벨을 붙이는 일 자체가 드물어서 받아들이기로 했습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 사람이 쓰는 스위치를 설계할 때</div>
+  &bull; 스위치마다 "잘못 켰을 때"와 "켜야 하는데 안 켰을 때"를 둘 다 적어 봅니다<br>
+  &bull; 둘 중 하나라도 검증을 건너뛰게 만든다면 그 스위치는 사람에게 맡기지 않습니다<br>
+  &bull; 검사를 빼는 판단은 바뀐 파일 목록과 같이 기계가 읽을 수 있는 근거에서 나와야 하고, 판단이 애매하면 넓은 쪽으로 떨어져야 합니다
+</div>
+
+<h2>3. 스크립트는 누가 부르는지로 가른다</h2>
+
+<p>라벨을 접고 나니 원래 질문이 남았어요. 인벤토리 스크립트를 고친 PR 은 어떻게 plan 을 건너뛰게 하나? 첫 번째 안(목록 적기)은 이미 버렸습니다. 나흘 전 <code>.github/</code> 를 고칠 때 커밋 메시지에 이렇게 적었거든요. "목록은 낡고, 낡은 목록은 조용히 틀린다."</p>
+
+<p>그래서 <b>이미 있는 사실</b>을 읽기로 했어요. 어떤 스크립트가 plan 결과에 영향을 주는지는 워크플로 파일에 이미 적혀 있습니다. 어느 잡이 그 스크립트를 실행하는지 보면 돼요.</p>
+
+<div class="obsv-code">판정       조건                                                plan
+---------  --------------------------------------------------  -------
+파이프라인 plan · apply 잡이 부른다                            전 스택
+           (terraform-plan 의 lint · security 잡은 제외)
+자기검증   그 밖의 잡이나 lint.sh 만 부른다                    없음
+모름       어느 잡도 부르지 않는다                             전 스택</div>
+<p>→ 가운데 줄이 새로 생긴 칸이에요. 린트와 보안 잡은 모든 PR 에서 돌기 때문에, 그 잡만 부르는 스크립트는 고친 PR 안에서 바로 검증됩니다. plan 을 더 돌려도 얻는 정보가 없어요.</p>
+
+<p>실제로 읽어 보니 plan 쪽 잡이 부르는 스크립트는 넷이었어요. plan 결과를 판정하는 스크립트, 스택을 고르는 스크립트(이 글의 주인공), 스택 목록을 만드는 스크립트, 진행 상황을 그리는 스크립트입니다. 인벤토리 스크립트를 부르는 건 인벤토리 잡이었고, IAM 경계와 알람 누락을 보는 검사는 drift 잡이 불렀어요. 어느 쪽도 plan 결과와는 상관이 없습니다.</p>
+
+<p>세부 규칙이 몇 개 있습니다. 하나하나가 실제로 틀릴 뻔한 지점이에요.</p>
+
+<p><b>잡 정의에 적힌 경로만 봅니다.</b> 스크립트 안의 문장까지 따라가면 안 돼요. 진행 상황 스크립트 안에 "<code>scripts/lint.sh</code> 를 만든 이유와 같다"라는 주석이 있는데, 이 문장까지 읽으면 린트 스크립트가 파이프라인으로 분류됩니다. 그러면 린트 스크립트를 고칠 때마다 전 스택이 다시 돌아요.</p>
+
+<p><b>하위 디렉터리는 통째로 한 주인입니다.</b> 인벤토리 디렉터리에는 스크립트 옆에 분류 규칙을 담은 데이터 파일이 있어요. 그 파일은 어느 잡에도 직접 적혀 있지 않지만, 인벤토리 스크립트와 같은 주인으로 봅니다. 반면 <code>scripts/</code> 바로 아래 파일에는 이 규칙을 적용하지 않아요. 그래서 거기 있는 태그 기준 파일은 여전히 "모름"이고, 고치면 전 스택이 돕니다.</p>
+
+<p><b>둘 다에 걸리면 파이프라인이 이깁니다.</b> plan 판정 스크립트는 린트 잡에서 자기 검사도 받기 때문에 양쪽에 다 나와요. 이럴 때는 넓은 쪽을 택합니다. <b>워크플로를 못 읽으면 예전 동작으로 돌아가요.</b> 이때는 <code>scripts/</code> 전체를 "모름"으로 봅니다.</p>
+
+<p>이 방식에는 반대 의견도 적어 두었어요. <span class="obsv-mark">워크플로 파싱이 틀리면 판정이 조용히 좁아집니다.</span> 누가 plan 잡을 고치다 스크립트 호출 위치를 옮기면, 파이프라인 스크립트가 "자기검증"으로 새어 나가도 아무도 모를 수 있어요. 그래서 판정 스크립트의 자기 검사가 <b>실제 저장소의 워크플로</b>를 읽어서, 앞의 네 스크립트가 여전히 파이프라인으로 분류되는지 매번 확인합니다. 하나라도 빠지면 린트가 실패해요. 인벤토리 스크립트와 린트 스크립트가 자기검증으로 분류되는지도 같이 봅니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 이 판정이 깨지는 조건</div>
+  &bull; plan · apply 잡이 스크립트를 잡 정의 밖(공용 액션 등)에서 부르기 시작하면 이 판정은 그 호출을 못 봅니다. 결정 기록에 재검토 조건으로 적어 두었어요<br>
+  &bull; 자기검증 스크립트만 고친 PR 은 스택별 tflint · validate 를 0개 돌립니다. 그 스크립트들의 자기 검사와 전역 가드는 스택 선택과 상관없이 돌기 때문에 받아들였어요
+</div>
+
+<p>정리하면 이 결정은 원칙을 바꾸지 않았어요. "모르면 전 스택"은 그대로이고, 라벨은 한 방향으로만 틀릴 수 있습니다. 바뀐 건 <b>원래 알 수 있었던 것을 이제 알게 된 것</b>뿐이에요. 인벤토리 스크립트가 plan 과 무관하다는 사실은 처음부터 워크플로 파일에 적혀 있었습니다.</p>
+
+<h2>4. 같은 판정을 머지 뒤에도 붙인 이유: 남겨진 잠금 파일</h2>
+
+<p>사실 이 판정 스크립트를 PR 밖에서 먼저 쓴 곳이 있어요. 일주일쯤 앞서 머지 뒤 파이프라인에 붙였습니다. 계기는 plan 비용이 아니라 <b>잠금 파일</b>이었어요.</p>
+
+<p>main 에 머지가 들어가면 "prod 미반영 확인"이라는 잡이 돕니다. prod 는 사람이 수동으로 apply 하기 때문에, 머지는 됐는데 prod 에 반영되지 않은 변경이 있으면 이슈로 알려 주는 잡이에요(7편의 그 알림입니다). 이 잡이 <b>푸시 내용과 상관없이 prod 스택 열여덟 개 전부</b>에 plan 을 돌리고 있었어요. 스택 하나를 고친 머지가 나머지 열일곱까지 건드렸습니다.</p>
+
+<p>여기에 동시 실행 설정이 겹쳤어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: concurrency 와 cancel-in-progress</div>
+  GitHub Actions 에서 같은 그룹 이름을 가진 실행이 겹칠 때 어떻게 할지 정하는 설정입니다. <code>cancel-in-progress: true</code> 이면 새 실행이 시작될 때 진행 중이던 이전 실행을 취소해요. 이 잡은 스택마다 그룹을 따로 두고 이 옵션을 켜 두었습니다.
+</div>
+
+<p>머지 두 개가 짧은 간격으로 들어오면, 앞 머지의 plan 이 도는 도중에 뒤 머지가 그 plan 을 취소합니다. 취소 자체는 문제가 아니에요. 어차피 뒤 머지가 같은 스택을 다시 보니까요. 문제는 잠금을 잡은 뒤에 취소된 plan 이 <b>잠금 파일을 지우지 못하고 죽는다</b>는 점이었습니다. 잠금을 잡기 전에 취소되면 남는 것이 없어요. 어느 쪽이 될지는 취소가 언제 닿느냐에 달려 있습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: state 잠금과 .tflock</div>
+  두 실행이 같은 state 를 동시에 고치지 못하게 막는 장치입니다. 이 저장소는 S3 에 state 를 두고 <code>use_lockfile = true</code> 를 쓰는데, 그러면 plan · apply 가 시작할 때 state 옆에 <code>&lt;키&gt;.tflock</code> 객체를 만들고 끝날 때 지워요. 그 객체가 있는 동안 다른 실행은 기다립니다.
+</div>
+
+<p>정상이라면 잠금은 몇 분 안에 생겼다 사라집니다. 그런데 프로세스가 중간에 강제로 끝나면 지우는 단계가 실행되지 않아요. 객체만 남습니다. 이 일을 처음 겪은 8월 말의 작업 기록에 이렇게 적었어요. "S3 lockfile 은 만료가 없어 재시도로 풀리지 않는다. <code>.tflock</code> 객체를 지워야 한다." 그날은 다른 작업 세션의 머지 두 개가 44초 간격으로 겹쳤습니다.</p>
+
+<p>뒤에 오는 실행은 잠금 객체를 보고 기다립니다. 이 저장소는 plan 마다 <code>-lock-timeout=5m</code> 을 걸어 두었으니, 5분을 기다린 뒤 "잠금을 얻지 못했다"며 실패해요. 잠금을 만든 실행은 이미 죽었기 때문에 몇 번을 다시 돌려도 결과가 같습니다.</p>
+
+<p>이 잠금 때문에 멈추는 게 미반영 확인 잡만이 아니에요. <b>같은 스택의 state 를 여는 모든 실행</b>이 멈춥니다. 매일 도는 drift 점검도 마찬가지예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: drift 점검</div>
+  코드와 실제 클라우드가 어긋났는지(누가 콘솔에서 손으로 바꿨는지) 매일 plan 을 돌려 확인하는 잡입니다. 어긋남을 찾으면 이슈를 열어요. plan 자체가 실패하면 "drift" 가 아니라 "error" 상태로 이슈를 남깁니다(7편).
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr23b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="24" y="32" font-size="22" fill="#4a7fb5">취소된 plan 하나가 그 스택의 다음 실행을 전부 멈춘다</text>
+
+<path d="M26 56 C 90 53, 150 59, 206 56 C 209 80, 208 104, 206 124 C 150 127, 90 121, 27 124 C 23 104, 25 80, 26 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+<text x="40" y="84" font-size="19" fill="#3d3a34">머지 A 의 plan</text>
+<text x="40" y="110" font-size="14" fill="#8a8272">시작하며 .tflock 생성</text>
+
+<path d="M210 90 C 240 88, 262 91, 286 90" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr23b)"/>
+
+<path d="M296 56 C 360 53, 420 59, 476 56 C 479 80, 478 104, 476 124 C 420 127, 360 121, 297 124 C 293 104, 295 80, 296 56 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+<text x="310" y="84" font-size="19" fill="#c07f18">머지 B 가 A 를 취소</text>
+<text x="310" y="110" font-size="14" fill="#8a8272">cancel-in-progress</text>
+
+<path d="M480 90 C 510 88, 532 91, 556 90" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr23b)"/>
+
+<path d="M566 56 C 600 53, 640 59, 676 56 C 679 80, 678 104, 676 124 C 640 127, 600 121, 567 124 C 563 104, 565 80, 566 56 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="578" y="84" font-size="19" fill="#b3502f">🔒 잠금만 남음</text>
+<text x="578" y="110" font-size="14" fill="#8a8272">만료 없음</text>
+
+<path d="M620 130 C 622 160, 618 180, 620 204" fill="none" stroke="#e5533c" stroke-width="2" marker-end="url(#arr23b)"/>
+
+<path d="M60 214 C 250 211, 450 217, 676 214 C 679 248, 678 282, 676 310 C 450 313, 250 307, 61 310 C 57 282, 59 248, 60 214 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="78" y="242" font-size="19" fill="#3d3a34">그 스택의 state 를 여는 실행은 모두 5분 기다린 뒤 실패</text>
+<text x="96" y="270" font-size="16" fill="#3d3a34">&bull; 다음 머지의 미반영 확인</text>
+<text x="96" y="294" font-size="16" fill="#3d3a34">&bull; 매일 도는 drift 점검 (error 로 기록, drift 는 못 봄)</text>
+<text x="510" y="270" font-size="16" fill="#3d3a34">&bull; 그 스택의 PR plan</text>
+<text x="510" y="294" font-size="16" fill="#3d3a34">&bull; 재시도해도 같다</text>
+
+<path d="M24 336 C 240 333, 460 339, 676 335" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="366" font-size="20" fill="#b3502f">사람이 .tflock 객체를 지우기 전까지 풀리지 않는다</text>
+<text x="24" y="394" font-size="15" fill="#8a8272">plan 을 많이 돌릴수록 취소당할 plan 도 많아진다: 18개를 매번 돌리면 18개가 후보다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 잠금을 만든 실행이 죽어도 잠금 객체는 스스로 사라지지 않는다</div>
+
+<h3>"다행히"라고 적은 날</h3>
+
+<p>여기서 제 기록이 서로 어긋나요. 9월 16일 작업 기록에는 이렇게 적었습니다. 머지 두 개를 16초 간격으로 해서 미반영 확인 잡 열일곱 개가 취소됐는데, <b>다행히 잠금을 잡기 전에 취소돼서</b> 다음 실행에서 열여덟 개가 전부 성공했다고요. 그리고 "연속 머지 사이에는 main 잡 완료를 반드시 기다린다"는 다짐도 붙였어요.</p>
+
+<p>닷새 뒤 수리 커밋의 메시지에는 다른 이야기가 적혀 있습니다. <span class="obsv-mark">그날 고아 잠금이 셋 생겼고, 그 스택들의 drift 감시가 하루 넘게 죽어 있었다.</span> 그 셋이 제가 다행이라고 적은 머지에서 나왔는지, 그 기록을 쓴 뒤의 다른 머지에서 나왔는지는 기록만으로 가려지지 않아요. 확실한 건 하나입니다. "다음 실행이 성공했다"는 그 시점에 확인한 스택에 대한 사실이었고, 그날 전체에 대한 사실은 아니었어요. 그리고 다짐으로는 막지 못했습니다.</p>
+
+<h3>수리: 바뀐 스택만, PR 과 같은 스크립트로</h3>
+
+<p>수리는 이 잡이 <b>그 푸시가 건드린 prod 스택만</b> 보게 하는 것이었어요. 판정은 PR 이 쓰는 스택 선택 스크립트를 그대로 가져다 썼습니다. 자기 검사가 붙어 있고 린트가 매번 돌리는 로직이라, 새로 짜는 것보다 믿을 만했어요.</p>
+
+<div class="obsv-code">실측 (수리 당일)
+바뀐 파일                                고른 prod 스택
+stacks/&lt;서비스&gt;/dev/alb-legacy.tf        없음      (전에는 18개 전부)
+stacks/&lt;서비스&gt;/prod/alb-legacy.tf       그 스택 하나
+docs/adr/x.md                             없음
+modules/cw-alarm/main.tf                  18개 전부 (모르면 좁히지 않는다)
+.github/workflows/*.yml                   18개 전부</div>
+<p>→ 바뀐 스택만 돌면, 머지가 겹쳐도 취소당할 수 있는 plan 이 열여덟에서 한두 개로 줄어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: prod 목록만 넘기면 오히려 넓어진다</div>
+  처음에는 판정 스크립트에 prod 스택 목록만 넘기려 했어요. 그러면 dev 스택만 바뀐 머지에서 바뀐 파일이 어느 prod 디렉터리에도 걸리지 않습니다. 스크립트 입장에서는 "스택 밖의 파일"이 되니 안전장치가 발동해서 <b>prod 전체를 돌려요</b>. 그래서 전체 스택 목록으로 판정한 뒤에 prod 만 걸러 냅니다. 판정기의 안전장치는 판정기가 전체 그림을 볼 때만 맞게 동작해요.
+</div>
+
+<p>함께 넣은 장치가 둘 있어요. 첫째, 무엇을 건너뛰었는지 실행 요약에 반드시 찍습니다. <b>조용히 좁히면 "전부 확인됐다"로 읽히는데 실제로는 그렇지 않으니까요.</b> 2장에서 좁히는 라벨을 거절한 이유와 같은 문장이에요. 둘째, 이전 커밋을 찾지 못해 diff 를 구하지 못하면 "좁히지 않음"으로 떨어지게 했습니다.</p>
+
+<p>잃은 것도 있어요. 예전에는 다른 사람의 머지가 들어올 때마다 미반영 상태를 다시 알려 주는 효과가 있었습니다. 원래 알려야 할 시점은 그 변경이 머지되는 순간이니 재알림은 부수 효과였다고 판단했어요. 그 공백은 매일 도는 drift 점검이 메웁니다.</p>
+
+<p>그리고 정직하게 적어 둘 것이 있어요. <b>이 수리는 고아 잠금을 없앤 게 아니라 생길 기회를 줄인 것</b>입니다. 미반영 확인 잡은 지금도 스택별로 <code>cancel-in-progress: true</code> 예요. 같은 스택을 고친 머지 두 개가 겹치면 여전히 잠금이 남을 수 있습니다. 차이는 그 후보가 매 머지마다 열여덟 개에서 실제로 바뀐 스택 몇 개로 줄었다는 점이에요.</p>
+
+<h2>5. 좁혀도 되는 경우와 안 되는 경우</h2>
+
+<p>이 글의 세 이야기를 나란히 놓으면 같은 질문이 보여요. <b>검증을 덜 하는 결정을 누가, 무엇을 근거로 내리나.</b></p>
+
+<p>좁히는 라벨은 사람이 기억과 판단으로 내리는 결정이었어요. 틀리면 plan 없는 초록불이 남고, 그걸 알아챌 장치가 없습니다. 그래서 만들지 않았어요. 스크립트 분류는 기계가 워크플로 파일이라는 근거를 읽고 내리는 결정입니다. 읽지 못하면 넓은 쪽으로 떨어지고, 분류가 새면 자기 검사가 실패해요. 미반영 확인을 좁힌 것도 같은 스크립트이고, 무엇을 건너뛰었는지 화면에 남깁니다.</p>
+
+<p>그러니까 좁히는 것 자체가 나쁜 게 아니에요. 서른세 개 plan 은 실제 비용이었고, 열여덟 개 plan 은 잠금이라는 더 큰 비용을 만들었습니다. <span class="obsv-mark">좁히려면 근거가 기계에 읽혀야 하고, 근거가 없으면 넓은 쪽으로 떨어져야 하고, 건너뛴 것이 보여야 합니다.</span> 셋 중 하나라도 빠지면 그건 최적화가 아니라 검증을 끈 거예요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>스크립트만 고친 PR 이 전 스택 plan 을 돌린 건, 판정기가 <code>scripts/</code> 를 통째로 "모른다"로 봤기 때문이에요.</b> 해법으로 <code>plan:skip</code> 라벨이 먼저 떠올랐지만 만들지 않았습니다. 넓히는 라벨을 잘못 붙이면 몇 분이 들고, 좁히는 라벨을 잘못 붙이면 plan 없는 초록불이 남아요.<br><br>
+  대신 워크플로 파일을 읽어 <b>어느 잡이 그 스크립트를 부르는지</b>로 분류했어요. plan · apply 잡이 부르면 전 스택, 모든 PR 에서 도는 검사 잡만 부르면 생략, 아무도 안 부르면 여전히 전 스택입니다. 그보다 먼저 같은 판정을 머지 뒤 미반영 확인에도 붙였는데, 취소된 plan 이 남긴 <code>.tflock</code> 이 만료 없이 drift 점검까지 막았기 때문이에요. 그 수리는 잠금을 없앤 게 아니라 생길 기회를 줄였습니다.<br><br>
+  검증을 덜 하는 결정은 사람의 기억이 아니라 기계가 읽는 근거로 내리고, 근거가 없으면 넓히고, 건너뛴 것은 보이게 남깁니다.
+</div>
+
+</div>

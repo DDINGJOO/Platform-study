@@ -1,0 +1,263 @@
+<!-- ============================================================
+  Datadog 설정을 코드로 10편: 지연 오탐 68건은 느린 게 정상인 요청이 만들었다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: 지연 모니터, p95 오탐, 핵심 경로 감시, SLO 번 레이트, 에러 예산 -->
+<!-- lead: 서비스 p95 지연 모니터가 14일 동안 임계를 68번 넘었는데, 전부 원래 느린 요청 때문이었어요. 판정 범위를 좁히고 핵심 경로 모니터와 지연 SLO 번 레이트 알림을 붙인 과정을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 Datadog 설정을 코드로 · 10편</div>
+  1편. 모니터를 코드로 옮겨도 콘솔은 잠그지 않았다<br>
+  2편. service 는 앱이 정하고 team 은 호출 단위다<br>
+  3편. 필수 모니터가 헬스체크를 세고 있었다<br>
+  4편. 데이터 없음은 장애인가<br>
+  5편. APM 을 떼는 순서<br>
+  6편. 로그가 사라진 건 샘플링이 아니었다<br>
+  7편. 없는 채널로 보낸 알림은 plan 을 통과한다<br>
+  8편. 약 30개라던 서비스는 11개였다<br>
+  9편. 음소거된 P1 하나가 배치 실패 감시를 껐다<br>
+  <b>10편. 지연 오탐 68건은 느린 게 정상인 요청이 만들었다</b> &larr; 지금 이 글
+</div>
+
+<p>10월 2일 오전, 메인 API 의 지연 모니터를 지난 14일 데이터에 그대로 대 봤어요. 임계는 3편에서 7일 실측으로 정한 3초였습니다. 14일 동안 이 임계를 넘은 횟수는 68번이었어요. 그런데 그 68번 중에 실제로 서비스가 느려진 때는 한 번도 없었습니다. 전부 원래 느린 요청이 평소 속도로 느렸을 뿐이었어요.</p>
+<p>3편에서 배치 서버의 업로드 두 개를 지연 판정에서 뺀 적이 있어요. 그때는 서비스 하나의 엔드포인트 두 개였습니다. 메인 API 와 에이전트 API 를 열어 보니 같은 성격의 요청이 훨씬 많았고, 종류도 여러 가지였어요. 사용자가 휴대폰에서 버튼을 누를 때까지 기다리는 인증 요청, 신분증 사진을 분석하는 요청, 5분 동안 연결을 열어 두는 스트림이 서비스 p95 하나에 섞여 있었습니다.</p>
+<p>이 글은 그 68번을 0으로 만든 과정과, 서비스 p95 하나로는 보이지 않던 것을 따로 보게 만든 과정이에요. 그리고 열 편째인 만큼 이 시리즈가 지금까지 무엇을 했고 무엇이 남았는지도 짧게 정리합니다.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 장애가 없었는데 지연 임계를 68번 넘은 이유는 무엇일까?<br>
+&middot; 3편에서 "지연 p95 에서는 헬스체크를 빼지 않는다"고 한 판단은 왜 뒤집었을까?<br>
+&middot; 서비스 전체 p95 가 멀쩡해도 로그인만 느려질 수 있을까?<br>
+&middot; 오래 기다리는 API 는 왜 따로 감시하지 않기로 했을까?<br>
+&middot; 조금씩 나빠지는 지연은 무엇으로 잡을까?</p>
+
+<h2>1. 68번 넘었는데 전부 정상이었다</h2>
+
+<p>서비스 단위 지연 모니터는 그 서비스가 받은 요청 전체의 p95 를 봐요. 요청 100건을 빠른 순으로 세웠을 때 95번째 응답시간입니다. 이 값이 하나의 숫자로 의미가 있으려면 섞인 요청들이 대체로 비슷한 속도여야 해요. 메인 API 는 그렇지 않았습니다.</p>
+<p>메인 API 와 에이전트 API 에서 원래 느린 요청을 성격별로 묶으면 이렇게 나뉘었어요.</p>
+<p>&middot; <b>외부 기관이나 사용자를 기다리는 요청</b>: 본인 인증 요청은 사용자가 휴대폰 앱에서 확인을 누를 때까지 응답하지 않아요. 외부 기관의 응답을 받아 넘기는 단계도 그쪽 속도를 따릅니다.<br>
+&middot; <b>안에서 무거운 일을 하는 요청</b>: 신분증·서명 이미지 분석(OCR), 상담 초안 작성, 관리자의 회원 탈퇴 처리가 있었어요.<br>
+&middot; <b>스트리밍</b>: 에이전트 API 의 관리자 문의 화면은 연결을 5분 동안 열어 둡니다.<br>
+&middot; <b>헬스체크와 CORS 사전 요청</b>: 반대로 아주 빠른 요청들이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 스트리밍 응답 (SSE)</div>
+  서버가 응답을 한 번에 끝내지 않고 연결을 열어 둔 채 데이터를 조금씩 보내는 방식이에요. APM 은 이 연결이 닫힐 때까지를 한 요청으로 재기 때문에, 정상 동작인데도 응답시간이 몇 분으로 찍힙니다.
+</div>
+<p>메인 API 는 10분 창으로 p95 를 봤어요. 10분 동안 들어온 요청 중 인증이나 OCR 같은 느린 요청이 5%를 넘으면, 그 창의 p95 는 그 요청들의 응답시간이 됩니다. <span class="obsv-mark">임계를 넘긴 것은 서비스가 느려져서가 아니라, 원래 느린 요청이 그 10분 창에 많이 들어와서였어요.</span> 그래서 이 모니터가 울려도 받은 사람이 할 수 있는 일은 없었습니다. 인증 요청을 빠르게 만들 방법은 사용자에게 버튼을 빨리 누르라고 하는 것뿐이니까요.</p>
+
+<h2>2. 일반 요청만 재고, 3편의 판단 하나를 뒤집었다</h2>
+
+<p>그래서 지연 판정을 "일반" 요청으로 좁혔어요(#851). 3편에서 모듈에 넣어 둔 <code style="font-family:Menlo,monospace;font-size:14px;">latency_exclude_resources</code> 목록을 메인 API 와 에이전트 API 에도 채운 거예요.</p>
+<div class="obsv-code">latency_p95_ms = 1000
+# 지연은 「일반」 요청만 본다.
+#   외부 기관 · 사용자 대기 : 인증 요청, 외부 기관 중계 단계
+#   내부 무거운 처리       : 신분증 · 서명 분석(OCR), 상담 초안
+#   헬스체크 · CORS 사전요청
+# 핵심 업무(신청 접수 등)는 빼지 않는다. 느려지면 잡아야 한다.
+latency_exclude_resources = [
+  "get_/actuator/health",
+  "head_/actuator/health",
+  "options_*",
+  "post_/api/{버전}/{인증 경로}/*",
+  "post_/api/v1/user/{OCR 분석 경로}",
+  ...
+]</div>
+<p>&rarr; APM 의 resource 이름(메서드_경로)으로 판정에서 뺄 요청을 적고, 같은 성격의 새 API 가 생겨도 덮이도록 경로 끝은 와일드카드로 묶었다는 뜻이에요. 다만 3편에서 적은 대로 <code style="font-family:Menlo,monospace;font-size:14px;">*health*</code> 같은 넓은 패턴은 쓰지 않았습니다.</p>
+<p>이 목록에서 눈여겨볼 줄은 맨 위 두 줄이에요. 3편에서는 "지연 p95 에서는 헬스체크를 빼지 않는다"고 정했습니다. 빠른 요청을 빼면 p95 가 올라가서 임계를 다시 봐야 하기 때문이었어요. 그 판단을 이번에 뒤집었습니다. 메인 API 에서 헬스체크는 전체 요청의 11%였고 응답시간은 1ms 였어요. 이 요청들이 p95 를 실제 사용자가 겪는 값보다 낮게 보이게 하고 있었습니다. 3편의 판단은 요청이 적은 서비스를 기준으로 한 것이었고, 메인 API 와 에이전트 API 는 헬스체크를 빼도 판정할 요청이 충분했어요.</p>
+<p>두 방향으로 뺀 결과를 14일 시뮬레이션(10분 p95)으로 확인했어요.</p>
+<div class="obsv-code">             p95 중앙   14일 최대   임계(전)  임계(후)   초과(후)
+메인 API      182ms      756ms     3000ms   1000ms     0
+에이전트 API   51ms      638ms     1500ms   1000ms     0</div>
+<p>&rarr; 느린 요청을 빼니 남은 요청의 14일 최댓값이 1초 아래로 내려왔고, 그래서 임계를 오히려 조일 수 있었다는 뜻이에요. 메인 API 는 3초에서 1초로, 에이전트 API 는 1.5초에서 1초로 낮췄습니다. 메인 API 의 14일 초과 횟수는 68번에서 0번이 됐어요. 이 0은 같은 14일 데이터에 새 조건을 대 본 결과이고, 운영에서 앞으로도 0이라는 뜻은 아닙니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 느리다고 다 빼면 안 된다</div>
+  에이전트 API 의 신청 접수 API 는 평소 p95 가 약 3초예요. 이 API 를 빼면 임계를 더 조일 수 있었지만 빼지 않았습니다. 제외 기준은 "느린가"가 아니라 "느린 게 정상이고, 느려져도 우리가 할 일이 없는가"였어요. 신청 접수가 느려지면 사용자가 그 화면에서 기다리고 있는 것이니 잡아야 합니다. 이런 API 는 4절의 핵심 경로 모니터가 자기 평소 값으로 따로 봐요.
+</div>
+
+<h2>3. 가드도 판정과 같은 요청을 세야 했다</h2>
+
+<p>같은 날 제휴 서비스와 메시지 발송 서비스를 같은 방식으로 들여다봤어요(#854). 여기서 3편의 저트래픽 가드가 다시 문제를 일으키고 있었습니다.</p>
+<p>3편에서 가드는 <code style="font-family:Menlo,monospace;font-size:14px;">/actuator/health</code> 와 OPTIONS 를 빼고 셌어요. 그런데 제휴 서비스는 헬스체크 경로가 따로 있었습니다. 그 경로는 3편의 제외 목록에 없었으니 가드가 그대로 셌어요. 이 서비스는 요청의 71%가 그 헬스체크였습니다. 그래서 실제 요청이 3건뿐인 10분에도 가드 기준 20건을 넘겼고, 모니터는 그 3건의 p95 로 판정했어요. 3편에서 막으려던 "몇 건의 비율로 사람을 깨우는 일"이 경로 이름 하나 때문에 그대로 남아 있었던 거예요.</p>
+<p>고친 방법은 지연 판정 전용 가드를 하나 더 두는 것이었어요. 기존 가드는 에러율 판정에 그대로 쓰고, 새 가드는 지연 제외 목록까지 반영해서 셉니다.</p>
+<div class="obsv-code">latency_guard_scope = join(",", concat(
+  [local.traffic_scope],
+  [for r in var.latency_exclude_resources : "!resource_name:${r}"]
+))
+# [sub] 지연 판정 대상 적음 : 10분 동안 위 범위의 요청이 20건 미만
+# [P2]  응답 지연          : latency_raw &amp;&amp; !low_traffic_latency</div>
+<p>&rarr; 가드가 세는 범위와 p95 를 재는 범위를 같은 목록에서 만들게 했다는 뜻이에요. 지연 판정에서 뺀 요청은 가드에서도 빠집니다.</p>
+<p>제휴 서비스는 자기 헬스체크와 CORS 사전 요청, 외부 기관 중계 두 종류를 지연 판정에서 뺐어요. p95 중앙값이 3,511ms 에서 490ms 로 내려가서 임계를 15초에서 2초로 낮췄습니다. 3편에서 느린 상태를 정상으로 인정한 값이라고 소개한 그 15초예요. 새 조건으로 14일을 다시 보면, 판정 대상이 20건 이상인 구간에서 2초를 넘은 것은 1번이었어요.</p>
+<p>메시지 발송 서비스 쪽은 더 곤란한 상태였어요. 요청의 86%가 헬스체크였고, 지연 모니터가 보던 p95 는 헬스체크의 응답시간인 7ms 였습니다. <span class="obsv-mark">이 모니터는 발송 API 가 아니라 헬스체크의 속도를 재고 있었어요.</span> 헬스체크를 빼고 발송 API 만 재니 p95 중앙값은 62ms 였고, 임계 500ms 는 그대로 뒀습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M24 60 C 90 57, 160 62, 222 59 C 225 120, 224 200, 223 262 C 160 265, 90 261, 26 263 C 23 200, 25 120, 24 60 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="123" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">전: 서비스 p95 하나</text>
+  <text x="123" y="96" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">⏳ 인증 대기 · OCR</text>
+  <text x="123" y="126" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">📡 5분 스트림</text>
+  <text x="123" y="156" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">🔑 로그인 · 핵심 업무</text>
+  <text x="123" y="186" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">📄 일반 요청</text>
+  <text x="123" y="216" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">💓 헬스체크 1ms</text>
+  <text x="123" y="248" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">임계 3000ms · 14일 68번</text>
+  <path d="M232 110 C 280 100, 320 85, 372 78" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <path d="M232 160 C 290 160, 330 160, 372 161" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <path d="M232 214 C 280 228, 320 240, 372 246" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr1)"/>
+  <path d="M382 46 C 460 43, 580 48, 676 45 C 679 70, 678 95, 677 112 C 580 115, 460 111, 384 113 C 381 92, 383 68, 382 46 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="529" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">원래 느린 요청 · 헬스체크</text>
+  <text x="529" y="100" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">지연 판정과 가드에서 뺀다</text>
+  <path d="M382 128 C 460 125, 580 130, 676 127 C 679 150, 678 175, 677 194 C 580 197, 460 193, 384 195 C 381 172, 383 150, 382 128 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="529" y="156" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">일반 요청 → 서비스 p95</text>
+  <text x="529" y="182" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">10분 창 · 임계 1000ms</text>
+  <path d="M382 212 C 460 209, 580 214, 676 211 C 679 236, 678 260, 677 280 C 580 283, 460 279, 384 281 C 381 258, 383 236, 382 212 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="529" y="240" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">핵심 경로 8개 → 경로마다 p95</text>
+  <text x="529" y="266" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">1시간 창 · 자기 평소 값 기준</text>
+  <text x="350" y="330" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 하나의 숫자에 섞여 있던 요청을 성격대로 나눠서 잰다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 서비스 p95 하나에 섞여 있던 요청을 셋으로 갈랐다</div>
+
+<h2>4. 서비스 p95 가 멀쩡해도 로그인은 느릴 수 있다</h2>
+
+<p>2절까지 하고 나면 오탐은 사라져요. 그런데 반대쪽 문제가 남습니다. 로그인 API 가 평소 0.2초에서 0.8초로 느려졌다고 해 볼게요. 사용자는 확실히 느끼는 변화예요. 하지만 서비스 p95 는 다른 수많은 요청과 섞여 있어서, 이 정도 변화로는 임계 1초를 넘지 않을 수 있습니다. <span class="obsv-mark">서비스 p95 는 성격이 다른 API 를 섞어 놓아서, 특정 API 하나가 나빠지는 것에는 둔해요.</span></p>
+<p>그래서 업무에서 중요한 API 는 서비스 p95 와 별도로, API 마다 자기 평소 값을 기준으로 보게 했어요(#862). 모듈에 <code style="font-family:Menlo,monospace;font-size:14px;">critical_endpoints</code> 입력을 두고, 여기 적은 API 마다 모니터를 하나씩 만듭니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 핵심 경로 (critical path)</div>
+  이 글에서는 "사용자가 이 화면에서 실제로 기다리고 있고, 느려지면 업무가 바로 영향을 받는 API"를 뜻해요. 서비스 하나에 API 가 수백 개 있어도 이런 API 는 몇 개 안 됩니다.
+</div>
+<p>메인 API 에서 5개, 에이전트 API 에서 3개를 골라 모두 8개예요. 역할로 나누면 로그인 2개, 신청 접수 2개, 그 밖의 업무 핵심 API 4개입니다.</p>
+<div class="obsv-code">critical_endpoints = {
+  "{메서드}_{로그인 경로}" = { label = "로그인",    latency_ms = {임계} }
+  "{메서드}_{업무 경로}"   = { label = "{업무 이름}", latency_ms = {임계} }
+  ...
+}
+# 모니터 쿼리 (API 하나에 하나)
+avg(last_1h):p95:trace.servlet.request{service:{서비스},env:prod,
+  resource_name:{API}} &gt; {임계}</div>
+<p>&rarr; 서비스 전체가 아니라 resource 이름 하나로 범위를 좁히고, 1시간 창의 p95 를 그 API 의 임계와 비교한다는 뜻이에요.</p>
+<p>창을 10분이 아니라 1시간으로 잡은 데는 이유가 있어요. 이 API 들은 호출이 시간당 몇 건에서 몇백 건이었습니다. 10분 창으로 보면 몇 건짜리 p95 가 되고, 그건 3절에서 겪은 "3건의 p95" 문제와 같아요. 호출이 없는 시간에는 데이터 없음이 되는데, 이때는 알리지 않게 뒀습니다.</p>
+<p>임계는 API 마다 따로 계산했어요. 14일 동안의 1시간 p95 중 상위 1%에 1.5를 곱하고, 최소 300ms, 100ms 단위로 올림했습니다. 이 기준으로 14일을 시뮬레이션해 보니 8개 중 7개는 초과가 0번이었어요. 에이전트 API 의 신청 접수 하나만 2번 넘었습니다. 평소 꼬리가 긴 API 라 임계가 22.7초로 나왔고, 이 값은 첫 기준으로 두고 운영하면서 다시 보기로 했어요. 알림은 P2 로 <code style="font-family:Menlo,monospace;font-size:14px;">#{알림 채널}</code> 에 갑니다.</p>
+
+<h2>5. 오래 기다리는 API 의 감시는 만들지 않았다</h2>
+
+<p>2절에서 뺀 API 들은 이제 어떤 지연 모니터도 보지 않아요. 그래서 "이 API 들의 에러는 따로 봐야 하지 않을까"를 확인했습니다. 결론은 만들지 않는 것이었어요. 근거는 14일 실측입니다.</p>
+<p>&middot; 메인 API 의 인증·OCR 요청은 약 56만 건 중 5xx 가 0건이었어요.<br>
+&middot; 에이전트 API 의 서류 발급 요청은 5xx 가 0.3% 이하였습니다.<br>
+&middot; 인증 실패는 5xx 가 아니라 업무 코드가 담긴 정상 응답으로 돌아가요. 그리고 외부 인증 연동은 이미 P1 모니터가 timeout 까지 보고 있었습니다.<br>
+&middot; 에이전트 API 의 스트림은 요청의 42%가 에러로 기록됐는데, 연결 종료가 에러로 남은 것이었어요. 10분에 많아야 8건이라 같은 시간 요청 450건 이상인 서비스 에러율에는 영향이 없었습니다.</p>
+<p>새로 만들 모니터가 잡을 사건이 14일 동안 거의 없었고, 있을 법한 실패는 이미 다른 모니터가 보고 있었어요. 이 상태에서 모니터를 더하면 늘어나는 것은 관리할 코드와 스트림 끊김 같은 소음뿐입니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: "만들지 않음"도 결정으로 남긴다</div>
+  3편에서 JVM 힙 모니터를 뺀 이유를 코드 주석에 적었듯이, 이번에도 만들지 않은 이유를 작업 기록에 숫자와 함께 남겼어요. 나중에 누군가 "느린 API 는 아무도 안 보네" 하고 모니터를 더하려 할 때, 그 사람이 먼저 확인할 것은 이 숫자가 아직 맞는가입니다.
+</div>
+
+<h2>6. 조금씩 나빠지는 지연은 SLO 로 본다</h2>
+
+<p>4절의 핵심 경로 모니터는 1시간 p95 가 임계를 넘을 때 울려요. 그러면 매일 한두 번씩 잠깐 느려지는 API 는 어떨까요. 한 번 한 번은 1시간 평균을 끌어올리지 못해서 모니터가 울리지 않아요. 그런데 한 달을 모으면 사용자가 느린 화면을 본 횟수는 적지 않아요. "지금 나쁜가"를 묻는 모니터로는 "이번 달에 얼마나 나빴나"를 답할 수 없어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: SLO 와 에러 예산</div>
+  SLO(Service Level Objective)는 "30일 중 99%는 괜찮아야 한다"는 식의 목표예요. 나머지 1%가 에러 예산입니다. 그만큼은 나빠도 된다고 미리 정해 둔 양이에요. 예산이 남아 있으면 괜찮은 달이고, 빨리 줄어들면 무언가 나빠지고 있다는 뜻입니다.
+</div>
+<p>8개 핵심 경로마다 지연 SLO 를 하나씩 만들었어요(#870). 방식은 time-slice 입니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: time-slice SLO</div>
+  시간을 일정한 조각(여기서는 5분)으로 나눠, 조각마다 조건을 만족했는지 "좋은 5분 / 나쁜 5분"으로 판정하는 SLO 예요. 여기서는 그 5분의 p95 가 핵심 경로 임계 이하면 좋은 5분입니다. 호출이 하나도 없는 5분은 Datadog 기본값에 따라 좋은 것으로 세요. 그래서 밤에 호출이 없는 API 가 예산을 쓰지 않습니다.
+</div>
+<p>목표는 30일 중 좋은 5분 99%, 경고는 99.5%로 뒀어요. time-slice SLO 는 만들자마자 과거 데이터로 지난 30일 실적을 계산해 줍니다. 그래서 알림을 붙이기 전에 목표가 맞는지 먼저 볼 수 있었어요. 8개 모두 99.84%에서 100% 사이였고, 남은 예산은 가장 적은 것도 84%였습니다. 지난 30일 실적이 목표 안에 있었으므로 99%를 그대로 뒀어요.</p>
+<p>그다음에 예산이 줄어드는 속도로 알림을 붙였습니다(#873).</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 번 레이트 (burn rate)</div>
+  에러 예산을 쓰는 속도를 "딱 30일에 다 쓰는 속도"와 비교한 배수예요. 번 레이트 1이면 30일째에 예산이 정확히 바닥나고, 6이면 그 6배 속도라서 5일 만에 바닥납니다.
+</div>
+<div class="obsv-code">burn_rate("{SLO}").over("30d").long_window("6h").short_window("30m") &gt; 6
+
+6시간 × 6배 = 30일 예산의 5% (6 × 6h ÷ 720h)
+이 속도가 이어지면 예산은 약 5일 안에 바닥난다</div>
+<p>&rarr; 최근 6시간 동안 예산을 평소의 6배 속도로 썼고, 최근 30분도 여전히 그 속도라면 알린다는 뜻이에요. 30분 확인 창은 이미 끝난 문제에 뒤늦게 울리지 않게 하는 장치입니다.</p>
+<p>이 알림은 P3 로, 사람을 부르지 않고 Slack 에만 보내요. 급한 장애는 4절의 핵심 경로 모니터(P2)가 이미 잡습니다. 번 레이트를 빠른 소진용으로도 하나 더 걸면 같은 장애에 알림이 두 번 와요. 그래서 <span class="obsv-mark">번 레이트는 "모니터가 울리지 않을 만큼 조금씩, 그러나 계속 나빠지는" 경우만 맡게 했어요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="40" y="44" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">🔥 급하게 나빠짐</text>
+  <path d="M40 60 C 70 59, 90 61, 110 60 C 125 58, 130 20, 140 22 C 150 24, 152 58, 165 60 C 190 61, 210 59, 230 60" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M40 40 C 120 39, 180 41, 230 40" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8" stroke-linecap="round"/>
+  <path d="M250 50 C 280 49, 300 51, 330 50" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <path d="M342 22 C 420 19, 500 24, 560 21 C 563 45, 562 65, 561 84 C 500 87, 420 83, 344 85 C 341 65, 343 45, 342 22 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="451" y="48" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">핵심 경로 모니터</text>
+  <text x="451" y="72" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">1시간 p95 &gt; 경로별 임계</text>
+  <path d="M566 53 C 586 52, 600 53, 616 53" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <text x="656" y="58" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">🔔 P2</text>
+  <text x="40" y="164" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#c07f18">⏳ 조금씩 계속 나빠짐</text>
+  <path d="M40 200 C 60 199, 66 186, 72 188 C 78 190, 80 199, 95 200 C 115 201, 120 184, 128 186 C 136 188, 138 199, 152 200 C 170 201, 176 183, 184 185 C 192 187, 196 199, 210 200 C 220 200, 224 186, 230 188" fill="none" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M40 170 C 120 169, 180 171, 230 170" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8" stroke-linecap="round"/>
+  <path d="M250 190 C 280 189, 300 191, 330 190" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <path d="M342 158 C 420 155, 500 160, 560 157 C 563 182, 562 205, 561 224 C 500 227, 420 223, 344 225 C 341 205, 343 182, 342 158 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="451" y="184" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">SLO 번 레이트</text>
+  <text x="451" y="208" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">6시간 6배 + 30분 확인</text>
+  <path d="M566 191 C 586 190, 600 191, 616 191" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr2)"/>
+  <text x="656" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">💬 P3</text>
+  <text x="135" y="232" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">점선 = 모니터 임계</text>
+  <text x="350" y="278" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 같은 장애에 두 번 울리지 않게, 속도별로 맡는 쪽을 나눴다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 임계를 넘는 급성 지연은 모니터가, 임계 아래에서 반복되는 지연은 번 레이트가 맡는다</div>
+
+<h2>7. 자동으로 쌓이기만 한 인시던트 538건</h2>
+
+<p>같은 날 Datadog 의 인시던트 목록도 정리했어요. 열어 보니 538건이 쌓여 있었습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 인시던트 (Datadog Incident Management)</div>
+  장애 하나를 기록 단위로 만들어 담당자, 진행 상황, 타임라인을 모아 두는 Datadog 기능이에요. 사람이 직접 열 수도 있고, 모니터가 울릴 때 자동으로 만들게 설정할 수도 있습니다.
+</div>
+<p>538건 중 533건은 사람이 연 것이 아니었어요. 옛 로그인 에러 모니터와 옛 신청 API 에러 모니터가 울릴 때마다 자동으로 만든 것이었습니다. 자동 생성은 9월 14일 이후 멈춰 있었고, 그 뒤로는 새 기록 없이 옛 기록만 남아 있었어요. 나머지 5건은 테스트로 만든 것이었습니다.</p>
+<p>538건을 모두 지우고, 같은 날 Incident 좌석 1개도 해제했습니다. 콘솔에만 남아 있던 정리 대상을 하나 줄인 일이기도 해요. On-Call 좌석 8개는 그대로 뒀습니다. P1 알림이 온콜 담당자에게 전화를 거는 데 쓰는 좌석이기 때문이에요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 인시던트는 기본 설정으로는 지울 수 없다</div>
+  인시던트 유형(여기서는 General Incident) 설정의 <code style="font-family:Menlo,monospace;font-size:14px;">allow_incident_deletion</code> 을 켜야 삭제가 됩니다. 켜고 지운 뒤 다시 껐어요. 켜 둔 채로 두면 진짜 장애 기록도 실수로 지워질 수 있으니, 정리가 끝나면 원래대로 돌려 두는 것이 안전합니다.
+</div>
+<p>같은 날 다운 모니터의 알림 대상도 하나 맞췄어요(#865). 다른 서비스의 P1 다운 알림은 플랫폼팀 온콜이 받는데, 메인 API 와 에이전트 API 의 다운 모니터는 서버개발 온콜만 불렀습니다. 같은 등급의 장애인데 받는 사람이 서비스마다 달랐던 거예요. 두 모니터에 플랫폼팀 온콜을 더하고, 서버개발 온콜은 그대로 두었습니다.</p>
+
+<h2>8. 열 편을 돌아보며: 한 것과 남은 것</h2>
+
+<p>이 시리즈는 9월 28일에 시작했어요. 계획은 13단계, 약 6주였습니다. 10월 2일까지 5일 동안 0~10단계와 12단계(SLO)를 끝냈어요. 열 편을 묶으면 대략 이런 흐름이었습니다.</p>
+<p>&middot; <b>옮기기 (1·2편)</b>: 콘솔에 흩어진 모니터를 실물 변경 없이 코드로 옮겼고, 태그의 뜻(service 는 앱, team 은 호출 단위)을 정했어요.<br>
+&middot; <b>제대로 재기 (3~6편, 10편)</b>: 필수 모니터를 모듈로 맞추고, 그 모니터가 재고 싶은 값을 재는지 실측으로 대조했어요. 헬스체크를 세던 가드, 사이드카를 재던 CPU, 데이터 없음의 의미, APM 을 떼는 순서, 로그 유실이 여기서 나왔습니다. 이번 편의 지연 판정 범위도 같은 질문의 연장이에요.<br>
+&middot; <b>알림이 닿는지 확인하기 (7~9편)</b>: 없는 채널로 가는 알림을 PR 단계에서 막고, 서비스 카탈로그를 실제로 데이터를 보내는 11개 앱에 맞추고, 음소거된 채 잊힌 P1 을 되살렸어요.</p>
+<p>10월 1일 실물 대조에서 모니터 90개가 전부 코드에 있다는 것을 확인했어요. 코드 밖에 일부러 남긴 것은 빈 대시보드와 샘플 대시보드 같은 정리 후보, 그리고 원칙상 코드 밖에 두는 일회성 다운타임 하나였습니다. 9편에서 적었듯이 그 다운타임은 배치 실패 P1 을 끄고 있던 음소거였고, 10월 2일에 풀어서 코드 밖 일회성 다운타임도 0이 됐어요.</p>
+<p>남은 것은 세 가지예요. 하나는 11단계인 서비스 표준 모듈입니다. 서비스 목록(CMDB)에 한 줄을 등록하면 카탈로그, 모니터, 대시보드, SLO 가 함께 만들어지게 하는 단계예요. 이건 날짜가 아니라 CMDB 쪽 결정(원본을 어디에 둘지, 어떤 항목을 둘지, 어떻게 옮길지, 누가 쓸지)에 달려 있어서 아직 시작하지 않았습니다. 둘째는 9편에서 적은 종료 시점 없는 다운타임을 찾아 보고하는 장치로, 아직 만들지 않았어요. 셋째는 이번 편에서 정한 숫자들이에요. 핵심 경로 임계와 SLO 목표는 14일, 30일 실측으로 정한 첫 기준이라, 1~2주 운영한 뒤 실제로 울린 알림을 보고 다시 맞출 예정입니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>메인 API 의 지연 모니터가 14일 동안 임계를 68번 넘은 것은 인증 대기, OCR, 스트림 같은 원래 느린 요청 때문이었다. 이 요청과 헬스체크를 판정과 가드에서 함께 빼니 68번이 0번이 됐고, 임계는 오히려 3초에서 1초로 조일 수 있었다.</b><br><br>
+  대신 서비스 p95 가 놓치는 로그인·신청 접수 같은 핵심 경로 8개는 경로마다 자기 평소 값으로 보고, 임계 아래에서 반복되는 지연은 SLO 번 레이트가 Slack 으로만 알린다. 오래 기다리는 API 의 감시는 14일 실측을 보고 만들지 않았다. 지연 모니터를 고친다는 것은 임계를 바꾸는 일이 아니라, 그 숫자에 어떤 요청이 섞여 있는지부터 가르는 일이다.
+</div>
+
+</div>
