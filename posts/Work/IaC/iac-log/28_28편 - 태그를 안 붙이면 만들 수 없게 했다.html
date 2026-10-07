@@ -1,0 +1,324 @@
+<!-- ============================================================
+  IaC 작업일지 28편: 태그를 안 붙이면 만들 수 없게 했다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: IAM Deny, aws:RequestTag, 태그 강제, 인라인 정책, SCP -->
+<!-- lead: 콘솔에서 규약 태그 없이 만들어진 시크릿 하나를 보고, 코드 밖에서 사람이 만드는 자원을 막을 자리를 찾았어요. 조직 정책도 태그 정책도 쓸 수 없어서 사람 권한에 Deny 를 건 과정을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지, 여섯째 날 · 28편</div>
+  1~7편. 첫날: 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날: 같은 사실이 두 군데 적혀 있을 때<br>
+  12~15편. 셋째 날: 만든 가드를 의심한 날들<br>
+  16~21편. 넷째 날: 이름을 믿지 않고 자원을 판독하는 법<br>
+  22~24편. 다섯째 날: 편입을 시작하며 소유를 다시 정했다<br>
+  25편. 배포가 참조하는 것부터 가져왔다<br>
+  26편. 지우지 않고 끄고 지켜보기로 했다<br>
+  27편. 두 겹은 새로 만드는 길만 막고 있었다<br>
+  <b>28편. 태그를 안 붙이면 만들 수 없게 했다</b> &larr; 지금 이 글
+</div>
+
+<p>10월 2일, 운영 계정에 시크릿 하나가 새로 생겨 있었어요. 콘솔에서 사람이 만든 것이었습니다. 규약 태그 셋 중 하나도 붙어 있지 않았고, 대신 그 자리에서 즉석으로 지은 태그 둘이 붙어 있었어요. 이름에는 개발용이라는 표시가 들어 있었는데, 이 계정은 운영 계정입니다.</p>
+
+<p>편입 작업은 거의 끝나가고 있었어요. 계정에 흩어져 있던 자원을 코드로 들여오는 일이요. 그런데 들여오는 동안에도 코드 밖에서는 새 자원이 계속 생깁니다. <b>생기는 속도가 들여오는 속도보다 빠르면 이 작업은 끝나지 않아요.</b></p>
+
+<p>그래서 이번에는 막는 쪽을 봤습니다. 질문은 하나였어요. 코드 밖에서 사람이 만드는 자원을, 어디서 막을 수 있나? 답을 고르는 데 선택지 넷을 비교했고 셋이 떨어졌습니다. 그 과정과, 고른 뒤에 밟은 두 개의 지뢰를 적을게요.</p>
+
+<p>이 글에서 다룰 것은 이렇습니다.</p>
+
+<div class="obsv-code">  1. 규약 태그가 없으면 무엇이 곤란한가
+  2. 막을 수 있는 자리 넷 중 셋이 떨어진 이유
+  3. 왜 한 번에 다 넓히지 않았나
+  4. 관리형 정책이 아니라 인라인 정책이어야 했던 이유
+  5. 막는 것과 세는 것을 함께 넣었다</div>
+
+<h2>1. 태그 하나가 빠지면 무엇이 곤란한가</h2>
+
+<p>먼저 태그가 왜 그렇게 중요한지부터 볼게요. 다섯째 날에 주간 인벤토리를 만들었어요(22편). 계정에 떠 있는 자원을 전부 긁어서 <b>코드가 소유한 것과 그렇지 않은 것으로 가르는 스크립트</b>입니다. 가르는 근거 중 하나가 태그예요. 누구 팀 것인지, 어느 서비스에 딸린 것인지, 운영인지 개발인지가 태그에 적혀 있어야 판독이 됩니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 규약 태그</div>
+  이 저장소가 모든 자원에 붙이기로 정한 세 개의 태그 키예요. Team(어느 팀 것인가), Application(어느 서비스에 딸린 것인가), Environment(운영인가 개발인가)입니다. 코드로 만드는 자원에는 Terraform 이 자동으로 붙여 줘요.
+</div>
+
+<p>16편의 결론이 "이름을 믿지 않는다"였어요. 이름에 개발용 표시가 들어 있어도 운영 트래픽을 받고 있을 수 있고, 반대도 있습니다. 이름은 만들 때 한 번 지어 놓고 아무도 고치지 않으니까요. 그래서 이름 대신 태그와 실제 연결 관계로 판독하기로 했는데, <span class="obsv-mark">태그가 아예 없으면 판독할 근거 자체가 없어요.</span></p>
+
+<p>이번에 생긴 시크릿이 딱 그 경우였습니다. 이름만 보면 개발용인데 운영 계정에 있어요. 그러면 둘 중 하나예요. 운영에서 쓰는 것인데 이름을 잘못 지었거나, 개발용인데 계정을 잘못 골랐거나. 태그가 하나라도 있었으면 바로 알았을 텐데, 하나도 없어서 만든 사람에게 물어보는 것 말고는 방법이 없었어요.</p>
+
+<p>자원 하나가 더 생긴 게 문제가 아니라, <b>아무도 설명할 수 없는 자원이 하나 더 생긴 게 문제</b>였습니다.</p>
+
+<h2>2. 막을 수 있는 자리 넷 중 셋이 떨어졌다</h2>
+
+<p>ADR 에 선택지 넷을 적고 하나씩 봤어요.</p>
+
+<p><b>첫째, 조직 정책입니다.</b> 계정 전체에 권한의 상한을 씌우는 방법이에요. 가장 확실한 자리인데, 우리 계정에는 걸 수가 없었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: SCP (서비스 제어 정책)</div>
+  AWS Organizations 에서 조직의 관리 계정이 멤버 계정들에게 거는 권한 상한이에요. 멤버 계정 안에서 아무리 강한 권한을 줘도 이 상한을 넘지 못합니다. 다만 거는 쪽이 관리 계정이라, 멤버 계정에서는 자기 자신에게 걸 수 없어요.
+</div>
+
+<p>우리 계정은 어떤 조직의 멤버 계정이고, 그 조직의 관리 계정은 우리가 아니에요. 그래서 이 선택지는 쓸 수 있고 없고의 문제가 아니라 <b>권한이 없는 자리</b>였습니다. 바로 탈락했어요.</p>
+
+<p><b>둘째, 태그 정책입니다.</b> 이름이 비슷해서 이게 답인 줄 알았어요. 조직이 제공하는 태그 표준화 기능인데, 실제로 하는 일은 <b>태그 값의 형식을 맞추는 것</b>이에요. 대소문자를 통일하고, 허용한 값 목록 밖의 값을 걸러 줍니다.</p>
+
+<p>그런데 우리 사건은 값이 틀린 게 아니라 <span class="obsv-mark">태그가 아예 없는 것</span>이었어요. 태그 정책은 붙어 있는 태그를 교정하지, 안 붙이고 만드는 것은 막지 못합니다. 막으려는 대상과 어긋나서 탈락했어요.</p>
+
+<p><b>셋째, 설정 검사 서비스입니다.</b> 규칙을 정해 두면 그 규칙에 맞지 않는 자원을 찾아 주는 AWS Config 의 기능이에요. 필수 태그 규칙도 있습니다. 그런데 이건 <b>탐지만 해요.</b> 자원이 만들어진 다음에 알려 줍니다. 평가 건수만큼 요금도 붙고요. 막는 수단은 못 되고, 막는 수단의 보조로만 둘 수 있다고 적었어요. 그 보조 자리는 새 서비스를 켜는 대신 이미 매주 돌고 있는 인벤토리가 맡았습니다(5절).</p>
+
+<p>여기까지 오니 자원 쪽에는 붙일 자리가 없다는 게 분명해졌습니다. 생각해 보면 당연해요. <b>아직 존재하지 않는 자원에는 정책을 붙일 수 없으니까요.</b> 자원별 정책은 이미 있는 자원을 누가 쓸 수 있는지만 정합니다.</p>
+
+<p>그러면 남는 자리는 하나예요. <b>생성 요청을 보내는 사람의 권한</b>입니다. 그래서 넷째 선택지인 사람 IAM 그룹에 Deny 정책을 거는 방법을 골랐어요.</p>
+
+<p>이 방법이 좋았던 이유는 6편에서 쓴 것과 같습니다. <span class="obsv-mark">Deny 는 Allow 보다 우선해요.</span> 관리자 권한을 가진 사람에게도 그대로 걸립니다. 기존 권한에서 무엇을 빼거나 다시 설계할 필요 없이, 정책 문서 하나를 더하면 끝이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 368" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="24" y="30" font-size="21" fill="#4a7fb5">코드 밖에서 사람이 만드는 것을 어디서 막나</text>
+
+<path d="M26 46 C 180 43, 400 49, 674 46 C 677 64, 676 82, 674 100 C 400 103, 180 97, 27 100 C 23 82, 25 64, 26 46 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="46" y="80" font-size="19" fill="#3d3a34">① 조직 정책 (SCP)</text>
+<text x="340" y="80" font-size="17" fill="#b3502f">✗ 멤버 계정이라 걸 자리가 없다</text>
+
+<path d="M26 112 C 180 109, 400 115, 674 112 C 677 130, 676 148, 674 166 C 400 169, 180 163, 27 166 C 23 148, 25 130, 26 112 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="46" y="146" font-size="19" fill="#3d3a34">② 태그 정책</text>
+<text x="340" y="146" font-size="17" fill="#b3502f">✗ 값 형식만 본다</text>
+
+<path d="M26 178 C 180 175, 400 181, 674 178 C 677 196, 676 214, 674 232 C 400 235, 180 229, 27 232 C 23 214, 25 196, 26 178 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+<text x="46" y="212" font-size="19" fill="#3d3a34">③ 설정 검사 서비스</text>
+<text x="340" y="212" font-size="17" fill="#c07f18">✗ 탐지만 한다. 생긴 뒤다</text>
+
+<path d="M26 244 C 180 241, 400 247, 674 244 C 677 268, 676 292, 674 314 C 400 317, 180 311, 27 314 C 23 292, 25 268, 26 244 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+<text x="46" y="276" font-size="19" fill="#3d3a34">④ 사람 그룹에 IAM Deny</text>
+<text x="340" y="276" font-size="17" fill="#2e6b41">✓ 요청 그 자리에서 거부된다</text>
+<text x="46" y="302" font-size="14" fill="#8a8272">Deny 는 관리자 권한보다 우선한다. 기존 권한은 건드리지 않는다</text>
+
+<text x="24" y="348" font-size="18" fill="#b3502f">아직 없는 자원에는 붙일 곳이 없었어요. 남은 자리는 호출하는 사람이었습니다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 자원 쪽 세 자리가 다 막히고 나서야 사람 쪽 권한이 남았다</div>
+
+<h2>3. 왜 한 번에 다 넓히지 않았나</h2>
+
+<p>정책의 모양은 단순해요. 생성 요청에 Team 태그가 담겨 있지 않으면 거부합니다. 세 태그를 각각 따로 적었어요. 한 조건 블록 안에 여러 변수를 넣으면 전부 만족해야 걸리는 조건이 되는데, 우리는 <b>하나라도 없으면 거부</b>해야 하니까요.</p>
+
+<div class="obsv-code">statement {
+  sid     = "RequireTagTeamOnCreate"
+  effect  = "Deny"
+  actions = ["secretsmanager:CreateSecret", ...]
+
+  condition {
+    test     = "Null"
+    variable = "aws:RequestTag/Team"
+    values   = ["true"]       # 이 키가 비어 있으면 거부
+  }
+}</div>
+
+<p>"이번 요청에 Team 이라는 태그가 담겨 있지 않으면 거부한다"는 뜻이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: aws:RequestTag</div>
+  지금 보낸 요청에 담겨 온 태그를 가리키는 IAM 조건 키예요. 조건 키는 정책이 요청을 허용할지 판단할 때 들여다보는 값의 이름이에요. 이미 붙어 있는 태그(aws:ResourceTag)와 다릅니다. 자원이 아직 없는 생성 시점에 쓸 수 있는 건 이쪽뿐이에요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Null 조건 연산자</div>
+  조건 키가 요청에 들어 있는지 아닌지만 보는 연산자예요. 그 키가 아예 없으면 true, 값이 뭐라도 담겨 있으면 false 입니다. 값이 무엇인지는 보지 않아요.
+</div>
+
+<p>여기에 함정이 하나 있습니다. 이 글에서 제일 중요한 대목이에요.</p>
+
+<p><b>모든 액션이 aws:RequestTag 를 받는 건 아니에요.</b> 생성할 때 태그를 같이 받도록 만들어진 액션만 이 키에 값을 채워 줍니다. 받지 않는 액션은 사용자가 태그를 아무리 잘 붙여 보내도 이 키가 비어 있어요.</p>
+
+<p>그러면 무슨 일이 생기냐면, Null 조건이 <b>언제나 참</b>이 됩니다. 비어 있음이 조건이고 그 키는 영원히 비어 있으니까요. 결과는 거부인데, 조건을 만족시킬 방법이 없는 거부예요. <span class="obsv-mark">태그를 강제한 게 아니라, 이 정책이 걸린 사람에게서 그 액션을 영영 빼앗은 겁니다.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr28a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="24" y="28" font-size="21" fill="#4a7fb5">같은 Deny 조건, 액션에 따라 끝이 갈린다</text>
+
+<text x="40" y="62" font-size="19" fill="#2e6b41">조건 키를 받는 액션</text>
+<text x="384" y="62" font-size="19" fill="#b3502f">조건 키를 받지 않는 액션</text>
+
+<path d="M36 74 C 130 71, 240 77, 330 74 C 333 90, 332 106, 330 122 C 240 125, 130 119, 37 122 C 33 106, 35 90, 36 74 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="52" y="98" font-size="18" fill="#3d3a34">태그를 붙여 요청한다</text>
+<text x="52" y="116" font-size="13" fill="#8a8272" font-family="Menlo, monospace">RequestTag/Team = platform</text>
+
+<path d="M370 74 C 470 71, 580 77, 664 74 C 667 90, 666 106, 664 122 C 580 125, 470 119, 371 122 C 367 106, 369 90, 370 74 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="386" y="98" font-size="18" fill="#3d3a34">태그를 붙여 요청해도</text>
+<text x="386" y="116" font-size="13" fill="#8a8272" font-family="Menlo, monospace">액션이 그 키를 채우지 않음</text>
+
+<path d="M182 124 C 180 134, 184 142, 182 150" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr28a)"/>
+<path d="M516 124 C 514 134, 518 142, 516 150" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr28a)"/>
+
+<path d="M36 154 C 130 151, 240 157, 330 154 C 333 170, 332 186, 330 202 C 240 205, 130 199, 37 202 C 33 186, 35 170, 36 154 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="52" y="178" font-size="18" fill="#2e6b41">조건 키에 값이 있다</text>
+<text x="52" y="196" font-size="13" fill="#8a8272" font-family="Menlo, monospace">Null = false</text>
+
+<path d="M370 154 C 470 151, 580 157, 664 154 C 667 170, 666 186, 664 202 C 580 205, 470 199, 371 202 C 367 186, 369 170, 370 154 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="386" y="178" font-size="18" fill="#b3502f">키가 늘 비어 있다</text>
+<text x="386" y="196" font-size="13" fill="#8a8272" font-family="Menlo, monospace">Null = true (항상)</text>
+
+<path d="M182 204 C 180 214, 184 222, 182 230" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr28a)"/>
+<path d="M516 204 C 514 214, 518 222, 516 230" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr28a)"/>
+
+<path d="M36 234 C 130 231, 240 237, 330 234 C 333 250, 332 266, 330 280 C 240 283, 130 277, 37 280 C 33 266, 35 250, 36 234 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="52" y="263" font-size="18" fill="#2e6b41">✓ 태그가 붙은 자원이 생긴다</text>
+
+<path d="M370 234 C 470 231, 580 237, 664 234 C 667 250, 666 266, 664 280 C 580 283, 470 277, 371 280 C 367 266, 369 250, 370 234 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+<text x="386" y="263" font-size="18" fill="#b3502f">🔥 그 액션이 영구 거부된다</text>
+
+<text x="24" y="310" font-size="18" fill="#b3502f">조건을 만족시킬 방법이 없는 거부는, 강제가 아니라 차단이에요</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 조건 키를 받지 않는 액션을 넣으면 Null 조건이 늘 참이 된다</div>
+
+<p>그래서 액션을 한 번에 넓히지 않았어요. 10월 2일 1차에는 시크릿 생성 하나만 넣었습니다. 그리고 오늘 2차로 다섯 서비스를 더했어요. 하나씩 공식 문서에서 조건 키 지원 여부를 확인하면서요.</p>
+
+<div class="obsv-code">1차 (10-02)   secretsmanager:CreateSecret
+
+2차 (10-07)   ecr:CreateRepository
+              sns:CreateTopic
+              sqs:CreateQueue
+              logs:CreateLogGroup
+              lambda:CreateFunction
+
+뺀 것         s3:CreateBucket
+              생성 시 태그 조건을 받는지 확인하지 못했다</div>
+
+<p>S3 를 뺀 이유를 적어 둘게요. 확인하지 못했으면 넣지 않습니다. 틀렸을 때의 대가가 양쪽으로 다르기 때문이에요. 넣지 않으면 버킷이 태그 없이 생길 수 있는 정도지만, <b>잘못 넣으면 이 정책이 걸린 사람은 아무도 버킷을 못 만듭니다.</b> 게다가 그 사실은 누군가 버킷을 만들려고 시도할 때까지 드러나지 않아요. 가드를 거는 일에서는 틀려도 덜 아픈 쪽으로 틀리는 게 중요합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 액션마다 어떤 조건 키를 받는지는 AWS 의 Service Authorization Reference 에 서비스별로 적혀 있어요. 추측하지 말고 거기서 확인합니다<br>
+  &bull; 태그를 붙이고 떼는 액션 이름이 서비스마다 달라요. 어떤 서비스는 TagResource 한 개지만, 어떤 서비스는 큐 전용 이름을 따로 쓰고, 어떤 서비스는 두 이름을 둘 다 받습니다. 하나만 막으면 나머지로 지나갑니다<br>
+  &bull; 생성만 막으면 만들고 나서 태그를 떼면 그만이에요. 그래서 떼는 액션도 같이 막았고, Environment 값이 규약 밖이면 거부하는 조건도 넣었습니다
+</div>
+
+<p>그리고 Terraform 의 apply 역할과 서비스 역할에는 이 정책을 붙이지 않았어요. 코드로 만드는 자원에는 이미 규약 태그가 자동으로 붙으니까요. 사람이 쓰는 경로에만 걸면 됩니다.</p>
+
+<h2>4. 관리형 정책이 아니라 인라인 정책이어야 했다</h2>
+
+<p>1차 apply 는 중간에 멈췄어요. 정책 문서는 만들어졌는데, 그걸 그룹에 붙이는 단계에서 이 오류가 났습니다.</p>
+
+<div class="obsv-code">Error: LimitExceeded: Cannot exceed quota for PoliciesPerGroup: 10</div>
+
+<p>그룹 하나에 붙일 수 있는 관리형 정책이 열 개까지인데 이미 꽉 차 있었다는 뜻이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 관리형 정책과 인라인 정책</div>
+  관리형 정책은 독립된 문서로 한 번 만들어 여러 곳에 붙여 쓰는 방식이고, 인라인 정책은 그 그룹이나 사용자 안에 직접 적어 넣는 방식이에요. 관리형은 "몇 개까지 붙일 수 있나"의 한도가 있고, 인라인은 그 한도에 들지 않는 대신 글자 수 한도가 있습니다.
+</div>
+
+<p>여기서 한 가지가 눈에 들어왔어요. <b>apply 가 통째로 되돌아가지 않습니다.</b> 정책 문서는 만들어졌고, 일부 그룹에는 붙었고, 나머지에는 못 붙은 상태로 멈췄어요. 그러니까 그 시점의 계정은 "일부만 강제되는" 상태였습니다. 가드를 거는 작업에서 이 중간 상태가 제일 위험해요. 걸렸다고 생각하는데 안 걸린 구간이 있으니까요.</p>
+
+<p>고친 방향은 간단했습니다. 대상 그룹 전부를 인라인 정책으로 통일했어요. 인라인은 개수 한도에 들지 않고, 대신 그룹당 글자 수 한도가 있는데 이 정책 문서는 그보다 훨씬 작습니다. 대신 관리형 정책과 그 부착은 지웠어요. 같은 내용이 두 군데 있으면 언젠가 어긋난다는 건 둘째 날의 주제였으니까요.</p>
+
+<p>그 전환 apply 에도 공백이 있었어요. 관리형 쪽을 지우고 인라인 쪽을 만드는 사이 몇 초 동안은 강제가 없습니다. 그래서 PR 에 <b>기대하는 plan 의 모양을 미리 적었어요.</b> 무엇이 새로 생기고 무엇이 지워지는지, 그리고 그 사이에 몇 초의 공백이 있다는 것까지요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 계정 한도는 plan 에 뜨지 않는다</div>
+  plan 은 코드의 문법과 참조 관계를 확인하고, 실물과 비교해 무엇이 바뀔지를 보여 줍니다. 그런데 "이 그룹에 정책을 하나 더 붙일 자리가 남았는가" 같은 계정 쪽 한도는 <b>실제로 붙여 봐야 압니다.</b> 그래서 apply 에서 처음 드러나요. 가드를 거는 PR 일수록 apply 가 중간에 멈추면 어떤 상태가 남는지를 먼저 적어 두는 편이 좋습니다.
+</div>
+
+<h2>5. 막는 것과 세는 것을 같이 넣었다</h2>
+
+<p>여기까지가 막는 이야기인데, 이 구조에는 공백이 있어요. 그리고 그 공백을 ADR 의 「반대 의견」에 적어 뒀습니다.</p>
+
+<p>정책을 거는 단위가 그룹이기 때문이에요. <span class="obsv-mark">그룹 단위로 거는 방식에는 그룹 밖에서 들어오는 사람이라는 공백이 남습니다.</span> 거기에 더해, 조건 키를 받지 않아서 아직 넣지 못한 액션이 있고, 정책을 걸기 전에 이미 만들어진 자원들도 그대로 있어요.</p>
+
+<p>그래서 오늘 같은 시각에 두 번째 장치를 넣었습니다. 막는 것이 아니라 <b>세는 것</b>이에요. 주간 인벤토리에 조건을 하나 더했습니다. 코드가 소유하지 않은 것으로 분류된 자원 중에서, 규약 태그가 하나라도 빠진 것을 요약 표와 결과 파일에 띄우도록요.</p>
+
+<p>여기서 한 가지를 조심해야 했어요. 인벤토리는 자원 종류마다 수집하는 정보가 다릅니다. <b>애초에 태그를 가져오지 않는 종류는 전부 "태그 없음"으로 보여요.</b> 그대로 세면 목록이 거짓 신고로 가득 찹니다.</p>
+
+<div class="obsv-code"># 태그가 한 건이라도 수집된 적이 있는 종류만 본다
+tagged_kinds = {종류 | 그 종류에서 태그가 하나라도 수집됐다}
+
+for 자원 in 전체:
+    if 자원.분류 not in (코드 밖) : 건너뛴다
+    if 자원.종류 not in tagged_kinds: 건너뛴다   # 수집 안 하는 종류
+    빠진 태그가 있으면 → 목록에 담는다
+
+# 그래서 이 숫자는 상한이 아니라 하한이다</div>
+
+<p>태그를 수집하는 종류만 보기 때문에, 이 목록은 실제보다 적게 나옵니다. 그래서 요약 표의 설명에 "태그를 수집하지 않는 종류는 빠져 있어 실제는 이보다 많을 수 있다"고 적었어요. 10월 5일자 인벤토리에 돌려 보니 61건이 나왔습니다. 시작 템플릿이 가장 많았고, 그다음이 게이트웨이와 키페어였어요.</p>
+
+<p>21편에서 "목록은 만들었고, 고친 것은 손에 꼽는다"고 썼는데, 그 뒤로 목록을 만들 때마다 같은 걸 생각해요. <b>정확한 척하는 숫자보다, 어디까지만 믿을 수 있는지가 적힌 숫자가 낫습니다.</b> 61건은 "이만큼 있다"가 아니라 "적어도 이만큼은 있다"예요. 둘은 다릅니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 352" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr28b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="24" y="28" font-size="21" fill="#4a7fb5">막는 장치 하나, 세는 장치 하나</text>
+
+<path d="M230 44 C 300 41, 400 47, 468 44 C 471 60, 470 76, 468 92 C 400 95, 300 89, 231 92 C 227 76, 229 60, 230 44 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="248" y="74" font-size="18" fill="#3d3a34">🧑 사람이 콘솔 · CLI 로 만든다</text>
+
+<path d="M349 94 C 347 104, 351 112, 349 122" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr28b)"/>
+
+<path d="M60 126 C 220 123, 440 129, 626 126 C 629 148, 628 170, 626 190 C 440 193, 220 187, 61 190 C 57 170, 59 148, 60 126 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+<text x="80" y="156" font-size="19" fill="#2e6b41">① IAM Deny · 생성 시점</text>
+<text x="80" y="180" font-size="15" fill="#8a8272">규약 태그가 없으면 그 자리에서 거부된다. 고치면 바로 통과한다</text>
+
+<path d="M470 68 C 560 70, 648 82, 664 118 C 672 158, 668 198, 646 222" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="1 7" marker-end="url(#arr28b)"/>
+<text x="488" y="112" font-size="15" fill="#c07f18">그래도 지나가는</text>
+<text x="488" y="132" font-size="15" fill="#c07f18">경로가 남는다</text>
+
+<path d="M60 228 C 220 225, 440 231, 626 228 C 629 252, 628 276, 626 296 C 440 299, 220 293, 61 296 C 57 276, 59 252, 60 228 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.8"/>
+<text x="80" y="258" font-size="19" fill="#3d6591">② 주간 인벤토리 · 사후</text>
+<text x="80" y="282" font-size="15" fill="#8a8272">코드 밖 자원 중 규약 태그가 빠진 것을 요약 표에 띄운다 (하한)</text>
+
+<text x="24" y="334" font-size="18" fill="#b3502f">막는 수단에 공백이 있다는 걸 알고, 그 공백을 세는 장치를 같이 뒀어요</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 막는 장치가 완전하지 않다는 전제 위에 세는 장치를 올렸다</div>
+
+<p>두 장치는 역할이 완전히 달라요. 첫째는 <b>새로 생기는 것</b>을 막고, 둘째는 <b>이미 있거나 지나간 것</b>을 보여 줍니다. 둘 중 하나만 있으면 어느 쪽도 완성되지 않아요. 막기만 하면 그 전에 생긴 것들을 영원히 모르고, 세기만 하면 세는 동안에도 계속 늘어납니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 막히는 사람은 이유를 모른다</div>
+  콘솔에서 태그를 빠뜨리고 만들기를 누르면 「권한이 없습니다」라고만 나와요. 태그 때문이라는 말은 어디에도 안 나옵니다. 가진 권한이 부족한 줄 알고 관리자를 찾아가게 돼요. 그래서 ADR 의 반대 의견에 이 점을 적고, 정책 이름과 안내를 미리 알려 두기로 했습니다. <b>막는 장치를 만들 때는 막힌 사람이 다음에 무엇을 해야 하는지까지가 설계예요.</b>
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>코드 밖에서 사람이 만드는 자원은 자원 쪽에서 막을 수 없었어요. 조직 정책은 걸 권한이 없는 자리였고, 태그 정책은 값 형식만 보고, 설정 검사 서비스는 생긴 뒤에 알려 줍니다. 아직 없는 자원에는 정책을 붙일 데가 없으니, 남은 자리는 호출하는 사람의 권한이었어요.</b><br><br>
+  고른 뒤에 지뢰가 둘이었습니다. 조건 키를 받지 않는 액션을 넣으면 그 액션이 영구 거부되기 때문에 서비스를 하나씩 확인하며 넓혔고, 관리형 정책은 그룹당 개수 한도에 걸려 인라인으로 바꿔야 했어요. 둘 다 plan 에는 보이지 않고 apply 와 문서 확인에서만 드러나는 것들입니다.<br><br>
+  그리고 막는 장치에는 공백이 남아요. 그걸 숨기지 않고 같은 날 세는 장치를 같이 넣었습니다. <b>가드는 완전해서 쓸모 있는 게 아니라, 어디가 비었는지 아는 채로 쓰여서 쓸모 있어요.</b>
+</div>
+
+</div>

@@ -1,0 +1,286 @@
+<!-- ============================================================
+  IaC 작업일지 27편: 두 겹은 새로 만드는 길만 막고 있었다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: IAM 권한 상승, permissions boundary, AttachGroupPolicy, 조건 키, IAM 그룹 정책 -->
+<!-- lead: 다른 ADR 을 쓰다가, 두 달 전에 세운 IAM 방어 두 겹이 "새로 만드는 길"만 막고 있었다는 걸 알았어요. permissions boundary 조건이 걸리지 않는 액션 앞에서 그 방어가 왜 침묵했는지, 3겹을 어떻게 더했는지 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지, 여섯째 날 · 27편</div>
+  1~7편. 첫날: 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날: 같은 사실이 두 군데 적혀 있을 때<br>
+  12~15편. 셋째 날: 만든 가드를 의심한 날들<br>
+  16~21편. 넷째 날: 이름을 믿지 않고 자원을 판독하는 법<br>
+  22~24편. 다섯째 날: 편입을 시작하며 소유를 다시 정했다<br>
+  25편. 배포가 참조하는 것부터 가져왔다<br>
+  26편. 지우지 않고 끄고 지켜보기로 했다<br>
+  <b>27편. 두 겹은 새로 만드는 길만 막고 있었다</b> &larr; 지금 이 글<br>
+  28편. 태그를 안 붙이면 만들 수 없게 했다
+</div>
+
+<p>오늘 아침에 쓰고 있던 문서는 보안 문서가 아니었어요. 사람이 콘솔에서 자원을 만들 때 규약 태그를 빠뜨리지 못하게 막는 설계였습니다. 닷새 전에 시크릿 하나로 1차를 걸어 두고, 그걸 다른 서비스로 넓히려고 적고 있었어요. 넓히려면 "이 계정에 사람이 어떤 모양으로 들어와 있는가"를 다시 정리해야 했어요. 사람은 IAM 사용자로 들어오고 그룹에 묶여 있어서, 막는 정책은 그룹에 붙어 있습니다.</p>
+
+<p>거기까지 적고 나서 한 줄을 더 확인했어요. <b>그 그룹에 정책을 붙이는 일을, 파이프라인의 apply 역할도 할 수 있나.</b> 막아 뒀다고 생각하고 연 것이었는데, 열려 있었습니다.</p>
+
+<p>두 달 전에 저는 이 역할의 권한 상승 경로를 두 겹으로 막는 ADR 을 썼어요(6편). 그때의 결론은 "목록으로 막는 방어는 목록 밖에서 뚫린다"였습니다. 그 두 겹을 오늘 다시 읽고 알았어요. <span class="obsv-mark">두 겹은 전부 "새로 만드는 길"만 막고 있었습니다.</span></p>
+
+<h2>1. 찾으러 가서 찾은 게 아니었다</h2>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: apply 역할</div>
+  CI 가 <code>terraform apply</code> 를 돌릴 때 빌려 쓰는 AWS 역할이에요. 사람이 쓰는 계정이 아니라 파이프라인이 쓰는 계정입니다. 이 저장소에서는 환경마다 하나씩 있어요.
+</div>
+
+<p>이 발견에서 제가 중요하게 보는 건 경위예요. 저는 권한 상승 경로를 점검하러 간 게 아니었습니다. 점검하러 갔다면 못 찾았을 거예요. 점검은 "내가 세운 방어가 그 자리에 있나"를 확인하는 일이라서, 두 겹이 멀쩡한 걸 보고 닫았을 테니까요. 두 겹이 <b>어디까지</b> 덮는지는 묻지 않았을 겁니다.</p>
+
+<p>태그 설계는 전혀 다른 질문을 들고 왔어요. "그룹에 정책을 붙일 수 있는 주체가 누구누구인가." 여기에 답하려면 apply 역할의 권한을 그룹 쪽에서 되짚어야 했고, 그제야 그쪽이 비어 있는 게 보였습니다.</p>
+
+<p>그래서 오늘 커밋 순서가 좀 이상해요. 아침 10시 25분에 보안 수정이 먼저 들어가고, 원래 하려던 태그 강제 확장은 오후에야 들어갔습니다. 설계하다 생긴 부산물이 본편보다 먼저 머지된 거예요.</p>
+
+<h2>2. 두 겹이 서 있던 자리</h2>
+
+<p>기존 두 겹을 짧게 다시 볼게요. apply 역할에는 <code>iam:*</code> 가 열려 있습니다. Terraform 이 스택마다 역할을 만들어야 해서 회수할 수가 없었어요. 대신 두 가지를 걸었습니다. <b>1겹</b>은 <code>sts:AssumeRole</code> 전면 Deny 예요. 역할을 만들어도 그 역할로 갈아탈 수 없게요. <b>2겹</b>은 역할이나 사용자를 만들 때, 그리고 거기에 정책을 붙일 때, 정해진 permissions boundary 가 지정돼 있지 않으면 Deny 하는 것입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: permissions boundary (권한 경계)</div>
+  어떤 역할이나 사용자가 넘을 수 없는 권한의 상한을 따로 적어 두는 정책이에요. 권한을 주는 장치가 아니라 천장을 정하는 장치입니다. 천장이 씌워진 역할에 AdministratorAccess 를 붙여도, 실제로 할 수 있는 일은 천장 안쪽뿐이에요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 조건 키 (condition key)</div>
+  IAM 정책이 "요청이 이런 모양일 때만"이라고 단서를 달 때 보는 값이에요. <code>iam:PermissionsBoundary</code> 는 "이 요청이 지정한 권한 경계가 무엇인가"를 담는 조건 키입니다. 그 값을 애초에 담지 않는 액션도 있어서, 그런 액션에는 이 조건으로 단서를 달 수가 없어요.
+</div>
+
+<p>두 겹은 잘 작동했어요. 다만 두 겹이 상대한 시나리오는 <b>없던 것을 새로 만드는 일</b>을 전제하고 있었습니다. 역할을 만들고, 정책을 붙이고, 그 역할로 갈아타는 순서예요. 그런데 권한을 올리는 데 꼭 새로 만들어야 하는 건 아니었습니다. 이 계정에는 이미 권한이 센 사람 계정과 그 사람들을 묶은 그룹이 있어요. <span class="obsv-mark">만들지 않고 이미 있는 것을 쓰면, 두 겹이 세워 둔 검문소를 아예 지나가지 않습니다.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="24" y="30" font-size="21" fill="#4a7fb5">같은 목적지로 가는 두 갈래 길</text>
+
+<path d="M26 50 C 110 47, 240 53, 334 50 C 337 100, 336 152, 334 198 C 240 201, 110 195, 27 198 C 23 152, 25 100, 26 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="44" y="82" font-size="22" fill="#2e6b41">새로 만드는 길</text>
+<text x="44" y="112" font-size="17" fill="#3d3a34">① 역할이나 사용자를 만든다</text>
+<text x="44" y="138" font-size="17" fill="#3d3a34">② 거기에 센 정책을 붙인다</text>
+<text x="44" y="164" font-size="17" fill="#3d3a34">③ 그 역할로 갈아탄다</text>
+<text x="44" y="188" font-size="14" fill="#8a8272">두 겹이 세 자리를 전부 막았다 ✅</text>
+
+<path d="M366 50 C 450 47, 580 53, 674 50 C 677 100, 676 152, 674 198 C 580 201, 450 195, 367 198 C 363 152, 365 100, 366 50 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="384" y="82" font-size="22" fill="#b3502f">이미 있는 것을 쓰는 길</text>
+<text x="384" y="112" font-size="17" fill="#3d3a34">갈래 1 · 그룹 구성을 바꾼다</text>
+<text x="384" y="138" font-size="17" fill="#3d3a34">갈래 2 · 자격증명을 바꾼다</text>
+<text x="384" y="164" font-size="17" fill="#3d3a34">새로 만드는 동작이 없다</text>
+<text x="384" y="188" font-size="14" fill="#8a8272">두 겹이 어느 쪽도 보지 못했다 😶</text>
+
+<path d="M180 206 C 220 220, 260 232, 292 240" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-dasharray="1 7"/>
+<path d="M520 206 C 480 220, 440 232, 408 240" fill="none" stroke="#e5533c" stroke-width="2.2" marker-end="url(#arr1)"/>
+
+<path d="M240 248 C 320 245, 400 251, 462 248 C 464 264, 463 280, 462 294 C 400 297, 320 291, 241 294 C 238 280, 239 264, 240 248 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="258" y="276" font-size="19" fill="#b3502f">💥 같은 곳에 도착한다</text>
+
+<text x="24" y="320" font-size="18" fill="#b3502f">막아 둔 것은 경로가 아니라, 경로의 한 종류였다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 두 겹은 왼쪽 길의 검문소였다. 오른쪽 길에는 검문소가 없었다</div>
+
+<h2>3. 경계는 붙을 자리가 있어야 선다</h2>
+
+<p>그러면 2겹은 왜 침묵했을까요. 경계가 약해서가 아니라 <b>경계라는 장치가 걸릴 자리가 그 액션에는 없기 때문</b>이었어요. 저는 권한 경계를 "apply 역할의 IAM 동작 전반에 씌운 천장"으로 읽고 있었는데, 그렇게 넓게 서는 물건이 아니었습니다.</p>
+
+<p>권한 경계는 <b>역할과 사용자에만 붙는 속성</b>이에요. 그룹에는 붙지 않고, 비밀번호나 액세스 키 같은 자격증명에도 붙지 않습니다. 그래서 2겹의 Deny 는 역할·사용자를 만드는 요청과 그 둘에 정책을 붙이는 요청에만 조건을 걸 수 있었어요. 그룹에 정책을 붙이는 요청에는 그 조건이 들어갈 칸 자체가 없습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="24" y="30" font-size="21" fill="#4a7fb5">권한 경계가 붙을 수 있는 곳</text>
+
+<path d="M26 50 C 70 47, 130 53, 174 50 C 177 78, 176 108, 174 134 C 130 137, 70 131, 27 134 C 23 108, 25 78, 26 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="62" y="84" font-size="21" fill="#2e6b41">역할</text>
+<text x="62" y="118" font-size="22" fill="#2e6b41">✅</text>
+
+<path d="M194 50 C 240 47, 300 53, 344 50 C 347 78, 346 108, 344 134 C 300 137, 240 131, 195 134 C 191 108, 193 78, 194 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="226" y="84" font-size="21" fill="#2e6b41">사용자</text>
+<text x="232" y="118" font-size="22" fill="#2e6b41">✅</text>
+
+<path d="M364 50 C 410 47, 470 53, 514 50 C 517 78, 516 108, 514 134 C 470 137, 410 131, 365 134 C 361 108, 363 78, 364 50 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="404" y="84" font-size="21" fill="#b3502f">그룹</text>
+<text x="402" y="118" font-size="22" fill="#b3502f">❌</text>
+
+<path d="M534 50 C 580 47, 640 53, 674 50 C 677 78, 676 108, 674 134 C 640 137, 580 131, 535 134 C 531 108, 533 78, 534 50 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="560" y="84" font-size="21" fill="#b3502f">자격증명</text>
+<text x="572" y="118" font-size="22" fill="#b3502f">❌</text>
+
+<text x="36" y="160" font-size="14" fill="#8a8272">CreateRole 요청에</text>
+<text x="36" y="178" font-size="14" fill="#8a8272">경계 값이 담긴다</text>
+<text x="204" y="160" font-size="14" fill="#8a8272">CreateUser 도 같다</text>
+<text x="374" y="160" font-size="14" fill="#8a8272">AttachGroupPolicy 에는</text>
+<text x="374" y="178" font-size="14" fill="#8a8272">담을 칸이 없다</text>
+<text x="544" y="160" font-size="14" fill="#8a8272">CreateAccessKey 도</text>
+<text x="544" y="178" font-size="14" fill="#8a8272">마찬가지다</text>
+
+<path d="M26 198 C 220 195, 460 201, 674 198 C 677 220, 676 240, 674 258 C 460 261, 220 255, 27 258 C 23 240, 25 220, 26 198 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+<text x="46" y="226" font-size="18" fill="#c07f18">조건을 단 Deny 는, 그 조건 값이 담기는 요청 앞에만 설 수 있다</text>
+<text x="46" y="248" font-size="18" fill="#c07f18">값이 담길 칸이 없는 액션에는 그 조건으로 단서를 달 수 없다</text>
+
+<text x="24" y="288" font-size="18" fill="#b3502f">천장을 씌웠다고 생각한 범위와, 천장이 실제로 덮은 범위가 달랐다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 조건을 다는 순간, 방어의 범위는 그 조건이 성립하는 액션으로 좁아진다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 나도 여기서 틀렸다</div>
+  &bull; 조건부 Deny 를 쓰면 "이 조건을 어기는 모든 요청"이 막힌다고 읽기 쉬운데, 실제로 막히는 건 <b>그 정책이 나열한 액션</b> 중에서 조건을 어긴 것뿐이에요<br>
+  &bull; 그러니 조건부 Deny 를 쓸 때는 조건의 내용만 검토하지 말고, <b>그 조건을 평가할 수 있는 액션이 어디까지인지</b>를 같이 적어 둬야 합니다<br>
+  &bull; 6편에서 설명한 "조건 키가 없으면 <code>StringNotEquals</code> 가 참이 된다"는 성질은 지금도 맞아요. 다만 그건 <b>그 액션이 정책에 적혀 있을 때</b>의 이야기였습니다
+</div>
+
+<p>열려 있던 길을 정리하면 두 갈래였어요. 지금은 전부 막힌 것들이에요.</p>
+
+<div class="obsv-code">그룹      AttachGroupPolicy     권한이 센 그룹에 관리자 정책을 붙인다
+          AddUserToGroup        아무 사용자를 그 그룹에 넣는다
+          RemoveUserFromGroup   태그 강제 대상에서 사람을 빼낸다
+
+자격증명   UpdateLoginProfile    사람의 로그인 비밀번호를 바꾼다
+          CreateAccessKey       사람의 액세스 키를 새로 만든다
+          EnableMFADevice       MFA 장치를 새로 등록한다</div>
+
+<p>아래쪽 두 줄이 특히 눈에 걸렸어요. 비밀번호를 바꾸거나 액세스 키를 새로 만들면, 새 역할을 하나도 만들지 않고 <b>이미 권한을 가진 사람의 자리에 들어갈 수 있습니다.</b> 1겹이 끊어 둔 갈아타기를 지나갈 필요도 없어요. 갈아타는 게 아니라 처음부터 그 사람으로 들어가는 길이니까요.</p>
+
+<h2>4. 3겹을 더했다</h2>
+
+<p>수리는 단순했어요. 조건을 붙이지 않은 Deny 두 개를 apply 역할에 더했습니다. 조건을 안 붙인 이유는 방금 본 그대로예요. 이 액션들에는 걸 조건이 없으니까요.</p>
+
+<div class="obsv-code">statement {
+  sid     = "DenyHumanGroupAndCredentialChanges"
+  effect  = "Deny"
+  actions = [
+    "iam:AddUserToGroup", "iam:RemoveUserFromGroup",
+    "iam:AttachGroupPolicy", "iam:DetachGroupPolicy",
+    "iam:CreateGroup", "iam:UpdateGroup", "iam:DeleteGroup",
+    "iam:CreateLoginProfile", "iam:UpdateLoginProfile", "iam:DeleteLoginProfile",
+    "iam:CreateAccessKey", "iam:UpdateAccessKey", "iam:DeleteAccessKey",
+    "iam:EnableMFADevice", "iam:DeactivateMFADevice", "iam:ResyncMFADevice",
+    # 그 밖에 자격증명을 새로 쥐여 주는 액션들
+  ]
+  resources = ["*"]
+}</div>
+
+<p>리소스를 <code>*</code> 로 둔 게 핵심이에요. 이름으로 대상을 고르면 다시 목록 방어가 됩니다. 이렇게 전면 Deny 를 걸 수 있었던 건 확인 하나 덕분이었어요. <span class="obsv-mark">이 액션들을 쓰는 스택이 하나도 없었습니다.</span> 사람 계정과 그룹 구성은 코드가 아니라 사람이 콘솔에서 하는 일이고, 그게 이 저장소의 규칙이에요.</p>
+
+<p>예외는 딱 하나였습니다. 아침에 넓히려던 그 태그 강제 정책이 그룹의 인라인 정책으로 들어가 있거든요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 인라인 정책 (inline policy)</div>
+  독립된 정책 자원을 따로 만들지 않고, 특정 사용자나 그룹에 직접 써 넣는 정책이에요. 이름은 그 대상 안에서만 의미가 있고 주소(ARN)가 따로 생기지 않습니다. 그래서 정책 이름을 가리켜 권한을 가를 수가 없어요.
+</div>
+
+<div class="obsv-code">statement {
+  sid     = "DenyGroupInlinePolicyOutsideTagEnforcement"
+  effect  = "Deny"
+  actions = ["iam:PutGroupPolicy", "iam:DeleteGroupPolicy"]
+
+  # 운영: 태그 강제 정책이 들어가는 그룹만 빼고 전부 Deny
+  # 개발: 존재하지 않는 그룹 ARN 하나를 넣어 전부 Deny
+  not_resources = ...
+}</div>
+
+<p><code>not_resources</code> 는 "여기 적힌 것 말고 전부"라는 뜻이에요. 운영 환경에서는 태그 강제 정책이 들어갈 그룹만 적어 두면 나머지는 전부 막힙니다. 개발 환경 apply 역할은 그룹을 건드릴 일이 없는데, 이 목록을 비우면 "제외할 것이 없다"가 되어 거꾸로 전부 허용돼요. 그래서 <b>존재하지 않는 그룹 주소를 하나 적었습니다.</b> 세상에 없는 것만 빼고 막으면 결과적으로 전부 막히니까요.</p>
+
+<h3>닫지 못한 자리는 닫지 못했다고 적었다</h3>
+
+<p>솔직하게 적을 게 하나 있어요. 이 예외는 <b>깨끗하게 좁혀지지 않았습니다.</b> 그룹 인라인 정책에 조건을 걸 수 있는 단위는 그룹까지예요. "이 이름을 가진 인라인 정책만"처럼 정책 이름으로 좁힐 수는 없습니다. 그래서 열어 둔 그 자리는 무엇이 들어가는지까지는 IAM 이 보지 못해요.</p>
+
+<p>완전히 닫는 방법은 있어요. 태그 강제 정책을 사람이 직접 apply 하는 영역으로 옮기면 됩니다. 대신 태그 규칙을 한 글자 바꿀 때마다 사람이 손으로 apply 해야 해요. 지금 단계에서는 그 비용이 더 크다고 봐서 <span class="obsv-mark">닫지 않고 감수하기로 했습니다.</span> 그 자리를 지키는 건 IAM 이 아니라 PR 리뷰예요. 머지된 것만 apply 되니까요.</p>
+
+<p>ADR 에는 이 내용을 "남는 위험"이라는 제목으로 적었습니다. 막은 것 옆에 안 막은 것을 같이 적지 않으면, 반년 뒤에 읽는 사람은 전부 막혔다고 읽어요. 오늘 제가 두 겹을 그렇게 읽었던 것처럼요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="24" y="30" font-size="21" fill="#4a7fb5">세 겹, 그리고 남겨 둔 자리</text>
+
+<path d="M30 48 C 200 45, 400 51, 540 48 C 543 66, 542 84, 540 100 C 400 103, 200 97, 31 100 C 27 84, 29 66, 30 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="48" y="80" font-size="19" fill="#3d3a34">1겹 · 갈아타기를 끊는다</text>
+<text x="560" y="80" font-size="15" fill="#8a8272">두 달 전</text>
+
+<path d="M30 112 C 200 109, 400 115, 540 112 C 543 130, 542 148, 540 164 C 400 167, 200 161, 31 164 C 27 148, 29 130, 30 112 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="48" y="144" font-size="19" fill="#3d3a34">2겹 · 천장 없이는 만들지 못하게 한다</text>
+<text x="560" y="144" font-size="15" fill="#8a8272">두 달 전</text>
+
+<path d="M30 176 C 200 173, 400 179, 540 176 C 543 194, 542 212, 540 228 C 400 231, 200 225, 31 228 C 27 212, 29 194, 30 176 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+<text x="48" y="208" font-size="19" fill="#2e6b41">3겹 · 사람 계정과 그룹을 건드리지 못하게 한다</text>
+<text x="560" y="208" font-size="15" fill="#2e6b41">오늘 🆕</text>
+
+<path d="M30 248 C 220 245, 460 251, 660 248 C 663 268, 662 288, 660 304 C 460 307, 220 301, 31 304 C 27 288, 29 268, 30 248 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="8 8"/>
+<text x="48" y="276" font-size="18" fill="#8a8272">이름 단위로는 조건을 걸 수 없어 남겨 둔 예외</text>
+<text x="48" y="296" font-size="15" fill="#8a8272">정책이 보지 못하는 것을 PR 리뷰가 본다</text>
+
+<text x="24" y="330" font-size="18" fill="#b3502f">닫은 것은 닫았다고, 남은 것은 남았다고 같은 문서에 적는다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 겹을 쌓는 일보다, 쌓지 못한 자리를 적어 두는 일이 다음 사람을 살린다</div>
+
+<h2>5. 이 변경은 파이프라인이 적용하지 못한다</h2>
+
+<p>마지막으로 오늘 묘했던 지점을 적을게요. 이 Deny 두 개는 apply 역할 자신의 정책이라서 <b>apply 역할이 자기 손으로 적용할 수 없습니다.</b> 그래서 이 저장소는 그런 자원을 bootstrap 이라는 별도 영역에 두고 사람이 직접 apply 해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: bootstrap</div>
+  파이프라인이 돌기 위해 먼저 있어야 하는 것들을 모아 둔 영역이에요. state 를 보관하는 버킷, apply 역할과 그 권한 같은 것들입니다. 이것들을 파이프라인으로 만들려면 파이프라인이 먼저 있어야 하니, 순서상 사람이 손으로 만들 수밖에 없어요.
+</div>
+
+<p>그런데 오늘은 로컬에 Terraform 을 돌릴 세션이 없었어요. 그래서 IAM 관리자가 CloudShell 에서 정책을 직접 넣었습니다. 코드로 관리하는 저장소에서 콘솔 작업을 한 거라, 그대로 두면 코드와 실물이 어긋난 상태가 돼요.</p>
+
+<div class="obsv-code"># 1. 사람이 CloudShell 에서 Deny 문 두 개를 넣는다
+aws iam put-role-policy --role-name {apply 역할} \
+  --policy-name {정책} --policy-document file://policy.json
+
+# 2. 적용 기록을 올리는 PR 의 bootstrap plan 으로 대조한다
+No changes. Your infrastructure matches the configuration.</div>
+
+<p>두 번째 줄이 검증이에요. 코드가 바라는 상태와 실물이 같다는 뜻입니다. 손으로 넣은 내용이 코드와 한 글자라도 달랐다면 plan 에 차이가 떴을 거예요. 그래서 적용 기록을 올리는 PR 의 plan 이 변경 없음인 것으로 확인하고, <code>bootstrap/README.md</code> 의 적용 기록 표에 그 한 줄을 남겼습니다. 날짜, 무엇을, 어떤 방법으로, 무엇으로 검증했는지예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 콘솔이나 CLI 로 급히 넣은 변경은 <b>그 자리에서 plan 으로 대조</b>해 두세요. 나중에 확인하면 그 사이에 다른 apply 가 덮어 버린 뒤일 수 있어요<br>
+  &bull; 대조하지 않고 두면 다음에 누가 그 영역을 apply 할 때 오늘 넣은 Deny 가 조용히 사라집니다. 권한을 되돌리는 변경은 plan 에서도 한 줄로만 보여요<br>
+  &bull; 적용 기록은 커밋 메시지 말고 <b>README 같은 고정된 자리</b>에 둡니다. 다음 사람이 제일 먼저 보는 곳이어야 해요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>두 달 전에 세운 두 겹은 "새로 만들고 정책을 붙이는" 경로를 막고 있었어요. 이미 있는 사람 계정을 쓰는 경로는 열려 있었습니다.</b> 2겹이 권한 경계라는 조건에 기대고 있었는데, 경계는 역할과 사용자에만 붙는 속성이라 그룹 조작과 자격증명 조작 앞에서는 걸릴 자리가 없었어요. 1겹은 갈아타기를 끊는 것이었고, 이미 있는 사람으로 들어가는 길에는 갈아탈 일이 없었습니다. 조건을 다는 순간 방어의 범위는 그 조건이 성립하는 액션까지로 좁아집니다.<br><br>
+  그래서 조건 없는 Deny 두 개를 3겹으로 더했고, 코드가 꼭 써야 하는 곳만 예외로 열었어요. 그 예외는 깨끗하게 닫히지 않아서, 닫지 않기로 한 이유와 함께 ADR 에 적어 두었습니다.<br><br>
+  이 발견은 점검에서 나오지 않았어요. 다른 설계를 하다가 같은 자원을 반대편에서 보면서 나왔습니다. <b>내가 세운 방어는 내가 세운 질문으로는 잘 안 깨집니다.</b>
+</div>
+
+</div>

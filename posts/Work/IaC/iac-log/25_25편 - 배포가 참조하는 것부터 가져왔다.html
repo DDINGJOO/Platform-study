@@ -1,0 +1,376 @@
+<!-- ============================================================
+  IaC 작업일지 25편: 배포가 참조하는 것부터 가져왔다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: CloudFront OAC, OAI, import 블록, CloudFront Function, WAF WebACL -->
+<!-- lead: 배포는 한 달 전에 코드로 담았는데 배포 블록 안에는 아직 ID 문자열이 박혀 있었어요. 코드 밖에 있던 엣지 자원 38개를 편입하면서, CLI 출력보다 plan 이 정확했던 세 번을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지, 여섯째 날 · 25편</div>
+  1~7편. 첫날: 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날: 같은 사실이 두 군데 적혀 있을 때<br>
+  12~15편. 셋째 날: 만든 가드를 의심한 날들<br>
+  16~21편. 넷째 날: 이름을 믿지 않고 자원을 판독하는 법<br>
+  22~24편. 다섯째 날: 편입을 시작하며 소유를 다시 정했다<br>
+  <b>25편. 배포가 참조하는 것부터 가져왔다</b> &larr; 지금 이 글<br>
+  26편. 지우지 않고 끄고 지켜보기로 했다<br>
+  27편. 두 겹은 새로 만드는 길만 막고 있었다<br>
+  28편. 태그를 안 붙이면 만들 수 없게 했다
+</div>
+
+<p>10월 7일 오전 10시 43분에 머지한 PR 의 제목은 이랬어요. <b>"배포가 참조하는 CloudFront OAC 23 · OAI 4 를 편입한다."</b> CDN 배포 자체는 한 달 전인 9월 4일에 이미 코드로 담았습니다. 그런데 그 배포 블록을 열어 보면 이런 줄이 있었어요.</p>
+
+<div class="obsv-code">origin_access_control_id = "{OAC ID}"       # 열네 글자짜리 문자열</div>
+
+<p>Terraform 은 이 값을 그대로 옮겨 적을 뿐이에요. 그 ID 가 실재하는지, 가리키는 대상이 어떤 설정인지, 어제와 같은지는 보지 않습니다. <span class="obsv-mark">배포는 코드 안에 있었는데, 배포가 가리키는 것은 코드 밖에 있었어요.</span></p>
+
+<p>이날 한 일은 그 바깥을 안으로 들이는 작업이었어요. 엣지 자원 38개입니다. 그리고 다섯 묶음 전부가 같은 리듬으로 돌았습니다. import 블록을 넣고, apply 하고, 9분에서 48분 뒤에 그 블록을 지웠어요. 왜 지워야 하는지가 이 글의 중간 이야기예요.</p>
+
+<p>이 글에서 다룰 것은 이렇습니다.</p>
+
+<div class="obsv-code">  1. 배포는 코드에 있는데 왜 부속은 밖에 있었나
+  2. import 블록은 왜 apply 하자마자 지워야 하나
+  3. CLI 출력과 plan 이 어긋났을 때 무엇을 믿었나
+  4. 함수 코드가 한 바이트 다르면 무슨 일이 일어나나
+  5. ALB 열다섯이 공유하는 방화벽을 어떻게 담았나
+  6. "소유를 정할 근거가 없다"던 셋은 어떻게 됐나</div>
+
+<h2>1. 배포는 코드에 있는데 부속은 밖에 있었다</h2>
+
+<p>CDN 배포가 S3 버킷을 오리진으로 쓸 때, 버킷을 인터넷에 열지 않고도 배포만 읽게 하려면 전용 신원이 필요해요. 그게 OAC 와 OAI 입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: OAC · OAI</div>
+  오리진 접근 제어(Origin Access Control)와 오리진 접근 신원(Origin Access Identity)이에요. 둘 다 "이 배포가 이 버킷을 읽어도 된다"를 증명하는 작은 자원입니다. OAI 가 먼저 나온 방식이고 OAC 가 뒤에 나온 방식인데, 오래된 배포에는 아직 OAI 가 붙어 있어요. 배포 쪽에는 그 자원의 ID 만 적힙니다.
+</div>
+
+<p>부속을 코드 밖에 두면 무엇이 곤란한지부터 볼게요. 매일 도는 drift 잡(코드와 실물이 어긋났는지 매일 plan 으로 확인하는 잡)은 <b>코드가 소유한 자원만</b> 봅니다. 배포는 소유했으니 배포의 설정이 바뀌면 잡혀요. 그런데 그 배포가 참조하는 OAC 의 서명 방식이 콘솔에서 바뀌어도 drift 는 아무 말도 하지 않아요. 코드에 있는 건 ID 문자열뿐이고, 문자열은 바뀌지 않았으니까요.</p>
+
+<p>그래서 27개를 한 PR 로 담았어요. 운영 18개, 개발 9개입니다. 담으면서 배포 쪽 참조도 문자열에서 리소스 속성으로 바꿨어요.</p>
+
+<div class="obsv-code"># 전
+origin_access_control_id = "{OAC ID}"
+origin_access_identity   = "origin-access-identity/cloudfront/{OAI ID}"
+
+# 후
+origin_access_control_id = aws_cloudfront_origin_access_control.{이름}.id
+origin_access_identity   = aws_cloudfront_origin_access_identity.{이름}.cloudfront_access_identity_path</div>
+
+<p>값은 양쪽이 똑같아요. 달라진 건 <b>Terraform 이 둘 사이의 의존 관계를 알게 됐다</b>는 점입니다. 두 줄의 끝이 다른 것도 보실 거예요. OAC 는 ID 를 그대로 쓰고, OAI 는 <code>origin-access-identity/cloudfront/</code> 가 앞에 붙은 경로 형식을 요구해서 전용 속성을 써야 했습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="22" y="30" font-size="21" fill="#4a7fb5">같은 ID, 두 가지 적는 법</text>
+
+<path d="M22 46 C 110 43, 230 49, 330 46 C 333 110, 332 190, 330 252 C 230 255, 110 249, 23 252 C 19 190, 21 110, 22 46 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="8 8"/>
+<text x="38" y="72" font-size="20" fill="#8a8272">9월 4일까지</text>
+
+<path d="M40 86 C 110 83, 200 89, 262 86 C 264 104, 263 122, 262 138 C 200 141, 110 135, 41 138 C 37 122, 39 104, 40 86 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="54" y="112" font-size="18" fill="#3d3a34">📦 배포 (코드 안)</text>
+<text x="54" y="132" font-size="13" fill="#8a8272">drift 가 매일 본다</text>
+
+<path d="M150 146 C 148 166, 152 182, 150 200" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="1 7" marker-end="url(#arr1)"/>
+<text x="162" y="180" font-size="15" fill="#8a8272">ID 문자열</text>
+
+<path d="M40 208 C 110 205, 200 211, 262 208 C 264 222, 263 234, 262 244 C 200 247, 110 241, 41 244 C 37 234, 39 222, 40 208 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="52" y="232" font-size="17" fill="#b3502f">🔒 OAC · OAI (코드 밖)</text>
+
+<path d="M370 46 C 460 43, 580 49, 678 46 C 681 110, 680 190, 678 252 C 580 255, 460 249, 371 252 C 367 190, 369 110, 370 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="386" y="72" font-size="20" fill="#2e6b41">10월 7일 10:43 이후</text>
+
+<path d="M388 86 C 458 83, 548 89, 610 86 C 612 104, 611 122, 610 138 C 548 141, 458 135, 389 138 C 385 122, 387 104, 388 86 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="402" y="112" font-size="18" fill="#3d3a34">📦 배포</text>
+<text x="402" y="132" font-size="13" fill="#8a8272">drift 가 매일 본다</text>
+
+<path d="M498 146 C 496 166, 500 182, 498 200" fill="none" stroke="#5a9e6f" stroke-width="2.2" marker-end="url(#arr1)"/>
+<text x="510" y="180" font-size="15" fill="#2e6b41">리소스 참조</text>
+
+<path d="M388 208 C 458 205, 548 211, 610 208 C 612 222, 611 234, 610 244 C 548 247, 458 241, 389 244 C 385 234, 387 222, 388 208 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="400" y="232" font-size="17" fill="#2e6b41">🔒 OAC 23 · OAI 4</text>
+<text x="30" y="272" font-size="14" fill="#8a8272">붉은 상자가 drift 가 보지 않는 영역이다</text>
+
+<text x="22" y="306" font-size="18" fill="#b3502f">문자열은 어제와 같다. 문자열이 가리키는 것이 같은지는 말해 주지 않는다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 배포만 소유하면 배포가 기대는 것은 계속 사각지대에 남는다</div>
+
+<h2>2. 넣고, apply 하고, 바로 지운다</h2>
+
+<p>이날 다섯 묶음의 시각을 나란히 놓으면 리듬이 보여요.</p>
+
+<div class="obsv-code">10:43  OAC 23 · OAI 4 편입            →  11:05  import 블록 27개 삭제   (22분)
+11:19  CDN 함수 2 편입                →  11:30  import 블록 삭제        (11분)
+11:42  공용 WebACL · IP 집합 편입      →  11:51  import 블록 삭제        ( 9분)
+12:19  배포 2 편입                    →  12:34  import 블록 삭제        (15분)
+12:48  배포 2 · OAC 2 · OAI 1 편입     →  13:36  import 블록 삭제        (48분)</div>
+
+<p>편입 PR 과 삭제 PR 이 늘 짝으로 붙어 있어요. 삭제 PR 의 본문은 한 줄짜리가 대부분입니다. "apply 완료."</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: import 블록</div>
+  이미 떠 있는 자원을 state 로 데려오라고 코드에 적는 블록이에요. 어느 리소스 주소로(<code>to</code>) 어떤 식별자를(<code>id</code>) 가져올지 둘만 적습니다. 명령어로 하던 편입을 코드로 적게 만든 방식이라, PR 리뷰와 plan 을 거쳐 편입할 수 있어요.
+</div>
+
+<p>왜 바로 지워야 하는지는 이 저장소의 CI 가 정했어요. plan 잡에 <b>import 단언</b>이라는 단계가 있습니다. 하는 일은 한 문장이에요. <span class="obsv-mark">코드에 import 블록이 N개면 plan 에도 import 가 N건이어야 한다.</span></p>
+
+<p>apply 가 끝나면 그 자원들은 이미 state 에 있어요. 그러면 다음 plan 에서 import 는 0건으로 나옵니다. 그런데 코드에는 블록이 27개 그대로 남아 있죠. 27 과 0 이 다르니 단언이 깨지고, 그 스택의 <b>모든 plan 이 막혀요.</b> 내 PR 뿐 아니라 그 스택을 건드리는 다음 사람의 PR 까지요.</p>
+
+<div class="obsv-code">::error::코드에 import 블록이 27개인데 plan 의 import 는 0건입니다.
+::error::apply 로 역할을 다한 import 블록이 남아 있을 수 있습니다.
+         이미 state 에 있는 리소스는 plan 에 import 로 잡히지 않습니다.
+         해당 블록을 지우고 주석으로 남기세요.</div>
+
+<p>CI 가 실패하면서 원인과 조치까지 같이 말해 주는 메시지예요. 두 번 겪고 나서 스크립트에 적어 둔 문구입니다.</p>
+
+<h3>이 단언이 왜 필요했나</h3>
+
+<p>단언이 있다는 사실보다, 이게 왜 생겼는지가 더 중요해요. Terraform 은 편입을 plan 에서 <code>no-op</code> 으로 표시합니다. "아무것도 바꾸지 않음"이라는 뜻이에요. 실제로 자원의 설정은 안 바뀌니까 거짓말은 아닙니다. 편입이라는 사실은 <code>importing</code> 이라는 별도 표시에 담겨요.</p>
+
+<p>문제는 이 저장소의 판정 지점 여섯 곳이 전부 <code>no-op</code> 을 건너뛰고 있었다는 점입니다. 그래서 운영 자원이 state 로 들어오는 PR 인데 사람이 보는 화면은 이랬어요.</p>
+
+<div class="obsv-code">PR 코멘트       +0 생성 · ~0 변경 · -0 삭제 · ±0 재생성 · 파괴적 변경 없음
+apply 잡        변경 없음 → 스킵
+drift 잡        clean
+미반영 점검      clean (머지됐는데 apply 안 된 변경을 찾는 잡. 열려 있던 이슈까지 닫힌다)</div>
+
+<p>운영 중인 자원 27개가 코드의 관리 아래로 들어오는데 네 화면 전부가 "아무 일도 없음"이에요. 단언은 그 빈 창을 막으려고 붙인 겁니다. 그리고 오탐이 날 수 없는 구조예요. 이미 state 에 있는 주소를 import 하려 하면 plan 자체가 실패하니까, "plan 은 성공했는데 import 가 모자라다"는 상황은 블록이 남아 있을 때뿐이거든요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="22" y="30" font-size="21" fill="#4a7fb5">단언이 세는 것은 두 숫자뿐이다</text>
+
+<path d="M22 48 C 100 45, 190 51, 252 48 C 254 72, 253 96, 252 116 C 190 119, 100 113, 23 116 C 19 96, 21 72, 22 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="36" y="74" font-size="18" fill="#3d3a34">1단계 · 블록을 넣는다</text>
+<text x="36" y="98" font-size="14" fill="#8a8272">코드 27 · plan 27 ✅</text>
+
+<path d="M260 82 C 290 79, 312 85, 338 82" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr2)"/>
+<text x="266" y="72" font-size="15" fill="#8a8272">apply</text>
+
+<path d="M346 48 C 424 45, 514 51, 576 48 C 578 72, 577 96, 576 116 C 514 119, 424 113, 347 116 C 343 96, 345 72, 346 48 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="360" y="74" font-size="18" fill="#b3502f">그냥 두면</text>
+<text x="360" y="98" font-size="14" fill="#8a8272">코드 27 · plan 0 ❌</text>
+
+<path d="M461 124 C 459 146, 463 162, 461 180" fill="none" stroke="#e5533c" stroke-width="2" marker-end="url(#arr2)"/>
+
+<path d="M330 188 C 440 185, 580 191, 678 188 C 680 206, 679 224, 678 240 C 580 243, 440 237, 331 240 C 327 224, 329 206, 330 188 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+<text x="344" y="218" font-size="17" fill="#b3502f">🔥 그 스택의 모든 plan 이 막힌다</text>
+
+<path d="M137 124 C 135 146, 139 162, 137 180" fill="none" stroke="#5a9e6f" stroke-width="2.2" marker-end="url(#arr2)"/>
+
+<path d="M22 188 C 110 185, 220 191, 300 188 C 302 206, 301 224, 300 240 C 220 243, 110 237, 23 240 C 19 224, 21 206, 22 188 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="36" y="218" font-size="17" fill="#2e6b41">2단계 · 블록을 지운다</text>
+
+<path d="M160 248 C 158 266, 162 278, 160 290" fill="none" stroke="#5a9e6f" stroke-width="2" marker-end="url(#arr2)"/>
+<path d="M22 296 C 110 293, 220 299, 300 296 C 302 306, 301 314, 300 322 C 220 325, 110 319, 23 322 C 19 314, 21 306, 22 296 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+<text x="40" y="314" font-size="16" fill="#2e6b41">코드 0 · plan 0 ✅</text>
+
+<text x="330" y="282" font-size="16" fill="#b3502f">편입은 plan 에 no-op 으로 보인다.</text>
+<text x="330" y="304" font-size="16" fill="#b3502f">숫자 요약으로는 빈 PR 과 구분되지 않는다.</text>
+<text x="330" y="326" font-size="16" fill="#b3502f">그래서 단언이 따로 센다 📟</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 편입 PR 이 "아무 일도 없음"으로 보이기 때문에, 블록 수를 따로 센다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: apply 는 내 PR 만 들고 가지 않는다</div>
+  OAC 묶음의 개발 환경 apply 결과에 <b>다른 PR 의 변경 하나가 같이 반영됐어요.</b> 미사용 배포를 비활성화하는 변경이 그날 아침에 머지돼 있었고, 아직 apply 되지 않은 상태였거든요. apply 는 내 브랜치가 아니라 기본 브랜치의 현재 상태를 적용합니다. 그래서 plan 을 읽을 때 "내가 쓴 줄"이 아니라 <b>plan 전체</b>를 읽어야 해요. 결과는 커밋에 그대로 적어 두었습니다.
+</div>
+
+<h2>3. CLI 출력이 틀리고 plan 이 맞았다</h2>
+
+<p>편입의 전제는 이 시리즈 내내 같아요. <b>실물을 바꾸지 않는다.</b> 그러려면 코드에 적는 값이 실물과 한 글자도 다르면 안 됩니다. 그래서 값은 전부 CloudShell(브라우저에서 바로 AWS 명령을 돌리는 터미널)에서 조회해 옮겼어요.</p>
+
+<p>그런데 이날 하루에 세 번, <b>조회 결과를 그대로 옮겼는데 plan 이 차이를 띄웠습니다.</b></p>
+
+<div class="obsv-code">OAC 하나의 설명    공백이 둘인 줄 알았는데 실물은 하나였다
+배포 하나의 설명    CLI 화면에서 한글이 깨져 보였다
+다른 배포의 설명    비어 있는 값이었는데 그렇게 보이지 않았다</div>
+
+<p>세 번 다 범인은 같아요. CLI 의 텍스트 출력은 사람이 읽기 좋게 정리된 화면이지, 저장된 값 그 자체가 아니었습니다. 공백을 정렬에 쓰기도 하고, 터미널 인코딩에 따라 한글이 깨지기도 해요.</p>
+
+<p>반면 plan 은 프로바이더가 API 로 받아 온 값과 코드를 직접 비교합니다. 그래서 <code>~</code> 한 줄이 뜨면 그게 실물의 진짜 값이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: plan 의 ~</div>
+  Terraform 이 plan 에서 쓰는 기호예요. <code>+</code> 는 새로 만듦, <code>-</code> 는 지움, <code>±</code> 는 지우고 다시 만듦, <code>~</code> 는 기존 자원의 속성을 바꿈입니다. 편입 PR 에서 <code>~</code> 가 뜨면 "코드가 실물과 다르다"는 신호예요.
+</div>
+
+<p>그래서 세 번 다 코드를 고쳤어요. <span class="obsv-mark">실물을 plan 에 맞춘 게 아니라, 코드를 plan 이 보여 준 실물에 맞췄습니다.</span> 이 순서가 반대가 되면 편입이 아니라 변경이에요.</p>
+
+<h3>같은 "비어 있음"을 반대로 적어야 했다</h3>
+
+<p>값이 비어 있을 때가 특히 까다로웠어요. 두 자원이 정반대였거든요.</p>
+
+<div class="obsv-code">OAC 의 description      실물이 빈 문자열 →  description = ""   라고 적어야 한다
+                        생략하면 프로바이더 기본값이 들어가 ~ 가 뜬다
+
+IP 집합의 description   실물이 빈 문자열 →  그 줄을 아예 생략해야 한다
+                        "" 를 프로바이더가 받지 않는다</div>
+
+<p>실물의 상태는 똑같이 "비어 있음"인데, 적는 법은 반대예요. 외워서 맞출 수 있는 종류가 아니라서, 둘 다 plan 을 돌려 보고 알았습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="22" y="30" font-size="21" fill="#4a7fb5">실물은 둘 다 빈 문자열</text>
+
+<path d="M22 46 C 100 43, 190 49, 250 46 C 252 62, 251 76, 250 90 C 190 93, 100 87, 23 90 C 19 76, 21 62, 22 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="36" y="74" font-size="18" fill="#3d3a34">OAC 의 설명</text>
+
+<path d="M400 46 C 478 43, 568 49, 628 46 C 630 62, 629 76, 628 90 C 568 93, 478 87, 401 90 C 397 76, 399 62, 400 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="414" y="74" font-size="18" fill="#3d3a34">IP 집합의 설명</text>
+
+<path d="M136 98 C 134 118, 138 132, 136 150" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr3)"/>
+<path d="M514 98 C 512 118, 516 132, 514 150" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr3)"/>
+
+<path d="M22 158 C 100 155, 190 161, 250 158 C 252 176, 251 194, 250 210 C 190 213, 100 207, 23 210 C 19 194, 21 176, 22 158 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+<text x="36" y="182" font-size="17" fill="#b3502f">생략하면 ❌</text>
+<text x="36" y="202" font-size="13" fill="#8a8272">기본값이 들어가 ~ 가 뜬다</text>
+
+<path d="M400 158 C 478 155, 568 161, 628 158 C 630 176, 629 194, 628 210 C 568 213, 478 207, 401 210 C 397 194, 399 176, 400 158 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+<text x="414" y="182" font-size="17" fill="#b3502f">"" 라고 적으면 ❌</text>
+<text x="414" y="202" font-size="13" fill="#8a8272">프로바이더가 받지 않는다</text>
+
+<path d="M262 184 C 300 181, 340 187, 386 184" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="1 7"/>
+<text x="284" y="174" font-size="15" fill="#8a8272">반대다</text>
+
+<path d="M22 226 C 180 223, 420 229, 628 226 C 630 240, 629 252, 628 264 C 420 267, 180 261, 23 264 C 19 252, 21 240, 22 226 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="40" y="252" font-size="17" fill="#2e6b41">정답은 plan 이 알려 준다. 한쪽은 "" 로 적고, 한쪽은 줄을 지운다</text>
+
+<text x="22" y="284" font-size="18" fill="#b3502f">실물이 같아도 코드에 적는 법까지 같지는 않다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 빈 값은 자원마다 표기법이 달라서, 외우지 말고 plan 으로 확인한다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 편입 PR 에서 <b>plan 의 기대값은 "import N건, 변경 0건"</b> 입니다. 태그가 바뀌는 것만 예외로 허용했어요<br>
+  &bull; <code>~</code> 가 뜨면 머지하지 않습니다. apply 하면 그 차이만큼 운영 자원이 바뀌니까요<br>
+  &bull; CI 에는 "기대 밖 속성이 바뀌면 막는" 검사도 같이 있어요. 기대 목록을 <code>tags</code> 로 주면 태그 외의 변화는 전부 실패로 떨어집니다<br>
+  &bull; apply 뒤에는 같은 스택으로 plan 을 한 번 더 돌려 <b>변경 없음</b>을 확인했어요. 첫 묶음은 그 결과를 삭제 PR 본문에 적었습니다
+</div>
+
+<h2>4. 코드가 한 바이트 다르면 배포가 된다</h2>
+
+<p>11시 19분에는 CDN 함수 둘을 담았어요. 하나는 광고 식별 파일 두 개를 외부 주소로 돌려보내는 함수고, 하나는 확장자 없는 경로에 <code>.html</code> 을 붙이는 함수입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: CloudFront Function</div>
+  CDN 가장자리에서 요청과 응답을 손보는 아주 작은 JavaScript 예요. 요청이 오리진에 닿기 전에 주소를 바꾸거나 돌려보내는 용도로 씁니다. 함수 코드 자체가 자원의 속성이라, 코드를 바꾸면 자원이 바뀝니다.
+</div>
+
+<p>여기서 24편과 같은 문제를 다시 만났어요. <b>설정뿐 아니라 코드가 자원의 일부</b>라는 점입니다. 코드를 조회해서 파일로 옮겼는데, 첫 plan 이 차이를 띄웠어요. 원인은 줄바꿈 하나였습니다. 실물에는 파일 끝 줄바꿈이 없는데, 편집기가 저장하면서 붙인 거예요.</p>
+
+<div class="obsv-code">resource "aws_cloudfront_function" "{이름}" {
+  name    = "{함수 이름}"
+  runtime = "cloudfront-js-2.0"
+  code    = trimsuffix(file("${path.module}/cloudfront-functions/{파일}.js"), "\n")
+  publish = true
+}</div>
+
+<p><code>trimsuffix</code> 가 파일 끝의 줄바꿈 하나를 떼고 읽는다는 뜻이에요. 저장소에는 줄바꿈이 있는 평범한 파일을 두고, Terraform 에 넘길 때만 뗍니다.</p>
+
+<p>왜 이렇게까지 맞췄는지는 <code>publish = true</code> 에 있어요. 코드가 다르면 apply 가 <b>새 버전을 만들어 운영 단계로 올립니다.</b> 그러니까 편입 PR 하나가 배포 행위가 되는 거예요. 그래서 이 파일 머리에 규칙을 적어 두었습니다. plan 에 <code>code</code> 변경이 보이면 머지하지 않는다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 편입이 실물을 바꾼 항목이 하나 있다</div>
+  "편입은 실물을 바꾸지 않는다"에 예외를 하나 뒀어요. <b>태그</b>입니다. 이 저장소는 모든 자원에 규약 태그를 붙이기로 했고(10편과 28편의 주제예요), 편입하면 그 규칙이 함수에도 걸려요. 함수 하나는 실물의 <code>Service</code> 태그 값이 그 함수가 붙어 있는 배포의 값과 달랐는데, 배포 쪽 값으로 맞췄습니다. 그래서 편입 PR 의 plan 은 <b>"import N건, 변경은 태그뿐"</b> 이 기대값이에요. 태그 밖의 변경이 섞이면 그건 편입이 아닙니다.
+</div>
+
+<h2>5. ALB 열다섯이 공유하는 방화벽 하나</h2>
+
+<p>11시 42분의 PR 은 성격이 좀 달랐어요. 지금까지는 배포 하나에 딸린 작은 부속이었는데, 이번엔 <b>ALB 열다섯 개가 공유하는 웹 방화벽</b> 하나였습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: WebACL · 관리형 룰 그룹 · Count</div>
+  WebACL 은 "어떤 요청을 막고 어떤 요청을 통과시킬지" 규칙을 모아 둔 묶음이에요. 관리형 룰 그룹은 AWS 가 만들어 파는 규칙 꾸러미고요. 꾸러미 안의 개별 규칙은 Count 로 내릴 수 있는데, 차단하지 않고 세기만 한다는 뜻입니다. 정상 요청까지 막는 규칙을 꺼 두는 흔한 방법이에요.
+</div>
+
+<p>실물을 읽어 보니 규칙이 7개였고, 그중 여섯이 관리형 룰 그룹이었어요. 꾸러미 안쪽 개별 규칙 조정은 46개였고, 그중 27개가 Count 로 내려져 있었습니다. 절반이 넘어요.</p>
+
+<p>이 46개는 누군가 콘솔에서 하나씩 내린 판단이에요. 왜 내렸는지는 코드 어디에도 없고요. 그래서 이 PR 이 한 일은 <span class="obsv-mark">그 판단을 평가하지 않고 그대로 옮겨 적는 것</span>이었어요. 46줄 중 한 줄이라도 다르게 적으면 운영 트래픽의 차단 여부가 바뀝니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 공용 자원은 변경의 폭이 다르다</div>
+  이 방화벽은 ALB 열다섯 개에 한꺼번에 걸려 있어요. 규칙 한 줄을 고치면 열다섯 개 서비스의 차단과 허용이 동시에 바뀝니다. 그래서 파일 머리에 "이 ACL 의 규칙을 바꾸는 PR 은 대상 ALB 의 최근 차단 로그를 먼저 확인한다"고 적어 두었어요. 소유를 가져왔다는 건 고치기 쉬워졌다는 뜻이기도 해서, 쉬워진 만큼 앞에 문장을 하나 세워 둔 겁니다.
+</div>
+
+<p>소유 위치도 같이 정했어요. 서비스 스택은 "이 ALB 에 저 방화벽을 붙인다"는 <b>연결</b>만 가지고, 방화벽 본체는 계정 보안을 담당하는 스택이 가집니다. 규칙은 특정 서비스의 사정이 아니라 계정 전체의 보안 정책이니까요.</p>
+
+<h2>6. "소유를 정할 근거가 없다"던 셋을 담았다</h2>
+
+<p>마지막 두 묶음은 부속이 아니라 배포 본체 넷이었어요. 그중 셋은 한 달 전에 <b>편입하지 않기로 결정했던 것들</b>입니다.</p>
+
+<p>9월 4일에 배포들의 소유를 한 벌씩 정할 때 기준은 "누가 배포하는가"였어요. 배포 워크플로를 역추적해 그 저장소를 가진 팀의 스택에 넣는 방식이에요. 태그를 믿지 않는 이유는 16편에 적었습니다. 태그와 실물이 어긋나는 사례가 실제로 나왔거든요.</p>
+
+<p>그런데 셋은 배포 워크플로를 찾지 못했어요. 버킷 이름으로도 배포 ID 로도 조직 전체 코드 검색에 걸리는 것이 문서뿐이었습니다. 수동 배포이거나, 비공개 저장소이거나, 검색 밖이거나요. 그때 문서에 이렇게 적었어요.</p>
+
+<div class="obsv-code">소유를 정할 근거가 없으므로 편입하지 않는다. 사람에게 물어야 하는 항목이다.</div>
+
+<p>10월 7일에는 그 셋을 담았어요. 기준을 바꿨기 때문입니다. 하나는 <b>오리진 버킷의 소유</b>로 정했어요. 버킷을 가진 스택이 그 버킷을 쓰는 배포도 갖는다는 규칙입니다.</p>
+
+<p>나머지 둘은 버킷으로 정할 수 없었어요. 한쪽은 오리진 버킷이 아직 코드 밖이었고, 다른 한쪽은 버킷 자체가 없었습니다. 그래서 <b>배포와 오리진 버킷에 붙은 태그가 같은 곳을 가리킨다</b>는 것을 근거로 삼았어요. 16편에서 믿지 않겠다고 적은 그 태그입니다. 소유를 확정하는 근거로는 못 쓰지만, 잠정으로 둘 자리를 고르는 근거로는 쓰기로 했어요.</p>
+
+<p>이게 기준을 낮춘 게 맞아요. 그래서 낮춘 만큼을 코드에 적었습니다. 파일 머리에 "소유는 잠정이다", "소유자가 확인되면 옮긴다"를 쓰고, 옮기는 방법까지 적어 뒀어요. state 에서 뺀 뒤 다른 스택으로 다시 넣는 두 단계입니다.</p>
+
+<p>바뀐 판단의 핵심은 이거예요. <span class="obsv-mark">편입은 소유를 확정하는 일이 아니라 자원을 코드가 보이는 곳으로 옮기는 일입니다.</span> 소유 결정을 기다리는 동안 그 배포들은 계속 코드 밖에 있었고, 그동안은 누가 무엇을 바꿔도 아무도 몰랐어요. 잠정으로 담아 두면 적어도 매일 돌아가는 drift 가 봅니다. 나중에 소유자가 확인되면 옮기는 비용은 PR 하나예요.</p>
+
+<p>버킷이 없던 그 배포는 담고 나서 더 분명해졌어요. 조회하면 "그런 버킷 없음"이 돌아오는데, 배포는 켜져 있고 도메인도 살아 있습니다. 그래도 고치지 않고 그대로 담았어요. 편입은 실물을 바꾸지 않으니까요. 주석에는 "끌지 말지는 사람이 판단한다"만 적어 두었고, 세 시간 뒤에 그 판단을 한 이야기는 다음 편의 주제예요.</p>
+
+<h3>부속이 먼저라는 순서가 늘 지켜지지는 않았다</h3>
+
+<p>12시 19분에 담은 배포 하나는 자기 OAC 가 아직 코드 밖이었어요. 실측을 안 했거든요. 그래서 그 줄만 ID 문자열로 남겨 두고, 29분 뒤 다음 PR 에서 OAC 를 담으면서 리소스 참조로 바꿨습니다.</p>
+
+<p>순서를 뒤집어 본 셈인데, 결과는 똑같았어요. 중요한 건 "부속을 먼저"가 아니라 <b>참조하는 쪽과 참조되는 쪽이 같은 state 안에 있어야 리소스로 이을 수 있다</b>는 제약이었습니다. 실제로 개발 환경 배포 하나는 운영 스택의 OAC 를 공유하고 있어서, 스택이 달라 지금도 문자열로 두었어요. 이건 순서의 문제가 아니라 스택 경계의 문제라 다른 해법이 필요합니다.</p>
+
+<p>그리고 아직 안 한 것도 적어 둘게요. 9월 4일의 "편입하지 않는다"가 적힌 문서는 <b>그대로입니다.</b> 뒤집힌 판단은 코드 주석과 커밋 메시지에만 남아 있어요. 같은 사실이 두 군데 적혀 있을 때 한쪽만 고치면 어떻게 되는지는 이 시리즈 둘째 날의 주제였는데, 지금 제가 그 상태를 만들어 둔 겁니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>배포를 코드로 담았다는 말이 배포가 기대는 것까지 담았다는 뜻은 아니었어요.</b> 배포 블록 안의 ID 문자열은 어제와 오늘이 늘 같아서, 그 문자열이 가리키는 자원이 콘솔에서 바뀌어도 drift 는 아무 말을 하지 않습니다. 이날 담은 38개는 거의 다 그런 부속이었어요.<br><br>
+  편입마다 import 블록을 넣고 apply 한 뒤 바로 지운 건 정리벽이 아니라 CI 때문입니다. Terraform 은 편입을 "아무것도 바꾸지 않음"으로 표시하고, 그래서 운영 자원이 들어오는 PR 이 빈 PR 처럼 보여요. 그 빈 창을 막으려고 코드의 블록 수와 plan 의 편입 건수를 대조하는 단언을 붙였고, 블록이 남으면 그 스택의 모든 plan 이 멈춥니다.<br><br>
+  그리고 값은 CLI 화면이 아니라 plan 이 알려 줬어요. 공백 하나, 깨진 한글, 빈 문자열까지 세 번 다 그랬습니다. 코드를 실물에 맞추는 일에서 믿을 것은 사람이 읽기 좋게 꾸민 출력이 아니라, 기계가 실물과 코드를 직접 비교한 결과입니다.
+</div>
+
+</div>
