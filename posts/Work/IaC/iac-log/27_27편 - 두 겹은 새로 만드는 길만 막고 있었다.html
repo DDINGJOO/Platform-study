@@ -3,7 +3,7 @@
   tistory-sketch-post 스타일 · 단일 HTML
 ============================================================ -->
 <!-- tags: IAM 권한 상승, permissions boundary, AttachGroupPolicy, 조건 키, IAM 그룹 정책 -->
-<!-- lead: 다른 ADR 을 쓰다가, 두 달 전에 세운 IAM 방어 두 겹이 "새로 만드는 길"만 막고 있었다는 걸 알았어요. permissions boundary 조건이 걸리지 않는 액션 앞에서 그 방어가 왜 침묵했는지, 3겹을 어떻게 더했는지 적었어요. -->
+<!-- lead: 다른 ADR 을 쓰다가, 두 달 전에 세운 IAM 방어 두 겹이 "새로 만드는 길"만 막고 있었다는 걸 알았어요. 그런데 수리하면서 한 번 더 틀렸습니다. 열려 있다고 ADR 에 적은 액션 중 둘은 이미 막혀 있었어요. 무엇이 정말 비어 있었는지, 왜 그걸 못 봤는지 적었어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -45,6 +45,8 @@
 
 <p>두 달 전에 저는 이 역할의 권한 상승 경로를 두 겹으로 막는 ADR 을 썼어요(6편). 그때의 결론은 "목록으로 막는 방어는 목록 밖에서 뚫린다"였습니다. 그 두 겹을 오늘 다시 읽고 알았어요. <span class="obsv-mark">두 겹은 전부 "새로 만드는 길"만 막고 있었습니다.</span></p>
 
+<p>여기까지가 오전의 결론이고, 저는 이 결론으로 ADR 보강과 커밋 메시지를 썼어요. <b>그 둘이 틀렸습니다.</b> 제가 "열려 있다"고 맨 앞에 적은 액션 두 개는 두 달 전에 제 손으로 이미 막아 둔 것이었어요. 같은 파일 아래쪽, 오늘 다시 읽지 않은 자리에 있었습니다. 그래서 이 글은 정정까지 같이 적을게요. 틀린 쪽이 오히려 이 글의 결론을 더 쓸모 있게 만들었거든요.</p>
+
 <h2>1. 찾으러 가서 찾은 게 아니었다</h2>
 
 <div class="obsv-term">
@@ -52,7 +54,7 @@
   CI 가 <code>terraform apply</code> 를 돌릴 때 빌려 쓰는 AWS 역할이에요. 사람이 쓰는 계정이 아니라 파이프라인이 쓰는 계정입니다. 이 저장소에서는 환경마다 하나씩 있어요.
 </div>
 
-<p>이 발견에서 제가 중요하게 보는 건 경위예요. 저는 권한 상승 경로를 점검하러 간 게 아니었습니다. 점검하러 갔다면 못 찾았을 거예요. 점검은 "내가 세운 방어가 그 자리에 있나"를 확인하는 일이라서, 두 겹이 멀쩡한 걸 보고 닫았을 테니까요. 두 겹이 <b>어디까지</b> 덮는지는 묻지 않았을 겁니다.</p>
+<p>이 발견에서 제가 중요하게 보는 건 경위예요. 저는 권한 상승 경로를 점검하러 간 게 아니었습니다. 점검은 "내가 세운 방어가 그 자리에 있나"를 확인하는 일이라서, 두 겹이 멀쩡한 걸 보면 거기서 닫힙니다. 두 겹이 <b>어디까지</b> 덮는지는, 그걸 따로 물어야 할 질문으로 세워 두지 않으면 잘 묻지 않게 돼요.</p>
 
 <p>태그 설계는 전혀 다른 질문을 들고 왔어요. "그룹에 정책을 붙일 수 있는 주체가 누구누구인가." 여기에 답하려면 apply 역할의 권한을 그룹 쪽에서 되짚어야 했고, 그제야 그쪽이 비어 있는 게 보였습니다.</p>
 
@@ -93,8 +95,8 @@
 
 <path d="M366 50 C 450 47, 580 53, 674 50 C 677 100, 676 152, 674 198 C 580 201, 450 195, 367 198 C 363 152, 365 100, 366 50 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
 <text x="384" y="82" font-size="22" fill="#b3502f">이미 있는 것을 쓰는 길</text>
-<text x="384" y="112" font-size="17" fill="#3d3a34">갈래 1 · 그룹 구성을 바꾼다</text>
-<text x="384" y="138" font-size="17" fill="#3d3a34">갈래 2 · 자격증명을 바꾼다</text>
+<text x="384" y="112" font-size="17" fill="#3d3a34">갈래 1 · 그룹 구성을 바꾼다 (통째로 열림)</text>
+<text x="384" y="138" font-size="17" fill="#3d3a34">갈래 2 · 자격증명을 바꾼다 (목록 밖만 열림)</text>
 <text x="384" y="164" font-size="17" fill="#3d3a34">새로 만드는 동작이 없다</text>
 <text x="384" y="188" font-size="14" fill="#8a8272">두 겹이 어느 쪽도 보지 못했다 😶</text>
 
@@ -142,7 +144,7 @@
 <text x="204" y="160" font-size="14" fill="#8a8272">CreateUser 도 같다</text>
 <text x="374" y="160" font-size="14" fill="#8a8272">AttachGroupPolicy 에는</text>
 <text x="374" y="178" font-size="14" fill="#8a8272">담을 칸이 없다</text>
-<text x="544" y="160" font-size="14" fill="#8a8272">CreateAccessKey 도</text>
+<text x="544" y="160" font-size="14" fill="#8a8272">EnableMFADevice 도</text>
 <text x="544" y="178" font-size="14" fill="#8a8272">마찬가지다</text>
 
 <path d="M26 198 C 220 195, 460 201, 674 198 C 677 220, 676 240, 674 258 C 460 261, 220 255, 27 258 C 23 240, 25 220, 26 198 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
@@ -156,13 +158,13 @@
 <div class="obsv-figcap">그림 2. 조건을 다는 순간, 방어의 범위는 그 조건이 성립하는 액션으로 좁아진다</div>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">⚠️ 주의: 나도 여기서 틀렸다</div>
+  <div class="obsv-ct">⚠️ 주의: 조건을 다는 순간 목록이 생긴다</div>
   &bull; 조건부 Deny 를 쓰면 "이 조건을 어기는 모든 요청"이 막힌다고 읽기 쉬운데, 실제로 막히는 건 <b>그 정책이 나열한 액션</b> 중에서 조건을 어긴 것뿐이에요<br>
-  &bull; 그러니 조건부 Deny 를 쓸 때는 조건의 내용만 검토하지 말고, <b>그 조건을 평가할 수 있는 액션이 어디까지인지</b>를 같이 적어 둬야 합니다<br>
-  &bull; 6편에서 설명한 "조건 키가 없으면 <code>StringNotEquals</code> 가 참이 된다"는 성질은 지금도 맞아요. 다만 그건 <b>그 액션이 정책에 적혀 있을 때</b>의 이야기였습니다
+  &bull; 게다가 그 액션 목록은 <b>길게 쓸 수가 없습니다.</b> 조건 키를 받지 않는 액션을 거기 끼워 넣으면 그 액션이 영영 거부되거든요(이 함정의 작동 방식은 28편에서 따로 다뤘어요). 그래서 조건부 Deny 의 목록은 구조적으로 짧게 유지됩니다<br>
+  &bull; 짧은 만큼 바깥이 넓은데, 그 바깥은 정책 어디에도 적히지 않아요. 권한 상승을 막는 문서라면 <b>이 문이 덮지 못하는 액션군이 무엇인지</b>를 같은 자리에 적어 둬야 다음 사람이 그 바깥을 봅니다
 </div>
 
-<p>열려 있던 길을 정리하면 두 갈래였어요. 지금은 전부 막힌 것들이에요.</p>
+<p>오전에 제가 적어 둔 "열려 있는 길" 목록은 이랬어요.</p>
 
 <div class="obsv-code">그룹      AttachGroupPolicy     권한이 센 그룹에 관리자 정책을 붙인다
           AddUserToGroup        아무 사용자를 그 그룹에 넣는다
@@ -172,11 +174,36 @@
           CreateAccessKey       사람의 액세스 키를 새로 만든다
           EnableMFADevice       MFA 장치를 새로 등록한다</div>
 
-<p>아래쪽 두 줄이 특히 눈에 걸렸어요. 비밀번호를 바꾸거나 액세스 키를 새로 만들면, 새 역할을 하나도 만들지 않고 <b>이미 권한을 가진 사람의 자리에 들어갈 수 있습니다.</b> 1겹이 끊어 둔 갈아타기를 지나갈 필요도 없어요. 갈아타는 게 아니라 처음부터 그 사람으로 들어가는 길이니까요.</p>
+<p>그리고 아래쪽 두 줄이 제일 무섭다고 썼습니다. 비밀번호를 바꾸거나 액세스 키를 새로 만들면 새 역할을 하나도 만들지 않고 <b>이미 권한을 가진 사람의 자리에 그대로 들어갈 수 있으니까요.</b> ADR 보강에도, 커밋 본문에도 그 두 줄을 맨 앞에 적었어요.</p>
+
+<h3>그 두 줄은 이미 막혀 있었다</h3>
+
+<p>글을 쓰려고 <code>bootstrap/iam.tf</code> 를 위에서 아래까지 다시 읽다가 알았어요. 같은 파일 끝부분에 <code>DenyLongLivedCredsAndServiceAssume</code> 라는 문이 있습니다. 2026년 8월 6일 커밋이에요. <span class="obsv-mark">조건 없이 <code>*</code> 에 Deny 를 걸고, 액션 네 개를 적어 뒀는데 그중 셋이 <code>CreateAccessKey</code> · <code>CreateLoginProfile</code> · <code>UpdateLoginProfile</code> 입니다.</span> 두 달 내내 거기 서 있었습니다.</p>
+
+<p>그러니까 제가 "가장 무섭다"고 적은 두 줄은 열린 적이 없었어요. 실제로 비어 있던 자리를 다시 가르면 이렇게 됩니다.</p>
+
+<div class="obsv-code">정말 열려 있던 것
+  그룹      AttachGroupPolicy     권한이 센 그룹에 관리자 정책을 붙인다
+            DetachGroupPolicy     붙어 있던 정책을 뗀다
+            AddUserToGroup        아무 사용자를 그 그룹에 넣는다
+            RemoveUserFromGroup   태그 강제 대상에서 사람을 빼낸다
+  자격증명   UploadSSHPublicKey    사람 계정에 공개키를 올린다
+            EnableMFADevice       MFA 장치를 새로 등록한다
+            DeactivateMFADevice   붙어 있던 MFA 를 뗀다
+            UpdateAccessKey       비활성 상태의 키를 다시 켠다
+
+이미 막혀 있던 것   ← 두 달 전에 조건 없는 Deny 로 막아 둔 자리
+  자격증명   CreateAccessKey · CreateLoginProfile · UpdateLoginProfile</div>
+
+<p>그룹 쪽은 통째로 비어 있었던 게 맞아요. 자격증명 쪽은 통째가 아니라 <b>목록 밖</b>이 비어 있었습니다. 8월에 네 개를 적어 두고 그걸로 "장기 자격증명은 막았다"고 넘어갔는데, 같은 목적을 가진 액션이 그 네 개 말고도 있었어요. 사람 계정에 공개키를 올리는 길, 서비스 전용 자격증명을 다시 발급받는 길, MFA 를 떼고 다시 붙이는 길 같은 것들입니다.</p>
+
+<p>두 달 전 ADR 의 결론이 "목록으로 막는 방어는 목록 밖에서 뚫린다"였는데, 그 문장을 쓴 사람이 바로 다음 커밋에서 액션 네 개짜리 목록을 만들고 두 달 동안 안 쳐다봤던 거예요. ADR 보강 문서와 오늘 커밋 본문에도 틀린 목록이 그대로 들어가 있습니다. 원본은 고치지 않고 여기에 적어 둘게요.</p>
 
 <h2>4. 3겹을 더했다</h2>
 
-<p>수리는 단순했어요. 조건을 붙이지 않은 Deny 두 개를 apply 역할에 더했습니다. 조건을 안 붙인 이유는 방금 본 그대로예요. 이 액션들에는 걸 조건이 없으니까요.</p>
+<p>수리 자체는 단순했어요. 조건을 붙이지 않은 Deny 두 개를 apply 역할에 더했습니다.</p>
+
+<p>그런데 이걸 <b>오늘 깨달은 방법</b>처럼 쓰면 거짓말이 돼요. 조건 없는 Deny 문은 두 달 전에 이미 만들어 뒀고, 왜 조건을 안 붙이는지도 그 문 위에 주석으로 적혀 있습니다. 조건부 문에 이런 액션을 넣으면 조건 키가 없어서 영구 Deny 가 되고 그 사실이 조건문 안에 숨는다고요. <span class="obsv-mark">오늘 한 일은 새 방법을 찾은 게 아니라, 알고 있던 방법을 두 달 동안 적용하지 않았던 액션군에 뒤늦게 적용한 것입니다.</span></p>
 
 <div class="obsv-code">statement {
   sid     = "DenyHumanGroupAndCredentialChanges"
@@ -187,11 +214,14 @@
     "iam:CreateGroup", "iam:UpdateGroup", "iam:DeleteGroup",
     "iam:CreateLoginProfile", "iam:UpdateLoginProfile", "iam:DeleteLoginProfile",
     "iam:CreateAccessKey", "iam:UpdateAccessKey", "iam:DeleteAccessKey",
+    "iam:UploadSSHPublicKey", "iam:UploadSigningCertificate",
     "iam:EnableMFADevice", "iam:DeactivateMFADevice", "iam:ResyncMFADevice",
     # 그 밖에 자격증명을 새로 쥐여 주는 액션들
   ]
   resources = ["*"]
 }</div>
+
+<p>위 세 줄 중 일부는 8월 문에 이미 있는 액션이라 겹칩니다. 지우지 않고 두기로 했어요. 사람 계정과 자격증명을 건드리는 액션을 한 문에 모아 두면 다음에 읽는 사람이 "이 역할이 사람에게 할 수 있는 일"을 한 자리에서 보니까요. Deny 는 겹쳐도 결과가 달라지지 않습니다.</p>
 
 <p>리소스를 <code>*</code> 로 둔 게 핵심이에요. 이름으로 대상을 고르면 다시 목록 방어가 됩니다. 이렇게 전면 Deny 를 걸 수 있었던 건 확인 하나 덕분이었어요. <span class="obsv-mark">이 액션들을 쓰는 스택이 하나도 없었습니다.</span> 사람 계정과 그룹 구성은 코드가 아니라 사람이 콘솔에서 하는 일이고, 그게 이 저장소의 규칙이에요.</p>
 
@@ -212,7 +242,7 @@
   not_resources = ...
 }</div>
 
-<p><code>not_resources</code> 는 "여기 적힌 것 말고 전부"라는 뜻이에요. 운영 환경에서는 태그 강제 정책이 들어갈 그룹만 적어 두면 나머지는 전부 막힙니다. 개발 환경 apply 역할은 그룹을 건드릴 일이 없는데, 이 목록을 비우면 "제외할 것이 없다"가 되어 거꾸로 전부 허용돼요. 그래서 <b>존재하지 않는 그룹 주소를 하나 적었습니다.</b> 세상에 없는 것만 빼고 막으면 결과적으로 전부 막히니까요.</p>
+<p><code>not_resources</code> 는 "여기 적힌 것 말고 전부"라는 뜻이에요. 운영 환경에서는 태그 강제 정책이 들어갈 그룹만 적어 두면 나머지는 전부 막힙니다. 개발 환경 apply 역할은 그룹을 건드릴 일이 아예 없어서 빼 둘 것이 하나도 없는데, 그렇다고 칸을 비울 수는 없었어요. 역할에 붙는 IAM 정책은 문마다 대상을 적는 칸이 있어야 하거든요. 그래서 <b>존재하지 않는 그룹 주소를 하나 적었습니다.</b> 세상에 없는 것만 빼고 막으면 결과적으로 전부 막히니까요.</p>
 
 <h3>닫지 못한 자리는 닫지 못했다고 적었다</h3>
 
@@ -223,31 +253,37 @@
 <p>ADR 에는 이 내용을 "남는 위험"이라는 제목으로 적었습니다. 막은 것 옆에 안 막은 것을 같이 적지 않으면, 반년 뒤에 읽는 사람은 전부 막혔다고 읽어요. 오늘 제가 두 겹을 그렇게 읽었던 것처럼요.</p>
 
 <div class="obsv-fig">
-<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
 <g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
-<text x="24" y="30" font-size="21" fill="#4a7fb5">세 겹, 그리고 남겨 둔 자리</text>
+<text x="24" y="30" font-size="21" fill="#4a7fb5">실제로 서 있던 겹들, 그리고 남겨 둔 자리</text>
 
 <path d="M30 48 C 200 45, 400 51, 540 48 C 543 66, 542 84, 540 100 C 400 103, 200 97, 31 100 C 27 84, 29 66, 30 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
 <text x="48" y="80" font-size="19" fill="#3d3a34">1겹 · 갈아타기를 끊는다</text>
-<text x="560" y="80" font-size="15" fill="#8a8272">두 달 전</text>
+<text x="560" y="80" font-size="15" fill="#8a8272">08-04</text>
 
 <path d="M30 112 C 200 109, 400 115, 540 112 C 543 130, 542 148, 540 164 C 400 167, 200 161, 31 164 C 27 148, 29 130, 30 112 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
 <text x="48" y="144" font-size="19" fill="#3d3a34">2겹 · 천장 없이는 만들지 못하게 한다</text>
-<text x="560" y="144" font-size="15" fill="#8a8272">두 달 전</text>
+<text x="560" y="144" font-size="15" fill="#8a8272">08-04</text>
 
-<path d="M30 176 C 200 173, 400 179, 540 176 C 543 194, 542 212, 540 228 C 400 231, 200 225, 31 228 C 27 212, 29 194, 30 176 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
-<text x="48" y="208" font-size="19" fill="#2e6b41">3겹 · 사람 계정과 그룹을 건드리지 못하게 한다</text>
-<text x="560" y="208" font-size="15" fill="#2e6b41">오늘 🆕</text>
+<path d="M30 176 C 200 173, 400 179, 540 176 C 543 194, 542 212, 540 228 C 400 231, 200 225, 31 228 C 27 212, 29 194, 30 176 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+<text x="48" y="202" font-size="19" fill="#c07f18">이름 없던 한 겹 · 조건 없는 Deny, 액션 네 개</text>
+<text x="48" y="221" font-size="15" fill="#8a8272">여기 적힌 셋을 나는 오늘 "열려 있다"고 적었다</text>
+<text x="560" y="202" font-size="15" fill="#8a8272">08-06</text>
 
-<path d="M30 248 C 220 245, 460 251, 660 248 C 663 268, 662 288, 660 304 C 460 307, 220 301, 31 304 C 27 288, 29 268, 30 248 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="8 8"/>
-<text x="48" y="276" font-size="18" fill="#8a8272">이름 단위로는 조건을 걸 수 없어 남겨 둔 예외</text>
-<text x="48" y="296" font-size="15" fill="#8a8272">정책이 보지 못하는 것을 PR 리뷰가 본다</text>
+<path d="M30 240 C 200 237, 400 243, 540 240 C 543 258, 542 276, 540 292 C 400 295, 200 289, 31 292 C 27 276, 29 258, 30 240 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+<text x="48" y="266" font-size="19" fill="#2e6b41">3겹 · 그룹을 막고, 네 개짜리 목록을 넓힌다</text>
+<text x="48" y="285" font-size="15" fill="#8a8272">새 방법이 아니라, 안 쓰던 자리에 같은 방법을 쓴 것</text>
+<text x="560" y="266" font-size="15" fill="#2e6b41">오늘 🆕</text>
 
-<text x="24" y="330" font-size="18" fill="#b3502f">닫은 것은 닫았다고, 남은 것은 남았다고 같은 문서에 적는다</text>
+<path d="M30 316 C 220 313, 460 319, 660 316 C 663 336, 662 356, 660 372 C 460 375, 220 369, 31 372 C 27 356, 29 336, 30 316 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="8 8"/>
+<text x="48" y="344" font-size="18" fill="#8a8272">이름 단위로는 조건을 걸 수 없어 남겨 둔 예외</text>
+<text x="48" y="364" font-size="15" fill="#8a8272">정책이 보지 못하는 것을 PR 리뷰가 본다</text>
+
+<text x="24" y="398" font-size="18" fill="#b3502f">겹을 세는 일보다, 세 둔 겹이 어디까지 닿는지 세는 일이 어렵다</text>
 </g>
 </svg>
 </div>
-<div class="obsv-figcap">그림 3. 겹을 쌓는 일보다, 쌓지 못한 자리를 적어 두는 일이 다음 사람을 살린다</div>
+<div class="obsv-figcap">그림 3. 세 번째 상자는 오늘 다시 읽기 전까지 내 머릿속 그림에 없던 겹이다</div>
 
 <h2>5. 이 변경은 파이프라인이 적용하지 못한다</h2>
 
@@ -278,9 +314,9 @@ No changes. Your infrastructure matches the configuration.</div>
 
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>두 달 전에 세운 두 겹은 "새로 만들고 정책을 붙이는" 경로를 막고 있었어요. 이미 있는 사람 계정을 쓰는 경로는 열려 있었습니다.</b> 2겹이 권한 경계라는 조건에 기대고 있었는데, 경계는 역할과 사용자에만 붙는 속성이라 그룹 조작과 자격증명 조작 앞에서는 걸릴 자리가 없었어요. 1겹은 갈아타기를 끊는 것이었고, 이미 있는 사람으로 들어가는 길에는 갈아탈 일이 없었습니다. 조건을 다는 순간 방어의 범위는 그 조건이 성립하는 액션까지로 좁아집니다.<br><br>
+  <b>두 달 전에 세운 두 겹은 "새로 만들고 정책을 붙이는" 경로를 막고 있었어요. 이미 있는 사람 계정을 쓰는 경로 중 그룹 쪽은 통째로 비어 있었습니다.</b> 2겹이 권한 경계라는 조건에 기대고 있었는데, 경계는 역할과 사용자에만 붙는 속성이라 그룹 조작 앞에서는 걸릴 자리가 없었어요. 1겹은 갈아타기를 끊는 것이었고, 이미 있는 사람으로 들어가는 길에는 갈아탈 일이 없었습니다. 조건을 다는 순간 방어의 범위는 그 조건이 성립하는 액션까지로 좁아집니다.<br><br>
   그래서 조건 없는 Deny 두 개를 3겹으로 더했고, 코드가 꼭 써야 하는 곳만 예외로 열었어요. 그 예외는 깨끗하게 닫히지 않아서, 닫지 않기로 한 이유와 함께 ADR 에 적어 두었습니다.<br><br>
-  이 발견은 점검에서 나오지 않았어요. 다른 설계를 하다가 같은 자원을 반대편에서 보면서 나왔습니다. <b>내가 세운 방어는 내가 세운 질문으로는 잘 안 깨집니다.</b>
+  <b>그리고 수리하면서 한 번 더 틀렸어요.</b> 열려 있다고 ADR 과 커밋 본문에 맨 앞에 적은 자격증명 액션 둘은, 두 달 전에 조건 없는 Deny 로 제가 이미 막아 둔 것이었습니다. 몰라서 못 막은 게 아니었어요. 조건 없는 Deny 라는 답은 두 달 전 제 주석에 이유까지 적혀 있었고, 저는 그 답을 <b>다른 액션군에 적용하지 않았을 뿐</b>이었습니다. 그러니 방어를 다시 볼 때 물을 것은 "이 원리를 아는가"가 아니라 <b>"아는 원리를 아직 적용하지 않은 자리가 어디인가"</b>예요.
 </div>
 
 </div>
