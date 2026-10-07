@@ -1,0 +1,344 @@
+<!-- ============================================================
+  기본값을 거부로 1편: 전체가 열려 있었다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: Spring Security, permitAll, 인가, 기본값 거부, 익명 호출 로깅 -->
+<!-- lead: 제휴 연동 서버의 /api/ 아래가 전부 인증 없이 열려 있었어요. 감사 보고서에 이미 HIGH 로 적혀 있던 항목인데 한 달을 넘겼고, 그 뒤 관리자성 경로부터 인가를 걸고 익명 호출을 세는 필터를 넣은 과정을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔒 기본값을 거부로 · 1편</div>
+  <b>1편. 전체가 열려 있었다</b> &larr; 지금 이 글<br>
+  2편. 8주치 82,918건을 전부 셌다<br>
+  3편. 기본값을 바꾸고 되돌림 스위치를 남겼다<br>
+  4편. 지우려던 분기에 주 사용자가 있었다<br>
+  5편. 안전 조치가 장애를 만들었다
+</div>
+
+<p>이 서버의 문제는 제가 발견한 게 아니에요. 2026년 8월 10일 자 사내 보안 감사 보고서에 이미 적혀 있었습니다. <code>/api/**</code> 가 <code>permitAll</code> 이라 URL 단위 인가가 없다는 지적이었고, 등급은 HIGH, 기한은 "단기 1주 이내"였어요.</p>
+
+<p>8월 18일 점검 페이지에는 이 서버가 완료로 체크돼 있었는데, 설정은 그대로였습니다. 제가 그 줄을 실제로 연 날은 9월 11일이에요. <b>1주 안에 끝내라던 항목을 한 달 넘겨서 열었습니다.</b> <span class="obsv-mark">몰라서 열려 있었던 게 아니라, 적혀 있는데도 열려 있었어요.</span></p>
+
+<p>열어 본 설정은 짧지 않았습니다. 224줄짜리 파일이었고, 인가 블록에 <code>permitAll</code> 이 스무 줄 넘게 열거돼 있었어요. 그리고 <b>맨 끝에 <code>/api/**</code> 를 통째로 통과시키는 줄이 하나 더 있었습니다.</b> 어드민 API도 엑셀 내려받기도 전부 그 마지막 줄 아래였어요.</p>
+
+<p>여기서 할 수 있는 선택은 두 가지로 보였어요. 지금 바로 전부 닫거나, 아니면 다른 순서를 찾거나. 저는 두 번째를 골랐습니다. <span class="obsv-mark">무엇이 들어오고 있는지 모르는 상태에서 기본값을 뒤집으면, 무엇이 끊기는지도 모르니까요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 다룰 것</div>
+  &bull; 보고서에 적혀 있던 항목이 왜 한 달을 넘겼나?<br>
+  &bull; 길게 적어 둔 허용 목록이 왜 전부 무의미했나?<br>
+  &bull; 전부가 아니라 관리자성 경로부터 닫는다는 건 무슨 뜻인가?<br>
+  &bull; 요청을 막지 않는 필터를 왜 같은 날에 같이 넣었나?
+</div>
+
+<h2>1. 맨 끝 한 줄이 앞을 다 덮었다</h2>
+
+<p>그 서버의 인가 블록은 요지가 이랬습니다.</p>
+
+<div class="obsv-code">// 점검하기 전의 인가 블록 (요지, 224줄 파일의 일부)
+.authorizeHttpRequests(reg -&gt; reg
+    .requestMatchers(정적 리소스).permitAll()
+    .requestMatchers("/api/v1/batch/**").permitAll()
+    .requestMatchers("/api/v1/{연동}/**").permitAll()           // 이 경로는 인증 없이 접근 가능
+    .requestMatchers("/api/v1/{연동}/v3/00660/** ").permitAll()
+    ... permitAll 이 스무 줄 넘게 이어짐 ...
+    .requestMatchers("/api/v1/payment/**").authenticated()
+    .requestMatchers("/api/**", 문서 화면).permitAll()
+)</div>
+
+<p>→ 앞쪽에 쌓인 스무 줄 넘는 <code>permitAll</code> 은 전부 품이 들어간 흔적이에요. 경로가 필요할 때마다 한 줄씩 늘었습니다. 그런데 <b>맨 끝 줄이 <code>/api/**</code> 를 통째로 통과시키니, 그 위에 무엇을 적었든 결과는 같았어요.</b> 인증을 요구하는 줄은 결제 경로 하나뿐이었습니다.</p>
+
+<p>"얇은 중계 서버니까 설정도 짧겠지"라던 제 짐작이 반대였던 셈이에요. 설정은 길었고, 길어진 이유는 기능이 붙을 때마다 줄을 더했기 때문입니다. 아무도 맨 끝 줄을 보지 않았을 뿐이었어요.</p>
+
+<p>누구인지 확인하는 단계가 인증이고, 그 사람이 이 일을 해도 되는지 정하는 단계가 인가입니다. 인증을 건너뛰면 인가는 판정할 재료 자체가 없어요. 이 서버가 그 상태였습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: permitAll</div>
+  Spring Security 에서 "이 경로는 인가 판정을 묻지 말고 통과시켜라"고 적는 규칙이에요. 토큰이 실려 오면 읽기는 하지만, 없다고 막지는 않습니다. 상태 점검 경로처럼 <b>누구나 봐도 되는 자리</b>에 쓰고, 범위를 넓게 잡으면 그 안이 전부 같은 판정을 받아요.
+</div>
+
+<p>의도한 공개였는지부터 구분해야 했어요. 제휴 연동 서버는 상대 쪽 서버가 호출하는 구조라, 일부 경로를 일부러 열어 두기도 하거든요. 앞쪽 목록은 그렇게 쌓인 자리라 하나하나 설명이 됐습니다. <b>설명이 안 되는 건 맨 끝 줄이었어요.</b> 그 줄이 왜 거기 있는지 적어 둔 기록은 찾지 못했습니다.</p>
+
+<p>의도한 공개라면 "왜 열었는가"를 검토하면 되고, 남은 기본값이라면 검토할 근거조차 없어요. 어느 쪽이든 그날 할 일은 같았습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arrA1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="30" font-size="21" fill="#4a7fb5">요청 하나가 통과하는 자리</text>
+
+<path d="M26 58 C 80 55, 140 61, 196 58 C 199 76, 198 94, 196 112 C 140 115, 80 109, 27 112 C 23 94, 25 76, 26 58 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+<text x="40" y="92" font-size="18" fill="#3d3a34">📊 상세 조회 요청</text>
+
+<path d="M26 134 C 80 131, 140 137, 196 134 C 199 152, 198 170, 196 188 C 140 191, 80 185, 27 188 C 23 170, 25 152, 26 134 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+<text x="40" y="168" font-size="18" fill="#3d3a34">🛠️ 어드민 API 요청</text>
+
+<path d="M26 210 C 80 207, 140 213, 196 210 C 199 228, 198 246, 196 264 C 140 267, 80 261, 27 264 C 23 246, 25 228, 26 210 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+<text x="40" y="244" font-size="18" fill="#3d3a34">📥 엑셀 내려받기 요청</text>
+
+<path d="M202 85 C 225 83, 245 84, 262 85" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA1)"/>
+<path d="M202 161 C 225 159, 245 160, 262 161" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA1)"/>
+<path d="M202 237 C 225 235, 245 236, 262 237" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA1)"/>
+
+<path d="M272 48 C 330 45, 400 51, 450 48 C 453 120, 452 200, 450 276 C 400 279, 330 273, 273 276 C 269 200, 271 120, 272 48 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+<text x="288" y="82" font-size="22" fill="#b3502f">🔓 맨 끝 한 줄</text>
+<text x="288" y="116" font-size="14" fill="#3d3a34" font-family="Menlo, monospace">/api/**  permitAll</text>
+<text x="288" y="152" font-size="16" fill="#3d3a34">토큰을 보지 않는다</text>
+<text x="288" y="176" font-size="16" fill="#3d3a34">누구인지 묻지 않는다</text>
+<text x="288" y="200" font-size="16" fill="#3d3a34">경로를 가리지 않는다</text>
+<text x="288" y="240" font-size="15" fill="#b3502f">앞의 스무 줄을</text>
+<text x="288" y="262" font-size="15" fill="#b3502f">전부 덮는다</text>
+
+<path d="M454 162 C 476 160, 496 161, 514 162" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA1)"/>
+
+<path d="M524 120 C 570 117, 630 123, 674 120 C 677 150, 676 180, 674 208 C 630 211, 570 205, 525 208 C 521 180, 523 150, 524 120 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+<text x="540" y="152" font-size="19" fill="#3d3a34">🎯 컨트롤러</text>
+<text x="540" y="180" font-size="14" fill="#8a8272">요청이 그대로 닿는다</text>
+
+<path d="M24 300 C 240 297, 460 303, 676 299" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="332" font-size="20" fill="#b3502f">= 세 요청이 전부 같은 판정을 받습니다. 다른 것은 경로뿐이에요</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 넓게 잡은 공개 범위 아래에서는 경로가 달라도 판정이 같다</div>
+
+<h2>2. 전부 닫으면 무엇이 끊기는지 모른다</h2>
+
+<p>그 줄을 지우는 건 한 번이면 끝나는 작업이었고, 구멍도 그 자리에서 사라졌을 거예요. 그런데 지우면 무슨 일이 생기는지 저는 답할 수 없었습니다. 제휴 쪽 서버가 어떤 경로를 부르는지, 사내 도구가 붙어 있는지, 예전에 만든 배치가 아직 돌고 있는지, 전부 추측이었거든요.</p>
+
+<p>뒤집는다는 건 허용한 것만 통과시키고 나머지를 전부 막는 쪽으로 가는 일이에요. 시리즈 제목이 가리키는 전환이 이건데, 어려운 점은 기술이 아니라 그다음입니다. 바꾸는 순간 <b>허용 목록에 적지 않은 호출이 전부 실패해요.</b> 목록이 정확하려면 기록이 있어야 하는데, 인증을 하지 않는 서버는 "누가 불렀는지"를 남길 재료가 없습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 전부 닫기 버튼을 누르고 싶어진다</div>
+  &bull; "지금 당장 악용되고 있는가"와 "구조가 잘못되어 있는가"는 다른 질문이에요. 뒤쪽이라면 순서를 설계할 시간이 있습니다<br>
+  &bull; 저는 <b>급한 쪽부터 좁히고, 나머지는 근거를 모은 뒤에 바꾸기</b>로 나눴어요. 그 판단이 나머지 네 편의 전제가 됩니다
+</div>
+
+<h2>3. 관리자성 경로부터 URL 단위로 닫았다</h2>
+
+<p>그래서 범위를 나눴어요. 기준은 "열려 있을 때 피해가 큰 쪽"입니다. 조회 하나와 어드민 API는 같은 무게가 아니니까요.</p>
+
+<p>닫기로 한 쪽은 관리자성 경로 열 묶음과 API 문서 화면이었습니다. 공통점은 <b>밖에서 불릴 일이 없다</b>는 것이었어요. 제휴 연동이라는 이 서버의 목적에 비춰 보면 운영자나 내부 서버가 쓰는 자리거든요.</p>
+
+<div class="obsv-code">URL 단위 인가를 건 경로 (관리자성)
+
+  /api/v1/admin/**                어드민
+  /api/v1/excel/**                엑셀 내려받기
+  /api/v1/assignment/**           배정
+  /api/v1/admin-proxy-receipt/**  대행 접수
+  /api/v1/{연동}-admin/**         제휴사 어드민
+  /api/v1/proxy-person-detail/**  대행인 상세
+  /api/v1/hospital-visit-work/**  방문 업무
+  /api/v1/user-detail/**          사용자 상세
+  /api/v1/{사내}/payment/**       결제
+  /api/v1/document-checklist/test-auto-create/**
+  /swagger-ui/** 등               API 문서 화면</div>
+
+<p>→ 중괄호는 실제 이름을 가린 자리예요. 마지막 줄만 <code>/api/</code> 밖인데, 맨 끝 그 한 줄과 별개로 열려 있던 자리라 같이 묶었습니다. 전부가 아니라 <b>이 목록만</b> 골랐어요.</p>
+
+<p>판정은 전용 <code>AuthorizationManager</code> 에 맡겼어요. "이 요청을 통과시킬지"를 정하는 자리인데, 설정에 조건을 늘어놓는 대신 판정 코드를 따로 두면 역할·헤더·경로를 한곳에서 같이 볼 수 있습니다.</p>
+
+<div class="obsv-code">AdminApiAuthorizationManager.check(인증정보, 요청)
+
+  관리자 권한을 가진 사용자인가           -&gt; 통과
+  요청 헤더의 서버 간 API 키가 맞는가      -&gt; 통과
+  요청 헤더의 제휴사 어드민 키가 맞는가    -&gt; 통과
+  셋 다 아니다                            -&gt; 거부</div>
+
+<p>→ 셋 중 하나만 있으면 통과예요. 부르는 주체가 한 종류가 아니거든요. 운영자는 관리자 권한으로, 내부 서버는 사람 계정이 없으니 서버용 키로, 제휴사 쪽 운영 도구는 또 별도 키로 들어옵니다. 통일하는 쪽이 깔끔하지만 그러려면 호출하는 쪽을 전부 고쳐야 해요. 이번 목표는 통일이 아니라 <span class="obsv-mark">아무 열쇠 없이 들어오던 길을 먼저 막는 것</span>이었습니다.</p>
+
+<p>거부할 때 돌려주는 응답도 나눠 뒀습니다. <b>인증 정보가 아예 없으면 401, 로그인은 했지만 관리자가 아니면 403</b>이에요. 막힌 쪽에서 "열쇠가 없는 건지, 열쇠가 안 맞는 건지"를 구분할 수 있어야 하거든요.</p>
+
+<p>그런데 이 목록 안에서도 전부 닫지는 못했어요. 사내 다른 서버가 토큰 없이 부르던 경로 네 개는 인증 없이 그대로 뒀습니다. 발신 쪽을 고치기 전에는 막는 순간 그쪽이 끊기니까요.</p>
+
+<p>그 예외 목록도 한 번에 맞추진 못했어요. 배포 당일 알림톡 경로에서 401 이 나기 시작했는데, 사내 API 서버가 토큰 없이 부르던 자리가 빠져 있었습니다. 같은 날 예외로 추가해 복구했어요. 네 개라는 숫자는 그 한 건을 더한 결과입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arrA2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="30" font-size="21" fill="#4a7fb5">관리자성 경로에 붙인 판정</text>
+
+<path d="M26 52 C 70 49, 120 55, 166 52 C 169 74, 168 96, 166 118 C 120 121, 70 115, 27 118 C 23 96, 25 74, 26 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="40" y="84" font-size="19" fill="#3d3a34">📨 들어온 요청</text>
+<text x="40" y="106" font-size="13" fill="#8a8272">헤더와 권한을 들고</text>
+
+<path d="M172 85 C 190 83, 208 84, 224 85" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA2)"/>
+
+<path d="M234 44 C 320 41, 430 47, 518 44 C 521 110, 520 180, 518 250 C 430 253, 320 247, 235 250 C 231 180, 233 110, 234 44 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+<text x="250" y="76" font-size="22" fill="#3d6591">🔑 전용 인가 판정기</text>
+<text x="250" y="100" font-size="14" fill="#8a8272">셋 중 하나라도 참이면 통과</text>
+
+<path d="M250 114 C 320 112, 430 116, 502 114 C 505 126, 504 140, 502 152 C 430 154, 320 150, 251 152 C 247 140, 249 126, 250 114 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+<text x="262" y="142" font-size="17" fill="#c07f18">① 관리자 권한을 가진 사용자</text>
+
+<path d="M250 162 C 320 160, 430 164, 502 162 C 505 174, 504 188, 502 200 C 430 202, 320 198, 251 200 C 247 188, 249 174, 250 162 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+<text x="262" y="190" font-size="17" fill="#c07f18">② 서버 간 API 키</text>
+
+<path d="M250 210 C 320 208, 430 212, 502 210 C 505 222, 504 236, 502 248 C 430 250, 320 246, 251 248 C 247 236, 249 222, 250 210 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+<text x="262" y="238" font-size="17" fill="#c07f18">③ 제휴사 어드민 키</text>
+
+<path d="M522 140 C 528 134, 532 132, 538 130" fill="none" stroke="#5a9e6f" stroke-width="2.2" marker-end="url(#arrA2)"/>
+<path d="M522 160 C 528 172, 532 182, 538 186" fill="none" stroke="#e5533c" stroke-width="2.2" marker-end="url(#arrA2)"/>
+
+<path d="M542 100 C 580 97, 640 103, 674 100 C 677 120, 676 140, 674 160 C 640 163, 580 157, 543 160 C 539 140, 541 120, 542 100 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="556" y="128" font-size="19" fill="#2e6b41">✅ 통과</text>
+<text x="556" y="150" font-size="13" fill="#8a8272">컨트롤러로</text>
+
+<path d="M542 186 C 580 183, 640 189, 674 186 C 677 206, 676 226, 674 246 C 640 249, 580 243, 543 246 C 539 226, 541 206, 542 186 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="556" y="214" font-size="19" fill="#b3502f">⛔ 거부</text>
+<text x="556" y="236" font-size="13" fill="#b3502f">익명 401 · 비관리자 403</text>
+
+<path d="M24 286 C 240 283, 460 289, 676 285" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="316" font-size="19" fill="#3d6591">대상은 어드민 · 내려받기 · 배정 · 상세 · 결제 등 열 묶음과 API 문서</text>
+<text x="24" y="344" font-size="16" fill="#8a8272">나머지 경로는 이번에 건드리지 않았습니다</text>
+<text x="24" y="374" font-size="19" fill="#b3502f">= 기본값은 아직 허용이고, 관리자성 경로만 거부가 기본이 됐어요</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 전부가 아니라 관리자성 경로에만 먼저 자물쇠를 달았다</div>
+
+<h2>4. 같은 날, "세는 장치"를 따로 올렸다</h2>
+
+<p>여기까지가 닫은 쪽이에요. 그런데 같은 날 커밋을 하나 더 올렸습니다. 닫는 변경과는 별개 커밋이었지만 같은 날 함께 나갔어요. 인증 없이 들어오는 요청에 전용 태그를 붙여 로그로 남기는 서블릿 필터입니다. 컨트롤러에 닿기 전에 끼어드는 자리라 요청을 막을 수도 있는데, 이건 아무것도 막지 않아요. 인증 정보가 비어 있으면 태그 하나를 더 붙이고 그대로 통과시킵니다.</p>
+
+<div class="obsv-code">인증 없이 들어온 요청에 붙이는 태그
+
+  [ANON-API] method=GET path=/api/v1/{상세}/... ip=... ua=... origin=...
+
+-&gt; 공개로 적어 둔 목록에 없는 /api/** 익명 요청만 이 태그를 받는다
+   요청은 막지 않는다. 응답도 바뀌지 않는다</div>
+
+<p>→ 태그가 붙은 줄만 세면 "인증 없는 호출이 어느 경로에 얼마나 있는지"가 나와요. 전환 전에 필요한 바로 그 숫자입니다.</p>
+
+<p>이걸 같은 날에 올린 이유가 있어요. 뒤로 미루면 "나중에"가 되기 쉽고, 그러면 전환은 근거 없이 하거나 몇 주를 다시 기다려야 합니다. <b>닫는 변경과 세는 변경은 짝</b>이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 관찰 필터를 넣을 때</div>
+  &bull; <b>막지 않는다는 걸 코드에서 분명히 하세요.</b> 조건 하나 잘못 들어가 요청을 떨어뜨리면, 세려고 넣은 장치가 장애를 만듭니다<br>
+  &bull; <b>태그는 검색으로 한 번에 모이는 고유한 말로 정하세요.</b> 흔한 단어를 쓰면 다른 로그와 섞여 세는 일 자체가 어려워져요<br>
+  &bull; <b>경로는 남기되 본문과 헤더 값은 남기지 마세요.</b> 인증 없는 요청이라도 본문에는 개인정보가 있을 수 있습니다
+</div>
+
+<p>마지막 줄을 적으면서 뒤가 켕겼어요. 같은 감사 보고서에 이 서버의 인증 필터가 <b>JWT 토큰 전문을 INFO 레벨로 그대로 찍고 있다</b>는 지적이 나란히 있었거든요. 2024년 3월에 들어간 한 줄이 2년 넘게 돌았습니다. <span class="obsv-mark">"헤더 값은 남기지 마세요"를 팁으로 적는 서버가 헤더 값을 통째로 남기고 있었어요.</span></p>
+
+<p>이쪽은 보고서를 받고 이틀 만에 지웠어요. <code>permitAll</code> 은 한 달을 넘겼고요. 같은 보고서의 두 항목인데 속도가 이렇게 갈린 이유는 단순합니다. 한 줄 지우면 끝나는 일과, 지우는 순간 무엇이 끊길지 모르는 일의 차이였어요.</p>
+
+<h2>5. 닫기 전에 세는 순서</h2>
+
+<p>먼저 닫는 순서와 먼저 세는 순서를 나란히 놓으면 차이가 분명해져요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 370" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arrA3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="30" font-size="21" fill="#4a7fb5">두 가지 순서</text>
+
+<path d="M26 48 C 240 45, 460 51, 674 48 C 677 90, 676 130, 674 170 C 460 173, 240 167, 27 170 C 23 130, 25 90, 26 48 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="44" y="80" font-size="22" fill="#b3502f">🚪 먼저 닫는 순서</text>
+
+<path d="M44 96 C 100 94, 150 98, 198 96 C 201 112, 200 128, 198 144 C 150 146, 100 142, 45 144 C 41 128, 43 112, 44 96 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="56" y="118" font-size="16" fill="#3d3a34">근거 없이 전환</text>
+<text x="56" y="136" font-size="13" fill="#8a8272">기본값을 한 번에</text>
+<path d="M204 120 C 216 118, 228 119, 240 120" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA3)"/>
+
+<path d="M246 96 C 300 94, 350 98, 400 96 C 403 112, 402 128, 400 144 C 350 146, 300 142, 247 144 C 243 128, 245 112, 246 96 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="258" y="118" font-size="16" fill="#3d3a34">어딘가 끊긴다</text>
+<text x="258" y="136" font-size="13" fill="#8a8272">호출하던 쪽에서 실패</text>
+<path d="M406 120 C 418 118, 430 119, 442 120" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA3)"/>
+
+<path d="M448 96 C 520 94, 600 98, 658 96 C 661 112, 660 128, 658 144 C 600 146, 520 142, 449 144 C 445 128, 447 112, 448 96 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+<text x="460" y="118" font-size="16" fill="#b3502f">무엇이 끊겼는지 모른다</text>
+<text x="460" y="136" font-size="13" fill="#b3502f">그 전의 기록이 없다</text>
+
+<path d="M26 196 C 240 193, 460 199, 674 196 C 677 238, 676 278, 674 318 C 460 321, 240 315, 27 318 C 23 278, 25 238, 26 196 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="44" y="228" font-size="22" fill="#2e6b41">🔎 먼저 세는 순서</text>
+
+<path d="M44 244 C 100 242, 150 246, 198 244 C 201 260, 200 276, 198 292 C 150 294, 100 290, 45 292 C 41 276, 43 260, 44 244 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="56" y="266" font-size="16" fill="#3d3a34">관찰 필터를 넣는다</text>
+<text x="56" y="284" font-size="13" fill="#8a8272">익명 호출에 태그</text>
+<path d="M204 268 C 216 266, 228 267, 240 268" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA3)"/>
+
+<path d="M246 244 C 300 242, 350 246, 400 244 C 403 260, 402 276, 400 292 C 350 294, 300 290, 247 292 C 243 276, 245 260, 246 244 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="258" y="266" font-size="16" fill="#3d3a34">기록이 쌓인다</text>
+<text x="258" y="284" font-size="13" fill="#8a8272">경로 · 횟수 · 시각</text>
+<path d="M406 268 C 418 266, 430 267, 442 268" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrA3)"/>
+
+<path d="M448 244 C 520 242, 600 246, 658 244 C 661 260, 660 276, 658 292 C 600 294, 520 290, 449 292 C 445 276, 447 260, 448 244 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2"/>
+<text x="460" y="266" font-size="16" fill="#2e6b41">근거를 들고 전환한다</text>
+<text x="460" y="284" font-size="13" fill="#2e6b41">무엇이 끊길지 안다</text>
+
+<text x="24" y="350" font-size="19" fill="#b3502f">= 관찰 필터는 안전 장치가 아니라, 뒤에 올 전환의 근거예요</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 같은 전환이라도 기록이 있느냐에 따라 결과가 달라진다</div>
+
+<p>이 순서를 고른 대가도 적어 둘게요. 관리자성 경로를 뺀 나머지는 <b>이 작업이 끝난 뒤에도 여전히 열려 있었습니다.</b> 피해가 큰 경로는 바로 닫았으니 최악은 줄였고, 남은 범위는 몇 주를 더 세어도 되는 성격이었어요. <span class="obsv-mark">닫는 일을 미룬 것이 아니라, 닫을 근거를 먼저 만들기로 한 것입니다.</span></p>
+
+<h2>6. 범인을 찾다가 질문이 틀렸다는 걸 알았다</h2>
+
+<p>조치를 넣고 나서 저장소 이력을 뒤졌어요. 누가 언제 넣었는지 알면 재발도 막을 수 있을 것 같았거든요. 그럴듯한 커밋 둘이 금방 나왔습니다.</p>
+
+<div class="obsv-code">범인으로 지목했던 두 커밋
+
+  2024-04-23  "시스템 토큰 적용 완"
+              + "/api/v1/{연동}/v3/00660/** "  를 permitAll 에 추가 (끝에 공백)
+
+  2024-06-27  "잘못된 security config matcher 수정"
+              - /api/v1/{연동}/**/hometax/info
+              + /api/v1/{연동}/**</div>
+
+<p>→ 두 번째가 특히 눈에 띄었어요. 제목은 <b>고치는 일</b>인데 실제 변경은 좁은 경로 하나를 그 위 단계 전체로 <b>넓히는</b> 일이었습니다. 고치는 줄 알고 넓힌 거예요.</p>
+
+<p>그런데 두 커밋 다 노출을 바꾸지 않았습니다. <b>맨 끝의 포괄 허용이 그보다 먼저 있었거든요.</b> 두 커밋이 추가한 경로는 어차피 그 줄 아래에 있었어요. 열려 있던 문에 이름표를 하나 더 붙인 셈입니다.</p>
+
+<p>그 줄 자체는 저장소 첫 커밋(2023-11-29)까지 올라가요. 다만 그때는 로컬용 설정 뭉치 안에만 있었고, 운영용 뭉치는 같은 자리를 인증 필수로 두고 있었습니다. 2024년 3월에 환경별 뭉치들이 주석 처리되고 하나만 남았는데, <b>남은 하나가 로컬용이었어요.</b></p>
+
+<p>덤도 하나 나왔습니다. 2024-04-23 이 추가한 패턴은 <b>끝에 공백이 하나 붙어</b> 있었어요. 경로에 공백이 들어갈 일은 없으니 그 줄은 2년 동안 한 건도 매칭하지 않았습니다. 아무도 몰랐던 이유도 같아요. 어차피 맨 끝 줄이 통과시키고 있었으니까요. <span class="obsv-mark">죽은 설정은 효과가 없을 때가 아니라, 효과가 없어도 티가 안 날 때 오래 삽니다.</span></p>
+
+<p>그래서 범인 찾기는 틀린 질문이었어요. 누가 열었느냐가 아니라 <b>이 서버의 기본값이 무엇이냐</b>가 질문이었습니다. 기본값이 허용이면 그 앞에 쌓은 줄들은 전부 장식이고, 범인을 찾아 고쳐 봐야 다음 사람이 같은 자리에 또 한 줄을 더할 뿐이에요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>감사 보고서에 HIGH 로 적혀 있던 항목이었어요.</b> 점검 페이지에는 완료로 체크돼 있었지만 설정은 그대로였고, 1주 안에 처리하라던 일을 한 달 넘겨서 열었습니다. 224줄짜리 설정에서 허용 목록은 길게 쌓여 있었고, 맨 끝 한 줄이 그 전부를 덮고 있었어요.<br><br>
+  한 번에 전부 닫지는 않았습니다. 관리자성 경로 열 묶음에 전용 인가 판정기를 붙여 익명이면 401, 관리자가 아니면 403 을 주도록 했고, 같은 날 익명 호출을 세는 필터를 따로 올렸어요. 예외 네 개와 그날 터진 401 회귀도 적어 뒀습니다.<br><br>
+  범인이랍시고 2024년 커밋 둘을 지목했지만 둘 다 노출을 바꾸지 않았어요. 질문은 누가 열었느냐가 아니라 기본값이 무엇이냐였습니다.
+</div>
+
+</div>

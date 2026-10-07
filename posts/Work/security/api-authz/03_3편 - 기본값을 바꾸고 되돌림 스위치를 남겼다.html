@@ -1,0 +1,316 @@
+<!-- ============================================================
+  기본값을 거부로 3편: 기본값을 바꾸고 되돌림 스위치를 남겼다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: 기본 거부, Spring Security, 인증 기본값, 되돌림 스위치, API 키 헤더 -->
+<!-- lead: /api/** 가 기본 허용이라 새 경로를 만들면서 인증을 빠뜨리면 열린 채로 배포됐어요. 무엇이 들어오는지 먼저 센 뒤에 기본값을 거부로 뒤집고, 설정값 하나로 되돌릴 수 있게 만든 과정을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔒 기본값을 거부로 · 3편</div>
+  1편. 전체가 열려 있었다<br>
+  2편. 8주치 82,918건을 전부 셌다<br>
+  <b>3편. 기본값을 바꾸고 되돌림 스위치를 남겼다</b> &larr; 지금 이 글<br>
+  4편. 지우려던 분기에 주 사용자가 있었다<br>
+  5편. 안전 조치가 장애를 만들었다
+</div>
+
+<p>보안 설정 파일을 다시 열었습니다. 보호할 경로들이 위에 줄줄이 적혀 있고, 그 아래에 <code>/api/**</code> 를 통과시키는 줄이 하나 있었어요. 규칙은 위에서부터 읽히니까, 위에 걸리지 않은 요청은 전부 그 줄에서 통과됩니다. 읽는 순서로는 "막을 것만 골라 막고, 나머지는 열어 둔다" 였어요.</p>
+
+<p>이 구조에서 새 경로를 하나 추가하면 어떻게 될까요. <b>아무것도 적지 않아도 잘 동작합니다.</b> 테스트도 통과하고, 호출도 되고, 리뷰에서도 걸릴 이유가 없어요. 인증을 한 번도 떠올리지 않아도 열린 채로 배포까지 갑니다.</p>
+
+<p>1편에서 넣어 둔 관찰 필터가 25일 동안 기록을 쌓아 줬습니다. 그 기록을 집계해 <span class="obsv-mark">공개 목록 밖으로 들어온 익명 요청이 0건</span>인 걸 확인한 뒤에 기본값 자체를 뒤집었어요. 그리고 되돌릴 스위치를 같이 넣었습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 다룰 것</div>
+  &bull; "인증을 빠뜨렸다"는 사실은 왜 아무 데도 드러나지 않나?<br>
+  &bull; 기본값을 뒤집기 전에 무엇을 세야 했나?<br>
+  &bull; 기본 거부로 바꾸면 같은 실수가 어디로 떨어지나?<br>
+  &bull; 되돌림 스위치는 무엇을 되돌리고, 무엇은 되돌리지 못하나?<br>
+  &bull; 호출하는 쪽의 기본값도 바꿀 수 있나?
+</div>
+
+<h2>1. 빠뜨렸다는 사실이 아무 데도 남지 않았어요</h2>
+
+<p>기본 허용의 진짜 문제는 "열려 있는 경로가 있다" 가 아니에요. <b>빠뜨렸다는 사실이 어디에도 기록되지 않는다</b> 는 겁니다.</p>
+
+<p>경로를 하나 추가하면서, 그 경로가 인증을 요구하는지는 아무도 묻지 않아요. 묻지 않아도 되니까요. 그래서 이건 사람이 꼼꼼하지 못해서 생기는 일이 아니라, <span class="obsv-mark">구조가 질문을 만들어 내지 않아서 생기는 일</span>이었어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 익명 요청 (anonymous request)</div>
+  로그인 정보나 토큰을 하나도 달고 오지 않은 요청이에요. 기본 허용 설정에서는 이런 요청도 그냥 통과하기 때문에, 응답만 봐서는 정상 호출과 구분되지 않습니다.
+</div>
+
+<p>1편에서 본 것도 같은 모양이었어요. <code>/api/**</code> 아래가 통째로 열려 있는데, 누가 판단해서 연 건지 기본값이 남은 건지 <b>아무도 설명하지 못했습니다.</b> 설명할 기록이 애초에 만들어지지 않으니까요. 설정을 더 꼼꼼히 읽는 것으로는 줄지 않는 종류예요. 같은 실수가 닫히는 쪽으로 떨어지게 만들어야 했습니다.</p>
+
+<h2>2. 뒤집기 전에 먼저 셌어요</h2>
+
+<p>기본값을 거부로 바꾸는 작업 자체는 설정 몇 줄이에요. 어려운 건 <b>지금 들어오는 호출 중 무엇이 끊기는지 모른다</b> 는 점입니다.</p>
+
+<p>공개로 열려 있던 경로 중에는 실제로 공개여야 하는 것도 섞여 있습니다. 상태 점검 호출이나 토큰을 받기 전에 부르는 경로 같은 것들이요. 목록을 눈으로 만들어 뒤집으면, 빠뜨린 경로는 그 순간 끊깁니다.</p>
+
+<p>그래서 1편에서 관찰 필터를 먼저 넣었어요. 요청을 막지 않고 통과시키면서, 인증 정보 없이 들어왔다는 사실만 기록하는 장치입니다. 차단하지 않으니 동작은 그대로인데, "바꾸면 무엇이 끊기는가" 는 미리 알 수 있어요.</p>
+
+<p>세는 태도는 2편과 같았어요. 표본이 아니라 전부를 봅니다. 다만 <b>출처도 기간도 다릅니다.</b> 2편이 센 것은 리버스 프록시의 접근 로그라 보관본까지 꺼내 8주를 덮었어요. 여기서 세는 건 애플리케이션에 넣은 관찰 필터의 태그라, 필터가 들어간 날부터만 쌓입니다. 필터를 넣고 기본값을 뒤집기까지가 <span class="obsv-mark">25일, 약 3주 반</span>, 그게 제가 볼 수 있었던 전부였어요.</p>
+
+<div class="obsv-code">25일치 집계 · 관찰 필터 태그 기준
+(필터를 넣은 날 ~ 기본값을 뒤집은 날. 2편의 8주와는 출처가 다릅니다)
+
+  공개 목록 안으로 들어온 익명 요청 .... 태그가 붙은 전량
+  공개 목록 밖으로 들어온 익명 요청 ....            0 건
+
+-&gt; 이 25일 안에서는, 기본값을 거부로 바꿔도 끊기는 호출이 없다</div>
+
+<p>→ 익명 호출이 모두 "공개여도 되는 경로" 안에서만 들어온다는 뜻이에요. 목록 밖에서 한 건이라도 있었다면, 그건 전환하는 순간 끊길 호출이었습니다. 다만 이 0건은 <b>25일치 0건</b>이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 적어 놓고 제가 못 지킨 기준</div>
+  이 글 끝에 저는 "관찰 기간은 업무 주기를 덮어야 한다" 고 적어 뒀어요. 그런데 실제 관찰 창은 25일, <b>한 달도 안 됩니다.</b> 월 1회 배치가 있었다면 이 창 밖이었을 거예요<br>
+  25일이 충분해서 전환한 게 아니에요. <b>되돌리는 비용을 먼저 낮춰 놓고</b> 모자란 기간을 감수한 겁니다. 되돌림 스위치는 덤이 아니라, 이 짧은 창으로 전환하려면 먼저 갖춰야 했던 조건이었어요
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 262" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr04b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="32" font-size="21" fill="#4a7fb5">기본값을 뒤집기 전에 한 일</text>
+
+<path d="M24 56 C 70 53, 125 59, 172 56 C 175 86, 174 120, 172 150 C 125 153, 70 147, 25 150 C 21 120, 23 86, 24 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="38" y="86" font-size="20" fill="#3d3a34">📡 관찰 필터</text>
+<text x="38" y="112" font-size="15" fill="#3d3a34">익명 호출을 기록만</text>
+<text x="38" y="134" font-size="15" fill="#8a8272">막지는 않아요</text>
+
+<path d="M174 102 C 180 100, 186 104, 192 102" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr04b)"/>
+
+<path d="M196 56 C 242 53, 297 59, 344 56 C 347 86, 346 120, 344 150 C 297 153, 242 147, 197 150 C 193 120, 195 86, 196 56 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+<text x="210" y="86" font-size="20" fill="#3d3a34">🗂️ 25일치 기록</text>
+<text x="210" y="112" font-size="15" fill="#3d3a34">어느 경로로</text>
+<text x="210" y="134" font-size="15" fill="#8a8272">들어왔는지</text>
+
+<path d="M346 102 C 352 100, 358 104, 364 102" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr04b)"/>
+
+<path d="M368 56 C 414 53, 469 59, 516 56 C 519 86, 518 120, 516 150 C 469 153, 414 147, 369 150 C 365 120, 367 86, 368 56 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+<text x="382" y="86" font-size="20" fill="#3d3a34">🔢 집계</text>
+<text x="382" y="112" font-size="15" fill="#3d3a34">공개 목록 밖에서</text>
+<text x="382" y="136" font-size="19" fill="#b3502f">익명 요청 0 건</text>
+
+<path d="M518 102 C 524 100, 530 104, 536 102" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr04b)"/>
+
+<path d="M540 56 C 580 53, 636 59, 676 56 C 679 86, 678 120, 676 150 C 636 153, 580 147, 541 150 C 537 120, 539 86, 540 56 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="554" y="86" font-size="20" fill="#2e6b41">🔁 전환</text>
+<text x="554" y="112" font-size="15" fill="#3d3a34">기본값을</text>
+<text x="554" y="134" font-size="15" fill="#2e6b41">거부로</text>
+
+<path d="M24 186 C 240 183, 460 189, 676 185" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="216" font-size="20" fill="#b3502f">0 건을 확인한 뒤에 바꿨어요</text>
+<text x="24" y="242" font-size="15" fill="#8a8272">세어 보지 않았다면 무엇이 끊길지 모르는 채로 뒤집는 일이 됩니다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 관찰이 먼저이고 전환은 그 결과다</div>
+
+<h2>3. 기본값을 거부로 뒤집었어요</h2>
+
+<p>근거가 생겼으니 바꿨습니다. 바뀐 건 두 줄의 역할이에요.</p>
+
+<div class="obsv-code">전환 전   기본 허용
+  보호할 경로 목록      authenticated    &lt;- 따로 적는다 (위)
+  "/api/**"            permitAll        &lt;- 걸러지지 않은 나머지
+
+  새 경로를 추가하고 아무것도 적지 않으면   -&gt;   permitAll
+
+
+전환 후   기본 거부
+  공개할 경로 목록      permitAll        &lt;- 따로 적는다 (위)
+  anyRequest()         authenticated    &lt;- 걸러지지 않은 나머지
+
+  새 경로를 추가하고 아무것도 적지 않으면   -&gt;   authenticated</div>
+
+<p>→ 목록에 적는 대상이 "막을 것" 에서 "열 것" 으로 바뀌었어요. 길이는 비슷한데 의미가 반대입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: anyRequest().authenticated() 와 permitAll</div>
+  Spring Security 의 경로별 접근 규칙이에요. 규칙은 위에서부터 읽히고, 먼저 걸리는 규칙이 이깁니다. <code>permitAll</code> 은 "이 경로는 인증 없이 통과" 고, 맨 마지막의 <code>anyRequest().authenticated()</code> 는 "위에서 아무 규칙에도 걸리지 않은 나머지 전부는 인증이 필요하다" 예요. 즉 마지막 한 줄이 기본값 역할을 합니다.
+</div>
+
+<p>이제 새 경로를 만들면서 인증을 생각하지 않으면 호출이 401로 막힙니다. 만든 사람이 바로 알게 돼요. <span class="obsv-mark">같은 실수인데 떨어지는 곳이 반대가 된 겁니다.</span></p>
+
+<p>다만 <b>그 경로가 공개 목록에 걸리지 않았을 때만</b> 그렇습니다. 전환 뒤에도 공개 목록은 위에 남아 있고, 넓은 패턴으로 적힌 줄이 덮는 범위 안에서는 기본 허용이 살아 있어요. 새 경로가 하필 그 안으로 들어가면 401은 뜨지 않습니다. 저희도 예외로 남긴 공개 경로가 네 개였고, 일부는 검토 끝에 <b>지우지 않기로</b> 정했어요.</p>
+
+<p>그러니 기본값을 뒤집어도 <span class="obsv-mark">공개 목록은 여전히 사람이 읽고 줄여야 하는 목록</span>입니다. 바뀐 건 "안 적으면 열린다" 가 "안 적으면 막힌다" 로 된 데까지예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 401 과 403</div>
+  401은 "누구인지 모르겠다" 고, 403은 "누구인지는 알겠는데 권한이 없다" 예요. 기본 거부로 바꾼 뒤 설정을 빠뜨린 경로는, 인증 정보가 없는 익명 요청에 401을 돌려줘요. 로그인은 했는데 권한이 모자란 경우라면 403이고요. 조용히 통과하는 대신 응답 코드로 말해 주는 겁니다.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr04a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="32" font-size="21" fill="#4a7fb5">인증 설정을 빠뜨렸을 때 어디로 떨어지나</text>
+
+<path d="M26 52 C 110 49, 220 55, 336 52 C 339 150, 338 250, 336 344 C 220 347, 110 341, 27 344 C 23 250, 25 150, 26 52 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="44" y="84" font-size="24" fill="#b3502f">⚠️ 기본 허용</text>
+<text x="44" y="112" font-size="16" fill="#3d3a34">설정에 적는 것: 보호할 경로</text>
+
+<path d="M44 126 C 130 123, 230 129, 318 126 C 321 148, 320 168, 318 186 C 230 189, 130 183, 45 186 C 41 168, 43 148, 44 126 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="58" y="152" font-size="16" fill="#3d3a34">새 경로를 만들면서</text>
+<text x="58" y="174" font-size="16" fill="#3d3a34">인증 설정을 빠뜨려요</text>
+
+<path d="M181 192 C 180 202, 182 212, 181 220" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr04a)"/>
+
+<path d="M44 226 C 130 223, 230 229, 318 226 C 321 250, 320 274, 318 296 C 230 299, 130 293, 45 296 C 41 274, 43 250, 44 226 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+<text x="58" y="252" font-size="16" fill="#3d3a34">기본값 permitAll 로 떨어져요</text>
+<text x="58" y="282" font-size="21" fill="#b3502f">🔓 열린 채로 배포</text>
+
+<text x="44" y="326" font-size="18" fill="#b3502f">아무도 모른 채 지나갑니다</text>
+
+<path d="M350 62 C 348 160, 352 260, 350 336" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+
+<path d="M364 52 C 450 49, 560 55, 674 52 C 677 150, 676 250, 674 344 C 560 347, 450 341, 365 344 C 361 250, 363 150, 364 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="382" y="84" font-size="24" fill="#2e6b41">✅ 기본 거부</text>
+<text x="382" y="112" font-size="16" fill="#3d3a34">설정에 적는 것: 공개할 경로</text>
+
+<path d="M382 126 C 468 123, 568 129, 656 126 C 659 148, 658 168, 656 186 C 568 189, 468 183, 383 186 C 379 168, 381 148, 382 126 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="396" y="152" font-size="16" fill="#3d3a34">새 경로를 만들면서</text>
+<text x="396" y="174" font-size="16" fill="#3d3a34">인증 설정을 빠뜨려요</text>
+
+<path d="M519 192 C 518 202, 520 212, 519 220" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr04a)"/>
+
+<path d="M382 226 C 468 223, 568 229, 656 226 C 659 250, 658 274, 656 296 C 568 299, 468 293, 383 296 C 379 274, 381 250, 382 226 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+<text x="396" y="252" font-size="16" fill="#3d3a34">기본값 authenticated 로 떨어져요</text>
+<text x="396" y="282" font-size="21" fill="#2e6b41">🔒 닫힌 채로 배포</text>
+
+<text x="382" y="326" font-size="18" fill="#2e6b41">401 이 떠서 바로 알게 됩니다</text>
+
+<path d="M24 372 C 240 369, 460 375, 676 371" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="402" font-size="20" fill="#b3502f">같은 실수인데 떨어지는 곳이 반대예요</text>
+<text x="24" y="428" font-size="15" fill="#8a8272">실수를 없애는 설계가 아니라, 실수의 결과를 안전한 쪽으로 보내는 설계입니다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 기본값이 바뀌면 빠뜨림의 결과가 공개에서 차단으로 바뀐다</div>
+
+<h2>4. 되돌림 스위치를 같이 넣었어요</h2>
+
+<p>0건이라고 해서 안전하다고 단정할 수는 없었어요. 25일을 비켜 간 배치가 있을 수도 있고, 공개 목록을 옮겨 적으면서 한 줄을 흘렸을 수도 있습니다. 둘 다 전환한 뒤에야 드러나요.</p>
+
+<p>그래서 되돌아갈 길을 같이 만들었습니다. 설정값 하나로요.</p>
+
+<div class="obsv-code">security.api-default-authenticated=true    기본 거부   (기본값, 현재 값)
+security.api-default-authenticated=false   이전 동작   (기본 허용)
+
+  참이면    anyRequest().authenticated()
+  거짓이면  "/api/**" 을 permitAll
+
+-&gt; 두 모양을 코드에 둘 다 남겨 두고 설정값으로 고른다</div>
+
+<p>→ 이 값이 <code>false</code> 면 전환 전 구성으로 돌아갑니다. 규칙은 기동할 때 짜이니까 다시 띄워야 하지만, 코드를 되돌려 빌드와 배포를 다시 태울 필요는 없어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 되돌림 스위치</div>
+  새 동작과 옛 동작을 코드에 둘 다 남겨 두고, 설정값 하나로 어느 쪽을 쓸지 고르게 만드는 방식이에요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 366" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr04c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="32" font-size="21" fill="#4a7fb5">되돌림 스위치는 무엇을 고르게 하나</text>
+
+<path d="M230 56 C 310 53, 390 59, 470 56 C 473 78, 472 100, 470 118 C 390 121, 310 115, 231 118 C 227 100, 229 78, 230 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+<text x="246" y="84" font-size="14" fill="#3d3a34" font-family="Menlo, monospace">security.api-default-</text>
+<text x="246" y="104" font-size="14" fill="#3d3a34" font-family="Menlo, monospace">authenticated</text>
+
+<path d="M330 122 C 282 140, 232 158, 200 174" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr04c)"/>
+<path d="M370 122 C 418 140, 468 158, 500 174" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arr04c)"/>
+
+<path d="M40 182 C 120 179, 240 185, 330 182 C 333 212, 332 244, 330 272 C 240 275, 120 269, 41 272 C 37 244, 39 212, 40 182 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="58" y="212" font-size="22" fill="#2e6b41">true (지금 이 값)</text>
+<text x="58" y="240" font-size="16" fill="#3d3a34">기본 거부. 공개 목록만 열려요</text>
+<text x="58" y="262" font-size="15" fill="#8a8272">빠뜨린 경로는 401 로 막힙니다</text>
+
+<path d="M370 182 C 450 179, 570 185, 660 182 C 663 212, 662 244, 660 272 C 570 275, 450 269, 371 272 C 367 244, 369 212, 370 182 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+<text x="388" y="212" font-size="22" fill="#c07f18">false</text>
+<text x="388" y="240" font-size="16" fill="#3d3a34">이전 동작으로 돌아가요</text>
+<text x="388" y="262" font-size="15" fill="#8a8272">기본 허용 + 보호 경로 목록</text>
+
+<path d="M24 296 C 240 293, 460 299, 676 295" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="326" font-size="20" fill="#b3502f">되돌릴 길이 있어서 기본값을 바꾸는 결정을 내릴 수 있었어요</text>
+<text x="24" y="352" font-size="15" fill="#8a8272">되돌림이 재배포뿐이라면, 끊긴 호출을 보면서 빌드를 기다려야 합니다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 되돌리는 비용이 전환을 결정할 수 있는 범위를 정한다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 스위치는 시간을 벌어 줄 뿐이에요</div>
+  &bull; <code>false</code> 로 내리면 끊긴 호출은 되살아나지만, <b>열려 있던 상태로 같이 돌아갑니다.</b> 되돌림은 해결이 아니라 조사할 시간을 버는 수단이에요<br>
+  &bull; 되돌린 사실이 눈에 띄게 남아야 해요. 값이 조용히 <code>false</code> 인 채로 몇 주가 지나면 전환을 한 적이 없는 것과 같아집니다<br>
+  &bull; 스위치는 임시 상태예요. 안정이 확인되면 옛 경로를 지우는 것까지가 한 작업입니다
+</div>
+
+<h2>5. 호출하는 쪽의 기본값도 바꿨어요</h2>
+
+<p>같은 생각을 서버 간 호출 쪽에도 적용했습니다. {연동 서버}로 나가는 호출에는 API 키 헤더를 실어야 했는데, 그동안은 <b>호출하는 코드가 매번 붙이는 구조</b>였어요. 새 호출을 추가하는 사람이 키를 기억해야 했습니다. 그래서 호출 클라이언트를 고쳐, <span class="obsv-mark">모든 호출에 키 헤더를 기본으로 싣게</span> 했어요.</p>
+
+<p>앞의 전환과 방향은 반대예요. 받는 쪽은 "안 적으면 막힌다" 로, 거는 쪽은 "안 적어도 붙는다" 로 바꿨습니다. 기준은 같아요. <b>사람이 기억해야 동작하는 자리를 기본값으로 옮긴다.</b></p>
+
+<h2>6. 바뀐 것은 실수의 양이 아니라 방향이에요</h2>
+
+<p>인증 설정을 빠뜨리는 일이 사라지지는 않아요. 사람은 계속 빠뜨립니다. 바뀐 건 빠뜨렸을 때 어디로 떨어지느냐예요. 전에는 공개로, 지금은 차단으로 떨어집니다.</p>
+
+<p>이 전환에서 제일 오래 걸린 건 설정을 고치는 일이 아니었어요. <span class="obsv-mark">무엇이 들어오고 있는지 세는 일</span>이었습니다. 먼저 뒤집고 나서 끊기는 걸 하나씩 찾았다면, 그건 전환이 아니라 사고였을 겁니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 기본값을 뒤집기 전에</div>
+  &bull; <b>관찰부터 넣으세요.</b> 막지 않고 기록만 하는 단계가 있어야 "바꾸면 무엇이 끊기는가" 에 숫자로 답할 수 있어요<br>
+  &bull; <b>관찰 기간은 업무 주기를 덮어야 해요.</b> 월말에만 도는 호출이 있다면 한 달로는 부족합니다. 저는 25일로 끊었으니 이 기준을 못 지킨 셈이고, 그래서 되돌림 스위치가 선택이 아니라 전제 조건이었어요<br>
+  &bull; <b>되돌림 비용을 먼저 정하세요.</b> 재배포가 필요하면 전환을 미루게 됩니다<br>
+  &bull; <b>공개 목록은 짧게 쓰세요.</b> 넓은 범위로 한 줄 적어 두면 그 줄 안에서 기본 허용이 되살아납니다
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>기본값을 허용에서 거부로 뒤집으면 실수의 방향이 바뀝니다.</b> 인증 설정을 빠뜨렸을 때 전에는 열린 채로, 지금은 닫힌 채로 배포되고 401이 떠서 바로 드러나요. 다만 공개 목록에 걸리는 경로는 예외라, 그 목록은 여전히 사람 몫이에요.<br><br>
+  뒤집을 수 있었던 건 먼저 셌기 때문이에요. 1편의 관찰 필터가 25일 동안 쌓은 기록을 집계해 공개 목록 밖 익명 요청이 0건인 걸 확인한 뒤에 바꿨고, 설정값 하나로 되돌아갈 길을 남겼어요. 25일은 제가 이 글에 적은 "업무 주기를 덮어라" 는 기준에 못 미칩니다. 모자란 만큼은 되돌림 스위치가 메웠어요.<br><br>
+  안전한 기본값은 용기로 정하는 게 아니라 숫자로 정합니다. 무엇이 들어오는지 모르는 상태에서 기본값을 바꾸는 건 전환이 아니라 장애예요.
+</div>
+
+</div>
