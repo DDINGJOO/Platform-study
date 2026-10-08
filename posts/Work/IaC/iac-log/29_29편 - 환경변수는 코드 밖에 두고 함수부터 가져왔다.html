@@ -1,0 +1,307 @@
+<!-- ============================================================
+  IaC 작업일지 29편: 환경변수는 코드 밖에 두고 함수부터 가져왔다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: Lambda 편입, ignore_changes, 환경변수 평문, 배포 파이프라인, 소유 경계 -->
+<!-- lead: 함수 아홉 개를 코드로 가져오면서 환경변수는 일부러 코드 밖에 뒀어요. 그 칸에 시크릿이 평문으로 있었기 때문입니다. 무엇을 소유하고 무엇을 두고 왔는지 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 IaC 작업일지, 일곱째 날 · 29편</div>
+  1~7편. 첫날: 설계, 리뷰, 그리고 수리<br>
+  8~11편. 둘째 날: 같은 사실이 두 군데 적혀 있을 때<br>
+  12~15편. 셋째 날: 만든 가드를 의심한 날들<br>
+  16~21편. 넷째 날: 이름을 믿지 않고 자원을 판독하는 법<br>
+  22~24편. 다섯째 날: 편입을 시작하며 소유를 다시 정했다<br>
+  25~28편. 여섯째 날: 엣지를 가져오고 사람이 만드는 길을 좁혔다<br>
+  <b>29편. 환경변수는 코드 밖에 두고 함수부터 가져왔다</b> &larr; 지금 이 글<br>
+  30편. 트리거는 함수 쪽에서 거꾸로 찾았다<br>
+  31편. 웹훅을 환경변수에서 시크릿으로 옮겼다
+</div>
+
+<p>10월 8일 오전 9시 15분에 머지한 PR 의 제목에는 조건이 하나 붙어 있었어요. <b>"알림 함수 셋을 편입한다. 환경변수는 코드 밖."</b> 함수를 코드 안으로 가져오면서, 그 함수의 환경변수는 일부러 두고 왔다는 뜻입니다.</p>
+
+<p>이유는 그 칸에 들어 있는 값 때문이었어요. 알림 함수 셋은 메신저 웹훅 주소를 평문으로 갖고 있었고, 나머지 함수들도 저마다 다른 종류의 비밀을 같은 자리에 두고 있었어요. 편입은 실물을 코드로 옮겨 적는 일이라, 그대로 적으면 그 값들이 저장소에 들어가요.</p>
+
+<p>이날 오전 9시 15분부터 오후 2시 14분까지 함수 9개가 코드 안으로 들어왔습니다. <span class="obsv-mark">무엇을 담고 무엇을 두고 올지 칸 단위로 정하는 게 이날 일의 전부였어요.</span></p>
+
+<div class="obsv-code">  1. 함수를 담으면 그 안의 시크릿도 같이 담긴다
+  2. 가릴 수 있는 시크릿과 가릴 수 없는 시크릿
+  3. 배포 파이프라인이 코드를 바꾸는 함수 둘
+  4. 지난달에 "쓰지 않는다"고 적어 둔 그 lifecycle
+  5. 9개가 들어왔고, 들어오면서 드러난 것</div>
+
+<h2>1. 함수를 담으면 그 안의 시크릿도 같이 담긴다</h2>
+
+<p>함수를 코드 밖에 두면 무엇이 곤란한지부터 볼게요. 런타임 버전, 메모리, 타임아웃, 환경변수가 전부 IaC 밖에 있으면 누가 콘솔에서 바꿔도 아무도 모릅니다. 1차 편입 조사에서 지원이 끝난 런타임으로 돌고 있던 함수와, 이미 지워진 DB 를 매주 멈추려 하던 함수가 그렇게 처음 드러났어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: drift 와 drift 잡</div>
+  drift 는 코드에 적힌 상태와 실제로 떠 있는 상태가 어긋난 것이에요. drift 잡은 매일 정해진 시각에 plan 을 돌려 그 어긋남을 찾아 이슈로 여는 자동화입니다. 중요한 전제가 하나 있어요. <b>코드가 소유한 자원만 봅니다.</b> 코드 밖에 있는 것은 아무리 바뀌어도 조용해요.
+</div>
+
+<p>그래서 담아야 하는데, 담으려고 보니 환경변수 칸이 걸렸습니다. 선택지가 셋이었어요.</p>
+
+<p>첫째, 값을 그대로 HCL 에 적는다. 그러면 웹훅 주소와 비밀번호가 저장소 이력에 영구히 남아요. 탈락입니다.</p>
+
+<p>둘째, 환경변수 블록을 그냥 안 적는다. 이쪽이 더 위험했어요. <span class="obsv-mark">Terraform 은 코드에 안 적은 속성을 프로바이더 기본값으로 되돌립니다.</span> 환경변수를 안 적으면 "환경변수 없음"이 코드의 선언이 되고, 첫 apply 가 운영 함수의 환경변수를 통째로 지워요. 함수는 그 자리에서 죽습니다.</p>
+
+<p>셋째, 안 적되 그 칸만 비교에서 빼라고 선언한다. 이걸 골랐어요.</p>
+
+<div class="obsv-code">resource "aws_lambda_function" "알림_함수" {
+  function_name = "..."
+  runtime       = "python3.12"
+  memory_size   = 128
+  timeout       = 3
+  # environment 블록을 쓰지 않는다
+
+  lifecycle {
+    # 환경변수에 시크릿(메신저 웹훅)이 있다. 코드 밖에 둔다.
+    ignore_changes = [environment]
+  }
+}</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ignore_changes</div>
+  이 속성은 코드와 실물을 비교하지 말라고 Terraform 에 알리는 선언이에요. 적힌 칸은 실물 값이 무엇이든 plan 에 나오지 않고, apply 도 건드리지 않습니다. 코드가 소유하는 범위를 리소스 전체가 아니라 <b>속성 단위</b>로 줄이는 장치예요.
+</div>
+
+<p>얻은 것과 내준 것이 분명합니다. 얻은 것은 런타임, 메모리, 타임아웃, 태그, 코드가 코드 안으로 들어오고 drift 가 매일 본다는 점이에요. 내준 것은 환경변수입니다. 누가 콘솔에서 웹훅을 바꿔도 plan 은 조용해요. state 에는 값이 남는데, state 는 전용 키로 암호화되고 접근이 역할별로 제한돼 있어서 그 조건을 감수하기로 했습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="22" y="30" font-size="21" fill="#4a7fb5">환경변수 칸을 어떻게 할 것인가</text>
+
+<path d="M22 48 C 80 45, 160 51, 218 48 C 221 74, 220 96, 218 116 C 160 119, 80 113, 23 116 C 19 96, 21 72, 22 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="36" y="74" font-size="18" fill="#3d3a34">① 값을 적는다</text>
+<text x="36" y="100" font-size="14" fill="#8a8272">environment = { ... }</text>
+
+<path d="M242 48 C 300 45, 380 51, 438 48 C 441 74, 440 96, 438 116 C 380 119, 300 113, 243 116 C 239 96, 241 72, 242 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="256" y="74" font-size="18" fill="#3d3a34">② 그냥 뺀다</text>
+<text x="256" y="100" font-size="14" fill="#8a8272">블록 없음</text>
+
+<path d="M462 48 C 520 45, 600 51, 678 48 C 681 74, 680 96, 678 116 C 600 119, 520 113, 463 116 C 459 96, 461 72, 462 48 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="476" y="74" font-size="18" fill="#2e6b41">③ 빼고 변경 무시</text>
+<text x="476" y="100" font-size="14" fill="#8a8272">ignore_changes</text>
+
+<path d="M120 124 C 118 146, 122 160, 120 176" fill="none" stroke="#e5533c" stroke-width="2" marker-end="url(#arr1)"/>
+<path d="M340 124 C 338 146, 342 160, 340 176" fill="none" stroke="#e5533c" stroke-width="2" marker-end="url(#arr1)"/>
+<path d="M570 124 C 568 146, 572 160, 570 176" fill="none" stroke="#5a9e6f" stroke-width="2.2" marker-end="url(#arr1)"/>
+
+<path d="M22 184 C 80 181, 160 187, 218 184 C 221 208, 220 228, 218 246 C 160 249, 80 243, 23 246 C 19 228, 21 206, 22 184 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="34" y="210" font-size="17" fill="#b3502f">🔑 저장소에 남는다</text>
+<text x="34" y="234" font-size="14" fill="#8a8272">이력에서 지울 수 없다</text>
+
+<path d="M242 184 C 300 181, 380 187, 438 184 C 441 208, 440 228, 438 246 C 380 249, 300 243, 243 246 C 239 228, 241 206, 242 184 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="254" y="210" font-size="17" fill="#b3502f">💥 apply 가 지운다</text>
+<text x="254" y="234" font-size="14" fill="#8a8272">함수가 그 자리에서 죽는다</text>
+
+<path d="M462 184 C 520 181, 600 187, 678 184 C 681 208, 680 228, 678 246 C 600 249, 520 243, 463 246 C 459 228, 461 206, 462 184 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="474" y="210" font-size="17" fill="#2e6b41">✅ 값도 저장소도 그대로</text>
+<text x="474" y="234" font-size="14" fill="#8a8272">대신 drift 가 못 본다</text>
+
+<text x="22" y="282" font-size="18" fill="#b3502f">코드에 안 적는 것과 코드가 모른 척하는 것은 결과가 정반대다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 적지 않는 것만으로는 코드 밖에 두는 게 되지 않는다</div>
+
+<h2>2. 가릴 수 있는 시크릿과 가릴 수 없는 시크릿</h2>
+
+<p>같은 날 아침, 함께 담기로 했던 함수 하나를 빼놨어요. 느린 쿼리 알림 함수입니다. 빼놓은 이유가 커밋 본문에 그대로 적혀 있어요. "코드에 웹훅이 하드코딩돼 있어 넣지 않았다."</p>
+
+<p>환경변수는 코드 밖에 둘 수 있는데 왜 코드 안의 값은 못 두냐면, 1차 편입에서 정한 규칙 때문이에요. 함수 코드는 실물에서 회수한 zip 을 바이트 그대로 커밋하고, 코드가 그 파일을 가리킵니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 코드 해시 (source_code_hash)</div>
+  Terraform 이 "지금 떠 있는 함수 코드"와 "저장소에 있는 zip"이 같은지 비교할 때 쓰는 값이에요. 둘이 다르면 apply 가 저장소의 코드를 올려 함수를 재배포합니다. <b>편입은 실물을 바꾸지 않는다</b>는 전제를 지키려면 이 값이 처음부터 일치해야 해요.
+</div>
+
+<p>그래서 웹훅만 지우고 커밋하는 선택지가 없었습니다. 한 글자라도 고치면 해시가 달라지고, 그러면 편입 첫 apply 가 운영 함수의 코드를 재배포해요. 편입이 아니라 배포가 됩니다.</p>
+
+<p>결국 이 함수만 순서가 뒤집혔어요. 나머지 여덟은 <b>일단 담고</b> 고치는 건 뒤로 미뤘는데, 이 함수는 <b>고쳐야 담을 수 있었습니다.</b> 오전 9시 15분에 빠진 함수가 낮 12시 13분에 들어왔어요.</p>
+
+<p>대신 이 함수에서만 「편입은 실물을 바꾸지 않는다」가 깨졌습니다. 커밋한 zip 은 웹훅을 지우고 다시 묶은 것이라 실물 해시와 다를 수밖에 없었고, 그래서 한 번의 apply 가 import 와 재배포를 같이 했어요. 이 함수의 코드를 무엇으로 어떻게 고쳤는지는 31편에서 따로 다룹니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 시크릿이 어디 있느냐로 처리가 갈려요</div>
+  &bull; <b>환경변수에 있다</b>: 코드에 안 적고 변경 무시로 둔다. 바로 편입된다<br>
+  &bull; <b>함수 코드 안에 있다</b>: 가릴 방법이 없다. 코드를 먼저 고쳐야 편입이 된다<br>
+  &bull; 둘의 차이는 "저장소가 그 값을 가리키기만 하는가, 들고 있는가"예요. 가리키는 것은 끊을 수 있지만, 들고 있는 것은 내려놓는 수밖에 없습니다
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="22" y="30" font-size="21" fill="#4a7fb5">같은 웹훅, 다른 자리, 다른 일정</text>
+
+<path d="M22 50 C 90 47, 170 53, 236 50 C 239 76, 238 98, 236 118 C 170 121, 90 115, 23 118 C 19 98, 21 74, 22 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="36" y="78" font-size="18" fill="#3d3a34">🔑 환경변수에 있다</text>
+<text x="36" y="102" font-size="14" fill="#8a8272">함수 8개</text>
+
+<path d="M244 84 C 282 81, 310 87, 348 84" fill="none" stroke="#5a9e6f" stroke-width="2.2" marker-end="url(#arr2)"/>
+<text x="252" y="74" font-size="15" fill="#2e6b41">변경 무시</text>
+
+<path d="M356 50 C 440 47, 560 53, 678 50 C 681 76, 680 98, 678 118 C 560 121, 440 115, 357 118 C 353 98, 355 74, 356 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="372" y="78" font-size="18" fill="#2e6b41">09:15 바로 편입</text>
+<text x="372" y="102" font-size="14" fill="#8a8272">코드는 그 값을 가리키지도 않는다</text>
+
+<path d="M22 150 C 90 147, 170 153, 236 150 C 239 176, 238 198, 236 218 C 170 221, 90 215, 23 218 C 19 198, 21 174, 22 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="36" y="178" font-size="18" fill="#b3502f">🔒 코드 파일 안에 있다</text>
+<text x="36" y="202" font-size="14" fill="#8a8272">함수 1개</text>
+
+<path d="M244 184 C 282 181, 310 187, 348 184" fill="none" stroke="#e5a33c" stroke-width="2.2" marker-end="url(#arr2)"/>
+<text x="248" y="174" font-size="15" fill="#c07f18">코드 수정</text>
+
+<path d="M356 150 C 440 147, 560 153, 678 150 C 681 176, 680 198, 678 218 C 560 221, 440 215, 357 218 C 353 198, 355 174, 356 150 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="372" y="178" font-size="18" fill="#2e6b41">12:13 세 시간 뒤 편입</text>
+<text x="372" y="202" font-size="14" fill="#8a8272">한 apply 가 편입과 재배포를 같이 했다</text>
+
+<path d="M22 240 C 200 237, 440 243, 678 240" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="22" y="272" font-size="18" fill="#b3502f">가리키는 것은 끊으면 되고, 들고 있는 것은 내려놔야 한다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 시크릿의 위치가 편입 순서를 정했다</div>
+
+<h2>3. 배포 파이프라인이 코드를 바꾸는 함수 둘</h2>
+
+<p>이 저장소에는 8월에 정한 소유 경계 규칙이 있어요. <b>배포 파이프라인이 쓰지 않는 것만 소유한다.</b> 판정은 취향이 아니라 실측으로 합니다. 확인하는 것은 셋이에요. CloudFormation 이 쥐고 있는가, 배포 파이프라인이 쓰는가, 여럿이 같이 쓰는 자원인가. 가운데 것은 지난 90일 동안 그 자원에 관리 API 를 호출한 주체가 사람인지 자동화인지를 감사 로그로 봅니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 배포 파이프라인</div>
+  앱 코드가 머지되면 빌드해서 운영에 올리는 자동화예요. 인프라 저장소와는 따로 돌고, 올릴 때마다 함수의 코드나 컨테이너 이미지 주소를 바꿉니다. 인프라 코드가 같은 칸을 소유하면 양쪽이 서로의 값을 되돌리려 들어요.
+</div>
+
+<p>1차 편입 때는 여섯 함수 전부 호출 주체가 사람이었어요. 그런데 이날 담은 9개 중 셋은 달랐습니다. 청구서 생성 함수 둘(운영·개발)은 컨테이너 이미지로 도는데 앱 파이프라인이 배포할 때마다 이미지 주소를 바꾸고, 블로그 렌더 함수는 프론트 저장소의 배포 워크플로가 <code>update-function-code</code> 로 새 코드를 올리고 버전을 발행합니다.</p>
+
+<p>규칙을 글자 그대로 읽으면 셋 다 소유 대상이 아니에요. 그런데 소유하지 않으면 런타임, 메모리, 타임아웃, 호출 경로 설정이 계속 코드 밖에 남습니다. 1번에서 적은 그 곤란이 그대로 남는 거예요.</p>
+
+<p>그래서 경계를 다시 그었어요. <span class="obsv-mark">리소스 단위가 아니라 속성 단위로 긋습니다. 설정은 코드가 소유하고, 아티팩트는 파이프라인에 남깁니다.</span></p>
+
+<div class="obsv-code">알림 함수 · 느린 쿼리 알림 함수 · 로그 전달 함수 · 리뷰 봇
+  ignore_changes = [environment]
+  → 설정과 코드는 저장소가 소유. 환경변수만 코드 밖
+
+청구서 생성 함수 (컨테이너 이미지)
+  ignore_changes = [image_uri, environment]
+  → 이미지 주소는 앱 파이프라인이 바꾼다
+
+블로그 렌더 함수 (파이프라인이 zip 을 올린다)
+  ignore_changes = [filename, source_code_hash, publish]
+  → 코드는 파이프라인, 설정과 호출 경로는 저장소</div>
+
+<p>이렇게 가르지 않으면 무슨 일이 일어나는지가 중요해요. 코드까지 소유한 채로 두면, 앱팀이 배포할 때마다 실물과 저장소가 어긋납니다. drift 잡은 어긋남 하나만 있어도 이슈를 열어요. <b>앱팀이 매일 배포하면 이슈도 매일 열립니다.</b> 그 이슈는 인프라 채널로 가고, 남의 배포 기록이 우리 채널을 채워요. 그러면 사람은 곧 drift 알림을 무시하게 됩니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 변경 무시가 공짜는 아니에요</div>
+  변경 무시로 둔 칸은 <b>그 줄을 뗄 때까지 감시 밖</b>입니다. 그래서 적을 때 이유를 주석으로 같이 적어 뒀어요. "이 칸은 파이프라인이 바꾼다", "이 칸에는 시크릿이 있다". 이유가 적혀 있지 않으면 다음 사람은 그 줄을 지워도 되는지 판단할 수 없고, 보통은 그냥 둡니다.
+</div>
+
+<h2>4. 지난달에 "쓰지 않는다"고 적어 둔 그 lifecycle</h2>
+
+<p>그런데 1차 편입을 정한 결정 문서에는 이렇게 적혀 있어요. <b>"ignore_changes 를 쓰지 않는다."</b> 9월 21일에 내가 적은 문장을 이날 어긴 셈입니다.</p>
+
+<p>왜 금지했는지를 다시 읽어 보니, 금지의 대상이 ignore_changes 자체가 아니었어요. 그때 경계한 것은 조합이었습니다. 코드 출처를 재현할 수 없으니 <b>더미 zip</b> 을 두고 그 칸을 변경 무시로 가리자는 안이 있었거든요. 그 안의 문제는 명확했어요. lifecycle 블록 한 줄이 리팩터링 중에 지워지면, 다음 apply 가 운영 함수의 코드를 더미로 덮습니다. 저장소에 원본이 없으니 되돌릴 방법이 없어요.</p>
+
+<p>이번에 코드 칸에 변경 무시를 건 것은 블로그 렌더 함수 하나인데, 그 조건이 아니었습니다. 저장소에 든 zip 은 실물에서 회수한 원본이고 해시가 실물과 일치해요. lifecycle 이 지워져서 apply 가 코드를 덮어도, 덮이는 것은 더미가 아니라 어제까지 돌던 그 코드입니다. 게다가 파이프라인이 다음 배포에서 최신 코드를 다시 올려요.</p>
+
+<p><span class="obsv-mark">금지된 것은 lifecycle 한 줄이 아니라 "되돌릴 수 없음"이었어요.</span> 그 조건이 사라졌으니 금지도 같이 사라집니다. 규칙을 적을 때 금지한 행동만 적고 금지한 이유를 안 적으면, 다음 사람은 조건이 바뀐 걸 알아도 판단할 근거가 없어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+<text x="22" y="30" font-size="21" fill="#4a7fb5">같은 사고가 나도 결과가 갈린다</text>
+
+<path d="M22 48 C 110 45, 230 51, 330 48 C 333 110, 332 190, 330 254 C 230 257, 110 251, 23 254 C 19 190, 21 110, 22 48 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-dasharray="8 8"/>
+<text x="38" y="74" font-size="19" fill="#b3502f">지난달에 탈락시킨 안</text>
+
+<path d="M40 88 C 110 85, 200 91, 300 88 C 302 106, 301 122, 300 138 C 200 141, 110 135, 41 138 C 37 122, 39 106, 40 88 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+<text x="54" y="116" font-size="17" fill="#3d3a34">📦 더미 zip + 변경 무시</text>
+
+<path d="M170 146 C 168 164, 172 178, 170 194" fill="none" stroke="#e5533c" stroke-width="2" marker-end="url(#arr3)"/>
+<text x="182" y="176" font-size="15" fill="#8a8272">lifecycle 삭제</text>
+
+<path d="M40 202 C 110 199, 200 205, 300 202 C 302 222, 301 234, 300 246 C 200 249, 110 243, 41 246 C 37 234, 39 220, 40 202 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="50" y="226" font-size="17" fill="#b3502f">💀 운영 코드가 더미가 된다</text>
+<text x="50" y="242" font-size="13" fill="#8a8272">되돌릴 원본이 없다</text>
+
+<path d="M370 48 C 460 45, 580 51, 678 48 C 681 110, 680 190, 678 254 C 580 257, 460 251, 371 254 C 367 190, 369 110, 370 48 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="386" y="74" font-size="19" fill="#2e6b41">10월 8일에 쓴 안</text>
+
+<path d="M388 88 C 458 85, 548 91, 648 88 C 650 106, 649 122, 648 138 C 548 141, 458 135, 389 138 C 385 122, 387 106, 388 88 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+<text x="400" y="116" font-size="17" fill="#3d3a34">📦 회수한 원본 + 변경 무시</text>
+
+<path d="M518 146 C 516 164, 520 178, 518 194" fill="none" stroke="#5a9e6f" stroke-width="2.2" marker-end="url(#arr3)"/>
+<text x="530" y="176" font-size="15" fill="#8a8272">lifecycle 삭제</text>
+
+<path d="M388 202 C 458 199, 548 205, 648 202 C 650 222, 649 234, 648 246 C 548 249, 458 243, 389 246 C 385 234, 387 220, 388 202 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="400" y="226" font-size="17" fill="#2e6b41">🙂 어제 돌던 코드로 덮인다</text>
+<text x="400" y="242" font-size="13" fill="#8a8272">다음 배포로 회복된다</text>
+
+<text x="22" y="292" font-size="18" fill="#b3502f">금지한 것은 lifecycle 이 아니라 되돌릴 수 없음이었다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 결정 문서에 이유를 적어 두면 조건이 바뀔 때 다시 판단할 수 있다</div>
+
+<h2>5. 9개가 들어왔고, 들어오면서 드러난 것</h2>
+
+<p>이날 들어온 9개를 시각과 함께 놓으면 이렇습니다. 편입 PR 과 import 블록 삭제 PR 이 늘 짝으로 붙어 있어요.</p>
+
+<div class="obsv-code">09:15  알림 함수 3                  →  09:24  블록 삭제   ( 9분)
+09:54  청구서 생성 함수 2 (운영·개발)  →  10:07  블록 삭제   (13분)
+10:26  로그 전달 함수 1 · 리뷰 봇 1    →  10:41  블록 삭제   (15분)
+12:13  느린 쿼리 알림 함수 1          →  12:21  블록 삭제   ( 8분)
+14:14  블로그 렌더 함수 1            →  14:22  블록 삭제   ( 8분)
+                          합계 9개</div>
+
+<p>담지 않은 것도 분명히 적어 뒀어요. 실행 역할은 IAM 을 통째로 담는 단계가 따로 잡혀 있어서 이날은 주소로만 참조했고, 트리거는 이날 오후에 따로 담았습니다. 함수 본체와 트리거를 한 PR 에 넣으면 되돌릴 범위가 커져서예요.</p>
+
+<p>이날의 편입 조사가 부산물로 드러낸 것은 둘이었어요. 하나는 태그가 하나도 붙어 있지 않던 함수입니다. 소유자도 서비스 구분도 없는 채로 매시 정각에 돌면서 30일 동안 730번 가까이 호출되고 있었고, 이번 apply 가 태그를 처음 붙였어요. 둘은 로그 전달 함수의 코드가 제작사 공식 배포판 최근 다섯 버전 어느 것과도 해시가 맞지 않았다는 점이에요. 누군가 직접 묶어 올린 것이라, 업그레이드할 때 공식 배포판으로 갈아 끼워야 한다는 메모를 그 함수를 적은 .tf 주석에 남겼습니다. 지원이 끝난 런타임으로 돌던 함수는 이미 1차 조사에서 드러나 있던 것이고, 이날 편입하면서 올렸습니다.</p>
+
+<p>이날의 결과를 한 줄로 정리하면 이렇습니다. 함수 9개의 런타임과 메모리와 타임아웃과 태그는 이제 코드 안에 있고 drift 가 매일 봅니다. 환경변수는 담는 시점에는 전부 밖에 뒀어요. 거기 든 값이 평문이라서입니다. 그 값을 다른 데로 옮기는 일은 함수를 담는 일과 나란히 돌아갔고, 낮 12시 34분에는 알림 함수 넷의 환경변수가 코드 안으로 들어오면서 변경 무시도 떨어졌어요. 그 순서를 왜 그렇게 짰는지는 31편에서 다룹니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>함수를 코드로 가져올 때 코드가 소유할 범위는 리소스가 아니라 속성 단위로 정했어요.</b> 시크릿이 든 환경변수와 파이프라인이 바꾸는 아티팩트는 변경 무시로 두고, 런타임과 메모리와 타임아웃과 태그만 코드가 가졌습니다. 둘의 유효기간은 달라요. 아티팩트 쪽은 파이프라인이 있는 한 그대로 가고, 시크릿 쪽은 값을 다른 데로 옮기면 거둘 수 있는 임시 조치입니다.<br><br>
+  변경 무시는 감시를 포기하는 선언이라 공짜가 아니에요. 그래서 칸마다 왜 비웠는지를 주석으로 남겼습니다. <b>소유는 전부 아니면 전무가 아니라, 어느 칸을 누가 쥐는지를 적는 일이에요.</b>
+</div>
+
+</div>

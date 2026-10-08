@@ -1,0 +1,299 @@
+<!-- ============================================================
+  개인정보 암호화 4편: 컬럼이 아니라 문장을 암호화했다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: JPA 컨버터, 선택적 암호화, 개인정보 암호화, 커서 페이징, 일회성 배치 -->
+<!-- lead: 계좌번호 컬럼은 암호화했는데, 업무 이력 문구 안에 계좌번호가 문장으로 35,802건 남아 있었어요. 컬럼 전체가 아니라 특정 문구만 골라 암호화하는 컨버터를 붙인 기록입니다. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔐 개인정보 암호화 · 4편</div>
+  1편. 설정은 켜 두었고 그 파일은 읽히지 않았다<br>
+  2편. 암호화에 실패하면 평문으로 저장하기로 했다<br>
+  3편. 등치 조회가 남아 있어 랜덤 IV 를 쓸 수 없었다<br>
+  <b>4편. 컬럼이 아니라 문장을 암호화했다</b> &larr; 지금 이 글<br>
+  5편. 관리자 코멘트가 암호문처럼 보였다
+</div>
+
+<p>계좌번호 컬럼을 잠근 다음, 같은 값이 다른 데 또 있는지 확인하러 다녔어요. 업무 이력 화면에 찍히는 문구를 몇 건 꺼내 봤는데, 계좌번호가 문장 가운데에 박혀 있었습니다. 사람 이름과 계좌 정보가 한 문장 안에 그대로 들어 있었어요.</p>
+
+<p>건수를 세 보니 <b>35,802건</b>이었습니다. 2024-08-15 부터 쌓였고, 지금도 매일 수십 건씩 들어오고 있었어요. 컬럼을 암호화해 둔 것과 무관하게, 같은 계좌번호가 다른 테이블의 설명 문장으로 복사돼 있던 겁니다.</p>
+
+<p>그래서 이번 대상은 컬럼이 아니라 문장이 됐어요. 여기서 질문이 둘로 갈립니다. <b>어떤 문장을 대상으로 고를 것인가, 그리고 한 컬럼에 평문과 암호문이 섞인 뒤에 읽는 쪽은 그 둘을 어떻게 가려낼 것인가.</b></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 다룰 것</div>
+  &bull; 컬럼을 통째로 암호화하면 무엇이 깨지는가?<br>
+  &bull; "이 문장이 암호화 대상인가"를 무엇으로 판정했는가?<br>
+  &bull; 한 컬럼에 평문과 암호문이 섞이면 읽는 쪽은 어떻게 가리는가?<br>
+  &bull; 35,802건을 고치는 배치에 왜 진행 위치를 저장해야 했는가?<br>
+  &bull; 되돌리려면 무엇을 먼저 꺼야 하는가?
+</div>
+
+<p>미리 한 줄 적어 둘게요. 여기 적은 코드는 올린 뒤 독립 리뷰로 넘어갔고, 판정은 변경요청, <b>지적이 9건</b>(변경요청 5건, 권고 4건)이었습니다. 그러니 이 글은 리뷰 이전 시점의 판단이에요. 뒤에서 리뷰가 고쳐 준 자리는 그때마다 밝혀 두고, 리뷰 전체는 5편에 적었습니다.</p>
+
+<h2>1. 암호화 대상이 컬럼이 아니라 문장이었어요</h2>
+
+<p>문제의 컬럼은 업무 이력의 설명 문구입니다. 한 컬럼인데 들어오는 문구가 한 종류가 아니에요. 사건 종류가 44가지이고, 종류마다 다른 문장이 같은 컬럼에 쌓입니다. 그중 <b>한 종류</b>에 사람 이름과 계좌번호가 함께 들어 있었어요. 이름만 들어 있는 종류가 따로 하나 더 있는데, 그건 이번 범위 밖으로 뒀습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 업무 이력 문구</div>
+  대행 건에 무슨 일이 있었는지 한 줄씩 쌓아 두는 기록이에요. 어드민 화면의 이력 탭에 그대로 출력됩니다. 사람이 읽을 문장이라 형식이 정해진 JSON 이 아니라 일반 문자열입니다.
+</div>
+
+<p>가장 간단한 조치는 그 컬럼에 암호화 컨버터를 붙여 전체를 암호화하는 것이었어요. 컨버터는 저장할 때와 읽을 때 값을 자동으로 바꿔 주는 장치예요(3편의 관대한 컨버터와 같은 자리입니다). 그런데 <span class="obsv-mark">같은 컬럼을 조건으로 쓰는 조회가 두 곳 있었습니다.</span> 하나는 처리 소요 시간 지표가 네이티브 SQL 로 문구 앞부분을 잘라 다른 테이블 값과 비교하는 곳이고, 다른 하나는 특정 종류의 문구 한 개를 등치로 비교해 행을 찾는 곳이었어요.</p>
+
+<p>컬럼을 다 암호화하면 이 둘은 그날부터 아무것도 찾지 못합니다. 3편에서는 등치 조회를 살려야 해서 암호 방식을 결정적으로 고정했는데, 이번에는 방향이 달랐어요. 그 조회들이 보는 문구를 <b>암호화 대상에서 아예 빼는 쪽</b>을 골랐습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="34" y="26" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">① 컬럼을 통째로 암호화하면</text>
+  <path d="M34 40 C 110 37, 190 42, 252 39 C 255 68, 254 92, 253 120 C 190 123, 110 118, 36 121 C 32 92, 34 66, 34 40 Z"
+        fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="54" y="64" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">🔒 암호문 (대상 1종)</text>
+  <text x="54" y="88" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">🔒 암호문 (나머지 43종)</text>
+  <text x="54" y="110" font-family="Menlo, monospace" font-size="11" fill="#8a8272">한 컬럼, 전부 암호문</text>
+  <path d="M258 78 C 292 76, 312 72, 342 70" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrA)"/>
+  <path d="M348 36 C 460 33, 580 38, 662 35 C 665 62, 664 86, 663 112 C 580 115, 460 110, 350 113 C 346 86, 348 62, 348 36 Z"
+        fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="366" y="60" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">❌ 문구 앞부분 자르기 비교</text>
+  <text x="366" y="84" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">❌ 다른 종류 문구 등치 비교</text>
+  <text x="366" y="104" font-family="Menlo, monospace" font-size="11" fill="#8a8272">= 조회 2곳이 아무것도 못 찾는다</text>
+  <path d="M30 148 C 200 146, 480 150, 672 147" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="34" y="182" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">② 대상 문구만 골라 암호화하면</text>
+  <path d="M34 196 C 110 193, 190 198, 252 195 C 255 224, 254 248, 253 276 C 190 279, 110 274, 36 277 C 32 248, 34 222, 34 196 Z"
+        fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="54" y="220" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">🔒 암호문 (대상 1종)</text>
+  <text x="54" y="244" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d6591">평문 (나머지 43종)</text>
+  <text x="54" y="266" font-family="Menlo, monospace" font-size="11" fill="#8a8272">한 컬럼, 둘이 섞인다</text>
+  <path d="M258 234 C 292 232, 312 228, 342 226" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrA)"/>
+  <path d="M348 192 C 460 189, 580 194, 662 191 C 665 218, 664 242, 663 268 C 580 271, 460 266, 350 269 C 346 242, 348 218, 348 192 Z"
+        fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="366" y="216" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">✅ 자르기 비교 그대로</text>
+  <text x="366" y="240" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">✅ 등치 비교 그대로</text>
+  <text x="366" y="260" font-family="Menlo, monospace" font-size="11" fill="#8a8272">비교 대상 문구는 평문이니까</text>
+  <text x="130" y="308" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 대가는 "한 컬럼에 평문과 암호문이 섞인다"</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 조회를 살리려고 선택적 암호화를 고르면, 혼재를 대가로 받습니다</div>
+
+<h2>2. "이 문장이 대상인가"를 접두어로 판정했어요</h2>
+
+<p>대상 문구는 종류마다 정해진 앞부분으로 시작합니다. 문장 맨 앞에 늘 똑같이 붙는 이 토막을 접두어라고 부를게요. 그래서 판정은 간단했어요. 문장이 그 접두어로 시작하면 암호화 대상, 아니면 평문 그대로입니다.</p>
+
+<p>중요한 건 판정 기준을 어디에 두느냐였어요. 문장을 만드는 쪽에 문자열이 박혀 있고, 판정하는 쪽에도 같은 문자열을 또 적으면 두 곳이 생깁니다. 그래서 <b>그 앞부분을 이벤트 쪽 상수 하나로 올리고, 문장을 만드는 쪽과 판정하는 쪽이 그 상수를 같이 쓰게</b> 했어요.</p>
+
+<div class="obsv-code">// 문장을 만드는 쪽 (이벤트)
+static final String 대상_접두어 = "…이 사건을 알리는 문구 앞부분…";
+
+String 문구() {
+    return 대상_접두어 + "…사람 이름과 계좌 정보가 이어집니다(형식은 가렸어요)…";
+}
+
+// 암호화 대상인지 판정하는 쪽 (컨버터와 배치가 같이 쓴다)
+static boolean 대상인가(String 문구) {
+    return 문구 != null &amp;&amp; 문구.startsWith(대상_접두어);
+}</div>
+
+<p>이렇게 두면 문구 형식을 고칠 때 판정도 같이 따라옵니다. 접두어를 바꾸면 생성과 판정이 한 상수에서 함께 바뀌니까요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 상수를 공유하지 않으면 조용히 틀립니다</div>
+  양쪽에 문자열을 따로 적어 두면, 어느 한쪽만 고쳐지는 순간 판정이 어긋납니다. 문장은 바뀌었는데 판정은 옛 앞부분을 보고 있으니 <b>새 이력이 평문으로 저장되고, 에러는 하나도 안 납니다.</b> 화면도 정상으로 보여요. 그래서 "이벤트가 만드는 문구가 판정 상수로 시작하는가"를 테스트로 고정해 뒀습니다. 문구를 고치면 그 테스트가 먼저 깨지게요.
+</div>
+
+<h2>3. 한 컬럼에 평문과 암호문이 섞입니다</h2>
+
+<p>컬럼 전체를 암호화할 때는 읽기가 고민거리가 아니에요. 전부 암호문이니 전부 복호화하면 됩니다. 선택적으로 암호화하면 그게 안 됩니다. 값을 하나 꺼냈을 때 이게 암호문인지 평문인지 먼저 정해야 해요.</p>
+
+<p>여기서 한 가지 제약이 있었어요. 컨버터는 <b>그 컬럼 값 하나만 받습니다.</b> 같은 행의 사건 종류 컬럼을 볼 수 없어요. "종류가 대상이면 복호화한다"는 판정을 쓸 수가 없었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 컨버터 (AttributeConverter)</div>
+  엔티티 필드 하나와 DB 컬럼 하나 사이에서 값을 바꿔 주는 장치예요. 저장할 때 한 번, 읽을 때 한 번 불립니다. 받는 것은 그 값 하나뿐이라, 같은 행의 다른 컬럼은 보이지 않습니다.
+</div>
+
+<p>그래서 읽기는 <span class="obsv-mark">행의 종류가 아니라 값의 생김새로 가립니다.</span> 암호화한 값에는 암호문임을 알리는 짧은 표시가 앞에 붙어 있어요. 그 표시로 시작하면 복호화하고, 아니면 저장된 값을 그대로 돌려줍니다. 배치가 아직 안 지나간 평문 행과, 애초에 대상이 아닌 43종 문구가 모두 두 번째 갈래로 빠져나갑니다.</p>
+
+<div class="obsv-code">쓰기 : 스위치가 켜져 있고 + 대상 접두어로 시작  →  문장 전체를 암호화
+       그 밖의 문구                             →  평문 그대로 저장
+
+읽기 : 값이 암호문 표시로 시작                  →  복호화해서 원래 문장
+       아니면                                   →  저장된 값 그대로</div>
+
+<p>쓰기는 선택적인데 읽기는 선택적이 아니라는 점을 짚어 둘 필요가 있어요. 이 컨버터는 그 컬럼에 붙기 때문에, <b>44종 문구 전부의 읽기 경로를 지나갑니다.</b> 대상 한 종류만 지나가는 게 아닙니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrB" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="34" y="26" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">한 컬럼에서 꺼낸 값들</text>
+  <path d="M34 38 C 100 36, 170 40, 232 37 C 235 50, 234 58, 233 68 C 170 71, 100 66, 36 69 C 32 58, 34 48, 34 38 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="48" y="60" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d6591">평문 문구 (다른 종류)</text>
+  <path d="M34 80 C 100 78, 170 82, 232 79 C 235 92, 234 100, 233 110 C 170 113, 100 108, 36 111 C 32 100, 34 90, 34 80 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="48" y="102" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">🔒 암호문 (대상)</text>
+  <path d="M34 122 C 100 120, 170 124, 232 121 C 235 134, 234 142, 233 152 C 170 155, 100 150, 36 153 C 32 142, 34 132, 34 122 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="48" y="144" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d6591">평문 문구 (다른 종류)</text>
+  <path d="M34 164 C 100 162, 170 166, 232 163 C 235 176, 234 184, 233 194 C 170 197, 100 192, 36 195 C 32 184, 34 174, 34 164 Z" fill="#fdf3dd" stroke="#c07f18" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="48" y="186" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">평문 (대상인데 아직)</text>
+  <path d="M240 115 C 270 113, 288 110, 312 108" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB)"/>
+  <path d="M318 82 C 372 79, 428 84, 462 81 C 465 104, 464 122, 463 142 C 428 145, 372 140, 320 143 C 316 122, 318 102, 318 82 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8" stroke-linejoin="round"/>
+  <text x="336" y="110" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d6591">읽기 판정</text>
+  <text x="336" y="132" font-family="Menlo, monospace" font-size="11" fill="#8a8272">앞에 암호문 표시?</text>
+  <path d="M468 100 C 500 92, 520 82, 548 74" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB)"/>
+  <path d="M470 126 C 500 134, 520 146, 548 156" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB)"/>
+  <text x="556" y="62" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">있으면</text>
+  <text x="556" y="84" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">복호화</text>
+  <text x="556" y="152" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d6591">없으면</text>
+  <text x="556" y="174" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d6591">그대로</text>
+  <path d="M30 222 C 200 220, 480 224, 672 221" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="40" y="252" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">컨버터는 이 값 하나만 받습니다. 같은 행의 사건 종류 컬럼은 못 봐요.</text>
+  <text x="40" y="280" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 그래서 판정은 "행의 종류"가 아니라 "값의 생김새"로 합니다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 혼재를 감당하는 쪽은 읽기이고, 읽기가 쓸 수 있는 단서는 값 자체뿐입니다</div>
+
+<h2>4. 35,802건을 고치는 배치에 진행 위치를 저장했어요</h2>
+
+<p>컨버터는 앞으로 들어올 문구만 바꿉니다. 이미 쌓인 35,802건은 그대로예요. 그래서 한 번 돌리고 끝낼 배치를 따로 만들었습니다.</p>
+
+<p>그 배치가 대상을 찾는 방법이 거칠었어요. 사건 종류 컬럼에 인덱스가 없어서, 대상만 골라 집어 올 방법이 없습니다. PK 순서로 테이블을 훑으면서 종류가 맞는 행만 거르는 수밖에 없었어요. 사전 조회로 적어 둔 숫자는 <b>테이블 전체 486만 행, 약 1GB</b> 였습니다.</p>
+
+<p>그런데 제가 이 시점에 비용 자리에 적어 둔 판단은 "대상이 35,802건이니 하룻밤이면 끝난다" 한 줄이었어요. 실행 시각도 그 어림만 가지고 새벽 04:05 부터 04:55 까지 5분 간격으로, 다른 배치가 쓰는 04:45 만 빼고 열 번 잡았습니다. <span class="obsv-mark">한 페이지를 채우는 데 몇 행을 훑는지는 세어 보지 않았어요.</span></p>
+
+<p>그 계산은 나중에 독립 리뷰가 해서 붙여 줬습니다. 대상 밀도가 0.74% 라 한 페이지(200건)를 채우려면 평균 2.7만 행을 읽고, 한 실행이 끝까지 가면 테이블을 한 번 통째로 읽는 셈이 된다는 숫자예요. 이 수치가 설계 문서에 들어간 것도, 그 비용에 맞춰 분산 락 보유 시간을 늘린 것도 리뷰를 반영하면서였습니다(5편).</p>
+
+<p>그리고 한 실행에는 상한을 뒀어요. 채우기는 페이지 200행에 250페이지까지(5만 행), 쓰기가 없는 검증은 페이지 500행에 200페이지까지입니다. 이 상한 때문에 <b>진행 위치를 저장해야 했습니다.</b> 상한이 있는데 매번 처음부터 훑으면, 매 실행이 같은 앞쪽 구간만 다시 읽고 뒤쪽에는 영원히 닿지 못해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 진행 위치 (커서)</div>
+  "여기까지 처리했다"는 id 하나예요. 다음 실행은 그 id 보다 큰 행부터 읽습니다. 몇 번째 페이지인지로 기억하면 그 사이에 행이 들어오거나 빠질 때 어긋나지만, id 기준이면 어긋나지 않습니다.
+</div>
+
+<p>진행 위치는 배치를 켜는 스위치 행 안에 같이 넣었어요. 실행이 끝날 때 마지막으로 본 id 를 그 값에 써 두고, 대상 끝에 닿으면 스위치 행 자체를 지웁니다. 행이 없으면 다음 새벽에는 배치가 아예 뜨지 않아요.</p>
+
+<div class="obsv-code">-- 배치 설정 테이블에 이 행이 있을 때만, 그 모드로 돕니다
+{"mode":"FILL"}                     -- 처음부터 채우기
+{"mode":"FILL","진행위치":1234567}  -- 멈춘 자리 (키 이름과 숫자는 가렸어요)
+{"mode":"VERIFY"}                   -- 남은 평문·복호화 실패 건수만 센다
+{"mode":"RESTORE"}                  -- 암호문을 평문으로 되돌린다
+
+-- 대상 끝에 닿으면 이 행을 지운다 = 더 이상 돌지 않는다</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="34" y="26" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">① 상한만 두고 매번 처음부터 훑으면</text>
+  <path d="M40 44 C 200 41, 480 47, 660 43 C 663 58, 662 70, 661 84 C 480 87, 200 81, 42 85 C 38 70, 40 58, 40 44 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M72 46 C 73 58, 71 72, 72 83" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M148 46 C 149 58, 147 72, 148 83" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M286 46 C 287 58, 285 72, 286 83" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M424 46 C 425 58, 423 72, 424 83" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M566 46 C 567 58, 565 72, 566 83" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M636 46 C 637 58, 635 72, 636 83" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M40 100 C 90 102, 150 98, 206 101" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M40 112 C 90 114, 150 110, 206 113" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M40 124 C 90 126, 150 122, 206 125" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round"/>
+  <text x="216" y="118" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">1·2·3회차가 같은 앞쪽만 다시 읽는다</text>
+  <text x="430" y="140" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">뒤쪽엔 끝까지 닿지 못해요</text>
+  <path d="M30 160 C 200 158, 480 162, 672 159" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="34" y="192" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">② 멈춘 자리를 저장하면</text>
+  <path d="M40 206 C 200 203, 480 209, 660 205 C 663 220, 662 232, 661 246 C 480 249, 200 243, 42 247 C 38 232, 40 220, 40 206 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M248 204 C 249 220, 247 234, 248 249" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-dasharray="4 4" stroke-linecap="round"/>
+  <path d="M456 204 C 457 220, 455 234, 456 249" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-dasharray="4 4" stroke-linecap="round"/>
+  <path d="M46 226 C 100 228, 170 224, 240 227" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" marker-end="url(#arrC)"/>
+  <path d="M256 226 C 310 228, 380 224, 448 227" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" marker-end="url(#arrC)"/>
+  <path d="M464 226 C 520 228, 590 224, 652 227" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" marker-end="url(#arrC)"/>
+  <text x="96" y="266" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">1회차</text>
+  <text x="306" y="266" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">2회차</text>
+  <text x="520" y="266" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">3회차 → 끝에 닿으면 스위치 삭제</text>
+  <text x="250" y="196" font-family="Menlo, monospace" font-size="11" fill="#8a8272">진행 위치 저장</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 한 실행에 상한을 두는 순간, 진행 위치는 선택이 아니라 필수가 됩니다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 이력 테이블은 엔티티로 고치지 않았어요</div>
+  &bull; 엔티티로 저장하면 수정 시각 컬럼이 같이 갱신됩니다. 사람이 이력을 고친 게 아니라 암호화를 한 것이니, 손댄 행의 수정 시각이 배치 실행 시각으로 덮이면 안 돼요<br>
+  &bull; 엔티티에는 삭제 표시된 행을 빼는 조건이 걸려 있어서, 소프트 삭제된 행은 건너뛰게 됩니다. 그 행에도 계좌번호가 들어 있어요<br>
+  &bull; 그래서 이 배치만 직접 SQL 로 읽고 씁니다. UPDATE 는 "읽었던 값과 같을 때만" 걸어서, 그 사이 앱이 같은 행을 고쳤으면 0건으로 끝나게 했어요<br>
+  &bull; 로그와 예외에는 id 와 건수만 남깁니다. 한 행을 담는 객체의 출력 형식부터 id 만 찍게 해 뒀어요<br>
+  &bull; 다만 쓰기 예외는 이 시점에 원인 예외를 그대로 달아 다시 던지고 있었습니다. DB 오류 메시지에 값이 섞여 올 수 있으니 원인을 떼라는 건 5편의 리뷰에서 나온 지적이에요
+</div>
+
+<h2>5. 되돌림을 세 모드로 나눴어요</h2>
+
+<p>한 번 돌리고 버릴 배치인데도 모드를 셋으로 나눴습니다. 채우기, 검증, 복원이에요. 채우기는 평문을 암호문으로 바꾸고, 검증은 쓰지 않고 남은 평문과 복호화되지 않는 행만 셉니다. 복원은 암호문을 다시 평문으로 되돌려요.</p>
+
+<p>채우기에는 갈래가 셋 있습니다. 이미 암호문이면 건너뜁니다. 대상 종류 행인데 문구가 판정 접두어로 시작하지 않으면, 고치지 않고 id 만 남겨요. 사람이 봐야 할 행이라는 뜻입니다. 대상이면 암호화한 뒤 <b>그 자리에서 다시 복호화해 원문과 같은지 확인하고</b> 나서야 UPDATE 를 겁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 소프트 삭제 (soft delete)</div>
+  행을 실제로 지우지 않고 "삭제됨" 표시만 남기는 방식이에요. 화면에는 안 보이지만 테이블에는 그대로 있습니다. 평문 개인정보를 찾을 때는 이 행들도 세어야 합니다.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 되돌리는 순서를 이때 틀리게 적어 뒀어요</div>
+  이 시점의 설계 문서에는 되돌림이 <b>"복원 완료 → 이전 버전"</b> 으로 적혀 있었습니다. 3편의 레거시 테이블 절차를 그대로 옮겨 적은 거예요. 그쪽은 쓰기가 멈춘 테이블이라 복원을 끝내면 새 암호문이 더 생기지 않으니 그 순서가 맞습니다. 이 테이블은 매일 쌓이는데도 같은 순서를 적어 둔 게 문제였어요.<br><br>
+  독립 리뷰가 이 한 줄을 잡아 줬고(5편), 순서는 이렇게 정정됐습니다.<br><br>
+  ① 쓰기 스위치를 끄고 재배포합니다. 컨버터는 꺼져 있어도 암호문을 복호화하니 화면 문구는 그대로예요<br>
+  ② 복원을 돌리고, 검증으로 암호문 0건을 확인합니다<br>
+  ③ 그 다음에 이전 버전으로 되돌립니다<br><br>
+  쓰기를 먼저 끊지 않으면 복원 중에, 그리고 복원이 끝나고 이전 버전으로 바뀌기 전까지 들어온 새 암호문이 이전 버전에서 복호화되지 않아 화면에 남습니다. 배치까지 먼저 되돌리면 복원을 실행할 수단이 사라져요.
+</div>
+
+<h2>6. 여기까지가 확인된 것입니다</h2>
+
+<p>지금 끝난 것은 코드 쪽입니다. 선택적 컨버터, 접두어 상수 공유, 쓰기 스위치와 기동 로그 표시, 일회성 배치와 테스트까지요. 로컬 DB 에 실제로 넣고 꺼내 보면서, 대상 문구는 암호문으로 들어가고 원문 컬럼에 사람 이름과 계좌 정보가 남지 않는지, 어드민 이력 화면과 같은 조회로 원래 문장이 그대로 나오는지, 조회만 했을 때 평문 행이 다시 쓰이지 않는지 확인했습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 그 로컬 테스트의 주석은 실제보다 넓게 적혀 있었어요</div>
+  테스트 클래스 주석에는 "문구를 조건으로 쓰는 조회도 본다"고 적어 뒀습니다. 그런데 실제로 돌아가는 메서드는 그렇지 않았어요. <b>문구 앞부분을 잘라 비교하는 네이티브 조회는 아예 호출하지 않았고</b>, 등치로 찾는 쪽도 실제 조회 메서드를 부르는 대신 같은 조건을 흉내 낸 쿼리를 따로 적어 본 것이었습니다. 이 시점에 확인된 건 "비교에 쓰는 값이 컨버터를 거쳐도 바뀌지 않는다"까지예요.<br><br>
+  이것도 독립 리뷰가 문서와 코드가 어긋난 자리로 짚었습니다. 두 조회를 직접 부르는 테스트는 리뷰 뒤에 들어갔어요(5편). 이 시리즈에서 되풀이되는 모양이기도 합니다. <b>문서에 적어 둔 범위와 코드가 실제로 지나가는 범위는 저절로 같아지지 않아요.</b>
+</div>
+
+<p>아직 확인되지 않은 것은 운영입니다. <span class="obsv-mark">채우기 배치는 예정돼 있고 아직 돌지 않았어요.</span> 스위치 행을 넣기 전에는 배치가 Job 을 띄우지도 않습니다. 그러니 남은 평문이 0건이 됐는지, 486만 행을 훑는 데 실제로 몇 분이 걸리는지, 접두어가 다른 행이 몇 건 나오는지는 지금 숫자가 없습니다.</p>
+
+<p>그래서 이 편에서 말할 수 있는 건 "암호화를 끝냈다"가 아니라, <b>암호화 대상을 컬럼이 아니라 문장 단위로 정의하고, 그 판정을 한 곳에 모으고, 되돌릴 경로를 먼저 만들어 뒀다</b>까지입니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>컬럼을 암호화해도 같은 값이 다른 테이블의 설명 문장에 복사돼 있으면 평문은 남습니다. 이번 대상은 컬럼이 아니라 문장이었어요.</b><br><br>
+  컬럼을 통째로 암호화하면 그 컬럼을 조건으로 쓰는 조회 두 곳이 깨지기 때문에, 특정 사건의 문구만 골라 문장 전체를 암호화했습니다. 판정 기준인 접두어는 문장을 만드는 쪽과 판정하는 쪽이 같은 상수를 쓰게 해서, 문구를 고치면 판정도 함께 바뀌게 했어요.<br><br>
+  대가는 한 컬럼에 평문과 암호문이 섞인다는 점입니다. 읽는 쪽은 행의 종류를 볼 수 없으니 값의 생김새로 가립니다. 쌓인 35,802건은 진행 위치를 저장하는 일회성 배치로 채우기로 했고, 같은 배치에 검증과 복원을 같이 넣어 뒀습니다. 그 배치는 아직 돌지 않았어요.<br><br>
+  <b>선택적 암호화는 범위를 줄이는 결정이 아니라, 대상 판정을 코드 어딘가에 영구히 남기는 결정입니다.</b>
+</div>
+
+</div>

@@ -1,0 +1,302 @@
+<!-- ============================================================
+  개인정보 암호화 2편: 암호화에 실패하면 평문으로 저장하기로 했다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: 암호화 실패 처리, JPA 컨버터, 롤링 배포 호환, 무중단 암호화 전환, 평문 저장 -->
+<!-- lead: 쓰기 암호화가 실패했을 때 저장을 막으면 수정과 로그인이 멈추고, 평문으로 두면 평문이 남아요. 평문 저장을 고르고, 그 결정의 끝까지 같이 설계한 기록입니다. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔐 개인정보 암호화 · 2편</div>
+  1편. 설정은 켜 두었고 그 파일은 읽히지 않았다<br>
+  <b>2편. 암호화에 실패하면 평문으로 저장하기로 했다</b> &larr; 지금 이 글<br>
+  3편. 등치 조회가 남아 있어 랜덤 IV 를 쓸 수 없었다<br>
+  4편. 컬럼이 아니라 문장을 암호화했다<br>
+  5편. 관리자 코멘트가 암호문처럼 보였다
+</div>
+
+<p>저장할 때 계좌번호를 암호화하는 코드를 붙이고 나니, 답을 정해야 하는 질문이 하나 남았어요. <b>암호화가 실패하면 그 저장을 어떻게 할 것인가.</b></p>
+
+<p>선택지는 둘뿐입니다. 예외를 던져 저장을 막으면 평문은 한 글자도 안 남아요. 대신 그 순간 대행인 정보 수정과 로그인이 함께 멈춥니다. 평문으로 저장하면 서비스는 돌아가는데 평문이 남습니다. 둘 다 대가가 있고, 가운데는 없어요.</p>
+
+<p>결정은 <span class="obsv-mark">평문으로 저장하기</span>였습니다. 코드가 그렇게 굴러간 게 아니라 제가 고른 거라, 설계 문서에도 제 결정으로 적어 뒀어요. 그리고 이 결정에는 끝이 같이 설계돼 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 다룰 것</div>
+  &bull; 암호화가 실패했을 때 저장을 막는 쪽과 통과시키는 쪽은 각각 무엇을 잃나?<br>
+  &bull; 평문을 저장해 두고도 그 평문을 잊지 않으려면 뭐가 같이 있어야 하나?<br>
+  &bull; 왜 한 번에 배포하지 않고 읽기와 쓰기를 둘로 나눴나?<br>
+  &bull; 느슨하게 시작한 처리를 나중에 엄격하게 닫는다는 건 뭘 하는 건가?
+</div>
+
+<h2>1. 실패를 막을까, 통과시킬까</h2>
+
+<p>암호화는 엔티티와 DB 사이에서 값을 바꿔 주는 자리에 붙어 있어요. 저장할 때 암호화하고, 읽을 때 복호화합니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 컨버터 (attribute converter)</div>
+  엔티티의 필드 하나와 DB 컬럼 하나 사이에서 값을 변환하는 코드예요. 이 자리에 암호화를 넣으면 조회·수정 코드를 한 줄도 고치지 않고 저장 형식만 바꿀 수 있어요. 이 글의 결정은 전부 이 자리에서 일어납니다.
+</div>
+
+<p>여기서 암호화가 실패한다면 보통 값 하나의 문제가 아니에요. 키를 못 읽거나 암호 모듈 쪽에서 막히는 종류죠. 키는 기동할 때 검증하니까 실제로 실패할 일 자체가 거의 없고요. 다만 그 드문 일이 일어나면 <b>한 건이 실패하는 게 아니라 그 시점 이후가 전부 실패해요.</b> 저장을 막는 쪽을 고르면 그 순간 대행인 수정과 로그인이 통째로 멈춥니다. 개인정보를 지키려고 넣은 코드가 장애를 만드는 모양이 되는 거예요.</p>
+
+<p>반대쪽도 공짜가 아닙니다. 평문으로 저장하면 평문 행이 다시 생겨요. 지금 하고 있는 일이 <b>이미 쌓여 있던 평문을 없애는 일</b>인데, 그 일을 하는 코드가 평문을 새로 만들 수 있다는 뜻입니다.</p>
+
+<h2>2. 평문으로 저장하기로 했다</h2>
+
+<p>평문 저장을 고를 수 있었던 건 이 컬럼의 읽기가 이미 평문을 받아들이게 돼 있었기 때문이에요. 같은 컬럼에 평문 행과 암호문 행이 섞여 있는 기간을 버티려고 만든 컨버터가 붙어 있었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: {관대한 컨버터}와 {암호문 전용 컨버터}</div>
+  {관대한 컨버터}는 읽은 값이 암호문 모양이면 복호화하고, 아니면 평문으로 보고 그대로 씁니다. {암호문 전용 컨버터}는 언제나 복호화를 시도하고 암호문이 아니면 실패해요. 전환 중인 컬럼에는 앞쪽, 전환이 끝난 컬럼에는 뒤쪽을 붙입니다.
+</div>
+
+<div class="obsv-code">{관대한 컨버터}
+
+읽기 (DB -&gt; 엔티티)
+  null                 -&gt;  null
+  암호문 접두어로 시작   -&gt;  복호화 (실패하면 예외, 모니터가 잡는다)
+  그 밖                -&gt;  그대로 (아직 암호화 안 된 행)
+
+쓰기 (엔티티 -&gt; DB)
+  null                 -&gt;  null
+  쓰기 암호화 꺼짐       -&gt;  그대로            (1차 배포)
+  쓰기 암호화 켜짐       -&gt;  암호화            (2차 배포)
+     암호화 실패        -&gt;  평문 그대로 저장 + WARN   (이 글의 결정)</div>
+
+<p>→ 읽기 쪽 세 줄이 결정의 근거예요. 평문으로 저장해 둬도 <b>읽는 쪽이 그 값을 평문으로 바르게 돌려줍니다.</b> 화면도, 지급 계산도 그대로 돌아가요.</p>
+
+<p>그리고 남은 평문을 치우는 쪽은 사람이 아니라 배치입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 채우기 배치 (fill)</div>
+  컬럼을 훑어서 아직 평문인 행만 그 자리에서 암호화하는 일회성 배치예요. 값을 바꾸지 않고 저장 형식만 바꾸기 때문에 화면에 보이는 내용은 같습니다. 암호화 직후 한 번 복호화해 원문과 같은지 확인한 뒤에 커밋해요.
+</div>
+
+<p>그래서 평문 저장의 대가가 "평문이 영구히 남는다"가 아니라 "암호화가 다음 배치까지 늦어진다"로 바뀝니다. <span class="obsv-mark">실패의 대가를 중단에서 지연으로 옮긴 거예요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 370" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="pii2a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="30" font-size="21" fill="#4a7fb5">저장할 때 암호화가 실패하면</text>
+
+<path d="M250 44 C 310 41, 390 47, 452 44 C 455 62, 454 78, 452 94 C 390 97, 310 91, 251 94 C 247 78, 249 62, 250 44 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+<text x="268" y="76" font-size="22" fill="#c07f18">🔑 암호화 실패</text>
+
+<path d="M300 98 C 250 112, 200 122, 160 138" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#pii2a)"/>
+<path d="M402 98 C 452 112, 500 122, 540 138" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#pii2a)"/>
+
+<path d="M26 150 C 100 147, 220 153, 300 150 C 303 196, 302 240, 300 276 C 220 279, 100 273, 27 276 C 23 240, 25 196, 26 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="46" y="182" font-size="23" fill="#b3502f">🚫 예외를 던진다</text>
+<text x="46" y="210" font-size="17" fill="#3d3a34">저장이 거절된다</text>
+<text x="46" y="236" font-size="16" fill="#8a8272">평문은 한 글자도 안 남는다</text>
+<text x="46" y="262" font-size="16" fill="#b3502f">대행인 수정·로그인이 멈춘다</text>
+
+<path d="M400 150 C 480 147, 600 153, 674 150 C 677 196, 676 240, 674 276 C 600 279, 480 273, 401 276 C 397 240, 399 196, 400 150 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="420" y="182" font-size="23" fill="#2e6b41">✅ 평문으로 저장</text>
+<text x="420" y="210" font-size="17" fill="#3d3a34">읽기가 평문을 받는다</text>
+<text x="420" y="236" font-size="16" fill="#8a8272">서비스는 멈추지 않는다</text>
+<text x="420" y="262" font-size="16" fill="#c07f18">평문 행이 하나 늘어난다</text>
+
+<path d="M350 158 C 348 200, 352 244, 350 272" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+
+<path d="M400 284 C 460 288, 540 282, 606 286" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#pii2a)"/>
+<text x="400" y="312" font-size="18" fill="#2e6b41">⏳ 채우기 배치가 나중에 암호화한다</text>
+
+<path d="M24 330 C 240 327, 460 333, 676 329" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="360" font-size="20" fill="#b3502f">= 실패의 대가를 중단에서 지연으로 바꿨다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 읽기가 평문을 받아 주기 때문에 평문 저장이 선택지가 된다</div>
+
+<h2>3. 평문이 조용히 쌓이지 않게</h2>
+
+<p>평문 저장의 진짜 위험은 평문 자체가 아니에요. <b>아무도 모르는 평문</b>입니다. 저장이 성공하고 화면이 멀쩡하면 실패한 티가 안 나니까요.</p>
+
+<p>그래서 실패를 알아차리는 자리를 컨버터 밖에 뒀습니다. 암복호 유틸이 실패할 때마다 ERROR 로그를 남기고, 그 로그를 보는 모니터가 따로 있어요. 컨버터는 그 위에 한 줄을 더 얹기만 합니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: P1 모니터</div>
+  특정 로그가 뜨면 바로 사람을 호출하는 가장 높은 등급의 감시 규칙이에요. 암복호 실패는 개인정보가 걸린 일이라 이 등급에 두고, 로그 한 건만 떠도 알림이 가게 했습니다.
+</div>
+
+<p>이때 로그에 뭘 적을지가 또 하나의 결정이었어요. 실패한 값을 찍어 두면 원인 찾기는 쉬워지는데, 그 값이 바로 지키려던 개인정보입니다. 그래서 컨버터는 <span class="obsv-mark">값 없이 입력 길이만</span> WARN 으로 남깁니다. 같은 계좌번호 사본이 지급 내역 스냅샷에도 있어서 관대한 컨버터가 하나 더 있는데(아래 {스냅샷 컨버터}), 그쪽은 길이도 빼고 "원문 그대로 뒀다"는 사실만 적어요.</p>
+
+<div class="obsv-code">실패했을 때 남는 줄 (실제 발췌가 아니라 모양)
+
+  [ERROR] 암복호 유틸     암호화 실패
+  [WARN ] {관대한 컨버터}  대행인 계좌번호 암호화 실패로 평문 저장. 입력 길이=13
+  [WARN ] {스냅샷 컨버터}  지급 내역 계좌번호 암호화 실패로 원문 저장
+
+JSON 이 깨져 암호화를 아예 걸지 못한 경우
+
+  [ERROR] {스냅샷 컨버터}  JSON 형식이 아니어서 계좌번호를 암호화하지 못하고 원문 저장</div>
+
+<p>→ 계좌번호도, 암호문도, 예외 원인 문구도 없어요. 어느 자리에서 실패했는지, 그리고 몇 글자짜리였는지까지만 남습니다. 호출을 울리는 건 맨 위 ERROR 한 줄이고, WARN 두 줄은 "그래서 평문으로 뒀다"는 기록이에요.</p>
+
+<p>마지막 묶음만 예외입니다. JSON 이 깨져 있으면 암복호 유틸을 아예 부르지 못해서 위의 ERROR 가 뜨지 않아요. 그래서 이 경로는 WARN 에 두지 않고 컨버터가 직접 ERROR 로 남기게 올렸습니다. <b>올린 건 거기까지예요.</b> 그 ERROR 한 줄을 지금 모니터 규칙이 집어 가는지는 따로 확인해야 합니다. 실패를 바깥에 맡기는 설계에 바깥을 거치지 않는 실패가 하나 있었고, 그 한 줄이 세어지는 자리까지 닿았는지는 아직 제가 못 박을 수 없어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 실패를 통과시키려면 같이 둬야 하는 것</div>
+  &bull; <b>통과시킨 실패를 세는 자리.</b> 실패를 삼키는 코드는 그 실패가 집계되는 곳이 따로 있을 때만 안전해요<br>
+  &bull; <b>나중에 치울 수단.</b> 평문으로 남긴 값을 다시 암호화하는 배치가 이미 있어야 합니다. 없으면 그냥 포기예요<br>
+  &bull; <b>로그에 값을 넣지 않기.</b> 개인정보 처리 실패 로그는 그 자체가 개인정보가 되기 쉬워요
+</div>
+
+<h2>4. 배포를 둘로 나눈 이유</h2>
+
+<p>위 의사코드에 "1차 배포", "2차 배포"가 적혀 있었어요. 읽기 전환과 쓰기 암호화를 한 번에 내보내지 않은 이유가 있습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 롤링 배포 (rolling deploy)</div>
+  새 버전 컨테이너를 띄우고 옛 버전을 하나씩 내리는 방식이에요. 아래에서는 이 컨테이너 하나를 "태스크"라고 부를게요. 서비스가 끊기지 않는 대신, 교체되는 동안은 <b>두 버전이 같은 DB를 함께 씁니다.</b> 지난 배포 기준으로 약 15분이었어요.
+</div>
+
+<p>읽기와 쓰기를 한 번에 바꿔 배포했다고 해 볼게요. 새 태스크는 암호문을 씁니다. 그 행을 아직 안 내려간 <b>옛 태스크가 읽으면, 옛 태스크는 암호문을 계좌번호로 압니다.</b> 그대로 화면과 지급 계산에 나갑니다. 데이터가 깨지는 건 아니지만, 그 15분 동안 사람이 보는 계좌번호가 암호문이 되는 거예요.</p>
+
+<p>그래서 순서를 <b>읽기 먼저, 쓰기 나중</b>으로 잘랐습니다. 1차 배포는 두 형식을 다 읽을 수 있게만 바꾸고 쓰기는 평문 그대로 뒀어요. 모든 태스크가 1차 버전이 된 뒤에 2차 배포로 쓰기 암호화를 켭니다. 2차 롤링 중에 남아 있는 옛 태스크는 1차 버전이라 암호문을 읽을 수 있고요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="pii2b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="30" font-size="21" fill="#e5533c">한 번에 배포하면: 약 15분 동안 두 버전이 같은 DB 를 쓴다</text>
+
+<path d="M26 46 C 90 43, 170 49, 240 46 C 243 76, 242 104, 240 128 C 170 131, 90 125, 27 128 C 23 104, 25 76, 26 46 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+<text x="44" y="76" font-size="21" fill="#8a8272">📟 옛 태스크</text>
+<text x="44" y="104" font-size="16" fill="#8a8272">평문만 읽을 수 있다</text>
+
+<path d="M460 46 C 530 43, 610 49, 674 46 C 677 76, 676 104, 674 128 C 610 131, 530 125, 461 128 C 457 104, 459 76, 460 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+<text x="478" y="76" font-size="21" fill="#3d6591">📟 새 태스크</text>
+<text x="478" y="104" font-size="16" fill="#8a8272">암호화해서 쓴다</text>
+
+<path d="M300 68 C 340 65, 392 71, 430 68 C 433 94, 432 112, 430 130 C 392 133, 340 127, 301 130 C 297 112, 299 94, 300 68 Z" fill="#f1f5fa" stroke="#6b8fb8" stroke-width="2.2"/>
+<text x="318" y="104" font-size="20" fill="#3d6591">💾 같은 DB</text>
+
+<path d="M456 100 C 448 102, 442 100, 436 100" fill="none" stroke="#4a7fb5" stroke-width="2" marker-end="url(#pii2b)"/>
+<path d="M296 112 C 282 116, 262 112, 246 114" fill="none" stroke="#e5533c" stroke-width="2" marker-end="url(#pii2b)"/>
+
+<path d="M26 148 C 200 145, 440 151, 674 148 C 677 168, 676 184, 674 200 C 440 203, 200 197, 27 200 C 23 184, 25 168, 26 148 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="46" y="182" font-size="20" fill="#b3502f">🔥 옛 태스크가 암호문을 계좌번호로 화면과 지급 계산에 내보낸다</text>
+
+<text x="24" y="242" font-size="21" fill="#2e6b41">그래서 둘로 나눴다</text>
+
+<path d="M26 258 C 100 255, 220 261, 316 258 C 319 296, 318 332, 316 358 C 220 361, 100 355, 27 358 C 23 332, 25 296, 26 258 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+<text x="46" y="290" font-size="22" fill="#3d6591">1차 배포</text>
+<text x="46" y="318" font-size="17" fill="#3d3a34">읽기: 평문도 암호문도</text>
+<text x="46" y="344" font-size="17" fill="#3d3a34">쓰기: 평문 그대로</text>
+
+<path d="M330 306 C 352 304, 368 310, 388 308" fill="none" stroke="#3d3a34" stroke-width="2.2" marker-end="url(#pii2b)"/>
+<text x="326" y="286" font-size="16" fill="#8a8272">전 태스크 교체 뒤</text>
+
+<path d="M406 258 C 480 255, 600 261, 674 258 C 677 296, 676 332, 674 358 C 600 361, 480 355, 407 358 C 403 332, 405 296, 406 258 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="426" y="290" font-size="22" fill="#2e6b41">2차 배포</text>
+<text x="426" y="318" font-size="17" fill="#3d3a34">읽기: 그대로</text>
+<text x="426" y="344" font-size="17" fill="#3d3a34">쓰기: 암호화 켬</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 읽을 수 있게 먼저 만들고, 쓰기는 그다음에 켠다</div>
+
+<p>원래 있던 {암호문 전용 컨버터}를 그대로 붙일 수 없던 이유도 같은 자리에 있어요. 그 컨버터는 읽을 때 접두어가 없으면 예외를 던집니다. 평문이 섞인 컬럼에 붙이면 <b>배포하는 순간 대행인을 읽는 모든 화면이 실패해요.</b> 그래서 전환 기간용 컨버터를 따로 만들어야 했습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 암호문처럼 보이는 평문 한 줄이 페이지 전체를 깨뜨립니다</div>
+  쓰기 암호화가 꺼진 1차 기간에 누가 암호문 접두어로 시작하는 값을 그대로 입력하면, 그 값은 평문으로 저장됩니다. 그런데 읽을 때는 접두어 때문에 암호문으로 보여 복호화가 실패해요.<br><br>
+  깨지는 범위가 그 행 하나가 아닙니다. 목록 화면은 대행인을 페이지 단위로 한꺼번에 읽기 때문에 <b>그 행이 들어간 페이지 전체</b>와 일괄 지급 계산, 그 대행인의 로그인이 함께 실패해요. 그래서 생성·수정 입력에서 그 접두어로 시작하는 값을 대소문자 가리지 않고 거부하게 막았습니다. 사전 조회로 운영에 그런 값이 0건인 것도 확인했고요.
+</div>
+
+<h2>5. 느슨하게 시작해 엄격하게 닫는다</h2>
+
+<p>여기까지가 "관대한" 쪽 설계예요. 이 상태를 오래 두면 문제가 생깁니다. 평문을 받아 주는 코드가 계속 살아 있으면, 평문이 다시 들어와도 아무 일도 일어나지 않아요. <b>관대함은 전환 기간의 장치지 최종 상태가 아닙니다.</b></p>
+
+<p>그래서 끝을 같이 적어 뒀습니다. 일괄 암호화가 끝나고 남은 평문이 없는 걸 확인하면, 컨버터를 {암호문 전용}으로 바꾸고 <span class="obsv-mark">{관대한 컨버터}와 채우기 배치를 지웁니다.</span> 그때부터는 평문이 남아 있으면 복호화가 실패해요. 평문을 금지하는 규칙을 문서에 쓰는 대신, 평문이 있으면 눈에 띄게 깨지는 구조로 만드는 겁니다.</p>
+
+<p>닫을 때 하나 배운 게 있어요. 처음에는 배치의 되돌리기 모드를 남겨 둘 생각이었습니다. 암호문을 평문으로 되돌리는 안전장치니까요. 그런데 전환 뒤에는 그게 안전장치가 아니라 <b>가장 위험한 버튼</b>이 됩니다. 되돌린 평문을 전환된 코드가 읽지 못하니까요. 안전장치가 의미를 갖는 건 그걸 읽을 수 있는 버전이 떠 있을 때뿐이에요. 그래서 전환과 배치 삭제를 한 번에 내보냈습니다. 이건 제가 먼저 알아챈 게 아니라, 독립 리뷰가 "전환된 코드에 되돌리기 버튼만 살아 있다"고 짚어 준 것이었어요. 덧붙이면 그 지적도, 그때 같이 쓴 설계 문단도 지금 저장소 트리에는 없습니다. 전환을 되돌릴 때 함께 사라져서, 되돌린 커밋을 들춰야 나와요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="pii2c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+  <marker id="pii2d" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="30" font-size="21" fill="#4a7fb5">2단 구조: 느슨하게 열고, 엄격하게 닫는다</text>
+
+<path d="M26 48 C 100 45, 220 51, 312 48 C 315 94, 314 140, 312 176 C 220 179, 100 173, 27 176 C 23 140, 25 94, 26 48 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+<text x="46" y="80" font-size="23" fill="#c07f18">1단계 · 느슨함</text>
+<text x="46" y="108" font-size="17" fill="#3d3a34">평문도 암호문도 읽는다</text>
+<text x="46" y="134" font-size="17" fill="#3d3a34">암호화 실패는 평문 저장</text>
+<text x="46" y="162" font-size="16" fill="#8a8272">채우기 배치가 평문을 줄인다</text>
+
+<path d="M328 100 C 350 98, 368 104, 388 102" fill="none" stroke="#3d3a34" stroke-width="2.2" marker-end="url(#pii2c)"/>
+<text x="322" y="82" font-size="16" fill="#8a8272">평문 0 확인 뒤</text>
+
+<path d="M404 48 C 480 45, 600 51, 674 48 C 677 94, 676 140, 674 176 C 600 179, 480 173, 405 176 C 401 140, 403 94, 404 48 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="424" y="80" font-size="23" fill="#2e6b41">2단계 · 엄격함</text>
+<text x="424" y="108" font-size="17" fill="#3d3a34">암호문만 읽는다</text>
+<text x="424" y="134" font-size="17" fill="#3d3a34">평문이면 복호화 실패</text>
+<text x="424" y="162" font-size="16" fill="#8a8272">느슨한 컨버터·배치 삭제</text>
+
+<path d="M400 196 C 340 212, 200 208, 110 194" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#pii2d)"/>
+<text x="150" y="232" font-size="19" fill="#b3502f">↩ 한 번 되돌린 적이 있다 (1편)</text>
+
+<path d="M24 254 C 240 251, 460 257, 676 253" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+<text x="24" y="284" font-size="20" fill="#3d3a34">= 평문 금지를 문서가 아니라 코드가 강제하는 상태로 옮긴다</text>
+<text x="24" y="310" font-size="17" fill="#b3502f">닫는 쪽은 아직 확인 중이다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 관대함에 끝을 적어 두지 않으면 그게 최종 상태가 된다</div>
+
+<p>다만 이 2단 구조가 계획대로 굴러갔다고는 못 하겠어요. 엄격한 쪽으로 넘기는 배포를 한 번 내보냈다가 <b>되돌린 적이 있습니다.</b> 쓰기 암호화를 켠다고 적어 둔 설정이 운영에서 읽히지 않고 있었고, 그 상태로 엄격한 컨버터를 올리니 평문 행에서 복호화가 실패했어요. 그 일은 1편에 따로 적었습니다. 되돌리면서 {관대한 컨버터}와 채우기 배치도 같이 살아났어요. <b>지금 돌고 있는 배치가 그때 지웠다가 돌아온 그 배치입니다.</b></p>
+
+<p>오늘 저녁에도 채우기 배치가 돌기로 돼 있었고, <b>결과는 아직 확인하지 않았습니다.</b> 남은 평문이 0인지 세어 보고, 조용한지 본 다음에야 엄격한 쪽을 다시 시도할 수 있어요. 지금 말할 수 있는 건 결정과 그 결정의 모양까지입니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>암호화가 실패할 때 예외를 던지면 서비스가 멈추고, 평문으로 저장하면 평문이 남습니다.</b> 평문 저장을 골랐어요. 읽기가 평문을 그대로 돌려주니 화면과 지급 계산이 멈추지 않고, 남은 평문은 채우기 배치가 나중에 암호화합니다. 실패의 대가가 중단에서 지연으로 바뀐 거예요.<br><br>
+  대신 조건을 셋 달았습니다. 실패는 암복호 유틸의 ERROR 로그와 P1 모니터가 세고, 컨버터는 값 없이 입력 길이만 WARN 으로 남기고, 평문을 치우는 배치가 먼저 있어야 해요.<br><br>
+  읽기 전환과 쓰기 암호화를 둘로 나눈 것도 같은 이유입니다. 롤링 배포 약 15분 동안은 두 버전이 같은 DB 를 쓰니까, 암호문을 읽을 수 있는 버전이 전부 깔린 다음에 암호화를 켰어요.<br><br>
+  그리고 관대함에는 끝을 적어 뒀습니다. 평문이 0인 걸 확인하면 암호문 전용 컨버터로 바꾸고 느슨한 컨버터와 배치를 지워, 평문이 있으면 깨지는 상태로 옮깁니다. 그 전환은 한 번 되돌렸고, 오늘 돌기로 돼 있던 배치의 결과도 아직 확인하지 않았어요.<br><br>
+  느슨함은 기간이어야 하고, 기간에는 끝이 적혀 있어야 합니다.
+</div>
+
+</div>

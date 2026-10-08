@@ -1,0 +1,316 @@
+<!-- ============================================================
+  개인정보 암호화 1편: 설정은 켜 두었고 그 파일은 읽히지 않았다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: Spring 프로필, on-profile, 설정 테스트, ECS, 기동 로그 -->
+<!-- lead: 쓰기 암호화 스위치를 켜 두었는데 그 설정 파일이 운영에서 읽히지 않았어요. 로그인한 대행인 61명의 계좌번호가 평문으로 다시 써진 과정과, 설정 테스트를 실행 조건까지 보도록 고친 기록을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔐 개인정보 암호화 · 1편</div>
+  <b>1편. 설정은 켜 두었고 그 파일은 읽히지 않았다</b> &larr; 지금 이 글<br>
+  2편. 암호화에 실패하면 평문으로 저장하기로 했다<br>
+  3편. 등치 조회가 남아 있어 랜덤 IV 를 쓸 수 없었다<br>
+  4편. 컬럼이 아니라 문장을 암호화했다<br>
+  5편. 관리자 코멘트가 암호문처럼 보였다
+</div>
+
+<p>2026년 10월 2일 오전 9시 39분, 어드민의 대행인 목록이 깨졌습니다. 문의 채팅 쪽에서도 같은 오류가 올라왔어요. 그날 아침 배포한 것은 컬럼 값을 읽고 쓸 때 거치는 변환기(컨버터)에서 평문 경로를 지운 것, 즉 <b>암호문만 읽는 컨버터</b>였습니다.</p>
+
+<div class="obsv-code">복호화 실패: 암호문 형식이 아님</div>
+
+<p>→ 컬럼에서 읽은 값이 암호문 접두어로 시작하지 않는다는 뜻이에요. 쉽게 말해 <b>평문이 아직 남아 있었습니다.</b></p>
+
+<p>그럴 리가 없다고 생각했어요. 하루 전에 쓰기 암호화를 켜는 배포를 내보냈고, 전 행을 암호화하는 일회성 배치도 17시 45분에 돌아 대상을 모두 암호화했다고 로그에 찍혔거든요. 설정 테스트도 초록불이었습니다. 그리고 배치가 끝난 뒤에는 로그만 보고 넘기지 않았어요. DB 를 직접 세어 봤고, <b>평문 0행, NULL 0행</b>이었습니다. <span class="obsv-mark">켜 두었다고 믿을 근거가 제게는 네 개 있었어요.</span></p>
+
+<p>그중 앞의 셋은 같은 한 가지를 비켜 가 있었습니다. 셋 다 "적어 두었는가"를 물었을 뿐 "그 값으로 돌고 있는가"는 묻지 않았거든요. <b>그런데 네 번째는 비켜 가지 않았습니다.</b> 그 시각에 평문은 정말 0행이었어요. 숫자가 틀린 게 아니었습니다.</p>
+
+<p>그래서 이 글의 구멍은 "확인을 안 했다"가 아니에요. <span class="obsv-mark">확인은 했고, 확인한 뒤에 되돌아갔습니다.</span> 집계는 그 시각의 사진이고, 사진을 찍은 뒤에도 쓰기는 계속되니까요.</p>
+
+<p>직전 배포 버전으로 롤백하고 코드도 되돌렸습니다. 그리고 원인을 찾았는데, 범인은 그날 아침 배포가 아니었어요. <b>어제 켠 스위치가 애초에 운영에서 읽히지 않는 파일에 들어 있었습니다.</b></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 다룰 것</div>
+  &bull; 파일에 적어 둔 설정값이 왜 운영에 적용되지 않았나?<br>
+  &bull; 배치와 개발 환경은 왜 멀쩡했나?<br>
+  &bull; 설정 테스트는 무엇을 보고 통과했나?<br>
+  &bull; 안 읽히는 그 파일을 운영용으로 살리는 안은 왜 기각했나?
+</div>
+
+<h2>1. 그 시점에 평문이 없어야 했던 이유</h2>
+
+<p>이 작업은 대행인 계좌번호 컬럼 2,113행을 같은 자리에서 암호화하는 일이었어요. 새 컬럼을 만들지 않고, 평문이 들어 있던 그 컬럼에 암호문을 덮어씁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 관대한 컨버터 (lenient converter)</div>
+  JPA 가 컬럼 값을 읽고 쓸 때 거치는 변환기예요. 읽을 때 값이 암호문 접두어로 시작하면 복호화하고, 아니면 평문으로 보고 그대로 넘깁니다. 평문과 암호문이 한 컬럼에 섞여 있는 전환 기간을 버티기 위한 장치입니다.
+</div>
+
+<p>배포는 둘로 나눴습니다. 교체 중에는 옛 버전 컨테이너(태스크)와 새 버전이 15분쯤 함께 돌기 때문에, 1차에서는 읽기만 두 형식을 받게 하고 2차에서 쓰기 암호화를 켰어요. 이 순서를 왜 지켜야 하는지는 2편에 적었습니다.</p>
+
+<p>2차 배포까지 끝낸 다음 날 아침이 그날이었어요. 순서대로라면 그 시점에 평문은 한 건도 없어야 했습니다.</p>
+
+<h2>2. 운영이 읽는 파일은 그 파일이 아니었다</h2>
+
+<p>스위치는 설정값 하나였습니다. 저는 그 값을 <b>API 모듈의 운영 프로필 설정 파일</b>에 넣었어요. 이름이 그렇게 생긴 파일이니 운영에서 읽히리라 생각했습니다.</p>
+
+<p>그 파일의 맨 위는 이랬어요.</p>
+
+<div class="obsv-code">[ API 모듈의 운영 프로필 설정 파일 ]   # 스위치를 여기 넣었다
+spring:
+  config:
+    activate:
+      on-profile: dev          # 2025-10-24 부터 이렇게 되어 있었다
+...
+encryption:
+  {대행인 계좌번호}:
+    encrypt-on-write: true     # 운영에서는 이 줄이 읽히지 않는다
+
+
+[ 공용 모듈의 운영 설정 파일 ]   # 운영 API 가 실제로 읽는 쪽
+# 파일 이름에 활성 프로필을 끼워 넣어 불러온다
+# 이 파일에는 커넥션 풀, 외부 서비스 주소, 점검 시간 등이 들어 있다</div>
+
+<p>→ 윗줄이 전부였어요. <code>on-profile: dev</code> 는 "이 파일은 dev 프로필일 때만 적용하라"는 선언입니다. 운영 태스크는 활성 프로필이 <code>prod</code> 라서, 파일 이름이 운영용처럼 생겼어도 <span class="obsv-mark">내용은 한 줄도 적용되지 않았습니다.</span></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 프로필 (profile)</div>
+  환경마다 다른 설정을 골라 쓰기 위한 이름표예요. 실행할 때 <code>prod</code> 같은 이름표를 켜면 그 이름에 해당하는 설정만 적용됩니다. 한 번에 여러 개를 켤 수도 있어요. 파일 이름으로 고르는 방식과, 파일 안에서 <code>on-profile</code> 로 스스로 조건을 붙이는 방식이 함께 쓰여요.
+</div>
+
+<p>저 한 줄은 2025년 10월 24일 커밋에서 바뀐 것이었습니다. 제목은 "운영 설정 파일을 두 모듈에서 중복 사용하고 있음"이었어요. 같은 이름의 파일이 둘이라 헷갈린다는 문제를 고치면서 한쪽을 dev 조건으로 바꿔 사실상 비활성으로 만든 거예요. 그 뒤로 <b>운영 API 의 prod 설정은 전부 공용 모듈 쪽 파일이 맡고 있었습니다.</b></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 350" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arrP1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="28" font-size="21" fill="#4a7fb5">운영 프로필로 기동할 때 어느 파일이 읽히나</text>
+
+<path d="M26 150 C 70 147, 112 153, 156 150 C 159 172, 158 196, 156 218 C 112 221, 70 215, 27 218 C 23 196, 25 172, 26 150 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+<text x="44" y="182" font-size="19" fill="#3d3a34">⚙️ 운영 태스크</text>
+<text x="44" y="206" font-size="14" fill="#8a8272">활성 프로필 = prod</text>
+
+<path d="M160 172 C 192 152, 216 122, 246 106" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#arrP1)"/>
+<path d="M160 198 C 192 216, 216 240, 246 254" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP1)"/>
+
+<path d="M256 58 C 380 55, 540 61, 672 58 C 675 90, 674 124, 672 154 C 540 157, 380 151, 257 154 C 253 124, 255 90, 256 58 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+<text x="274" y="86" font-size="21" fill="#b3502f">📄 API 모듈의 운영 프로필 파일</text>
+<text x="274" y="112" font-size="13" fill="#3d3a34" font-family="Menlo, monospace">on-profile: dev</text>
+<text x="274" y="140" font-size="16" fill="#b3502f">🔌 스위치는 여기 · 운영은 안 읽는다</text>
+
+<path d="M256 212 C 380 209, 540 215, 672 212 C 675 244, 674 278, 672 308 C 540 311, 380 305, 257 308 C 253 278, 255 244, 256 212 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8"/>
+<text x="274" y="240" font-size="21" fill="#2e6b41">📄 공용 모듈의 운영 설정 파일</text>
+<text x="274" y="266" font-size="13" fill="#3d3a34" font-family="Menlo, monospace">파일 이름으로 프로필을 고른다</text>
+<text x="274" y="294" font-size="16" fill="#2e6b41">✅ 운영이 실제로 읽는 쪽</text>
+
+<text x="24" y="338" font-size="20" fill="#b3502f">= 운영 설정처럼 생긴 파일이 둘이었고, 스위치는 안 읽히는 쪽에 있었어요</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 파일 이름이 아니라 적용 조건이 적용 여부를 정한다</div>
+
+<h2>3. 배치는 멀쩡했고 개발 환경은 재현되지 않았다</h2>
+
+<p>여기서 증상이 특이해집니다. 같은 스위치를 저는 세 곳에 넣어 뒀는데, <b>어긋난 곳은 운영 API 하나뿐이었어요.</b></p>
+
+<p>배치 모듈의 운영 설정 파일은 맨 위가 <code>on-profile: prod</code> 였습니다. 그래서 배치에서는 쓰기 암호화가 제대로 켜져 있었어요. 개발 환경은 dev 프로필 파일이 적용되니 그쪽도 켜져 있었습니다. <span class="obsv-mark">증상을 재현하려고 개발 환경에서 아무리 돌려 봐도 나오지 않는 종류의 결함이었어요.</span></p>
+
+<p>그러면 운영 API 가 꺼진 상태로 무엇을 했을까요. 일회성 배치가 17시 45분에 전 행을 암호문으로 채웠고, 그 뒤에 대행인이 로그인을 했습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 부분 갱신 (@DynamicUpdate)</div>
+  JPA 구현체(하이버네이트)는 엔티티의 한 필드만 바뀌어도 기본적으로 <b>모든 컬럼을 담은 UPDATE 문</b>을 만듭니다. 바뀐 컬럼만 담게 하려면 따로 설정을 켜야 해요. 이 엔티티에는 그 설정이 없었습니다.
+</div>
+
+<p>로그인하면 마지막 로그인 시각을 갱신해요. 그 필드 하나만 바뀌었지만 UPDATE 문에는 계좌번호 컬럼도 함께 실립니다. 쓰기 암호화가 꺼진 태스크가 그 문장을 보냈으니, <b>방금 암호문으로 바뀐 값이 다시 평문으로 덮였어요.</b> 그렇게 로그인한 대행인 61명의 계좌번호가 되돌아갔습니다.</p>
+
+<p>배치 쪽은 영향이 없었어요. 매일 새벽 4시 휴면 전환 작업이 같은 엔티티를 수정하는데, 그쪽은 스위치가 켜져 있어서 수정할 때마다 암호화했거든요. 같은 코드가 한쪽에서는 보호 장치로, 다른 쪽에서는 되돌리기로 돌았습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arrP2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="28" font-size="21" fill="#4a7fb5">암호문이 평문으로 되돌아간 경로</text>
+
+<path d="M26 46 C 140 43, 280 49, 400 46 C 403 62, 402 78, 400 92 C 280 95, 140 89, 27 92 C 23 78, 25 62, 26 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+<text x="42" y="74" font-size="17" fill="#2e6b41">🔐 일회성 배치가 전 행을 암호문으로 (17:45)</text>
+<path d="M212 96 C 214 102, 213 108, 212 114" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP2)"/>
+
+<path d="M26 118 C 140 115, 280 121, 400 118 C 403 134, 402 150, 400 164 C 280 167, 140 161, 27 164 C 23 150, 25 134, 26 118 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+<text x="42" y="146" font-size="17" fill="#3d3a34">🙋 대행인이 로그인한다</text>
+<path d="M212 168 C 214 174, 213 180, 212 186" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP2)"/>
+
+<path d="M26 190 C 140 187, 280 193, 400 190 C 403 206, 402 222, 400 236 C 280 239, 140 233, 27 236 C 23 222, 25 206, 26 190 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+<text x="42" y="218" font-size="17" fill="#3d3a34">✍️ 로그인 시각 하나만 바뀐 수정이 나간다</text>
+<path d="M212 240 C 214 246, 213 252, 212 258" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP2)"/>
+
+<path d="M26 262 C 140 259, 280 265, 400 262 C 403 278, 402 294, 400 308 C 280 311, 140 305, 27 308 C 23 294, 25 278, 26 262 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
+<text x="42" y="290" font-size="17" fill="#c07f18">📦 UPDATE 문에 계좌번호 컬럼도 함께 실린다</text>
+
+<path d="M404 286 C 416 282, 426 274, 436 262" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP2)"/>
+
+<path d="M444 122 C 520 119, 606 125, 674 122 C 677 162, 676 204, 674 244 C 606 247, 520 241, 445 244 C 441 204, 443 162, 444 122 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+<text x="462" y="152" font-size="19" fill="#b3502f">🔓 쓰기 암호화 꺼짐</text>
+<text x="462" y="178" font-size="15" fill="#3d3a34">그대로 저장한다</text>
+<text x="462" y="208" font-size="17" fill="#b3502f">계좌번호 61건이</text>
+<text x="462" y="230" font-size="17" fill="#b3502f">평문으로 되돌아갔다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 계좌번호를 건드리지 않은 수정도 계좌번호를 다시 쓴다</div>
+
+<h2>4. 테스트는 통과했다. 파일을 읽었을 뿐이다</h2>
+
+<p>이쯤에서 제일 아픈 지점이 나옵니다. <b>저는 이 스위치에 설정 테스트를 붙여 뒀어요.</b> 그런데 그 테스트는 통과했습니다.</p>
+
+<div class="obsv-code">[ 고치기 전 ]
+yml 파일을 직접 열어서
+  "encrypt-on-write" 키가 있는가  -&gt;  있다  -&gt;  통과
+
+[ 고친 뒤 ]
+활성 프로필을 운영 태스크와 똑같이 prod 로 지정하고
+운영과 같은 설정 소스로 스프링 환경을 올린 다음
+  Environment 에서 꺼낸 값이 true 인가  -&gt;  단언
+dev · local 프로필도 같은 방식으로 단언</div>
+
+<p>→ 위쪽은 <b>파일에 글자가 적혀 있는지</b>만 봅니다. 아래쪽은 <b>그 파일이 적용되는지까지</b> 봐요. 제 결함은 글자가 아니라 적용 조건에 있었으니, 위쪽 테스트는 끝까지 초록불일 수밖에 없었습니다.</p>
+
+<p>아래쪽도 만능은 아니에요. 설정 소스를 테스트가 직접 지정해서 띄우기 때문에, 실행 환경이 프로필 이름을 여러 개 주거나 오타를 내거나 환경변수로 값을 덮어쓰면 이 테스트는 그대로 통과합니다. 그래서 뒤에 적는 기동 로그가 따로 필요했어요.</p>
+
+<p>고칠 때 한 가지를 먼저 했어요. 새 테스트를 짜 놓고, <b>스위치를 옮기기 전에 그 테스트가 실패하는 것을 확인했습니다.</b> 이걸 건너뛰면 새 테스트도 결함을 못 보는 테스트일 수 있는데, 통과하는 걸 보고 안심하게 되거든요. <span class="obsv-mark">고치기 전에 빨간불을 한 번 보는 것이, 이 테스트가 무엇을 보는지에 대한 유일한 증거였어요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 설정 테스트를 쓸 때 "파일에 있는가"로 끝내면, 파일 선택 규칙이 바뀌는 날 조용히 무력해집니다<br>
+  &bull; 실행 환경이 프로필을 환경변수로 넘긴다면, 테스트도 같은 방식으로 프로필을 지정해 환경을 올리는 쪽이 가깝습니다<br>
+  &bull; 고치기 전에 실패를 보지 못한 테스트는, 지금 통과하는 이유를 설명할 수 없습니다
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 365" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+  <marker id="arrP3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+  </marker>
+</defs>
+<g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
+
+<text x="24" y="28" font-size="21" fill="#4a7fb5">두 설정 테스트가 보는 범위</text>
+
+<path d="M26 44 C 240 41, 460 47, 674 44 C 677 86, 676 128, 674 166 C 460 169, 240 163, 27 166 C 23 128, 25 86, 26 44 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<text x="44" y="74" font-size="22" fill="#b3502f">📄 파일을 직접 읽던 테스트</text>
+
+<path d="M44 92 C 100 90, 150 94, 198 92 C 201 110, 200 126, 198 142 C 150 144, 100 140, 45 142 C 41 126, 43 110, 44 92 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="56" y="114" font-size="16" fill="#3d3a34">파일을 연다</text>
+<text x="56" y="133" font-size="13" fill="#8a8272">이름으로 고른다</text>
+<path d="M204 117 C 218 115, 232 116, 246 117" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP3)"/>
+
+<path d="M252 92 C 310 90, 360 94, 408 92 C 411 110, 410 126, 408 142 C 360 144, 310 140, 253 142 C 249 126, 251 110, 252 92 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="264" y="114" font-size="16" fill="#3d3a34">키가 있는가</text>
+<text x="264" y="133" font-size="13" fill="#8a8272">글자만 본다</text>
+<path d="M414 117 C 428 115, 442 116, 456 117" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP3)"/>
+
+<path d="M462 92 C 530 90, 600 94, 656 92 C 659 110, 658 126, 656 142 C 600 144, 530 140, 463 142 C 459 126, 461 110, 462 92 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+<text x="474" y="114" font-size="16" fill="#b3502f">초록불</text>
+<text x="474" y="133" font-size="13" fill="#b3502f">적용 조건은 안 본다</text>
+
+<path d="M26 194 C 240 191, 460 197, 674 194 C 677 236, 676 278, 674 316 C 460 319, 240 313, 27 316 C 23 278, 25 236, 26 194 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+<text x="44" y="224" font-size="22" fill="#2e6b41">🚀 같은 프로필로 띄우는 테스트</text>
+
+<path d="M44 242 C 100 240, 150 244, 198 242 C 201 260, 200 276, 198 292 C 150 294, 100 290, 45 292 C 41 276, 43 260, 44 242 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="56" y="264" font-size="16" fill="#3d3a34">프로필을 prod 로</text>
+<text x="56" y="283" font-size="13" fill="#8a8272">실행 환경과 같게</text>
+<path d="M204 267 C 218 265, 232 266, 246 267" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP3)"/>
+
+<path d="M252 242 C 310 240, 360 244, 408 242 C 411 260, 410 276, 408 292 C 360 294, 310 290, 253 292 C 249 276, 251 260, 252 242 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+<text x="264" y="264" font-size="16" fill="#3d3a34">환경을 올린다</text>
+<text x="264" y="283" font-size="13" fill="#8a8272">파일 선택까지 거친다</text>
+<path d="M414 267 C 428 265, 442 266, 456 267" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrP3)"/>
+
+<path d="M462 242 C 530 240, 600 244, 656 242 C 659 260, 658 276, 656 292 C 600 294, 530 290, 463 292 C 459 276, 461 260, 462 242 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2"/>
+<text x="474" y="264" font-size="16" fill="#2e6b41">실제 값을 단언</text>
+<text x="474" y="283" font-size="13" fill="#2e6b41">고치기 전엔 실패했다</text>
+
+<text x="24" y="350" font-size="20" fill="#b3502f">= 적혀 있는지 묻는 테스트와, 그 값으로 도는지 묻는 테스트는 다릅니다</text>
+</g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 설정 테스트는 파일이 아니라 실행 조건을 대상으로 삼아야 한다</div>
+
+<h2>5. 머지 조건을 건너뛴 것</h2>
+
+<p>원인은 설정 위치였지만, 터지기 전에 잡을 기회가 하나 더 있었어요. 암호문만 읽는 3차 작업에는 <b>검증 배치 통과를 머지 조건으로 걸어 뒀습니다.</b> 전 행을 훑어 평문으로 남은 행과 복호화 실패 행을 세는 배치인데, 쓰기 없이 세기만 해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 검증 모드 (VERIFY)</div>
+  일회성 배치를 채우기와 검증 두 모드로 나눠 뒀어요. 채우기는 평문 행을 암호화하고, 검증은 아무것도 쓰지 않고 평문으로 남은 행 수와 그 행의 식별자만 로그로 남깁니다. 암호문 전용으로 넘어가도 되는지 판단하는 자리입니다.
+</div>
+
+<p>그 조건은 당일 17시 45분 실행분이었는데, <b>3차 작업은 그 전에 머지됐습니다.</b> 검증이 돌았다면 평문으로 남은 행 수가 0이 아니었을 거예요. 나중에 센 수가 61행이었습니다. 0이 아닌 숫자를 봤다면 배포를 멈췄을 테고, 이 글의 오전 9시 39분은 없었을 겁니다.</p>
+
+<p>이 조건을 다시 보면, 그게 바로 <b>두 번째 사진</b>이었어요. 전날 저녁의 집계는 그 시각까지만 참인 숫자였고, 그래서 암호문 전용으로 넘어가기 직전에 한 번 더 세게 해 둔 것이었습니다. 앞의 0 을 믿고 뒤의 0 을 건너뛴 셈이에요. <span class="obsv-mark">쓰기가 계속되는 시스템에서 "확인했다"는 날짜와 시각을 붙여야만 말이 됩니다.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 게이트를 적어 두는 것과 통과시키는 것은 다르다</div>
+  &bull; 저는 조건을 문서에 적었고, 그 조건이 왜 필요한지도 적어 뒀어요. 그런데 머지 버튼을 막는 장치는 없었습니다<br>
+  &bull; 설계 문서의 "~전에 ~를 확인한다"는 줄은 사람이 기억하는 한에서만 조건입니다. 이번에 기억하지 못한 사람은 저예요<br>
+  &bull; 그리고 한 번 센 0 은 다시 세기 전까지만 0 입니다. 같은 집계를 두 번 적어 둔 데에는 이유가 있었어요
+</div>
+
+<h2>6. 안 읽히는 파일을 살리는 안은 기각했다</h2>
+
+<p>수정 방향으로 두 가지가 보였습니다. 스위치 두 개를 공용 모듈의 운영 설정 파일로 옮기는 안, 그리고 <b>API 모듈의 그 파일을 운영 조건으로 되살려 원래 이름값대로 쓰게 하는 안</b>이었어요.</p>
+
+<p>두 번째가 더 근본적으로 보였지만 택하지 않았습니다. 그 파일이 1년 가까이 비활성이었다는 건, <b>그 안의 모든 줄이 1년 가까이 적용되지 않았다는 뜻</b>이거든요. 조건을 운영으로 바꾸면 스위치 두 개만 켜지는 게 아니라 그 파일에 적힌 설정이 한꺼번에 살아납니다. 세어 보니 <span class="obsv-mark">함께 바뀌는 운영 설정이 13개였어요.</span> 커넥션 풀 크기, 엔티티 이름 짓기 규칙, 점검 시간 같은 것들입니다.</p>
+
+<p>장애를 고치는 배포에 그만큼의 변경을 얹을 이유가 없었어요. 그래서 스위치만 옮기고, 그 파일 맨 위에는 "이 파일은 운영에 적용되지 않는다"는 주석을 달아 뒀습니다. 파일을 지우는 일은 별도 작업으로 떼어 냈어요.</p>
+
+<p>같은 날 하나를 더 넣었습니다. <b>기동이 끝날 때 쓰기 암호화 스위치 값을 로그 한 줄로 남기는 것</b>이에요. 이번 결함이 오래 숨어 있던 이유가 단순했거든요. 값이 무엇으로 읽혔는지 어디에도 남지 않았습니다.</p>
+
+<p>같은 자리에 키 지문도 남겼어요. 암호화 키의 해시 앞 4바이트만 16진수로 적은 짧은 문자열인데, 해시라서 키를 되돌릴 수 없고 키 조각도 남지 않지만 두 서버가 같은 키를 쓰는지는 이 값만 비교하면 알 수 있습니다. API 와 배치의 기동 로그만으로 대조하려고 넣었어요.</p>
+
+<p>이 수정은 독립 리뷰를 받아 통과 판정이 났고, 권고 7건 중 다섯 개를 같이 반영했어요. 눈에 띄는 셋만 적으면, 배치 쪽에도 같은 방식의 실제 적용값 테스트를 넣고, 운영 프로필에서 스위치가 꺼져 있으면 ERROR 로 한 줄 더 남기고, 모든 태스크가 교체된 뒤에 채우기 배치를 돌린다는 조건을 절차에 적었습니다. <b>기동을 실패시키는 안은 택하지 않았어요.</b> 설정 하나 때문에 서비스가 뜨지 않는 쪽보다 알림이 뜨는 쪽이 낫다고 봤습니다.</p>
+
+<p>그리고 이 작업은 아직 끝나지 않았습니다. 평문으로 되돌아간 61행을 다시 암호화하고 검증까지 통과시키는 일이 남았어요. 일괄 암호화 배치는 오늘 저녁에도 <b>돌기로 돼 있었고, 결과는 아직 확인하지 못했습니다.</b> 처음에는 "돌았고"라고 적었다가 고쳤어요. 결과를 보지 않았으면 돌았다는 것도 제가 확인한 게 아니니까요. 검증이 통과하지 않으면 암호문 전용 컨버터는 다시 올리지 않아요.</p>
+
+<p>덧붙여 둘 게 하나 있어요. 이 글을 쓰며 근거를 다시 들춰 보려니, 전날 저녁 집계를 적어 둔 설계 문서의 그 절도 3차 작업 점검 문서도 <b>지금 저장소에는 없었습니다.</b> 3차 작업을 통째로 되돌리면서 코드와 함께 지워졌고, 되돌린 커밋을 열어야만 나와요. <span class="obsv-mark">되돌리기는 판단을 되돌리면서 그 판단의 근거까지 같이 치웁니다.</span> 적어 둔 것과 지금 적용되는 것이 다르다는 이 글의 이야기가 문서에서도 한 번 더 나온 셈이에요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>스위치를 켜 둔 파일이 운영에서 읽히지 않았습니다.</b> 이름은 운영 프로필 설정 파일인데 맨 위가 dev 조건이었고, 그렇게 바뀐 건 1년 전 커밋이었어요. 운영 API 는 쓰기 암호화가 꺼진 채로 돌았고, 전 행을 암호화한 배치 뒤에 로그인한 대행인 61명의 계좌번호가 로그인 시각 갱신 때 평문으로 다시 써졌습니다.<br><br>
+  설정 테스트는 통과했어요. yml 파일을 열어 키가 있는지만 봤기 때문입니다. 실행 환경과 같은 프로필로 띄워 실제로 읽히는 값을 단언하도록 바꾸고, 고치기 전에 그 테스트가 실패하는 것부터 확인했습니다. 그래도 남는 구멍은 기동 로그로 메웠어요. 안 읽히는 파일을 운영용으로 되살리는 안은 운영 설정 13개가 함께 바뀌어 기각했어요.<br><br>
+  배치가 끝난 저녁에 DB 를 직접 세어 평문 0행을 확인하기도 했습니다. 그 숫자는 틀리지 않았어요. 밤사이 로그인이 그 뒤에 일어났을 뿐입니다. 암호문 전용으로 넘어가기 직전에 한 번 더 세기로 한 조건이 문서에 있었는데, 그걸 건너뛴 게 마지막 기회였어요.<br><br>
+  설정은 파일에 적는 순간 켜지는 것이 아니라, 그 파일이 읽히는 순간에 켜집니다. 그리고 확인한 값은 확인한 그 시각까지만 참이에요.
+</div>
+
+</div>
