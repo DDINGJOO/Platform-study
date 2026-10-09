@@ -1,0 +1,238 @@
+<!-- lead: 자바로 만든 서비스는 아픈 자리가 대체로 정해져 있어요. 공통 지표 여섯 개와 조건부 두 개를 어떤 순서로 쌓아야 하는지, 그 순서가 USE·RED 와 어떻게 맞물리는지, 지표마다 흔히 잘못 보는 지점을 정리했어요. -->
+<!-- tags: GC 다운타임, 힙 사용률, 파일 설명자, 조율된 누락, USE RED -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔔 SLO와 경고, 3편</div>
+  1편. 알람은 언제 울려야 하나<br>
+  2편. 모니터만 보고 있는 사람은 값비싼 경고 시스템이다<br>
+  <b>3편. 모든 자바 서비스가 같은 자리에서 아프다</b> &larr; 지금 이 글<br>
+  4편. 머신러닝이 임계값을 정해 주지는 않았다
+</div>
+
+<p>서비스를 새로 띄우고 대시보드를 만듭니다. 빈 화면 앞에서 제일 먼저 드는 생각은 "뭘 올리지"예요. CPU, 메모리, 요청 수, 에러 수. 떠오르는 대로 올리면 패널이 열두 개쯤 생기고, 그중 어느 것도 새벽 3시에 울려야 하는지 아닌지 모르는 채로 남습니다.</p>
+
+<p>이때 필요한 건 목록이 아니라 순서예요. 패널을 하루에 열두 개 만들 일은 없고, 보통은 하나씩 늘려 가게 됩니다. 그러면 <b>무엇부터 올려야 가장 덜 후회하는가</b>가 실제 질문이 돼요.</p>
+
+<p>다행히 이 질문에는 공개된 답이 반쯤 나와 있어요. <b>USE</b>는 자원 하나를 볼 때 사용률(utilization)·포화도(saturation)·에러를 보라고 하고, <b>RED</b>는 요청을 받는 서비스를 볼 때 요청률(rate)·에러(errors)·지속 시간(duration)을 보라고 합니다. 하나는 자원 쪽, 하나는 요청 쪽이에요. <span class="obsv-mark">자바로 만든 서비스는 이 둘에 동시에 걸쳐 있습니다.</span> 바깥에서 보면 요청을 받는 서비스고, 안에서 보면 힙과 CPU와 파일 설명자를 쓰는 자원 덩어리니까요.</p>
+
+<h2>1. 왜 이 순서인가: 앞 지표가 다음 지표를 불러와요</h2>
+
+<p>공통 지표는 여섯 개로 추려집니다. 에러, 레이턴시, 가비지 수집 다운타임, 힙 사용률, CPU 사용률, 파일 설명자. 자바로 만든 서비스라면 종류를 가리지 않고 전부 해당해요. 뒤에 비정상 트래픽과 배치·장기 실행 작업이 붙는데, 이 둘은 해당하는 애플리케이션에만 있으니 조건부로 떼어 둡니다.</p>
+
+<p>앞쪽 둘은 RED 쪽 얼굴이고 뒤쪽 넷은 USE 쪽 얼굴이에요. 에러와 레이턴시는 사용자가 겪는 것이고, GC 다운타임과 힙은 메모리라는 자원의 포화도와 사용률이며, CPU와 파일 설명자는 각각의 사용률입니다. <span class="obsv-mark">사용자가 먼저 느끼는 쪽부터 깔고, 그다음 그 증상을 설명해 줄 자원 쪽으로 내려가는 순서예요.</span> 그래서 하나가 다음 하나를 지목합니다. 레이턴시가 느린 이유를 찾으면 메모리 포화도가 나오고, 포화도를 보면 사용률이 궁금해지고, CPU 사용률의 한계를 인정하면 한도가 또렷한 파일 설명자가 남아요.</p>
+
+<p>첫 걸음이 제일 싼 것도 이유가 있습니다. 에러 비중과 레이턴시는 계측기 하나에서 같이 나와요. 타이머 하나를 성공과 실패로 나눠서 재면, 실패한 실행의 비중이 곧 에러 빈도가 되고 동시에 레이턴시 분포도 제자리를 찾습니다. 섞어 재면 둘 다 틀어지고요(2편에서 다뤘습니다). <span class="obsv-mark">계측기 하나로 지표 두 개를 얻는 자리가 여기뿐이라, 여기서 시작하는 게 가장 이득입니다.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 362" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrB1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">쌓는 순서 (요청 쪽 먼저, 자원 쪽으로)</text>
+  <path d="M40 60 C 94 57, 149 63, 205 58 C 208 76, 207 92, 204 106 C 149 109, 94 103, 41 108 C 38 92, 39 76, 40 60 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="54" y="91" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">1. 에러</text>
+  <text x="46" y="128" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">타이머 하나를 성공/실패로 쪼갠다</text>
+  <path d="M230 60 C 284 57, 339 63, 395 58 C 398 76, 397 92, 394 106 C 339 109, 284 103, 231 108 C 228 92, 229 76, 230 60 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="244" y="91" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">2. 레이턴시</text>
+  <text x="236" y="128" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">같은 타이머의 다른 얼굴</text>
+  <path d="M420 60 C 474 57, 529 63, 585 58 C 588 76, 587 92, 584 106 C 529 109, 474 103, 421 108 C 418 92, 419 76, 420 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="434" y="91" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">3. GC 다운타임</text>
+  <text x="426" y="128" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">메모리 포화도</text>
+  <path d="M420 160 C 474 157, 529 163, 585 158 C 588 176, 587 192, 584 206 C 529 209, 474 203, 421 208 C 418 192, 419 176, 420 160 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="434" y="191" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">4. 힙 사용률</text>
+  <text x="426" y="228" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">포화도 다음에 사용률</text>
+  <path d="M230 160 C 284 157, 339 163, 395 158 C 398 176, 397 192, 394 206 C 339 209, 284 203, 231 208 C 228 192, 229 176, 230 160 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="244" y="191" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">5. CPU 사용률</text>
+  <text x="236" y="228" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">포화도로 재기 어렵다</text>
+  <path d="M40 160 C 94 157, 149 163, 205 158 C 208 176, 207 192, 204 206 C 149 209, 94 203, 41 208 C 38 192, 39 176, 40 160 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="54" y="191" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">6. 파일 설명자</text>
+  <text x="46" y="228" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">비용이 거의 들지 않는다</text>
+  <path d="M208 82 C 214 80, 220 84, 226 82" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M398 82 C 404 80, 410 84, 416 82" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M502 110 C 505 124, 500 138, 502 154" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M416 182 C 410 180, 404 184, 398 182" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M226 182 C 220 180, 214 184, 208 182" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M40 252 C 200 249, 420 255, 660 251" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="8 8" stroke-linecap="round"/>
+  <text x="660" y="244" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">여기까지는 전부 공통</text>
+  <path d="M150 268 C 206 265, 262 271, 320 266 C 323 283, 322 297, 319 310 C 262 313, 206 307, 151 312 C 148 297, 149 283, 150 268 Z" fill="#fdfaf3" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="164" y="296" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">7. 비정상 트래픽</text>
+  <text x="156" y="330" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">403 · 404 를 센다</text>
+  <path d="M390 268 C 446 265, 502 271, 560 266 C 563 283, 562 297, 559 310 C 502 313, 446 307, 391 312 C 388 297, 389 283, 390 268 Z" fill="#fdfaf3" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="404" y="296" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">8. 배치 · 장기 작업</text>
+  <text x="396" y="330" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">그런 앱에만 있다</text>
+  <path d="M110 212 C 118 232, 130 254, 146 266" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <text x="350" y="352" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 앞 지표가 뒤 지표를 불러오는 순서다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 공통 여섯 개가 먼저, 조건부 두 개가 나중</div>
+
+<h2>2. 레이턴시는 타이머가 켜지기 전 시간을 모릅니다</h2>
+
+<p>스프링부트가 자동으로 달아 주는 http.server.requests 타이머는 <b>서비스가 요청을 처리하기 시작하는 순간부터</b> 측정을 시작해요. 당연한 말 같지만 여기에 구멍이 있습니다. 요청 스레드 풀이 자주 포화되면 요청은 처리되기 전에 대기 상태에 머무르는데, 그 대기 시간은 타이머에 들어오지 않아요. 사용자는 기다렸는데 차트는 모릅니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 조율된 누락 (coordinated omission)</div>
+  측정하는 쪽이 느려진 시스템과 보조를 맞춰 버려서, 가장 나빴던 구간이 기록에서 빠지는 현상입니다. 원래는 부하 생성기 이야기예요. 서버가 멈춘 동안 요청을 덜 보내 놓고 보낸 것만 재니까, 결과가 실제보다 좋게 나옵니다. 서버 쪽 타이머도 결이 같아요. 타이머가 <b>처리를 시작하는 순간</b> 켜지면 그 앞에서 기다린 시간은 애초에 측정 대상이 아니게 됩니다.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="70" y="44" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">요청 도착</text>
+  <text x="560" y="44" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">응답 반환</text>
+
+  <path d="M70 106 C 123 103, 176 109, 230 104 C 233 121, 232 137, 229 150 C 176 153, 123 147, 71 152 C 68 137, 69 121, 70 106 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-dasharray="7 5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="150" y="134" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">스레드 풀에서 대기</text>
+  <path d="M240 106 C 346 103, 451 109, 560 104 C 563 121, 562 137, 559 150 C 451 153, 346 147, 241 152 C 238 137, 239 121, 240 106 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="400" y="134" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5">요청 처리</text>
+
+  <path d="M70 90 C 70 82, 74 80, 80 80 C 220 77, 420 83, 552 80 C 558 80, 562 82, 562 90" fill="none" stroke="#b3502f" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="316" y="70" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">사용자가 기다린 시간</text>
+
+  <path d="M240 168 C 240 176, 244 178, 250 178 C 340 181, 460 175, 552 178 C 558 178, 562 176, 562 168" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="400" y="202" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">http.server.requests 가 잰 시간</text>
+  <text x="150" y="202" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">여기가 통째로 빠진다</text>
+
+  <path d="M44 222 C 44 230, 48 232, 54 232 C 240 235, 420 229, 584 232 C 590 232, 594 230, 594 222" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="318" y="256" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">http.client.requests, 나를 부르는 쪽이 잰 시간</text>
+  <text x="350" y="288" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 가장 나빴던 구간이 내 타이머에는 없다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 톰캣 스레드 풀이나 프록시 풀에서 기다린 시간은 서버 타이머 바깥에 있다</div>
+
+<p>보완책은 반대쪽에서 재는 겁니다. 호출하는 쪽의 http.client.requests 타이머를 보는 거예요. 여기서 클라이언트는 최종 사용자가 아니라 API 게이트웨이나 다른 마이크로서비스처럼 서비스를 호출하는 주체입니다. <span class="obsv-mark">내 타이머가 못 보는 네트워크 지연과 스레드 풀 경합을, 나를 부르는 쪽은 보고 있어요.</span></p>
+
+<p>호출자가 여럿이면 하나 더 조심할 게 있습니다. 호출받는 서비스가 모든 요청을 똑같은 시간에 처리하더라도, 호출자의 배포 존이나 리전이 다르면 각자에게 보이는 처리 시간이 달라요. 태그를 전부 집계하면 느린 쪽의 이상치가 평균에 묻힙니다. 그래서 프로메테우스의 <code>topk</code>로 clientName별 최댓값만 뽑아 임계값과 비교하면, 종합 성능과 별개로 특정 클라이언트의 이상 측정치가 보존됩니다.</p>
+
+<h2>3. 자바라서 목록에 들어온 둘: GC와 힙</h2>
+
+<p>범용 목록에 자바 런타임 지표가 둘이나 들어온 이유는 결과 쪽에 있습니다. 가비지 수집이 멈춤 구간을 만들면 그 시간만큼 사용자 응답이 밀리고, 멈춤이 길어지는 추세는 'Out of memory'가 임박했다는 전조예요. 원인은 자바 특유의 사정이지만 증상은 응답 지연과 프로세스 종료입니다. USE 식으로 말하면 <b>메모리의 포화도</b>를 자바에서 가장 솔직하게 알려 주는 값이 GC 쪽에 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 보조 GC와 주요 GC (minor / major)</div>
+  새 객체는 전부 이든 공간에 할당되고, 이 공간이 가득 차면 <b>보조 GC</b>가 일어나 살아남은 객체를 생존자 공간으로 옮깁니다. 오래 살아남은 객체는 지난 세대로 승격되고, 그쪽을 청소하는 것이 <b>주요 GC</b>예요. 허용 범위와 임계값은 둘을 나눠서 정해야 합니다.
+</div>
+
+<p>볼 것은 두 가지입니다. 최대 다운타임, 그리고 가비지 수집에 쓴 시간의 비중이에요. 요즘 수집기는 상당 부분을 애플리케이션과 동시에 돌리지만, 멈춤 구간(stop-the-world)은 여전히 남고 그 시간은 그대로 잃어버린 시간입니다. 그래서 비중이 급격히 오를 때는 경고를 울려도 돼요.</p>
+
+<p>여기서 숫자 감각을 한 번 교정하게 됩니다. <span class="obsv-mark">보조 GC가 매분 일어난다는 사실 자체는 놀랄 일이 아니에요.</span> 횟수가 많아도 한 번에 쓰는 시간이 짧으면 전체에서 차지하는 비중은 소수점 아래로 떨어집니다. 볼 것은 횟수가 아니라 비중이에요. 집계 함수가 약한 모니터링 시스템을 쓴다면 마이크로미터의 JvmHeapPressureMetrics가 이 비중을 미리 계산해 jvm.gc.overhead 게이지로 올려 줍니다. 되돌아보기 구간 동안 GC에 쓴 CPU 시간의 근사치를 0에서 1 사이 값으로 주는 게이지예요.</p>
+
+<p>이 비중에는 공개된 기준점이 하나 있어요. JVM 자신이 <b>전체 시간의 98%를 GC에 쓰면서 힙의 2%도 회수하지 못하는 상태</b>를 한계로 보고 OutOfMemoryError를 던집니다. 'GC overhead limit exceeded'가 그 메시지예요. 다만 98%는 이미 끝난 상태의 선입니다. <span class="obsv-mark">경고선은 그보다 훨씬 아래, 아직 되돌릴 수 있는 구간에 있어야 해요.</span></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 거대 할당 (G1 Humongous Allocation)</div>
+  G1 수집기에서 <b>한 힙 영역(region) 크기의 절반 이상</b>을 차지하는 객체가 할당됐다는 신호입니다. 이런 객체는 이든을 거치지 않고 연속된 빈 영역에 바로 들어가서 수집도 까다로워져요. jvm.gc.pause 메트릭의 cause 태그 값으로 드러납니다. 작아 보이는 입력도 가공 과정에서 메모리를 크게 쓸 수 있어서, 이 값이 보이면 데이터를 청크로 나누거나 스트리밍하도록 고치는 쪽을 검토합니다.
+</div>
+
+<p>힙 사용률로 넘어가면 함정이 하나 더 있습니다. <b>공간이 가득 차는 현상 자체는 문제가 아니에요.</b> JVM의 가비지 수집은 공간이 채워지는 대로 비우도록 설계돼 있으니까요. 진짜 문제는 가득 찬 상태가 유지되는 것입니다. 그래서 힙 소비량을 백분율로 그리고 고정 임계값을 거는 가장 직관적인 방법이, 가장 자주 헛울리는 방법이 돼요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 332" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <path d="M68 44 C 71 110, 65 180, 69 250" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M68 250 C 230 248, 450 252, 652 249" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="96" y="38" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">힙 사용률</text>
+
+  <path d="M72 110 C 240 107, 450 113, 648 109" fill="none" stroke="#e5a33c" stroke-width="2.2" stroke-dasharray="9 7" stroke-linecap="round"/>
+  <text x="648" y="102" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">고정 임계값</text>
+
+  <path d="M76 232 C 98 190, 110 140, 124 96 C 130 132, 133 182, 137 216 C 159 174, 173 128, 187 100 C 193 136, 196 184, 200 214 C 222 170, 237 124, 251 98 C 257 134, 260 182, 264 212" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M264 212 C 290 162, 304 118, 320 92 C 326 110, 329 130, 333 146 C 356 122, 372 100, 388 84 C 394 96, 397 108, 401 120 C 424 104, 442 92, 458 80 C 464 88, 467 96, 471 104 C 496 94, 520 84, 544 76" fill="none" stroke="#e5533c" stroke-width="2.8" stroke-linecap="round"/>
+
+  <text x="170" y="274" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">가비지 수집이 치우면 내려온다</text>
+  <text x="178" y="62" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">⚡ 여기서도 경고가 울린다</text>
+  <text x="446" y="276" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">바닥이 더는 내려오지 않는다</text>
+  <path d="M430 258 C 434 236, 438 216, 442 198" fill="none" stroke="#b3502f" stroke-width="1.8" stroke-dasharray="6 5" stroke-linecap="round"/>
+  <text x="350" y="312" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 가득 차는 것은 설계, 가득 찬 채로 있는 것이 장애</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 넘는 횟수가 아니라 내려오지 않는 구간을 봐야 한다</div>
+
+<p>그래서 대안이 셋 나옵니다. 첫째는 롤링 카운트예요. 직전 5개 간격 중 3곳에서 임계값을 넘었을 때만 울리는 방식인데, 이 기능을 제공하는 모니터링 시스템이 많지 않습니다. 둘째는 수집 직후를 보는 겁니다. jvm.memory.usage.after.gc 게이지는 마지막 가비지 수집이 끝난 뒤 지난 세대의 사용량을 0에서 1 사이 비율로 알려 주는데, 이 값이 높다는 건 수집기가 충분히 치우지 못했다는 뜻이에요. 셋째는 두 지표를 묶는 방식입니다.</p>
+
+<div class="obsv-code">경고 조건: 두 지표를 AND 로 묶는다
+
+  A   jvm.gc.overhead                 최근 5분의 마지막 값   &gt; a
+  B   max_over_time(힙 사용률)[5m:]   최근 5분의 최댓값      &gt; b
+
+  A 와 B 가 동시에 참일 때만 경보</div>
+
+<p>여기서 중요한 건 a 와 b 의 숫자가 아니라 <span class="obsv-mark">같은 지표라도 단독으로 쓸 때와 묶어서 쓸 때 선을 다르게 잡아야 한다</span>는 점이에요. 단독 경고는 그것만으로 사람을 깨우니 보수적으로 높게 잡습니다. 반대로 다른 조건과 AND 로 묶이면 혼자서는 울리지 못하니, 더 공격적으로 내려 잡아도 됩니다. B의 <code>max_over_time</code>은 가비지 수집이 돌아 현재 사용량이 내려가도 지난 기간의 최댓값을 붙들고 있어요. "올라간 뒤 기준 시간 안에 내려오지 않았다"를 식으로 옮긴 셈입니다. 임계값을 못 정하겠으면 숫자를 미세 조정하는 대신 조건을 하나 더 거는 쪽이 낫습니다.</p>
+
+<h2>4. CPU에는 정상값이 없어요</h2>
+
+<p>CPU 사용량은 가장 흔히 보는 지표인데, 정작 "정상값"을 일반적으로 정하기가 가장 어렵습니다. 애플리케이션의 프로그래밍 모델에 따라 정상이 달라지기 때문이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 포화도와 사용률 (saturation / utilization)</div>
+  USE 의 앞 두 글자예요. <b>사용률</b>은 자원을 지금 얼마나 쓰고 있는지이고, <b>포화도</b>는 처리하지 못해 밀려 대기 중인 양입니다. 둘 중 장애에 가까운 신호는 보통 포화도 쪽이에요. 그래서 메모리는 포화도를 먼저 보지만, 애플리케이션 안에서 CPU 대기 길이를 바로 꺼내 쓰기는 어려워서 CPU는 사용률로 대신 봅니다.
+</div>
+
+<p>톰캣에서 블로킹 서블릿 모델로 도는 마이크로서비스는 요청 하나가 스레드 하나를 붙듭니다. 그래서 바깥 호출을 기다리는 동안 CPU는 놀고, 스레드 풀이 먼저 바닥나요. 이런 앱은 CPU보다 메모리 포화도 쪽에서 먼저 신호가 납니다. 반면 네티 위에서 반응형 모델로 도는 서비스는 적은 스레드로 대기 중인 요청을 훨씬 많이 끌어안기 때문에, 인스턴스당 처리량이 커지고 CPU 사용률도 같이 올라가요. <span class="obsv-mark">이건 결함이 아니라 그 모델이 노린 결과입니다.</span></p>
+
+<p>그래서 같은 70%가 한쪽에서는 비정상이고 다른 쪽에서는 설계대로입니다. 블로킹 앱은 평소 사용률이 낮게 깔리니 여유 있는 고정선이 대체로 맞고, 반응형 앱은 평소 선이 어디쯤인지 먼저 관찰한 뒤에 그 위로 그어야 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 인스턴스를 줄이기 전에</div>
+  반응형 앱이 메모리를 별로 안 쓴다는 걸 보고 인스턴스 사양을 메모리에 맞춰 줄이는 건 자연스러운 선택이에요. 그런데 플랫폼이 <b>CPU를 메모리 양에 비례해 나눠 주는</b> 경우가 있습니다. 클라우드 파운드리가 그렇습니다. 컨테이너가 받는 CPU 지분이 선언한 메모리에 비례해 정해져요. 메모리를 줄이면 쓰지도 않던 메모리 대신 <b>쓰고 있던 CPU가 깎입니다.</b><br>
+  덧붙이면 프로세스 CPU 사용량 메트릭은 0에서 1 사이 값입니다. 그라파나라면 단위를 percent(0.0-1.0)로 지정해야 y축이 백분율로 읽혀요.
+</div>
+
+<h2>5. 평소 안 보는 지표가 목록에 끼어 있는 이유</h2>
+
+<p>공통 목록의 마지막은 파일 설명자입니다. 대시보드에서 좀처럼 보기 어려운 지표인데, 그래도 모든 애플리케이션에 달아 둘 값에 들어갑니다. 이유가 둘 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 파일 설명자 (file descriptor)</div>
+  프로세스가 연 자원에 붙는 번호표입니다. 실제 파일만이 아니라 네트워크 접속과 데이터베이스 연결도 하나씩 차지해요. 유닉스에서 <code>ulimit</code>으로 상한이 걸려 있고, 기본값이 1,024인 운영체제가 많습니다.
+</div>
+
+<div class="obsv-code">$ ulimit -a
+open files   (-n) 1024        &lt;- 지금 열린 수가 아니라, 동시에 열 수 있는 상한
+
+java.net.SocketException: Too many open files
+java.io.FileNotFoundException: /myfile (Too many open files)</div>
+
+<p>아래 두 줄이 상한에 닿았을 때 나오는 에러예요. 소켓을 더 받지 못하거나 파일을 더 열지 못합니다. 첫 번째 이유는 비용이에요. 마이크로미터가 process.open.fds와 process.max.fds 게이지를 주니까, 둘을 나눠 한도 대비 사용률로 보기만 하면 됩니다. 한도가 숫자로 박혀 있는 몇 안 되는 자원이라 <span class="obsv-mark">USE 의 사용률을 가장 정직하게 계산할 수 있는 지표</span>이기도 해요. 평상시 값은 대개 한도의 한 자릿수 퍼센트에 머물러서, 선을 넉넉히 잡아도 헛울림이 잘 나지 않습니다.</p>
+
+<p>두 번째 이유가 더 중요해요. <span class="obsv-mark">메모리 부족이나 치명적인 예외는 프로세스를 끝내 버리지만, 파일 설명자 고갈은 끝내지 않습니다.</span> 상한에 닿은 순간부터 새 연결을 못 받고 로그 파일도 못 열지만, 프로세스는 여전히 살아 있는 것처럼 보여요. 완만하게 나빠지는 게 아니라 선 하나를 넘는 순간 절벽처럼 끊기는데, 죽지 않으니 재시작도 걸리지 않습니다. 죽어 주는 장애보다 이쪽이 더 위험해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 선을 긋는 네 가지 원칙</div>
+  &bull; 단독으로 울리는 조건은 높게, 다른 조건과 묶이는 조건은 낮게 잡아요<br>
+  &bull; 한도가 숫자로 정해진 자원(파일 설명자)은 고정 비율이 잘 먹힙니다<br>
+  &bull; 한도가 없는 자원(CPU)은 평소 선을 먼저 관찰한 뒤에 긋습니다<br>
+  &bull; 오르락내리락이 정상인 값(힙)은 넘은 횟수가 아니라 머무른 시간으로 봅니다<br>
+  어떤 숫자든 "여기서 시작해 보라"는 출발점이지 보편 상수가 아니에요. 고정 임계값이 시간을 어떻게 못 버티는지는 5편에서 이어집니다.
+</div>
+
+<p>남은 둘은 조건부입니다. 비정상 트래픽은 403이나 404가 짧은 시간에 몰리는 걸 침입 시도로 보는 건데, 여기서는 <b>2편에서 세운 "에러는 비중으로 본다"는 원칙이 뒤집힙니다.</b> 비중이 아니라 건수로 봐요. 403이 초당 1만 건이면 평소 처리량이 초당 1만 5천이든 1천 5백만이든 일단 의심해야 하니까요. 비중으로 보면 처리량이 큰 시스템에서 이상이 묻힙니다. 배치와 장기 실행 작업은 다른 문제예요. 일반 타이머는 작업이 끝나야 기록을 남기기 때문에, 1시간이면 끝났어야 할 작업이 16시간째 돌고 있으면 그 16시간 동안 차트에는 아무것도 나타나지 않습니다. 진행 중인 작업의 경과 시간을 재는 타이머(LongTaskTimer)가 필요한 자리가 여기예요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>필요한 건 지표 여덟 개의 목록이 아니라 순서였어요. 사용자가 먼저 느끼는 쪽(RED)을 깔고, 그 증상을 설명하는 자원 쪽(USE)으로 내려갑니다. 레이턴시 타이머는 스레드 풀에서 기다린 시간을 모르고, 힙은 가득 차는 게 아니라 가득 찬 채로 있는 것이 장애이며, 파일 설명자는 고갈돼도 프로세스를 죽이지 않습니다.</b><br><br>
+  지표마다 함정의 모양은 다르지만 방향은 하나예요. 숫자가 임계값을 넘었는지가 아니라, 그 숫자가 무엇을 섞어 놓았고 무엇을 빼놓았는지를 먼저 봐야 합니다.
+</div>
+
+</div>

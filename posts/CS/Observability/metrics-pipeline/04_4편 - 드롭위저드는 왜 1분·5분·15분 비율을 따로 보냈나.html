@@ -1,0 +1,299 @@
+<!-- tags: Dropwizard Metrics, Graphite, PromQL rate, 범위 벡터, 계측 라이브러리 -->
+<!-- lead: 드롭위저드 메트릭은 카운터 하나를 게시할 때 누적 카운트와 1분비·5분비·15분비를 따로 보냈어요. 그 세 줄은 쿼리 쪽에서 되살릴 수 있는 값이 아니었습니다. 계측 라이브러리가 그 시대 백엔드를 어떻게 닮아 가는지 정리해요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📊 메트릭 수집, 4편</div>
+  1편. 관측 데이터의 경제학<br>
+  2편. 프로메테우스는 왜 긁어가는가<br>
+  3편. StatsD, UDP로 쏘고 잊어라<br>
+  <b>4편. 드롭위저드는 왜 1분·5분·15분 비율을 따로 보냈나</b> &larr; 지금 이 글<br>
+  5편. 수집 기술의 최전선
+</div>
+
+<p>오래된 자바 서비스의 모니터링 화면을 연다고 해 볼게요. 주문 건수를 세는 카운터는 코드에 분명히 하나뿐인데, 메트릭 목록에는 이름이 네 줄로 떠 있습니다. 누적 카운트가 한 줄, 그리고 1분 비율, 5분 비율, 15분 비율이 각각 한 줄씩이에요.</p>
+
+<p>지금 감각으로는 낭비로 보입니다. 비율은 누적 카운트만 있으면 화면에 그릴 때 계산하면 되니까요. 보내는 쪽이 세 줄을 더 만들어 낼 이유가 없어 보여요. 그런데 이건 실수가 아니라, 그 시절에는 그게 맞는 설계였습니다.</p>
+
+<p><b>계측 라이브러리는 자기가 태어난 시대의 백엔드를 닮습니다.</b> 관측 가능성을 다루다 보면 라이브러리 API에서 이유를 알 수 없는 개념을 만나게 되는데, 그 개념의 쓸모를 묻기 전에 그게 어느 시대의 한계였는지를 먼저 물으면 대부분 풀려요. 드롭위저드의 네 줄이 그 질문을 연습하기 좋은 사례라서, 이 글에서는 그 네 줄을 끝까지 따라가 봅니다.</p>
+
+<h2>1. 카운터 하나가 네 줄이 된 이유</h2>
+
+<p>드롭위저드 메트릭이 처음 만들어질 무렵 자바 쪽에서 가장 널리 쓰이던 시계열 백엔드는 그라파이트였습니다. 그래서 드롭위저드의 Meter는 그라파이트로 나갈 때 이름 하나에 값을 여러 개 붙여 내보냈어요. 누적 카운트인 <b>count</b>, 그리고 <b>m1_rate</b>, <b>m5_rate</b>, <b>m15_rate</b>, 거기에 생애 평균인 <b>mean_rate</b>까지요. 카운터를 하나 올렸을 뿐인데 메트릭 목록이 길어지는 건 그래서였습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 그라파이트 (Graphite)</div>
+  2010년대 초에 가장 널리 쓰이던 시계열 저장·그래프 도구입니다. 이름에 점을 찍어 계층을 만드는 방식(orders.created.count)을 썼고, 저장한 값을 그대로 그려 주는 역할에 가까웠어요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 드롭위저드 메트릭 (Dropwizard Metrics)</div>
+  자바 진영에서 마이크로미터 이전에 사실상 표준이던 계측 라이브러리입니다. 이 글에서는 "그 시대 백엔드의 한계가 API에 남은 사례"로 등장해요.
+</div>
+
+<p>여기서 한 가지를 짚고 가야 합니다. 그라파이트에 계산 기능이 전혀 없었던 건 아니에요. 렌더 API에는 derivative나 nonNegativeDerivative 같은 함수가 있어서, 누적값의 증가분을 그래프로 뽑는 일 자체는 됐습니다. 그러니 "비율 연산이 아예 없어서"라고 한 줄로 끊으면 조금 과한 말이 돼요. <span class="obsv-mark">정확한 이유는 그 세 줄이 애초에 나눗셈이 아니었다는 데 있습니다.</span></p>
+
+<p>드롭위저드의 1분비·5분비·15분비는 지수가중이동평균입니다. 유닉스의 로드 애버리지와 같은 감쇠 계수를 그대로 가져다 쓴 값이에요. 최근 사건에 더 큰 무게를 주고 오래된 사건은 지수적으로 흐리게 만드는 방식이라, 누적 카운트 하나만 남겨 두면 쿼리 쪽에서 이 숫자를 되살릴 방법이 없습니다. 보내는 쪽이 애플리케이션 안에서 계속 갱신하며 들고 있다가 그대로 내보내는 수밖에 없었어요.</p>
+
+<p>비율을 재지 않아도 되는 경우를 라이브러리 자체에서 구분해 둔 것도 그래서입니다. 애너테이션 <b>@Counted</b>와 <b>@Metered</b>가 그 구분이었어요. 세기만 할 것인지 비율까지 낼 것인지를 개발자가 코드에 적어 줘야 했던 겁니다. 한 문장으로 정리하면 이렇게 돼요. <span class="obsv-mark">측정 API는 개발 당시 최신 모니터링 시스템의 역량을 기반으로 설계된다.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 지문은 카운터에만 남지 않았어요</div>
+  드롭위저드가 대세이던 시기의 백엔드에는 백분위 근사나 레이턴시 히트맵을 쿼리로 산출하는 기능도 없었습니다. 그래서 "셀 수 있는 것을 게이지로 측정하지 말고, 시간으로 잴 수 있는 것을 세려고 하지 말 것"이라는 지침조차 따를 수가 없었어요.<br>
+  &bull; 그때는 메서드에 @Counted를 붙이는 일이 특이하지 않았습니다<br>
+  &bull; 지금 @Counted를 붙일 일은 거의 없습니다. 시간으로 측정할 수 있는 메서드라면 타이머가 카운트 정보까지 항상 게시하니까요
+</div>
+
+<h2>2. 많이 보내거나, 잘 묻거나</h2>
+
+<p>왜 하필 메트릭에서만 이런 일이 벌어질까요. 메트릭은 시간적 정보뿐 아니라 게이지, 카운터, 히스토그램, 백분위를 모두 집계해서 나타낼 수 있습니다. 그리고 각각을 집계하는 방식은 시스템끼리 일치시킬 필요가 없고, 쿼리 시점에 똑같이 계산해야 할 이유도 없어요. 자유도가 있다는 뜻입니다.</p>
+
+<p>그 자유도가 만드는 구조는 한 줄로 못 박을 수 있어요. <span class="obsv-mark">메트릭 측정 라이브러리가 게시하는 시계열 수와 메트릭 백엔드의 쿼리 역량은 반비례 관계에 있다.</span> 백엔드가 쿼리 시점에 계산해 주면 적게 보내도 되고, 못 해 주면 미리 계산해서 많이 보내야 합니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 시계열 (time series)</div>
+  "이름 + 태그 조합" 하나에 시각별 값이 줄줄이 달린 한 줄짜리 데이터입니다. 대부분의 상용 백엔드가 이 줄 수로 과금하기 때문에, 몇 줄을 보내느냐는 곧 비용 문제가 돼요.
+</div>
+
+<p>계산은 누군가 한 번은 해야 하고, 남는 선택지는 그 계산을 <b>게시 시점에 할 것이냐 쿼리 시점에 할 것이냐</b> 하나뿐이에요. 게시 시점으로 밀면 시계열이 늘고 비용이 늘지만 느린 백엔드에서도 그림이 나옵니다. 쿼리 시점으로 밀면 보내는 양은 줄지만 백엔드가 그만큼 똑똑해야 하고요. 드롭위저드의 네 줄은 선택의 결과가 아니라, 선택지가 하나뿐이던 시절의 흔적입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <path d="M92 46 C 90 110, 94 182, 92 254" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M90 254 C 220 257, 430 251, 650 255" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="100" y="36" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">↑ 라이브러리가 게시하는 시계열 수</text>
+  <text x="648" y="282" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">백엔드의 쿼리 역량 →</text>
+
+  <path d="M126 70 C 240 128, 330 196, 612 232" fill="none" stroke="#4a7fb5" stroke-width="2.8" stroke-linecap="round"/>
+  <text x="330" y="120" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5">반비례</text>
+
+  <circle cx="126" cy="70" r="6" fill="#e5533c"/>
+  <text x="150" y="72" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">그라파이트 + 드롭위저드</text>
+  <text x="150" y="96" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">카운터 1개 → 누적 + 1분비 + 5분비 + 15분비</text>
+
+  <circle cx="612" cy="232" r="6" fill="#5a9e6f"/>
+  <text x="650" y="160" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">프로메테우스 + 마이크로미터</text>
+  <text x="650" y="184" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">누적 1줄, 비율은 rate()</text>
+
+  <text x="350" y="310" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 백엔드가 못 해 주는 계산은 라이브러리가 미리 보낸다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 적게 보내려면 묻는 쪽이 똑똑해야 한다</div>
+
+<h2>3. 같은 Counter 한 줄, 게시는 백엔드마다 다르게</h2>
+
+<p>요즘 라이브러리는 이 문제를 다르게 다룹니다. 모니터링 시스템 중에는 프로메테우스처럼 카운터의 누적값을 그대로 받는 쪽이 있고, 푸시 간격 동안 카운터가 얼마나 늘었는지를 비율로 받는 쪽이 있어요. 마이크로미터는 이 차이를 레지스트리 구현이 흡수하게 설계돼 있습니다. 비율로 정규화할지 말지를 백엔드별 구현이 알아서 고르기 때문에, 계측하는 사람이 쓴 Counter는 백엔드를 옮겨도 그대로 쓰여요.</p>
+
+<div class="obsv-code">// 계측 코드는 이 두 줄뿐입니다. 백엔드가 바뀌어도 그대로예요.
+Counter orders = registry.counter("orders.created");
+orders.increment();
+
+// 그라파이트 레지스트리로 나갈 때   (비율을 받아 가는 백엔드)
+//   → 누적 카운트와 비율 정보를 함께 게시
+
+// 프로메테우스 레지스트리로 나갈 때 (누적값을 받아 가는 백엔드)
+//   → 누적 카운트만 게시
+//   → 비율은 물어볼 때 계산:  rate(orders_created_total[4m])</div>
+
+<p>보내는 줄 수가 백엔드에 따라 달라지는데도 계측 코드는 한 글자도 바뀌지 않아요. 라이브러리가 차이를 흡수한 겁니다. 그래서 계측 API를 새로 설계할 때는 기존 구현에 있던 개념을 그대로 계승하기에 앞서, <span class="obsv-mark">그 개념이 세워져야 했던 이유를 역사적인 맥락에서 먼저 따져 봐야 합니다.</span> @Metered가 필요했던 이유가 사라졌다면, @Metered도 같이 사라져야 하는 거죠.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrCA2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+
+  <path d="M30 112 C 92 109, 152 114, 212 110 C 215 134, 214 160, 213 186 C 152 189, 92 185, 32 188 C 29 162, 30 136, 30 112 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="121" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">📦 계측 코드</text>
+  <text x="121" y="168" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">Counter 한 줄</text>
+
+  <path d="M218 134 C 250 120, 270 104, 294 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrCA2)"/>
+  <path d="M218 163 C 250 178, 270 196, 294 210" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrCA2)"/>
+
+  <path d="M302 44 C 400 41, 570 46, 670 42 C 673 76, 672 108, 671 140 C 570 143, 400 139, 304 142 C 301 110, 302 76, 302 44 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="318" y="72" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">그라파이트로 게시</text>
+  <text x="318" y="98" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">누적 카운트 + 비율 정보까지 함께</text>
+  <text x="318" y="124" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">비율을 라이브러리가 미리 계산한다</text>
+
+  <path d="M302 180 C 400 177, 570 182, 670 178 C 673 210, 672 242, 671 272 C 570 275, 400 271, 304 274 C 301 242, 302 210, 302 180 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="318" y="208" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">프로메테우스로 게시</text>
+  <text x="318" y="234" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">누적 카운트 한 줄</text>
+  <text x="318" y="259" font-family="Menlo, monospace" font-size="12" fill="#8a8272">rate(orders_created_total[4m]) ← 쿼리에서 계산</text>
+
+  <text x="350" y="298" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 보내는 쪽이 줄면, 묻는 쪽이 일한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 같은 계측 코드가 백엔드마다 다른 줄 수로 나간다</div>
+
+<h2>4. 분산 추적에는 왜 이 일이 덜 생기나</h2>
+
+<p>분산 추적을 나란히 놓고 보면 차이가 선명해집니다. 추적 백엔드가 데이터를 받는 방식은 메트릭 쪽보다 훨씬 일관성을 띠는 편이에요. 물론 추적도 컨텍스트 전파 형식은 여러 가지고, 모양의 균일성은 선택한 라이브러리 스택 안에서만 보장되는 수준입니다. 그래도 <b>데이터 자체는 백엔드와 무관하게 근본적으로 유사</b>해요.</p>
+
+<p>이유는 직관적입니다. 분산 추적은 이벤트별 정보로 구성되고, 추적 ID를 따라 맥락적으로 엮입니다. 사건 하나가 일어난 시각과 걸린 시간, 그리고 누가 나를 불렀는지가 전부죠.</p>
+
+<p>여기서부터는 제 해석입니다. 추적에는 집계라는 선택지가 애초에 없습니다. 고를 게 없으니 백엔드마다 다르게 보낼 일도 없어요. 반대로 메트릭에는 선택지가 전부 살아 있습니다. 합계와 카운트를 보낼지, 완성된 백분위를 보낼지, 버킷을 보낼지가 다 열려 있죠. <span class="obsv-mark">고를 수 있는 게 많은 쪽이 백엔드마다 갈라집니다.</span> 추적이 이식하기 쉬운 건 설계가 더 뛰어나서가 아니라, 데이터의 성격상 갈라질 자유가 적어서라고 저는 읽었어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrCA3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M352 40 C 350 120, 354 220, 351 296" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="8 8" stroke-linecap="round"/>
+
+  <text x="175" y="36" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">📊 메트릭</text>
+  <path d="M38 56 C 110 53, 230 58, 308 54 C 311 74, 310 92, 309 110 C 230 113, 110 109, 40 112 C 37 94, 38 74, 38 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="174" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">집계 방식을 고를 수 있다</text>
+  <path d="M128 114 C 110 126, 92 138, 80 150" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arrCA3)"/>
+  <path d="M174 114 C 172 128, 176 138, 174 150" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arrCA3)"/>
+  <path d="M220 114 C 238 126, 256 138, 268 150" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arrCA3)"/>
+
+  <path d="M50 166 C 70 164, 90 168, 108 165" fill="none" stroke="#e5a33c" stroke-width="6" stroke-linecap="round"/>
+  <path d="M50 180 C 70 178, 90 182, 108 179" fill="none" stroke="#e5a33c" stroke-width="6" stroke-linecap="round"/>
+  <path d="M50 194 C 70 192, 90 196, 108 193" fill="none" stroke="#e5a33c" stroke-width="6" stroke-linecap="round"/>
+  <path d="M50 208 C 70 206, 90 210, 108 207" fill="none" stroke="#e5a33c" stroke-width="6" stroke-linecap="round"/>
+  <text x="79" y="234" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">4줄</text>
+
+  <path d="M146 186 C 166 184, 186 188, 204 185" fill="none" stroke="#4a7fb5" stroke-width="6" stroke-linecap="round"/>
+  <text x="175" y="234" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">1줄</text>
+
+  <path d="M246 212 C 245 202, 247 196, 246 190" fill="none" stroke="#5a9e6f" stroke-width="7" stroke-linecap="round"/>
+  <path d="M262 212 C 261 194, 263 178, 262 168" fill="none" stroke="#5a9e6f" stroke-width="7" stroke-linecap="round"/>
+  <path d="M278 212 C 277 198, 279 188, 278 180" fill="none" stroke="#5a9e6f" stroke-width="7" stroke-linecap="round"/>
+  <path d="M294 212 C 293 204, 295 200, 294 196" fill="none" stroke="#5a9e6f" stroke-width="7" stroke-linecap="round"/>
+  <text x="270" y="234" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">버킷</text>
+
+  <text x="175" y="270" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">백엔드마다 모양이 다르다</text>
+
+  <text x="528" y="36" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">🧵 분산 추적</text>
+  <path d="M392 56 C 464 53, 584 58, 662 54 C 665 74, 664 92, 663 110 C 584 113, 464 109, 394 112 C 391 94, 392 74, 392 56 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="528" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">이벤트 하나 + 추적 ID</text>
+  <path d="M478 114 C 462 126, 444 138, 432 150" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arrCA3)"/>
+  <path d="M528 114 C 526 128, 530 138, 528 150" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arrCA3)"/>
+  <path d="M578 114 C 594 126, 612 138, 624 150" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arrCA3)"/>
+
+  <path d="M402 172 C 422 170, 442 174, 462 171" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M414 194 C 430 192, 446 196, 462 193" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M496 172 C 516 170, 536 174, 556 171" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M508 194 C 524 192, 540 196, 556 193" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M590 172 C 610 170, 630 174, 650 171" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M602 194 C 618 192, 634 196, 650 193" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <text x="528" y="234" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">사건 하나와 부모 관계</text>
+  <text x="528" y="270" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">백엔드가 달라도 모양이 같다</text>
+
+  <text x="350" y="314" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 고를 수 있는 게 많은 쪽이 갈라진다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 추적이 이식하기 쉬운 건 갈라질 자유가 적어서다</div>
+
+<h2>5. 데이터 구조를 고정하면 전환이 막힌다</h2>
+
+<p>여기서 한 가지 함정이 생깁니다. 여러 언어에 통합적으로 대응하려는 계측 프로젝트는 데이터 구조도 언어를 가로질러 일관되게 정의해야 한다는 압력을 받기 쉬워요. 오픈텔레메트리가 초기에 "더블형 카운터", "더블형 합계 관찰자" 같은 원시 미터를 전면에 내세웠던 게 그 압력의 모습입니다. 폴리글랏 지원은 분명한 가치인데, 그 대가로 API가 특정 데이터 구조에 못 박히면 문제가 따라붙습니다.</p>
+
+<p>어떤 문제인지는 전환 시나리오로 보면 금방 드러나요. 그라파이트에서 프로메테우스로 옮긴다고 해 볼게요. 프로메테우스 쪽에는 비율을 게시할 필요가 없지만, 전환하는 기간 동안에는 그라파이트에도 메트릭을 함께 보내야 합니다. 그러니 누적 카운터뿐 아니라 단위 시간당 비율 변화를 명시적으로 계산해 같이 내보내야 해요. 그런데 데이터 구조가 "더블형 카운터"로 고정돼 있으면 이 방식으로 전달할 수가 없습니다.</p>
+
+<p>역으로 가도 막힙니다. 다양한 모니터링 시스템에 폭넓게 대응하겠다고 모든 통계 데이터를 "더블형 카운터" 구조에 맞춰 집어넣으면, 최신 백엔드 기준으로는 쓰지도 않을 데이터를 계속 내보내는 셈이 되니까요. 앞에서 본 반비례 그래프의 두 극단에 동시에 서는 겁니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 시점을 적어 두고 읽기</div>
+  오픈텔레메트리 명세는 2021년 2월 1.0에서 추적 API와 SDK를 먼저 안정화했고, 메트릭은 그보다 한참 뒤에 릴리스 후보를 거쳐 안정화됐습니다. 위 지적은 메트릭 API가 아직 굳지 않았던 시기를 겨냥한 것이라, 지금의 오픈텔레메트리를 향한 평가로 그대로 옮기면 안 돼요. 다만 "API가 데이터 구조를 고정하면 백엔드 전환이 막힌다"는 문제 자체는 시점과 무관하게 남습니다.
+</div>
+
+<h2>6. 비율은 쿼리 쪽에도 간격이 있다</h2>
+
+<p>비율 계산을 백엔드로 넘겼다고 끝이 아닙니다. 프로메테우스에서 rate를 쓸 때 대괄호 안에 적는 범위 벡터 간격이 남아 있는데, 뿌리가 같은 이야기예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 범위 벡터 (range vector)</div>
+  rate(metric[2m])의 대괄호 부분입니다. "지금으로부터 뒤로 2분 동안의 점들"을 뭉텅이로 가져오라는 뜻이고, rate는 그 뭉텅이 안의 점들로 비율을 냅니다.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 스크래핑 간격 (scrape interval)</div>
+  프로메테우스가 애플리케이션의 /actuator/prometheus 같은 주소를 몇 초마다 긁어 갈지입니다. 이 글에서는 1분으로 놓고 이야기할게요.
+</div>
+
+<p>기계적인 제약이 먼저입니다. rate 계열 함수는 범위 안에 점이 <b>최소 두 개</b> 있어야 값을 냅니다. 하나뿐이면 아무것도 돌려주지 않고, 그래프에는 그냥 빈 구간으로 보여요. 그런데 스크래핑은 정확히 같은 간격으로 떨어지지 않습니다. 시점이 조금씩 밀리기도 하고 한 번쯤 실패하기도 하는데, 범위를 스크래핑 간격과 비슷하게 잡아 두면 그런 순간마다 창 안에 점이 하나만 남아요.</p>
+
+<p>그래서 현장에서는 범위를 넉넉히 잡는 쪽으로 굳어졌습니다. 프로메테우스 함수 문서가 배수를 못 박아 두지는 않지만, <span class="obsv-mark">스크래핑 간격의 네 배 이상으로 잡으라는 권고가 사실상 표준처럼 쓰여요.</span> 그라파나가 대시보드 변수로 $__rate_interval을 따로 만든 것도 같은 이유입니다. 사용자가 그래프를 확대할 때마다 창이 스크래핑 간격만큼 좁아져 "No data"가 뜨는 일을 막으려고요.</p>
+
+<div class="obsv-code"># 스크래핑 간격이 1분일 때
+
+rate(http_server_requests_seconds_count[1m])
+  → 창 안에 포인트가 하나만 들어오는 순간이 생긴다. 그 구간은 비어 보인다.
+
+rate(http_server_requests_seconds_count[2m])
+  → 기계적인 하한. 시점이 조금 흔들려도 포인트 두 개가 들어온다.
+
+rate(http_server_requests_seconds_count[4m])
+  → 현장 권고. 스크래핑 한 번쯤 실패해도 창이 버틴다.
+
+# 데이터포인트 누락 구간을 아예 없애는 것이 목표라면 더 넓게.
+# 기준 잡기:  범위 벡터 간격 ≥ 애플리케이션 시작 시간 + 스크래핑 간격 두세 개</div>
+
+<p>재시작도 같은 자리에서 걸립니다. 서비스가 내려갔다 올라오면 그 구간의 점이 통째로 비고, rate는 중단 기간에 이어 두 포인트가 쌓이기 전까지 비율을 계산하지 못해요. 애플리케이션이 뜨는 데 걸리는 시간은 저마다 다르고 스크래핑 간격보다 오래 걸리는 경우도 흔합니다. 빈 구간을 완전히 없애려면 창을 그만큼 더 넓혀야 한다는 뜻이에요. 범위 벡터는 프로메테우스 쪽 용어지만 발상은 어디서나 같아서, 경고 임계값을 잡을 때 쓰는 "최소 간격" 설정도 결국 재시작으로 생기는 시간 간격을 보정하려는 장치입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <path d="M48 150 C 200 153, 440 148, 660 152" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="60" y="128" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">1분마다 긁어 간 포인트</text>
+
+  <circle cx="80" cy="151" r="5" fill="#4a7fb5"/>
+  <circle cx="140" cy="152" r="5" fill="#4a7fb5"/>
+  <circle cx="202" cy="150" r="5" fill="#4a7fb5"/>
+  <circle cx="259" cy="151" r="5" fill="#4a7fb5"/>
+  <circle cx="430" cy="149" r="5" fill="#4a7fb5"/>
+  <circle cx="492" cy="150" r="5" fill="#4a7fb5"/>
+  <circle cx="551" cy="151" r="5" fill="#4a7fb5"/>
+  <circle cx="612" cy="151" r="5" fill="#4a7fb5"/>
+
+  <path d="M300 108 C 298 126, 302 160, 300 182" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+  <path d="M392 108 C 390 126, 394 160, 392 182" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+  <text x="346" y="100" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">서비스 재시작</text>
+  <text x="346" y="202" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">포인트가 비는 구간</text>
+
+  <path d="M415 88 C 414 76, 416 68, 415 60 C 440 57, 455 62, 478 59 C 479 70, 477 80, 478 88" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="446" y="48" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">1분 창</text>
+  <text x="446" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f">포인트 1개</text>
+
+  <path d="M415 178 C 414 190, 416 198, 415 206 C 450 209, 505 204, 540 207 C 541 196, 539 188, 540 178" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="478" y="198" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41">포인트 2개</text>
+  <text x="478" y="228" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">2분 창</text>
+
+  <text x="350" y="258" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 창이 좁으면 비율이 비어 보인다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 비율을 쿼리로 넘긴 대가는 창 너비를 직접 정하는 일이다</div>
+
+<p>드롭위저드의 네 줄과 이 창 너비는 사실 같은 문제의 양쪽 끝입니다. 비율을 미리 계산해 보내면 시계열이 늘어나고, 쿼리 시점으로 넘기면 어느 구간의 점들로 계산할지를 사람이 정해 줘야 해요. <span class="obsv-mark">비율은 누군가 책임져야 하는 계산이고, 그 책임이 어디에 있느냐만 시대에 따라 옮겨 다닙니다.</span></p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>측정 라이브러리가 게시하는 시계열 수와 백엔드의 쿼리 역량은 반비례한다.</b> 드롭위저드의 1분비·5분비·15분비는 유닉스 로드 애버리지와 같은 감쇠 계수를 쓰는 지수가중이동평균이라 누적 카운트만으로는 되살릴 수가 없었고, 그래서 게시 시점에 계산해 따로 보내야 했다. @Counted와 @Metered라는 구분까지 API에 남은 이유도 거기에 있다. 마이크로미터의 Counter가 프로메테우스에는 누적 카운트만 보내는 것도 같은 저울의 반대쪽이다.<br><br>
+  측정 API는 개발 당시 최신 모니터링 시스템의 역량을 기반으로 설계된다. 그러니 라이브러리의 낯선 개념을 만나면 쓸모를 묻기 전에 그게 어느 시대의 한계였는지를 먼저 묻는 편이 빠르다.
+</div>
+
+</div>

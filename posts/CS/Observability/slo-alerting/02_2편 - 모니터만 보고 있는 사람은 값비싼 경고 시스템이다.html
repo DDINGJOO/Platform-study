@@ -1,0 +1,240 @@
+<!-- lead: 벽에 걸린 대시보드를 하루 종일 보고 있어도 장애는 늦게 알게 돼요. 차트가 경고를 대체할 수 없는 이유와, 경고에 쓸모 있는 시각화가 대시보드에 쓸모 있는 시각화와 어떻게 다른지를 정리했어요. -->
+<!-- tags: 대시보드, 알림 피로, 히트맵, 범위 벡터, 우선순위 P1 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔔 SLO와 경고, 2편</div>
+  1편. 알람은 언제 울려야 하나<br>
+  <b>2편. 모니터만 보고 있는 사람은 값비싼 경고 시스템이다</b> &larr; 지금 이 글<br>
+  3편. 모든 자바 서비스가 같은 자리에서 아프다<br>
+  4편. 머신러닝이 임계값을 정해 주지는 않았다
+</div>
+
+<p>벽에 걸린 화면 하나가 1분마다 스스로 새로고침을 합니다. 팀마다 그런 화면이 하나씩 늘어나고, 아무도 보지 않는 새벽에도 쿼리는 똑같이 돌아요. 모니터링 시스템 입장에서 이건 공짜가 아닙니다. 자동 갱신되는 대시보드는 백엔드에 꾸준한 부하를 만들고, 화면이 늘어난 만큼 그 비용도 같이 늘어나요.</p>
+
+<p>그렇게 화면을 많이 띄워 놓고도 장애는 보통 늦게 알게 됩니다. <b>그러면 우리가 열심히 만들고 있는 화면들은 대체 무슨 일을 하고 있는 걸까요?</b> 결론을 먼저 적을게요. 차트는 경고를 대체할 수 없습니다. 둘은 역할이 다르고, 만드는 순서도 정해져 있어요.</p>
+
+<h2>1. 화면을 늘렸더니 모니터링 시스템이 먼저 버거워졌다</h2>
+
+<p>차트 하나가 모니터링 시스템에 얼마나 일을 시키는지는 잘 눈에 띄지 않아요. 레이턴시 히트맵을 예로 들면, 이 차트는 가로축의 시간 단위마다 수십에서 수백 개의 버킷을 조회합니다. 버킷 하나하나가 모니터링 시스템 안에서는 개별 시계열에 해당하니, 화면 한 장을 그리려고 수천 개의 시계열을 집계하는 셈이에요. 단순한 선 그래프를 그릴 때보다 연산 비용이 훨씬 많이 듭니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 히트맵 (heatmap)</div>
+  세로 한 줄이 특정 시간 구간의 히스토그램 하나인 차트예요. 칸의 색은 그 레이턴시 구간에 들어온 요청의 빈도를 뜻해서, 다수가 겪는 흔한 레이턴시는 뜨거운 색으로, 드문 이상값은 차가운 색으로 나타납니다.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 버킷 (bucket)과 시계열 (time series)</div>
+  버킷은 "2ms 이하", "4ms 이하"처럼 값의 구간마다 따로 세어 둔 칸입니다. 모니터링 시스템은 이 칸 하나를 시간에 따라 변하는 독립된 지표, 즉 시계열 하나로 저장해요. 그래서 버킷을 잘게 나눌수록 저장하고 집계할 대상이 그만큼 늘어납니다.
+</div>
+
+<p>차트가 하나라면 아무 문제가 없습니다. 그런데 조직이 커져서 여러 비즈니스가 각자의 화면을 벽에 띄우기 시작하면, 전체 모니터링 시스템의 유지 비용이 부담스러운 수준까지 올라갑니다. 대시보드가 늘면 모니터링 시스템 자체가 비용을 치르는 지점이 바로 여기예요.</p>
+
+<p>그래서 한 걸음 더 나가면 결론은 생각보다 과감해집니다. <span class="obsv-mark">벽에 걸린 모든 화면을 실시간으로 자동 갱신할 필요가 없다</span>는 거예요. 경고 시스템이 제대로 작동한다면 경고가 발생한 바로 그 순간에 대시보드를 열면 되고, 그러면 모니터링 시스템이 받는 부하도 자연히 제한됩니다. 아무도 보지 않는 시간에도 계속 쿼리를 던지던 화면이 조용해지는 거죠.</p>
+
+<h2>2. 화면을 지키는 사람은 믿을 수 없는 경고 시스템이다</h2>
+
+<p>그러면 지금까지 그 화면 앞에 서 있던 사람은 무엇을 하고 있었던 걸까요. 벽걸이 대시보드가 기대하는 인간은 주의력이 쉽게 흩어지는, 그래서 믿기 어려운 경고 시스템에 가깝습니다.</p>
+
+<p>조금 더 직설적으로 적으면 이렇게 돼요. 시종일관 모니터만 보고 있는 사람은 필요 이상으로 과한 시각적 투자를 감행한 값비싼 경고 시스템입니다. 급격한 스파이크, 깊은 저점, 합리적인 기대치를 넘어선 값을 보고 허용 여부를 판단하는 일은 결국 임계값 판정입니다. 그 판정을 메트릭으로 24시간 자동으로 돌릴 수 있는데, 사람을 앉혀 두면 자리를 비우는 시간이 생기고 두 화면을 동시에 볼 수도 없어요.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <path d="M32 52 C 110 49, 230 54, 328 50 C 331 90, 330 150, 329 198 C 230 201, 110 197, 33 200 C 30 150, 32 100, 32 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+    <path d="M372 52 C 450 49, 570 54, 668 50 C 671 90, 670 150, 669 198 C 570 201, 450 197, 373 200 C 370 150, 372 100, 372 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linejoin="round"/>
+    <path d="M350 38 C 352 90, 348 150, 350 214" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <text x="52" y="86" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#2f5a86">📺 벽에 걸린 화면</text>
+    <text x="52" y="120" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">1분마다 자동으로 새로고침</text>
+    <text x="52" y="150" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">한 장에 수천 시계열 집계</text>
+    <text x="52" y="180" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">보는 사람은 가끔 자리를 비운다</text>
+    <text x="392" y="86" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#2e6b41">📟 경고 시스템</text>
+    <text x="392" y="120" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">임계값으로 24시간 판정</text>
+    <text x="392" y="150" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">울린 순간에만 화면을 연다</text>
+    <text x="392" y="180" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">그때만 쿼리가 돈다</text>
+    <text x="350" y="246" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 사람을 화면 앞에 세우는 쪽이 더 비싸고 덜 믿음직하다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 판정을 두 가지 방식으로 하고 있었다</div>
+
+<p>같은 이야기를 한 문장으로 줄이면 이렇게 됩니다. 대시보드는 경고가 아니에요. 대시보드는 서버가 다운됐을 때 새벽 3시에 엔지니어를 깨워주지 못하고, 컨테이너 메모리가 반복적으로 부족해지는 상황을 즉시 알려주지도 못합니다. 경고는 엔지니어를 문제 상황으로 안내하는 수단이고, 대시보드는 그 자리에 도착한 다음에 쓰는 분석 도구라는 구분이죠.</p>
+
+<p>네트워크 운영 센터가 줄어든 과정도 같은 이야기예요. 예전에는 담당자들이 넓은 공간에 모여 대시보드를 끊임없이 주시하면서 공동으로 장애에 대응했어요. 지금은 페이저듀티나 옵스지니 같은 장애 관리 시스템이 알림과 통합되면서, 필요한 전문 인력을 즉시 투입하는 쪽이 훨씬 간편해졌습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 장애 관리 시스템 (incident management system)</div>
+  경고를 받아서 "지금 당직인 사람"에게 전화와 푸시로 밀어 넣는 시스템이에요. 온콜 일정을 자동으로 돌리고, 주 담당자가 응답하지 않으면 보조 담당자를, 그래도 없으면 팀 전체를 호출합니다. 페이저듀티와 옵스지니가 대표적이에요.
+</div>
+
+<h2>3. 경고가 보는 차트와 사람이 보는 차트는 다르다</h2>
+
+<p>여기서 가장 실용적인 구분이 나옵니다. 경고 체계에 쓸모가 많은 시각화가 대시보드에서는 쓸모없는 경우가 있고, 반대로 대시보드의 모든 차트에 경고를 설정할 수도 없다는 거예요. 둘은 애초에 다른 용도입니다.</p>
+
+<p>타이머 하나를 두 가지로 그린 화면을 떠올려 볼게요. 위에는 최대 레이턴시 선 그래프가 있고, 아래에는 레이턴시 분포 히트맵이 있어요. <span class="obsv-mark">경고 시스템은 최대 레이턴시를 감시하지만, 그 경고를 받은 엔지니어가 심각성을 확인할 때는 분포가 더 쓸모 있습니다.</span> 실패한 요청의 레이턴시가 대부분 최댓값에 가까운지, 아니면 일부만 그런지. 이 대답이 경고를 받은 사람이 문제를 얼마나 빨리 공론화하고 도움을 요청할지를 결정해요. 그래서 대시보드에는 둘 다 둘 필요 없이 히트맵 하나로 충분한 경우가 많아요. 최댓값을 지우자는 말이 아닙니다. 백분위만 보면 나머지 1%가 안 보인다는 2편의 이유는 그대로고, 다만 그 최댓값이 있어야 할 자리가 화면이 아니라 경고 쪽이라는 뜻이에요.</p>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <text x="72" y="32" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d6591">Max Latency</text>
+    <path d="M72 42 C 70 80, 73 120, 72 154" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+    <path d="M72 154 C 200 156, 420 152, 640 155" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+    <path d="M82 142 C 140 138, 180 144, 228 132 C 272 120, 318 62, 358 57 C 398 52, 442 112, 500 128 C 556 136, 600 132, 634 135" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M470 52 C 440 48, 410 48, 374 55" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arr2)"/>
+    <text x="478" y="58" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">경고는 이 꼭대기만 본다</text>
+    <text x="72" y="192" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d6591">Latency Heatmap</text>
+    <text x="640" y="192" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">받은 사람은 이 분포를 본다</text>
+    <path d="M74 200 C 72 240, 75 280, 74 314" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+    <path d="M74 314 C 200 316, 420 312, 640 315" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+    <path d="M84 212 C 250 210, 450 214, 628 211" fill="none" stroke="#cfe0ef" stroke-width="12" stroke-dasharray="28 12"/>
+    <path d="M84 248 C 250 246, 450 250, 628 247" fill="none" stroke="#9ec4e2" stroke-width="12" stroke-dasharray="28 12"/>
+    <path d="M84 266 C 250 264, 450 268, 628 265" fill="none" stroke="#e5a33c" stroke-width="12" stroke-dasharray="28 12"/>
+    <path d="M84 284 C 250 282, 450 286, 628 283" fill="none" stroke="#e5533c" stroke-width="12" stroke-dasharray="28 12"/>
+    <path d="M84 302 C 250 300, 450 304, 628 301" fill="none" stroke="#c23a22" stroke-width="12" stroke-dasharray="28 12"/>
+    <path d="M84 230 C 250 228, 450 232, 628 229" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+    <text x="68" y="216" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">20ms</text>
+    <text x="68" y="234" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#b3502f">15ms</text>
+    <text x="68" y="252" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">10ms</text>
+    <text x="68" y="270" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">7ms</text>
+    <text x="68" y="288" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">4ms</text>
+    <text x="68" y="306" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">2ms</text>
+    <text x="356" y="342" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">점선 자리가 비었다: 범위 벡터가 스크래핑 간격과 너무 가까웠을 수 있다</text>
+    <text x="356" y="372" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 경고는 꼭대기를 보고, 받은 사람은 분포를 본다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 2. 같은 타이머인데 경고와 사람이 서로 다른 그림을 쓴다</div>
+
+<p>그런데 같은 히트맵에 함정이 하나 숨어 있습니다. 자세히 보면 15ms 부근에 레이턴시 정보가 아예 없어요. 프로메테우스에서 잡은 범위 벡터가 스크래핑 간격과 너무 가까우면 이런 빈칸이 생깁니다. 같은 시간대의 최대 레이턴시 차트에는 그 값이 남아 있는데, 최댓값 쪽은 수집 시점마다 그대로 게시되는 지표라 창 길이의 영향을 받지 않거든요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 범위 벡터 (range vector)와 스크래핑 간격 (scrape interval)</div>
+  스크래핑 간격은 프로메테우스가 애플리케이션에서 값을 몇 초마다 긁어 가는지를 말해요. 범위 벡터는 쿼리에서 대괄호로 적는 "최근 몇 초치를 묶어서 볼 것인가"입니다. 이 창이 스크래핑 간격만큼 좁으면 창 안에 샘플이 한두 개밖에 안 들어가요.
+</div>
+
+<div class="obsv-code">scrape_interval: 15s   # 15초에 한 번 긁어 간다
+
+# 위험: 창이 긁어 가는 주기와 같다. 샘플이 1개뿐인 구간이 생긴다
+rate(http_server_requests_seconds_bucket[15s])
+
+# 기계적 하한: 두 배. rate 가 값을 내려면 창 안에 점이 최소 두 개는 있어야 한다
+rate(http_server_requests_seconds_bucket[30s])
+
+# 현장 권고: 네 배. 스크래핑이 한 번쯤 밀리거나 실패해도 창이 버틴다
+rate(http_server_requests_seconds_bucket[1m])</div>
+
+<p>첫 줄은 "15초마다 한 번 수집하면서 최근 15초만 묶어 보라"는 쿼리예요. 증가량을 계산하려면 창 안에 적어도 두 점이 있어야 하는데, 수집이 한 번만 걸리는 구간이 생기면 그 칸은 값 없이 비어 버립니다. 두 배가 값이 나오기 위한 기계적인 하한이고, 네 배는 스크래핑이 밀리거나 한 번 실패하는 것까지 감안한 현장 권고예요. 이 두 층이 어디서 왔는지는 1편에서 다뤘습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 빈 칸을 "데이터가 없다"로 읽지 않기</div>
+  히트맵의 빈 줄은 "그 레이턴시가 없었다"는 뜻일 수도 있고, "쿼리가 못 만들어 냈다"는 뜻일 수도 있어요. 같은 지표를 다른 방식으로 게시하는 차트(여기서는 최대 레이턴시)와 교차로 확인하면 둘을 구별할 수 있습니다. 차트 모양을 의심하기 전에 쿼리의 창 길이부터 확인해 보세요.
+</div>
+
+<h2>4. 경고를 먼저 만들고, 화면은 그다음에 만든다</h2>
+
+<p>여기까지의 결론은 순서에 관한 것입니다. 차트는 경고를 대체할 수 없어요. 먼저 적절한 대상자에게 적절한 알림이 가도록 만들고, 화면을 구성하는 일은 그다음입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 경고 (alert)와 알림 (notification)</div>
+  이 시리즈에서 <b>경고</b>는 "조건이 참이 돼서 울린 판정" 자체를 가리켜요. <b>알림</b>은 그 경고를 사람에게 밀어 넣는 통지 쪽입니다. 그래서 만들고 지우는 대상은 경고고, 시간대와 대상을 정하는 건 알림이에요.
+</div>
+
+<p>문제는 "적절한 대상자"와 "적절한 알림"이 말처럼 쉽지 않다는 거예요. 경고 이야기는 늘 양치기 소년에서 시작합니다. 반복되는 알림에 점차 무감각해지는 알림 피로는 운영 조직에서 아주 흔하고, 결국 알림 시스템 자체를 무용지물로 만들어요. 한 주에 수백, 수천 건씩 호출이 쌓이는데 그중 당장 손을 대야 하는 건 한 줌뿐이라는 이야기도 드물지 않게 나옵니다. 그래서 널리 통하는 권고는 하나로 모여요. <span class="obsv-mark">울렸을 때 할 일이 없는 경고는 아예 만들지 않는다</span>는 겁니다. "CPU가 높다"는 경고는 받아도 할 일이 없고, "주문 처리가 요청을 버리고 있다"는 경고는 받는 즉시 할 일이 정해져요.</p>
+
+<p>그다음 장치가 우선순위 수준입니다. 장애 등급을 P1부터 P5까지 나누는 방식은 업계에서 오래 쓰여 왔어요. 목적은 두 개입니다. 하나는 문제에 맞는 대응 노력을 정하는 것이고, 다른 하나는 <span class="obsv-mark">엔지니어의 이탈을 막는 것</span>입니다. 일주일에 세 번 새벽 3시에 호출을 받았는데 매번 아무 문제가 없었다면, 다음날 링크드인에서 채용 공고를 보게 된다는 거죠.</p>
+
+<div class="obsv-code">우선순위  정의                            알림 시간대        알림 대상
+P1       전체 서비스 중단, 핵심 기능 상실     24시간 즉시 호출    SRE + 개발 + 리더십
+P2       관측 시스템 장애 (이중화 없음)       24시간 즉시 호출    SRE
+P3       관측 시스템 장애 (이중화 있음)       업무 시간          SRE
+P4       영향 범위가 좁은 기능 저하           평일 09~17시       담당 팀
+P5       며칠 내 확인만 하면 되는 수준        티켓으로 적재         담당 팀</div>
+
+<p>표에서 눈여겨볼 칸은 "알림 시간대"예요. 우선순위마다 알림을 보내도 되는 시간을 미리 못 박아 두는 겁니다. 우선순위를 정의할 때 같이 적어 둬야 하는 항목은 네 가지입니다. 각 수준의 정의, 알림 대상, 알림 시간대, 그리고 대응 노력 수준이에요. 특히 관측 가능성 시스템 자체의 장애를 몇 번으로 볼지도 미리 정해 두는 게 좋아요. 이중화가 없으면 P2로 올려서 밤낮 없이 대응하고, 이중화가 있으면 P3로 내린다는 식으로요.</p>
+
+<p>여기까지 오면 한 문장으로 정리됩니다. SLO 위반 경고를 전부 세계 종말급 비상 사태로 취급할 필요는 없어요. 경고의 심각성에는 등급이 있고, 그 등급은 알림 시간대와 호출 대상이라는 손에 잡히는 형태로 바뀝니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 우선순위를 채널에 박아 둔다</div>
+  쓸 만한 방법은 알림을 보낼 통신 채널 자체에 등급을 박아 두는 거예요. devops-P1@example.com 같은 메일 주소를 따로 만들거나, 데이터독에서 페이저듀티로 보낼 때 대상을 @PagerDuty-DevOps-P1 로 지정하는 식입니다. 매번 웹 양식에서 우선순위를 고르다가 실수하는 일을 막고, 경고를 만드는 사람이 처음부터 그 중요도를 의식하게 만들어요.
+</div>
+
+<h2>5. 좋은 대시보드는 경고에서 열린다</h2>
+
+<p>그럼 화면은 언제 만드느냐. 이상적인 대시보드는 이렇습니다. 경고와 즉각적으로 연결되고, 경고와 관련된 정보를 차원을 바꿔 가며 탐색할 수 있는 화면이요. 비상 대기 인력에게 경고가 전달되면 그 자리에서 메트릭을 차원별로 뒤져 원인을 추정할 수 있어야 한다는 거예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 차원 탐색 (dimensional exploration)</div>
+  메트릭에 붙은 태그를 기준으로 쪼개 보는 일이에요. 같은 레이턴시 지표를 엔드포인트별로, 인스턴스별로, 응답 상태별로 바꿔 가며 보는 겁니다. 경고는 "느려졌다"까지만 알려주니, 어디가 느려졌는지는 이 탐색으로 좁혀요.
+</div>
+
+<div class="obsv-fig">
+  <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+    <defs>
+      <marker id="arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+      </marker>
+    </defs>
+    <path d="M26 92 C 70 89, 130 94, 172 90 C 175 112, 174 140, 173 160 C 130 163, 70 159, 27 162 C 24 140, 26 112, 26 92 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+    <text x="42" y="122" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2f5a86">🚨 경고 1건</text>
+    <text x="42" y="148" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">임계값을 넘었다</text>
+    <path d="M178 112 C 206 94, 222 70, 246 58" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr3)"/>
+    <path d="M178 142 C 206 162, 222 188, 246 200" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr3)"/>
+    <path d="M256 32 C 320 29, 390 34, 430 30 C 433 52, 432 72, 431 92 C 390 95, 320 91, 257 94 C 254 72, 256 52, 256 32 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linejoin="round"/>
+    <text x="272" y="60" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">P1 · 24시간 즉시 호출</text>
+    <text x="272" y="84" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">새벽 3시에도 깨운다</text>
+    <path d="M256 176 C 320 173, 390 178, 430 174 C 433 196, 432 216, 431 236 C 390 239, 320 235, 257 238 C 254 216, 256 196, 256 176 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linejoin="round"/>
+    <text x="272" y="204" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">P4 · 평일 09~17시</text>
+    <text x="272" y="228" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">다음 업무일에 본다</text>
+    <path d="M436 62 C 464 74, 480 92, 496 106" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr3)"/>
+    <path d="M436 206 C 464 192, 480 172, 496 156" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr3)"/>
+    <path d="M506 72 C 560 69, 630 74, 674 70 C 677 104, 676 158, 675 192 C 630 195, 560 191, 507 194 C 504 158, 506 104, 506 72 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linejoin="round"/>
+    <text x="522" y="102" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">📊 대시보드</text>
+    <text x="522" y="132" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">알림에 담긴 링크로 진입</text>
+    <text x="522" y="158" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">태그 차원을 바꿔 가며</text>
+    <text x="522" y="182" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">원인을 좁힌다</text>
+    <text x="350" y="276" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 화면은 경고가 열어 주는 자리에 둔다</text>
+  </svg>
+</div>
+<div class="obsv-figcap">그림 3. 경고가 사람을 부르고, 사람이 화면을 연다</div>
+
+<p>그 연결을 실제로 만드는 방법은 생각보다 단순해요. 알림 메시지 안에 그 경고를 유발한 메트릭의 시각화나 대시보드로 바로 가는 링크를 넣습니다. 그리고 그런 링크들을 한곳에 모아 둔 것이 운영 절차서예요. 운영 절차서의 진짜 가치는 시간을 아껴 준다는 데 있습니다. 소스코드, 로그 쿼리, 경고, 대시보드로 클릭 한 번에 갈 수 있게 해 주는 종합 안내서니까요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 운영 절차서 (runbook)</div>
+  장애가 났을 때 무엇을 보고 누구에게 연락할지를 적어 둔 문서예요. 애플리케이션 설명과 다이어그램, 담당자와 공급업체 연락처, 소스코드와 대시보드와 경고 링크, 연동된 외부 시스템 목록이 들어갑니다. 파일로 돌리지 않고 링크 하나로 공유되는 형태여야 항상 최신 내용을 보게 돼요.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 경고를 통째로 무음 처리하지 않기</div>
+  팀이 어떤 문제를 고치는 동안 관련 경고를 잠시 꺼 두는 일이 생겨요. 그런데 로그 기반 경고를 통째로 무음 처리하면 그 경고가 감시하던 다른 에러 메시지까지 전부 놓칩니다. 특정 에러 메시지에만 좁게 예외를 걸고, 그 예외에 만료 날짜를 함께 넣으세요. 기간이 지나면 경고가 저절로 되살아나서, 문제가 아직 남아 있는지 다시 묻게 되니까요.
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>차트는 경고를 대체할 수 없어요. 화면을 하루 종일 지키는 사람은 24시간 돌아가는 임계값 판정보다 느리고, 덜 믿음직하고, 훨씬 비쌉니다.</b><br><br>
+  경고에 쓸모 있는 시각화와 대시보드에 쓸모 있는 시각화는 서로 다릅니다. 경고는 꼭대기를 감시하고, 경고를 받은 사람은 분포를 봐요. 그래서 순서는 하나로 정해집니다. 적절한 사람에게 적절한 등급의 알림을 먼저 보내고, 화면은 그 알림이 열어 주는 자리에 만듭니다.
+</div>
+
+</div>

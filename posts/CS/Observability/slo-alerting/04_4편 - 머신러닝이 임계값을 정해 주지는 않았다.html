@@ -1,0 +1,286 @@
+<!-- tags: 범용 확장성 법칙, USL, 단일 지수 평활, 동적 임계값, 리틀의 법칙 -->
+<!-- lead: 고정 임계값은 석 달이면 어긋납니다. 머신러닝이 대신 정해 준다는 말이 왜 과장인지, 그리고 단순 예측·단일 지수 평활·범용 확장성 법칙 세 가지를 SRE 관점에서 정리했어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔔 SLO와 경고, 4편 (완결)</div>
+  1편. 알람은 언제 울려야 하나<br>
+  2편. 모니터만 보고 있는 사람은 값비싼 경고 시스템이다<br>
+  3편. 모든 자바 서비스가 같은 자리에서 아프다<br>
+  <b>4편. 머신러닝이 임계값을 정해 주지는 않았다</b> &larr; 지금 이 글
+</div>
+
+<p>임계값을 한 번 정해 두면 그걸로 끝일 것 같지만, 석 달쯤 지나면 이상해집니다. 숫자는 그대로인데 경고가 점점 자주 울려요. 그 서비스의 코드를 바꾼 적도 없는데요.</p>
+
+<p>반대도 있습니다. 서버를 늘리고 JVM 옵션을 손본 다음부터는 그 경고가 한 번도 울리지 않습니다. 좋아진 걸까요, 아니면 이제 아무것도 거르지 못하게 된 걸까요.</p>
+
+<p>SRE 쪽에서 꽤 오래 굴러다닌 질문이고, 대답은 보통 "머신러닝이 알아서 정해 줄 겁니다"가 아닙니다. 이번 편은 그 기대를 먼저 접고, 그 자리에 실제로 들어가는 통계 기법 세 가지를 순서대로 봅니다. 단순 예측, 단일 지수 평활, 범용 확장성 법칙이에요.</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 고정 임계값은 시간을 못 버팁니다</h2>
+
+<p>고정된 경고 임계값은 경험만으로 정하기가 어렵습니다. 시스템 성능이 시간의 영향을 받으니까요. 한 번 정한 숫자는 그대로인데 그 숫자가 가리키던 상태는 계속 움직입니다.</p>
+
+<p>어긋나는 방향이 둘이에요. 성능이 조금씩 나빠지는데 아직 참을 만한 수준이면, 고정된 임계값 때문에 <b>경고만 점점 늘어납니다</b>. 반대로 성능이 좋아졌는데 숫자를 그대로 두면 그 임계값은 아무것도 걸러내지 못해요. 어느 쪽이든 결과는 같습니다. 임계값이 알려 주던 정보의 신뢰도가 서서히 떨어져요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M60 52 C 59 120, 61 190, 60 245 C 140 246, 240 244, 325 245" fill="none" stroke="#3d3a34" stroke-width="2.3" stroke-linecap="round"/>
+    <path d="M62 100 C 130 98, 230 102, 322 99" fill="none" stroke="#e5a33c" stroke-width="2.6" stroke-dasharray="8 8" stroke-linecap="round"/>
+    <text x="222" y="92" font-size="19" fill="#c07f18">고정 임계값</text>
+    <path d="M65 205 C 100 198, 120 212, 145 195 C 170 178, 190 188, 215 160 C 240 134, 256 146, 280 112 C 296 94, 306 102, 320 86" fill="none" stroke="#4a7fb5" stroke-width="2.8" stroke-linecap="round"/>
+    <path d="M262 100 C 263 110, 262 118, 263 126" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+    <path d="M288 100 C 289 110, 288 118, 289 126" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+    <path d="M310 100 C 311 110, 310 118, 311 126" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+    <text x="64" y="268" font-size="21" fill="#4a7fb5">성능이 서서히 나빠지면</text>
+    <text x="64" y="292" font-size="21" fill="#b3502f">경고만 점점 늘어나요 🔥</text>
+    <path d="M348 50 C 347 120, 349 200, 348 262" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <path d="M392 52 C 391 120, 393 190, 392 245 C 470 246, 570 244, 662 245" fill="none" stroke="#3d3a34" stroke-width="2.3" stroke-linecap="round"/>
+    <path d="M394 100 C 470 98, 570 102, 659 99" fill="none" stroke="#e5a33c" stroke-width="2.6" stroke-dasharray="8 8" stroke-linecap="round"/>
+    <text x="556" y="92" font-size="19" fill="#c07f18">고정 임계값</text>
+    <path d="M397 150 C 424 160, 442 150, 470 176 C 500 198, 522 190, 552 208 C 582 222, 612 216, 657 220" fill="none" stroke="#5a9e6f" stroke-width="2.8" stroke-linecap="round"/>
+    <text x="396" y="268" font-size="21" fill="#2e6b41">성능이 좋아지면</text>
+    <text x="396" y="292" font-size="21" fill="#8a8272">아무것도 거르지 못해요 😶</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 틀린 건 숫자가 아니라, 숫자가 고정이라는 사실입니다</div>
+
+<p>그래서 <span class="obsv-mark">임계값은 정하는 게 아니라 계속 다시 구해야 하는 값</span>입니다. 사람이 분기마다 손으로 조율하든, 쿼리가 매 순간 다시 계산하든 둘 중 하나예요. 이 글은 후자를 택합니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 머신러닝이 임계값을 정해 주지는 않았습니다</h2>
+
+<p>"그럼 머신러닝에 맡기면 되지 않나요"가 자연스러운 다음 질문입니다. 모니터링 제품들이 오래전부터 "이상 탐지"라는 이름으로 광고해 온 기능이기도 하고요. 그런데 <b>시계열 예측에서 머신러닝이 고전 통계를 이겼다는 근거는 생각보다 약합니다</b>.</p>
+
+<p>스피로스 마크리다키스, 에반겔로스 스필리오티스, 바실리오스 아시마코풀로스가 2018년 PLOS ONE에 낸 「Statistical and Machine Learning forecasting methods: Concerns and ways forward」가 이 지점을 정면으로 다뤄요. M3 경진대회의 월별 시계열 1,045개를 놓고 널리 쓰이는 머신러닝 기법들과 고전 통계 기법 여덟 개를 같은 조건에서 비교했습니다. 결과는 <span class="obsv-mark">검사한 모든 예측 구간에서, 두 가지 정확도 지표 모두 머신러닝이 통계 기법에 밀렸다</span>는 것이었어요. 계산 비용은 머신러닝 쪽이 훨씬 컸고요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 시계열 (time series)</div>
+  시각 하나에 값 하나가 붙어 순서대로 쌓인 데이터예요. 초당 요청 수, 응답 시간처럼 모니터링 지표는 거의 전부 시계열입니다. 순서 자체가 정보라서 다루는 방법이 따로 있어요.
+</div>
+
+<p>같은 해에 열린 M4 경진대회 결과도 결이 비슷합니다. 우승한 방법은 순수 신경망이 아니라 <b>지수 평활과 순환 신경망을 섞은 하이브리드</b>였어요. 2등은 통계 기법 일곱 개에 머신러닝 하나를 더해 놓고, 그 가중치만 머신러닝이 정하게 한 조합이었고요. 상위권 열일곱 개 중 열두 개가 조합 기법이었습니다. 머신러닝이 고전 통계를 갈아치운 게 아니라, <span class="obsv-mark">지수 평활 같은 고전 기법이 여전히 뼈대로 남아 있는</span> 그림이에요.</p>
+
+<p>그러니 "모니터링 시스템이 머신러닝으로 임계값을 알아서 잡아 준다"는 말은 아직 과장에 가깝습니다. 시계열은 단순한 고전 통계가 여전히 힘을 쓰는 분야예요.</p>
+
+<p>SRE가 실제로 손에 쥐고 쓰는 통계 목록을 봐도 그렇습니다. 백분율, 평균과 표준 편차, 백분위, 히스토그램. 대시보드에 올라가는 건 대체로 이 넷이고 전부 고전 통계입니다. 머신러닝이나 몬테카를로 시뮬레이션은 이 넷으로 더 못 갈 때 꺼내는 다음 카드에 가까워요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 표준 편차 (standard deviation)</div>
+  값들이 평균에서 얼마나 흩어져 있는지를 나타내는 수치예요. 평균은 멀쩡한데 표준 편차가 유난히 크다면, 평균만 보느라 모니터링이 놓치고 있는 간헐적인 문제를 의심해 볼 만합니다.
+</div>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 단순한 방법: 마지막 값에 배수를 곱합니다</h2>
+
+<p>가장 단순한 쪽부터 갑니다. <b>다음 값은 마지막 관찰 값과 같다</b>고 치는 휴리스틱이에요. 영어로는 naive 예측이라고 부릅니다. 예측이라기엔 민망하지만 장점이 분명해요. 어떤 모니터링 시스템에서도 쓸 수 있습니다.</p>
+
+<p>여기에 배수를 곱하면 동적 임계값이 됩니다. 곱한 결과로 예측선을 그려 두고, 실제선이 그 아래로 떨어지는지 보는 거예요. 배수가 1보다 크면 반대로 넘어가는지 봅니다. 처리량 지표에 자주 거는데, 갑작스러운 처리량 저하는 서비스 중단의 전조일 수 있으니까요.</p>
+
+<div class="obsv-code">단순한 방법의 경고 조건 (말로 옮긴 것)
+
+  예측선 = (1분 전 값) × 배수 0.5
+  실제선 &lt; 예측선 이면  →  경고
+
+  배수 0.5  :  '정상'에서 50%까지 벗어나도 봐준다는 뜻
+  배수 &gt; 1  :  부등호를 뒤집어 "넘어가는지"를 본다</div>
+
+<p>아틀라스 같은 시계열 쿼리 언어라면 시간 이동과 곱셈 하나로 끝나는 식이에요. 그런데 이 느슨한 설정으로 실제 처리량 곡선을 대 보면 결과가 좀 당황스럽습니다. 정상에서 <b>50%까지 벗어나도 봐주는데 교차가 네 번</b>이나 나와요. 배수를 0.45로 낮추면 경고가 한 번도 발생하지 않지만, 대신 훨씬 더 멀리 벗어나야 울립니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M60 46 C 59 110, 61 190, 60 240 C 180 241, 420 239, 670 240" fill="none" stroke="#3d3a34" stroke-width="2.3" stroke-linecap="round"/>
+    <path d="M65 150 C 90 140, 105 205, 130 150 C 155 100, 175 145, 200 140 C 225 135, 240 150, 255 148 C 275 146, 285 210, 305 152 C 325 98, 345 142, 370 140 C 395 138, 410 150, 425 148 C 445 146, 455 208, 475 150 C 495 96, 515 140, 540 139 C 560 138, 575 148, 590 146 C 610 144, 620 206, 640 148 C 652 118, 660 132, 667 128" fill="none" stroke="#4a7fb5" stroke-width="2.8" stroke-linecap="round"/>
+    <path d="M65 190 C 150 186, 240 189, 330 185 C 420 181, 510 185, 600 180 C 630 178, 650 179, 667 177" fill="none" stroke="#e5a33c" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M130 178 C 131 192, 130 206, 131 218" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+    <path d="M305 178 C 306 192, 305 206, 306 218" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+    <path d="M475 178 C 476 192, 475 206, 476 218" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+    <path d="M640 178 C 641 192, 640 206, 641 218" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+    <text x="440" y="70" font-size="21" fill="#4a7fb5">실제선 (처리량)</text>
+    <text x="400" y="100" font-size="21" fill="#c07f18">예측선 = 마지막 값 × 0.5</text>
+    <text x="123" y="236" font-size="19" fill="#b3502f">①</text>
+    <text x="298" y="236" font-size="19" fill="#b3502f">②</text>
+    <text x="468" y="236" font-size="19" fill="#b3502f">③</text>
+    <text x="633" y="236" font-size="19" fill="#b3502f">④</text>
+    <text x="100" y="270" font-size="21" fill="#b3502f">50%까지 봐주는 설정인데도 교차가 네 번</text>
+    <text x="100" y="294" font-size="21" fill="#8a8272">0.45로 낮추면 0번, 대신 훨씬 둔해져요</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 느슨하게 할수록 덜 울리고, 덜 울리는 만큼 늦게 압니다</div>
+
+<p>느슨하게 잡을수록 예측선 자체도 덜 튑니다. 조용한 경고와 빠른 경고 사이에서 하나를 고르는 일이고, <span class="obsv-mark">배수 하나가 그 선택을 통째로 담당합니다</span>.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 단일 지수 평활: 과거를 섞되 멀수록 가볍게</h2>
+
+<p>단순한 방법의 약점은 마지막 한 점에 전부를 건다는 겁니다. 그 한 점이 튀면 예측선도 같이 튀어요. 그래서 배수를 곱하기 전에 <b>지표를 먼저 평활화</b>합니다. 과거 값을 섞되, 멀리 있는 값일수록 가볍게 치는 거예요.</p>
+
+<div class="obsv-code">단일 지수 평활 (simple exponential smoothing)
+
+  재귀식    ŷ(t+1) = α·y(t) + (1 − α)·ŷ(t)
+
+  풀어 쓰면
+    ŷ(t+1) = α·y(t)
+           + α(1 − α)·y(t−1)
+           + α(1 − α)²·y(t−2)
+           + α(1 − α)³·y(t−3) + …
+
+  0 ≤ α ≤ 1 이고, 가중치 α(1 − α)ⁿ 을 전부 더하면 1 로 수렴</div>
+
+<p>재귀식 한 줄과 풀어 쓴 가중합은 같은 식이에요. 지금 값에 α를, 직전 예측에 (1 − α)를 주는 계산을 매 시점 반복하면, 결과적으로 과거 값들의 가중치가 <b>지수적으로 줄어드는 합</b>이 됩니다.</p>
+
+<p>α가 1이면 (1 − α) 항이 전부 0이 되어 ŷ(t+1) = y(t)만 남아요. <b>앞 장의 단순한 방법이 단일 지수 평활의 한쪽 끝</b>인 셈입니다. 1보다 작아지는 만큼 과거가 섞여 들어오고요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 평활 계수 (alpha)</div>
+  0과 1 사이의 값 하나로, 최근 값을 얼마나 믿을지 정하는 손잡이예요. 1에 가까울수록 최근 값만 보고, 0에 가까울수록 과거를 길게 섞어 선이 부드러워집니다.
+</div>
+
+<p>가중치의 합은 기하급수라서 금방 1에 가까워져요. α가 0.5일 때를 적어 보면 이렇습니다.</p>
+
+<div class="obsv-code">평활 계수 α = 0.5 일 때의 가중치 α(1 − α)ⁿ
+
+  n      가중치      누적합
+  0      0.5        0.5
+  1      0.25       0.75
+  2      0.125      0.875
+  3      0.0625     0.9375
+  4      0.03125    0.96875
+  5      0.015625   0.984375</div>
+
+<p>n이 5만 돼도 누적합이 0.984예요. 그래서 실무에서는 <b>앞쪽 몇 개 항만 골라 급수의 합을 미리 구해 두고 평활 함수에 곱합니다</b>. 대신 쿼리가 길어져요. 1분 전부터 6분 전까지 여섯 항을 손으로 펼쳐 쓴 식이 되거든요. 지수 평활을 쿼리로 구현하려면 모니터링 시스템의 내장 함수가 받쳐 줘야 한다는 게 여기서 체감됩니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  세 기법 중 어디까지 갈 수 있는지는 의지가 아니라 <b>모니터링 시스템의 쿼리 언어</b>가 정합니다.<br>
+  &bull; 단순한 방법: 시간 이동(offset)과 곱셈만 되면 어디서든 가능<br>
+  &bull; 단일 지수 평활: 거듭제곱, 변수 바인딩, 항을 여러 개 쌓아 더하기가 필요<br>
+  &bull; 범용 확장성 법칙: 쿼리가 아니라 <b>애플리케이션 쪽</b>에서 계수를 계산해 메트릭으로 내보내야 함
+</div>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 범용 확장성 법칙: 겪어 보지 않은 처리량을 미리 묻습니다</h2>
+
+<p>여기서 사고방식이 한 번 바뀝니다. 앞의 두 기법은 지나간 값을 평활해서 지금의 임계값을 구했어요. 이번엔 <b>아직 겪어 보지 않은 처리량에서 레이턴시가 얼마가 될지</b>를 묻습니다. 서비스 수준 목표를 넘고 나서 대응하면 이미 늦으니까요. 경계에 근접하는 순간을 미리 예측해 경고를 올리면 아직 막을 시간이 있습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 리틀의 법칙 (Little's Law)</div>
+  대기열의 크기(동시성 N), 레이턴시(R), 처리량(X) 사이의 관계식이에요. <b>N = X × R</b>, <b>X = N / R</b>, <b>R = N / X</b> 세 줄입니다. 변수가 셋뿐이라 둘을 알면 나머지 하나가 나와요. 우리가 알고 싶은 건 레이턴시니까 동시성과 처리량에서 유도하면 됩니다.
+</div>
+
+<p>여기에 <b>범용 확장성 법칙(USL)</b>이 붙습니다. 닐 건터가 정리한 모델로, 처리량 또는 동시성이라는 <span class="obsv-mark">단일 변수 하나로 레이턴시를 예측</span>하려는 식이에요.</p>
+
+<div class="obsv-code">범용 확장성 법칙 (USL)
+
+  처리량    X(N) = λN / (1 + σ(N−1) + κN(N−1))
+
+    λN           무부하일 때의 이상적인 선형 증가
+    σ(N−1)       경합 비용. N 에 비례해 커진다
+    κN(N−1)      일관성 유지 비용. 쌍마다 생기므로 N² 로 커진다
+
+  리틀의 법칙 R = N / X 를 끼우면 레이턴시가 나옵니다
+
+    R(N) = (1 + σ(N−1) + κN(N−1)) / λ</div>
+
+<p>계수 세 개가 전부예요. λ는 무부하 상태의 작동 속도, σ는 경합, κ는 일관성 유지 비용입니다. σ와 κ가 둘 다 0이면 X(N) = λN, 즉 <b>늘린 만큼 그대로 빨라지는 이상적인 선형 확장</b>이에요. σ만 있으면 어느 선에서 수평으로 눕고, κ까지 붙으면 어느 지점부터는 <span class="obsv-mark">더 넣을수록 오히려 느려집니다</span>. 현실의 시스템이 어느 쪽인지를 관측값으로 맞춰 보는 게 USL이 하는 일이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 경합(contention)과 일관성 유지(coherency)</div>
+  경합은 같은 자원을 두고 기다리는 비용이에요. 관계형 데이터베이스의 테이블 락 같은 락 동기화가 여기 해당합니다. 일관성 유지는 작업 하나를 처리하려고 여러 구성 요소가 서로 상태를 맞추느라 드는 비용이고, 분산 시스템의 팬아웃과 비슷해요. 혼선이라고 부르기도 합니다. 경합은 N에 비례해 늘지만 일관성 유지는 쌍마다 생겨서 N²로 늘어요. 노드를 더 넣었는데 느려지는 구간은 거의 이 항 때문입니다.
+</div>
+
+<p>중요한 건 이 계수들을 사람이 손으로 구하지 않는다는 점이에요. 지금까지 관찰한 처리량과 레이턴시에 USL 곡선을 맞춰 λ, σ, κ를 계속 갱신하고, 그 결과를 메트릭으로 게시하면 됩니다. 자바라면 이런 모양이 되겠죠.</p>
+
+<div class="obsv-code">// USL 예측을 메트릭으로 내보낸다면 이런 모양
+UniversalScalabilityLawForecast
+  .builder(
+      registry
+        .find("http.server.requests")              // 이름이 같은 타이머를 찾고
+        .tag("uri", "/myendpoint")                 // 태그로 범위를 좁히고
+        .tag("status", s -&gt; s.startsWith("2"))     // 람다로도 좁힐 수 있어요
+  )
+  .independentVariable(
+      UniversalScalabilityLawForecast.Variable.THROUGHPUT)  // 처리량을 단일 변수로
+  // 최대 1,000 요청/초(처리량)까지 예측한다.
+  .maximumForecast(1000)
+  .register(registry);</div>
+
+<p>등록해 두면 여러 처리량 수준의 예측값이 간격마다 게이지로 게시됩니다. 타이머 이름 뒤에 네 가지 접두어가 더 붙는 식이에요. <code>forecast</code>(예측 게이지), <code>crosstalk</code>(혼선), <code>contention</code>(경합), <code>unloaded.performance</code>(무부하 성능)입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 마이크로미터에는 이 클래스가 없습니다</div>
+  위 코드는 지금 그대로는 컴파일되지 않아요. 공개된 micrometer-core 아티팩트를 열어 보면 USL 관련 클래스가 들어 있지 않습니다. 오래된 버전부터 최신 버전까지 마찬가지예요. <b>동작하는 API가 아니라 설계의 모양</b>으로 읽는 게 맞습니다. USL 자체는 충분히 쓸모 있는 모델이니, 계수 추정은 애플리케이션 쪽에서 직접 구현해 게이지로 내보내면 돼요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="uslarr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#b3502f" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M70 46 C 69 120, 71 200, 70 258 C 200 259, 430 257, 668 258" fill="none" stroke="#3d3a34" stroke-width="2.3" stroke-linecap="round"/>
+    <text x="22" y="56" font-size="18" fill="#8a8272">레이턴시</text>
+    <text x="598" y="284" font-size="18" fill="#8a8272">처리량 →</text>
+    <path d="M72 104 C 200 101, 420 107, 664 103" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-dasharray="8 8" stroke-linecap="round"/>
+    <text x="78" y="96" font-size="20" fill="#b3502f">SLO 경계</text>
+    <path d="M75 236 C 140 232, 210 224, 268 212" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
+    <text x="86" y="258" font-size="19" fill="#4a7fb5">지금까지 관찰한 구간</text>
+    <path d="M300 46 C 299 110, 301 190, 300 250" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <text x="236" y="40" font-size="19" fill="#8a8272">지금 처리량</text>
+    <path d="M268 212 C 350 203, 420 186, 478 150 C 520 124, 560 88, 600 58" fill="none" stroke="#e5a33c" stroke-width="3" stroke-dasharray="7 6" stroke-linecap="round"/>
+    <text x="330" y="232" font-size="20" fill="#c07f18">USL 이 그려 주는 예측 구간</text>
+    <path d="M512 104 C 513 118, 512 130, 513 142" stroke="#e5533c" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+    <path d="M548 146 C 540 145, 530 141, 522 134" fill="none" stroke="#b3502f" stroke-width="2" stroke-linecap="round" marker-end="url(#uslarr)"/>
+    <text x="552" y="166" font-size="20" fill="#b3502f">여기를 넘기 전에</text>
+    <text x="566" y="190" font-size="20" fill="#b3502f">경고합니다 📟</text>
+    <text x="96" y="306" font-size="21" fill="#b3502f">지금의 레이턴시가 아니라, 확장된 처리량의 예측 레이턴시에 경고를 겁니다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. SLO를 넘은 뒤가 아니라, 넘을 처리량을 미리 묻는 경고</div>
+
+<p>현재 처리량보다 확장된 값을 기준으로 경고를 걸면, 그 처리량에서의 예측 레이턴시가 아직 SLO 아래인지를 미리 확인할 수 있어요. 경합, 일관성 유지, 무부하 성능 세 값은 <span class="obsv-mark">성능 향상 여지가 어디 있는지</span>를 가리키는 지표이기도 합니다. 셋 중 무엇을 개선해도 예측 레이턴시와 실제 레이턴시가 같이 내려가요. 같은 모델을 전달 파이프라인에 붙여서, 프로덕션 수준 트래픽을 미리 흘려 보고 SLA를 만족하는지 배포 전에 확인할 수도 있고요.</p>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 다섯 편을 닫으며</h2>
+
+<p>이 시리즈는 내내 한 가지를 반복했어요. 그래프 위의 숫자는 답이 아니라 질문이라는 것. 1편에서 1분·5분·15분 비율을 따로 보내던 이유를 따지며 계측 라이브러리가 자기 시대의 백엔드를 닮는다는 걸 봤고, 2편에서 에러를 건수 대신 전체 대비 비중으로 그리기로 했고, 3편에서 모니터를 지켜보는 사람이 가장 비싼 경고 시스템이라는 걸 인정했고, 4편에서 자바 서비스들이 대체로 같은 자리에서 아프다는 걸 확인했습니다. 이번 편은 거기에 하나를 더합니다. <b>그 숫자를 고정해 두면 안 된다</b>는 것이요.</p>
+
+<p>도구 얘기는 한 줄이면 충분해요. 그라파나는 특정 업체에 묶이지 않는 오픈 소스이고 여러 모니터링 시스템의 데이터를 함께 받을 수 있어서, 어느 쪽으로 가더라도 크게 손해 보지 않는 선택지입니다. 히스토그램과 백분위를 들여다볼 때도 결국 여기로 돌아오고요.</p>
+
+<p>비즈니스 메트릭으로 가용성을 보는 일도 물론 중요합니다. 다만 다섯 편을 쓰면서 더 남는다고 느낀 쪽은 기본 신호를 직접 만져 보는 일이었어요. 어떤 지표가 왜 그 모양으로 생겼는지, 내 서비스가 어떤 식으로 느려지는지를 아는 것 말이에요.</p>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>고정 임계값은 시스템 성능이 변하는 속도를 못 따라갑니다. 머신러닝이 그 자리를 대신해 준다는 주장은 아직 과장이고, 시계열 예측에서는 고전 통계의 오류율이 더 낮다는 비교 결과가 공개돼 있어요.</b><br><br>
+  그래서 실제로 쓰는 건 단순한 방법, 단일 지수 평활, 범용 확장성 법칙입니다. 뒤로 갈수록 과거를 덜 따라가고 미래를 더 묻는데, 그만큼 모니터링 시스템과 애플리케이션이 받쳐 줘야 해요. 결국 경고를 잘 거는 일은 모델을 고르는 일이 아니라, <b>내 시스템이 어느 지점에서 어떻게 느려지는지를 내가 아는 일</b>입니다.
+</div>
+
+</div>
