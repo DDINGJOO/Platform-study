@@ -7,7 +7,7 @@
 이 저장소의 HTML 파일이 원본이고, 블로그는 그 사본입니다. 글을 고치면 여기서 고치고,
 커밋하면 업로더가 새 글과 바뀐 글을 골라 블로그에 반영합니다.
 
-## 무엇을 다루나 (126편)
+## 무엇을 다루나 (134편)
 
 ### 실무 기록
 
@@ -40,7 +40,11 @@
 | 계측 라이브러리 | 4 | 파사드와 레지스트리, 미터 종류 고르기, 게이지와 약한 참조 |
 | 집계와 분포 | 3 | 평균의 평균과 백분위 합산, 에러를 비율로 보기, exemplar |
 | SLO와 경고 | 4 | SLI·SLO·에러 버짓·burn rate, 차트와 경고의 역할 분리 |
-| 추적과 디버깅 | 6 | 컨텍스트 전파, 비동기에서 성공 세기, 멱등성, baggage |
+| 추적과 디버깅 | 7 | 컨텍스트 전파, 비동기에서 성공 세기, 멱등성, baggage, 그리고 실습 1편 |
+| 트래픽 관리 | 7 | 로드 밸런싱, 인스턴스 보호관찰, 헤지 요청, 재시도 비용, 서킷 브레이커와 동시성 제한 |
+
+실습 글에 실린 화면과 숫자는 [`labs/observability`](labs/observability)에서 직접 돌린 결과입니다.
+스프링 부트 샘플 서비스 셋과 OpenTelemetry Collector · Tempo · Prometheus · Grafana 스택을 Docker 로 띄웁니다.
 
 그 밖에 소프트웨어 개발 생명주기(1편), 이 블로그를 자동화한 기록(2편)이 있습니다.
 
@@ -65,6 +69,7 @@ posts/
   Work/            실무 기록 (IaC, fin-ops, ops, security, db-migration ...)
   CS/Observability 관측성 스터디
   <카테고리>/<시리즈>/NN_N편 - 제목.html
+labs/observability/   실습 코드 (샘플 앱, 관측 스택, 실습별 compose)
 tistory-series.json    시리즈 폴더 → 발행 제목 접두어
 tistory-manifest.json  파일 → 블로그 글 번호와 해시 (중복 발행 방지)
 .claude/skills/        작성·퇴고·발행 도구
