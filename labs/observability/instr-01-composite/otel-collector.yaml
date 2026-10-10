@@ -1,0 +1,21 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  # 받은 지표를 그대로 로그에 찍는다(이름, 단위, 종류, 시간성 확인용)
+  debug:
+    verbosity: detailed
+  # Prometheus 의 OTLP 수신 엔드포인트로 그대로 넘긴다
+  otlphttp/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [debug, otlphttp/prometheus]

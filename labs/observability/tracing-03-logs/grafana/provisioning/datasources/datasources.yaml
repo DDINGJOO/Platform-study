@@ -1,0 +1,41 @@
+# stack/ 의 데이터소스에 Loki 를 더하고, 로그 <-> 트레이스 이동을 켰다.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    url: http://tempo:3200
+    jsonData:
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      # 트레이스 -> 로그: 스팬의 service.name 을 Loki 의 service_name 라벨로 바꿔 끼우고
+      # trace ID 로 줄을 거른다.
+      tracesToLogsV2:
+        datasourceUid: loki
+        filterByTraceID: true
+        # 기본값 0 이면 스팬 시작~끝(밀리초로 내림)만 묻는다. 내린 경계와 실제 스팬 끝 사이에 찍힌 로그가 빠진다(글 4절). 빈 화면을 재현하려면 아래 두 줄을 지운다.
+        spanStartTimeShift: "-1s"
+        spanEndTimeShift: "1s"
+        tags:
+          - key: service.name
+            value: service_name
+  - name: Loki
+    uid: loki
+    type: loki
+    url: http://loki:3100
+    jsonData:
+      # 로그 -> 트레이스: 로그 줄에서 trace_id=... 를 뽑아 Tempo 링크로 만든다.
+      derivedFields:
+        - name: TraceID
+          matcherType: regex
+          matcherRegex: "trace_id=(\\w+)"
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: Tempo에서 트레이스 열기

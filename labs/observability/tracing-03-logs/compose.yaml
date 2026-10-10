@@ -1,0 +1,95 @@
+# 추적과 디버깅 실습-3: 로그의 trace_id에서 트레이스를 바로 연다.
+# 관측 스택은 stack/ 의 설정 파일을 그대로 쓰되, Grafana 데이터소스와 Collector 설정만 이 폴더 것으로 바꿨다.
+# (include 로는 서비스 설정을 덮어쓸 수 없어서 서비스 정의를 옮겨 왔다.)
+x-shop: &shop
+  build: ./app
+  image: obs-lab/tracing-03-logs:dev
+  mem_limit: 512m
+  environment: &shop-env
+    JAVA_TOOL_OPTIONS: -Xmx256m -javaagent:/otel/opentelemetry-javaagent.jar
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    OTEL_METRICS_EXPORTER: none
+    OTEL_LOGS_EXPORTER: ${LOGS_EXPORTER:-none}   # otlp 로 바꾸면 로그도 OTLP 로 보낸다(5절)
+
+services:
+  order:
+    <<: *shop
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: order
+      OTEL_SERVICE_NAME: order
+    ports: ["${APP_PORT:-8080}:8080"]
+
+  inventory:
+    <<: *shop
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: inventory
+      OTEL_SERVICE_NAME: inventory
+
+  payment:
+    <<: *shop
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: payment
+      OTEL_SERVICE_NAME: payment
+      SHOP_PAYMENT_FAIL_RATE: ${PAYMENT_FAIL_RATE:-0}
+      SHOP_PAYMENT_SLOW_MS: ${PAYMENT_SLOW_MS:-0}
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "/scripts/orders.js"]
+    volumes:
+      - ./k6:/scripts:ro
+
+  # ---- 로그 수집 ----
+  loki:
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki.yaml:/etc/loki/loki.yaml:ro
+    ports: ["${LOKI_PORT:-3100}:3100"]
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
+    volumes:
+      - ./alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # ---- stack/ 와 같은 관측 스택 ----
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo.yaml"]
+    user: "0"
+    volumes:
+      - ../stack/tempo.yaml:/etc/tempo.yaml:ro
+    ports: ["${TEMPO_PORT:-3200}:3200"]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ../stack/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_PORT:-9090}:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports: ["${GRAFANA_PORT:-3000}:3000"]

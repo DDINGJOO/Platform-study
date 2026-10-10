@@ -1,0 +1,299 @@
+<!-- lead: 인스턴스 세 대의 p99를 평균 낸 값, histogram_quantile로 합친 p99, k6가 잰 실제 p99를 비교했어요. 트래픽 비중에 따라 평균이 절반 아래로도 세 배 위로도 틀린 결과와 Micrometer에서 버킷을 켜면 백분위가 사라지는 이유를 정리했어요. -->
+<!-- tags: p99, histogram_quantile, 백분위 평균, Micrometer, Prometheus histogram -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📐 집계와 분포, 실습-1</div>
+  1편. 집계의 함정<br>
+  2편. 에러는 건수가 아니라 비율로 그린다<br>
+  3편. 히스토그램 위의 점을 클릭하면<br>
+  <b>실습-1. 인스턴스 세 대의 p99를 평균 내면 틀린다</b> &larr; 지금 이 글<br>
+  실습-2. 에러율을 PromQL에서 비율로 그린다<br>
+  실습-3. 히스토그램 점을 눌러 트레이스로 넘어간다
+</div>
+
+<p>서비스 대시보드에 "전체 p99" 패널이 하나 있다고 해 볼게요. 쿼리를 열어 보니 <code>avg(...{quantile="0.99"})</code>예요. 인스턴스마다 자기 p99를 보고하고, 대시보드는 그걸 평균 내서 보여 주고 있었습니다. 숫자는 200ms 근처에서 얌전히 움직이고, 아무도 이상하다고 느끼지 않아요.</p>
+
+<p>1편에서 백분위는 합칠 수 없는 완성품이고, 합치려면 버킷을 재료째 보내야 한다고 했습니다. 이번 글은 그 말을 숫자로 확인합니다. 지연 분포가 다른 인스턴스 세 대에 부하를 주고, <b>p99의 평균</b>, <b>버킷을 합쳐 계산한 p99</b>, <b>k6가 모든 요청을 보고 잰 실제 p99</b>를 나란히 놓았어요. 화면과 숫자는 전부 이번에 돌린 결과입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; p99 세 개를 평균 내면 실제 p99와 얼마나 차이 나는가?<br>
+  &bull; 트래픽 비중이 바뀌면 그 오차는 어느 방향으로 움직이는가?<br>
+  &bull; 버킷을 합친 p99는 정확한가, 아니면 운이 좋았던 것인가?<br>
+  &bull; 같은 타이머에 백분위와 버킷을 둘 다 켜면 무엇이 나오는가?
+</div>
+
+<h2>1. 실습 환경: 빠른 두 대와 가끔 느린 한 대</h2>
+
+<p>스프링 부트 앱 하나를 세 번 띄웁니다. <code>/work</code> 엔드포인트는 요청마다 20~60ms 사이에서 무작위로 잠들었다가 응답해요. 세 번째 인스턴스 <code>app-c</code>에만 환경변수 <code>LAB_SLOW_RATIO=0.1</code>을 줘서, 요청의 10%를 300~500ms로 늦췄습니다. GC가 자주 도는 노드나 이웃 컨테이너가 시끄러운 노드 하나를 흉내 낸 거예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrA1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrA1b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M26 118 C 60 116, 96 119, 124 117 C 126 136, 125 156, 124 174 C 92 176, 58 173, 27 175 C 25 156, 26 136, 26 118 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="75" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">k6</text>
+  <text x="75" y="162" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">초당 60건</text>
+  <path d="M128 132 C 170 110, 200 80, 236 62" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrA1)"/>
+  <path d="M128 146 C 170 145, 200 147, 236 146" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrA1)"/>
+  <path d="M128 160 C 170 182, 200 212, 236 230" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrA1)"/>
+  <path d="M244 34 C 290 32, 340 35, 384 33 C 386 52, 385 72, 384 88 C 340 90, 288 87, 245 89 C 243 72, 244 52, 244 34 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+  <text x="314" y="58" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">app-a</text>
+  <text x="314" y="78" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">20~60ms</text>
+  <path d="M244 118 C 290 116, 340 119, 384 117 C 386 136, 385 156, 384 172 C 340 174, 288 171, 245 173 C 243 156, 244 136, 244 118 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+  <text x="314" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">app-b</text>
+  <text x="314" y="162" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">20~60ms</text>
+  <path d="M244 202 C 290 200, 340 203, 384 201 C 386 220, 385 240, 384 256 C 340 258, 288 255, 245 257 C 243 240, 244 220, 244 202 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+  <text x="314" y="226" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">app-c 🐢</text>
+  <text x="314" y="246" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">10%는 300~500ms</text>
+  <path d="M388 62 C 430 80, 470 110, 500 132" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrA1b)"/>
+  <path d="M388 146 C 430 145, 470 147, 500 146" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrA1b)"/>
+  <path d="M388 230 C 430 212, 470 184, 500 162" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrA1b)"/>
+  <path d="M508 112 C 560 110, 620 113, 672 111 C 674 132, 673 160, 672 180 C 620 182, 558 179, 509 181 C 507 160, 508 132, 508 112 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="590" y="138" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Prometheus</text>
+  <text x="590" y="158" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">5초마다 긁는다</text>
+  <text x="590" y="174" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">p99 + 버킷</text>
+  <text x="590" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">📊 Grafana가 읽는다</text>
+  <text x="350" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">느린 요청은 전체의 약 3.6%, 전부 app-c 에서 나온다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 코드 세 대, 느린 꼬리는 한 대에만 있다</div>
+
+<p>세 대가 같은 양을 받으면 느린 요청은 전체의 약 3.3%가 됩니다. 실제 실행에서는 3.6%였어요(아래). 전체 p99는 "빠른 쪽에서 99%째 요청"이니 느린 요청 무리 안쪽 어딘가에 있어야 합니다. 그런데 p99를 셋 평균 내면 빠른 두 대의 60ms가 세 값 중 두 자리를 차지해요. 1편의 "평균의 평균" 함정이 백분위에서 어떻게 나타나는지 보려는 설정입니다.</p>
+
+<p>쓴 버전은 아래와 같아요.</p>
+
+<div class="obsv-code">Spring Boot           4.1.1   (Java 21, Micrometer 1.17.1)
+Prometheus            3.15.0
+Grafana               13.2.3
+k6                    2.3.0
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/agg-01-percentile-avg">GitHub 저장소의 labs/observability/agg-01-percentile-avg</a>에 있습니다. 다른 실습과 동시에 띄워도 겹치지 않게 호스트 포트를 23000번대로 잡았어요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/agg-01-percentile-avg
+docker compose up -d --build
+docker compose --profile load run --rm load     # 초당 60건, 3분, 세 대에 차례로
+# Grafana: http://localhost:23000 → 대시보드 「실습-1 p99 평균 vs 버킷 합산」</div>
+
+<h2>2. 버킷을 켜자 p99가 사라졌다</h2>
+
+<p>처음에는 스프링 부트의 자동 타이머 <code>http.server.requests</code> 하나에 두 가지를 다 켰어요. 인스턴스가 직접 계산하는 p99와, 백엔드가 합칠 수 있는 버킷입니다.</p>
+
+<div class="obsv-code">management:
+  metrics:
+    distribution:
+      percentiles:
+        http.server.requests: 0.99        # 앱이 계산한 p99 를 내보낸다
+      percentiles-histogram:
+        http.server.requests: true        # 버킷을 내보낸다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 클라이언트 백분위 (client-side percentile)</div>
+  앱 프로세스 안에서 최근 요청들의 분포를 들고 있다가 p99 같은 값을 직접 계산해 내보내는 방식입니다. Prometheus에는 <code>quantile="0.99"</code> 라벨이 붙은 숫자 하나로 도착해서, 다른 인스턴스 값과 다시 합칠 재료가 남지 않아요.
+</div>
+
+<p>그런데 <code>/actuator/prometheus</code>를 열어 보니 <code>quantile</code> 줄이 하나도 없었습니다. 버킷 줄과 <code>_count</code>, <code>_sum</code>, <code>_max</code>만 있었어요. 버킷 설정만 끄고 다시 띄우자 그제야 나왔습니다.</p>
+
+<div class="obsv-code"># 버킷을 켰을 때
+# TYPE http_server_requests_seconds histogram
+http_server_requests_seconds_bucket{...,uri="/work",le="0.001"} 0
+  ... (버킷 68개 + le="+Inf")
+http_server_requests_seconds_count{...,uri="/work"} 1
+
+# 버킷을 껐을 때
+# TYPE http_server_requests_seconds summary
+http_server_requests_seconds{...,uri="/work",quantile="0.99"} 0.082837504</div>
+
+<p>원인은 Micrometer의 Prometheus 레지스트리 코드에 있었어요. Micrometer 1.13부터 쓰는 새 레지스트리(<code>io.micrometer.prometheusmetrics.PrometheusMeterRegistry</code>)는 타이머에 버킷이 하나라도 있으면 Prometheus의 histogram 타입으로 내보내고, <b>버킷이 없을 때만</b> summary 타입으로 만들면서 quantile 값을 넣습니다. 한 이름이 histogram이면서 summary일 수는 없으니, 버킷을 켜는 순간 앱이 계산한 백분위는 조용히 빠져요. 설정 오류 경고도 없었습니다. 1.12까지 쓰던 예전 레지스트리 소스에는 "Prometheus는 한 지표가 histogram이면서 summary여도 거부하지 않는다"는 주석과 함께 quantile 줄과 버킷 줄을 같이 내보내는 코드가 있었어요. 버전을 올리면서 동작이 바뀐 겁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Prometheus의 summary와 histogram</div>
+  지연 분포를 내보내는 두 가지 지표 타입입니다. summary는 앱이 계산한 백분위 값(<code>quantile</code> 라벨)을 보내고, histogram은 "이 시간 이하가 몇 건"인 누적 버킷(<code>le</code> 라벨)을 보내요. 여러 인스턴스를 합칠 수 있는 쪽은 histogram입니다.
+</div>
+
+<p>그래서 비교용 p99는 <code>lab.work</code>라는 타이머를 따로 만들어, 같은 요청에서 잠드는 구간만 따로 재게 했어요. 자동 타이머에는 버킷만, <code>lab.work</code>에는 클라이언트 p99만 켰습니다.</p>
+
+<div class="obsv-code">management:
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true    # 버킷: 인스턴스를 합칠 수 있다
+      percentiles:
+        lab.work: 0.99                # 앱이 계산한 p99: 합칠 수 없다</div>
+
+<p>출력을 보다가 하나 더 걸렸어요. 설정에는 <code>http.server.requests</code>라고만 썼는데, 진행 중인 요청을 재는 <code>http.server.requests.active</code>(LongTaskTimer)에도 버킷 29줄이 따라 나왔습니다. 스프링 부트는 미터 이름을 점 단위로 하나씩 잘라 가며 맞는 설정을 찾기 때문이에요. <code>http.server.requests.active</code>에 대한 설정이 없으면 <code>http.server.requests</code>의 설정을 씁니다. 이름 앞부분이 같은 미터가 있다면 버킷 수가 그만큼 같이 늘어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 대시보드의 quantile 패널이 비어 있다면</div>
+  Micrometer 1.13 이상(스프링 부트 3.3 이상)으로 올린 뒤 <code>{quantile="0.99"}</code> 패널이 빈칸이 됐다면, 같은 타이머에 <code>percentiles-histogram</code>이 켜져 있는지 확인해요. 버킷을 켰다면 패널 쿼리를 <code>histogram_quantile</code>로 바꾸는 게 맞습니다. 버킷 없이 백분위만 쓰던 타이머는 그대로 나와요.
+</div>
+
+<h2>3. 세 대가 같은 양을 받을 때: 평균은 실제의 절반이 안 됐다</h2>
+
+<p>k6로 초당 60건을 3분 동안 세 대에 차례로 보냈습니다. 10,801건이 나갔고, 인스턴스마다 3,600건 안팎(app-a 3,601건)을 받았어요. 300ms를 넘은 요청은 392건(전체의 3.6%)이었고 전부 <code>app-c</code>에서 나왔습니다. 부하가 끝난 시각에 Prometheus에서 값을 읽었어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/aggregation/images/lab-01/dashboard-run1.png" alt="Grafana 대시보드 두 패널. 위는 인스턴스별 p99로 app-a와 app-b가 59.8ms, app-c가 485ms다. 아래는 p99 평균 202ms, 최댓값 485ms, 버킷 합산 446ms 세 선이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 평균(초록)만 혼자 아래에 떨어져 있다</div>
+
+<div class="obsv-code">                                       값        실제 p99 대비
+인스턴스별 p99    app-a / app-b / app-c   59.8 / 59.8 / 485.5 ms
+p99 세 개의 평균  avg(...)                201.7 ms   -55%
+p99 세 개의 최댓값 max(...)               485.5 ms    +8%
+버킷 합산 p99     histogram_quantile [3m] 447.8 ms    -0.1%
+실제 p99          k6, 10,801건 전체        448.3 ms</div>
+
+<p>표의 버킷 합산 값은 부하 구간 3분 전체를 창으로 잡아 다시 계산한 것이고, 그래프 선은 1분 창이라 범례의 마지막 값(446ms)과 조금 달라요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: histogram_quantile</div>
+  Prometheus 함수입니다. 버킷별 누적 건수를 받아서, 원하는 백분위가 어느 버킷에 떨어지는지 찾고 그 버킷 안을 직선으로 나눠 값을 추정해요(선형 보간: 버킷 안에 값이 고르게 퍼져 있다고 보고 비례로 위치를 정하는 계산). <code>sum by (le)</code>로 인스턴스의 버킷을 먼저 더해 넣으면 전체 요청의 백분위가 됩니다.
+</div>
+
+<p>평균은 201.7ms로 실제 p99 448.3ms의 절반도 안 됐어요. 사용자 100명 중 1명이 450ms 가까이 기다리는데, 대시보드는 200ms라고 말한 셈입니다. 빠른 두 대의 60ms가 느린 한 대의 485ms를 끌어내린 결과예요. 세 숫자에는 각 인스턴스가 몇 건을 처리했는지도, 꼬리가 얼마나 두꺼운지도 남아 있지 않아서 이 계산을 바로잡을 방법이 없습니다.</p>
+
+<p>최댓값 485.5ms는 실제보다 8% 높았어요. 이번처럼 느린 인스턴스가 3분의 1을 받는 경우에는 "제일 나쁜 인스턴스의 p99"가 그럴듯한 상한이 됩니다. 1편에서 말한 범위, 곧 "전체 p99는 가장 작은 p99와 가장 큰 p99 사이"가 그대로 성립했어요. 59.8ms와 485.5ms 사이에 448.3ms가 있습니다.</p>
+
+<h2>4. 느린 인스턴스가 5%만 받으면: 평균이 이번엔 세 배 높았다</h2>
+
+<p>평균이 늘 낮게 나온다면 "평균보다 조금 높게 보면 된다"로 넘어갈 수도 있어요. 그래서 트래픽 비중만 바꿔 한 번 더 돌렸습니다. 앱을 재시작해 클라이언트 백분위 창을 비운 뒤, 20건 중 1건만 <code>app-c</code>로 보냈어요.</p>
+
+<div class="obsv-code">docker compose restart app-a app-b app-c
+docker compose --profile load run --rm -e C_EVERY=20 load</div>
+
+<p>10,801건 중 <code>app-c</code>가 541건을 받았고, 300ms를 넘은 요청은 54건(0.5%)이었습니다. 느린 요청이 1%보다 적으니 전체 p99는 빠른 쪽 분포 안에 있어야 해요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/aggregation/images/lab-01/dashboard-run2.png" alt="두 번째 실행의 비교 패널. p99 평균 207ms, 최댓값 502ms, 버킷 합산 61.3ms" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 이번엔 버킷 합산(파랑)이 바닥에 있고 평균이 붕 떠 있다</div>
+
+<div class="obsv-code">                                       값        실제 p99 대비
+인스턴스별 p99    app-a / app-b / app-c   59.8 / 59.8 / 502.3 ms
+p99 세 개의 평균  avg(...)                207.3 ms   +236%
+p99 세 개의 최댓값 max(...)               502.3 ms   +714%
+버킷 합산 p99     histogram_quantile [3m]  61.4 ms    -0.5%
+실제 p99          k6, 10,801건 전체         61.7 ms</div>
+
+<p>표는 이번에도 3분 창으로 다시 계산했고, 그래프 범례(61.3ms)는 1분 창 값이에요. 인스턴스별 p99는 첫 실행과 거의 같아요. 각 인스턴스 안의 분포는 바뀌지 않았으니까요. 그런데 실제 p99는 448ms에서 62ms로 내려갔고, 평균은 207ms로 오히려 조금 올랐습니다. <span class="obsv-mark">p99의 평균은 트래픽 비중을 모르기 때문에, 틀리는 방향조차 정해져 있지 않습니다.</span> 첫 실행에서는 절반 아래로, 두 번째에서는 세 배 위로 틀렸어요. 최댓값도 상한 노릇만 할 뿐, 두 번째 실행에서는 실제의 8배였습니다.</p>
+
+<p>두 실행을 한 줄에 놓으면 이렇습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <path d="M60 80 C 220 79, 420 81, 650 80" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+  <path d="M60 200 C 220 199, 420 201, 650 200" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+  <text x="60" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">실행 1. 세 대가 같은 양 (느린 요청 3.6%)</text>
+  <text x="60" y="150" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">실행 2. app-c 가 5%만 (느린 요청 0.5%)</text>
+  <text x="60" y="100" font-family="Menlo, monospace" font-size="10" fill="#8a8272">0</text>
+  <text x="626" y="100" font-family="Menlo, monospace" font-size="10" fill="#8a8272">550ms</text>
+  <text x="60" y="220" font-family="Menlo, monospace" font-size="10" fill="#8a8272">0</text>
+  <text x="626" y="220" font-family="Menlo, monospace" font-size="10" fill="#8a8272">550ms</text>
+  <path d="M276 66 C 277 72, 275 86, 276 94" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+  <text x="276" y="60" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">평균 202</text>
+  <path d="M541 64 C 542 72, 540 86, 541 96" fill="none" stroke="#e5533c" stroke-width="3.5" stroke-linecap="round"/>
+  <text x="522" y="58" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">실제 448</text>
+  <path d="M546 70 C 547 76, 545 86, 546 90" fill="none" stroke="#4a7fb5" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="552" y="118" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">버킷 448</text>
+  <path d="M581 68 C 582 74, 580 86, 581 92" fill="none" stroke="#e5a33c" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="600" y="58" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">최대 486</text>
+  <path d="M126 184 C 127 192, 125 206, 126 216" fill="none" stroke="#e5533c" stroke-width="3.5" stroke-linecap="round"/>
+  <text x="116" y="178" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">실제 62</text>
+  <path d="M131 190 C 132 196, 130 206, 131 210" fill="none" stroke="#4a7fb5" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="142" y="238" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">버킷 61</text>
+  <path d="M282 186 C 283 192, 281 206, 282 214" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+  <text x="282" y="178" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">평균 207</text>
+  <path d="M599 188 C 600 194, 598 206, 599 212" fill="none" stroke="#e5a33c" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="599" y="178" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">최대 502</text>
+  <text x="350" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">실제 p99 는 크게 움직였는데 평균은 제자리에 있었다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 인스턴스 안의 분포는 그대로고, 바뀐 건 트래픽 비중뿐이다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: k6의 constant-arrival-rate</div>
+  응답이 늦든 빠르든 정해진 초당 요청 수를 유지하는 k6 실행 방식입니다. 응답이 느려지면 가상 사용자를 더 꺼내 써요. 느린 인스턴스 때문에 요청 수가 줄어드는 일이 없어서, 두 실행의 총건수가 10,801건으로 같았습니다.
+</div>
+
+<h2>5. 버킷 합산도 추정이다: 이번엔 경계 운이 좋았다</h2>
+
+<p>버킷 합산 p99가 실제와 0.5ms 차이로 맞아서 "histogram_quantile은 정확하다"고 쓰고 싶어지는데, 숫자를 뜯어보면 그렇게 쓸 수 없어요. 첫 실행의 3분 버킷을 열어 봤습니다.</p>
+
+<div class="obsv-code">sum by (le) (increase(http_server_requests_seconds_bucket{uri="/work"}[3m]))
+
+le(초)          누적 건수
+0.268435456     10399.1
+0.357913941     10514.5
+0.447392426     10684.1
+0.536870911     10792.4   ← 전체
+
+p99 순번 = 0.99 × 10792.4 = 10684.5   (0.447 경계까지 10684.1건)
+→ 0.447 ~ 0.537 버킷에 0.4건만 들어간 지점 = 447.8ms</div>
+
+<p>Micrometer가 미리 정한 버킷 경계 중 하나(0.447초)가 마침 실제 p99 바로 아래에 있었습니다. 99%째 요청이 경계에서 0.4건 떨어진 곳에 있으니 보간할 거리가 거의 없었던 거예요. 건수가 소수인 이유는 <code>increase</code>가 외삽을 하기 때문입니다. 창 양 끝에 샘플이 딱 맞지 않으면, 창 안에서 늘어난 속도대로 창 끝까지 늘었다고 보고 값을 늘려 잡아요.</p>
+
+<p>같은 버킷으로 <code>app-c</code> 한 대의 p99를 구하면 사정이 달라요.</p>
+
+<div class="obsv-code">histogram_quantile(0.99, sum by (instance, le) (increase(...[3m])))
+  app-c   507.2 ms     ← k6 가 잰 app-c 의 실제 p99 는 482.1ms, 최댓값은 501.4ms</div>
+
+<p>버킷 추정이 <b>실제로 관측된 최댓값보다 큰 값</b>을 내놓았습니다. 0.447~0.537초 버킷 안에 값이 고르게 퍼져 있다고 가정하고 직선으로 나눴기 때문이에요. 실제 요청은 0.447~0.50초, 곧 그 버킷의 아래쪽 약 60%에만 있었습니다(버킷 중점은 492ms, 실제 최댓값은 501.4ms). 1편에서 말한 대로 histogram_quantile은 추정값이고, 오차의 상한은 그 백분위가 떨어진 버킷의 폭입니다. 이 구간에서는 90ms예요.</p>
+
+<p>클라이언트 백분위와 k6 값도 그대로 비교할 수는 없어요. <code>app-a</code>의 p99를 k6는 61.5ms로, 앱은 59.8ms로 봤는데, 재는 범위가 다릅니다. <code>lab.work</code>는 앱 안에서 잠든 구간만 재고, k6는 HTTP 왕복 전체를 잽니다. 거기에 근사도 섞여 있어요. Micrometer는 클라이언트 백분위를 HdrHistogram으로 계산하는데, 정밀도 기본값이 유효숫자 1자리라 값이 계단 모양으로 떨어집니다. 두 실행에서 <code>app-a</code>와 <code>app-b</code>가 둘 다 정확히 59.768832ms를 보고한 건 그 계단 때문이에요. 계산 창도 최근 2분(3칸을 돌려 쓰는 원형 버퍼)이라 3분 전체와는 기준이 조금 달라요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: HdrHistogram</div>
+  값의 범위를 로그 눈금으로 나눠 세는 자료구조입니다. 메모리를 고정해 두고 백분위를 빠르게 구하는 대신, 정밀도(유효숫자 자릿수)만큼만 값을 구분해요.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 여러 인스턴스의 지연 백분위를 볼 때</div>
+  &bull; 전체 p99는 <code>histogram_quantile(0.99, sum by (le) (rate(..._bucket[5m])))</code>로 구해요. <code>by (le)</code>에 남길 라벨(서비스, 엔드포인트)만 더하고 <code>instance</code>는 빼요<br>
+  &bull; <code>avg</code>, <code>max</code>로 묶인 <code>quantile</code> 패널이 있으면 지워요. 이번 실험처럼 맞아 보이는 순간도 있지만, 트래픽 비중이 바뀌면 방향도 크기도 예측할 수 없어요<br>
+  &bull; 지켜야 할 지연 목표가 있으면 그 값에 버킷 경계를 직접 두어요(<code>management.metrics.distribution.slo</code>). 경계 위의 비율은 추정이 아니라 셈이에요<br>
+  &bull; 인스턴스 한 대만 보고 싶을 때만 <code>by (instance, le)</code>로 묶어요. 그 값도 버킷 폭만큼 틀릴 수 있어요
+</div>
+
+<h2>6. 개념 글과 다르게 나온 것: 기본 버킷 수</h2>
+
+<p>1편에는 타이머가 버킷 범위를 1밀리초에서 1분으로 좁혀 차원 하나당 73개를 쓴다고 적혀 있어요. 이번 출력에서 <code>/work</code> 하나의 버킷 줄은 1ms부터 30s까지 68개, 그리고 <code>+Inf</code>까지 69줄이었습니다. Micrometer 1.17.1 소스의 <code>AbstractTimerBuilder</code>도 기본 최솟값을 1ms, 최댓값을 30초로 두고 있었어요. 1.9.0 소스도 30초였습니다. 마지막 경계 30.0은 미리 만든 눈금에 있는 값이 아니라, 최댓값 30초를 경계로 하나 더 넣은 것이에요.</p>
+
+<p>숫자는 조금 달라도 1편의 결론은 그대로예요. 버킷을 켜면 태그 조합 하나마다 시계열이 69개씩 생기고, 이번 앱에서는 이름 앞부분이 같은 LongTaskTimer까지 29개가 따라 붙었습니다. 버킷을 켤 타이머는 골라서 켜야 해요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>인스턴스 세 대의 p99를 평균 내자 실제 p99 448ms가 202ms로, 트래픽 비중만 바꾼 두 번째 실행에서는 62ms가 207ms로 나왔다.</b> p99의 평균은 각 인스턴스가 몇 건을 처리했는지 모르기 때문에, 얼마나 틀릴지는 물론 어느 쪽으로 틀릴지도 정해져 있지 않다. 버킷을 <code>sum by (le)</code>로 합친 histogram_quantile은 두 번 모두 실제와 0.5ms 이내였지만, 그건 경계가 가까웠던 덕이고 오차의 상한은 버킷 폭이다.<br><br>
+  그리고 Micrometer 1.13 이후로는 같은 타이머에 버킷을 켜는 순간 앱이 계산한 백분위가 출력에서 빠진다. 합칠 수 있는 재료를 보내기로 했다면, 합칠 수 없는 완성품은 처음부터 대시보드에 올리지 않는 편이 낫다.
+</div>
+
+</div>

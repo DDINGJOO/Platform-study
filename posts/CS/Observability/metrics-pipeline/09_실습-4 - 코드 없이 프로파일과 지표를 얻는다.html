@@ -1,0 +1,314 @@
+<!-- lead: 의존성이 webmvc 하나뿐인 스프링 부트 앱에 Pyroscope 자바 에이전트와 Grafana Beyla(eBPF)를 붙여 플레임 그래프와 HTTP RED 지표를 얻었어요. 프로파일이 처음엔 실제 CPU의 14%만 저장된 이유와 고친 결과도 실측했어요. -->
+<!-- tags: Pyroscope, Grafana Beyla, eBPF, 플레임 그래프, 상시 프로파일링 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📊 메트릭 수집, 실습-4</div>
+  1편. 관측 데이터의 경제학<br>
+  2편. 프로메테우스는 왜 긁어가는가<br>
+  3편. StatsD, UDP로 쏘고 잊어라<br>
+  4편. 드롭위저드는 왜 1분·5분·15분 비율을 따로 보냈나<br>
+  5편. 수집 기술의 최전선<br>
+  실습-1. 태그 하나가 시계열을 몇 개로 늘리는지 세어 본다<br>
+  실습-2. 앱이 죽으면 pull과 push는 다르게 조용해진다<br>
+  실습-3. StatsD는 UDP 패킷을 말없이 버린다<br>
+  <b>실습-4. 코드 없이 프로파일과 지표를 얻는다</b> &larr; 지금 이 글
+</div>
+
+<p>CPU 사용률이 한 서비스에서만 늘 높은데, 지표 라이브러리는 없고 코드를 고쳐 배포하려면 다른 팀 일정을 기다려야 해요. 5편은 이런 상황의 답으로 커널에서 요청을 보는 eBPF와 콜스택을 통계적으로 찍는 상시 프로파일링을 들었습니다.</p>
+
+<p>이번 실습에서는 둘을 실제로 붙여 봤어요. 관측 의존성이 없는 스프링 부트 앱에 실행 옵션으로 Pyroscope 자바 에이전트를 붙이고, 옆 컨테이너에 Grafana Beyla를 띄웠습니다. 숫자와 화면은 전부 이번에 돌린 결과입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; Docker Desktop for Mac에서 eBPF 도구가 정말 도는가?<br>
+  &bull; eBPF는 URL 경로 템플릿(<code>/price/{sku}</code>)을 어떻게 알았는가?<br>
+  &bull; 프로파일 서버가 받은 데이터는 실제 CPU 사용량의 몇 %였는가?<br>
+  &bull; 플레임 그래프가 가리킨 곳을 고치면 얼마나 달라지는가?
+</div>
+
+<h2>1. 실습 환경: 코드에는 아무것도 없다</h2>
+
+<p>앱에는 엔드포인트가 세 개 있습니다. <code>/price/{sku}</code>는 상품 200개에 할인 규칙을 돌리고(BigDecimal 계산), <code>/report</code>는 2,000줄짜리 보고서 문자열을 만들고, <code>/checkout</code>은 10% 확률로 503을 돌려줘요. <code>build.gradle</code>의 의존성은 <code>spring-boot-starter-webmvc</code> 하나뿐입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrZ1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M30 40 C 120 37, 220 41, 300 39 C 302 100, 301 160, 300 214 C 220 217, 120 213, 31 216 C 29 160, 30 100, 30 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="44" y="64" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">☕ app 컨테이너 (JVM)</text>
+  <text x="44" y="88" font-family="Menlo, monospace" font-size="11" fill="#8a8272">의존성: spring-boot-starter-webmvc</text>
+  <path d="M46 102 C 110 100, 200 103, 284 101 C 285 120, 285 138, 284 152 C 200 154, 110 151, 47 153 C 45 138, 46 120, 46 102 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+  <text x="56" y="124" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">Pyroscope 자바 에이전트</text>
+  <text x="56" y="143" font-family="Menlo, monospace" font-size="10" fill="#c07f18">JAVA_TOOL_OPTIONS=-javaagent:...</text>
+  <text x="44" y="180" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">/price/{sku}  /report  /checkout</text>
+  <text x="44" y="200" font-family="Menlo, monospace" font-size="10" fill="#8a8272">k6 VU 10개가 섞어서 부른다</text>
+
+  <path d="M304 120 C 360 118, 410 120, 446 119" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrZ1)"/>
+  <text x="372" y="110" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">10초마다 JFR 업로드</text>
+  <path d="M454 92 C 520 90, 580 93, 650 91 C 652 110, 651 130, 650 148 C 580 150, 520 147, 455 149 C 453 130, 454 110, 454 92 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="552" y="116" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">🔥 Pyroscope</text>
+  <text x="552" y="137" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">프로파일 저장</text>
+
+  <path d="M30 246 C 120 244, 220 247, 300 245 C 302 266, 301 286, 300 306 C 220 308, 120 305, 31 307 C 29 286, 30 266, 30 246 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+  <text x="44" y="270" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">🐝 Beyla 컨테이너</text>
+  <text x="44" y="292" font-family="Menlo, monospace" font-size="10" fill="#b3502f">privileged, pid: service:app</text>
+  <path d="M164 242 C 163 232, 165 225, 164 220" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round" marker-end="url(#arrZ1)"/>
+  <text x="176" y="236" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">커널에서 요청을 본다</text>
+
+  <path d="M304 276 C 360 275, 410 277, 446 276" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrZ1)"/>
+  <text x="372" y="266" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">:9400 긁기</text>
+  <path d="M454 248 C 520 246, 580 249, 650 247 C 652 266, 651 286, 650 304 C 580 306, 520 303, 455 305 C 453 286, 454 266, 454 248 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="552" y="272" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">Prometheus</text>
+  <text x="552" y="293" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">HTTP RED 지표</text>
+
+  <path d="M552 154 C 551 180, 553 210, 552 240" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-dasharray="6 6"/>
+  <text x="540" y="202" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">📊 Grafana가 둘 다 읽는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 앱 이미지에는 에이전트 jar만 넣었고, 나머지는 옆에서 붙였다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Pyroscope 자바 에이전트</div>
+  JVM에 <code>-javaagent</code>로 붙어 async-profiler를 돌리는 jar입니다. 정해진 간격(기본 10ms)마다 실행 중인 스레드의 콜스택을 찍고, 일정량 이상 메모리를 할당한 지점도 기록해서 10초마다 Pyroscope 서버로 보내요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Grafana Beyla</div>
+  eBPF로 프로세스의 네트워크 시스템 콜과 함수에 후크를 걸어 HTTP·gRPC 요청을 관찰하고, 요청 수와 오류, 지연을 지표로 내보내는 도구입니다. 5편에서 본 것처럼 지금은 OpenTelemetry eBPF Instrumentation(OBI)의 배포판이에요.
+</div>
+
+<p>Beyla 컨테이너는 <code>pid: "service:app"</code>로 앱 컨테이너와 PID 네임스페이스를 같이 쓰고, eBPF 프로그램을 커널에 올려야 해서 <code>privileged</code>로 띄웠어요. 쓴 버전과 돌리는 법입니다.</p>
+
+<div class="obsv-code">Spring Boot           4.1.1   (Java 21, Temurin 21.0.12)
+Pyroscope 자바 에이전트 2.9.2
+Pyroscope 서버         2.3.2
+Grafana Beyla         3.38.0
+Prometheus            3.15.0
+Grafana               13.2.3
+k6                    2.3.0   (VU 10개, 3분)
+실행 환경             Docker Desktop (리눅스 6.12 linuxkit, arm64), Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/metrics-04-zero-code">GitHub 저장소의 labs/observability/metrics-04-zero-code</a>에 있어요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/metrics-04-zero-code
+docker compose --profile ebpf up -d --build     # ebpf 프로필이 Beyla 까지 띄운다
+./run-load.sh                                    # k6 3분 + 앱 컨테이너의 실제 CPU 초
+# Grafana: http://localhost:21400 → Explore(Pyroscope), 대시보드 "Beyla RED"</div>
+
+<p>본문 숫자는 아래 세 번의 3분 부하에서 나왔고, 그 전의 탐색 실행 숫자는 따로 밝힙니다.</p>
+
+<div class="obsv-code">실행 A   Pyroscope 서버 한도 4MiB(기본값), 보고서 String.format     3절
+실행 B   서버 한도 16MiB, 보고서 String.format                      3·4절
+실행 C   서버 한도 16MiB, 보고서 StringBuilder(고친 구현)            5절</div>
+
+<h2>2. eBPF는 Mac의 Docker에서도 돌았다</h2>
+
+<p>Docker Desktop for Mac은 리눅스 가상 머신(linuxkit) 위에서 컨테이너를 돌립니다. 그 커널에서 eBPF가 막혀 있을 수도 있다고 보고 시작했는데, Beyla는 첫 실행에 그대로 붙었어요.</p>
+
+<div class="obsv-code">msg="Grafana Beyla" Version=v3.38.0
+msg="instrumenting process" cmd=/opt/java/openjdk/bin/java pid=1 type=java service=shop
+msg="creating or accessing OTEL namespace in bpffs failed ..."   (경고)</div>
+
+<p>→ 앱의 자바 프로세스를 찾아 계측을 시작했다는 뜻이에요. 경고는 <code>/sys/fs/bpf</code>가 없어 프로파일 연계 같은 일부 기능을 끈다는 것이고, HTTP 지표와는 상관이 없었어요.</p>
+
+<p>이 VM의 커널은 6.12였고 BTF 정보(<code>/sys/kernel/btf/vmlinux</code>)도 있었어요. 5편에서 본 verifier가 있는 최신 커널이면 VM 위라도 eBPF는 동작합니다. 다만 앱 컨테이너를 재생성하면 PID 네임스페이스를 빌려 쓰던 Beyla가 <code>Exited (137)</code>로 같이 죽으니, 둘을 함께 다시 띄워야 해요.</p>
+
+<h3>요청 수는 k6와 맞았다</h3>
+
+<p>3분 부하 동안 Beyla가 센 요청 수를 k6가 보낸 수와 맞춰 봤어요. 아래 3절의 실행 A(초당 약 4천 건)와 5절의 실행 C(초당 약 1.5만 건)입니다.</p>
+
+<div class="obsv-code">              k6가 보낸 요청    Beyla가 센 요청
+실행 A          726,468          726,469
+실행 C        2,769,149        2,769,143</div>
+
+<p>A의 1건은 부하 전에 보낸 확인용 <code>curl</code>로 보이고, C는 277만 건 중 6건이 적었어요. 503 비율도 코드에 넣은 10% 근처였습니다(탐색 실행에서 /checkout 219,184건 중 21,923건).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: RED 지표</div>
+  요청 수(Rate), 오류 수(Errors), 처리 시간(Duration)입니다. 서비스가 사용자에게 어떻게 보이는지를 가장 짧게 요약하는 세 가지라서, 서비스 대시보드의 첫 줄에 많이 둬요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-04/beyla-red.png" alt="Beyla 지표로 그린 Grafana 대시보드. 위는 라우트와 상태 코드별 초당 요청 수로 17시 6분 이후 실행에서 크게 늘었고, 아래 왼쪽은 /checkout 5xx 비율이 10% 근처, 오른쪽은 p99가 5ms와 10ms 두 값에만 붙어 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 왼쪽 구간이 실행 B, 오른쪽이 5절에서 고친 뒤의 실행 C다</div>
+
+<p>오른쪽 아래 p99 패널은 5ms와 10ms 두 값에만 붙어 있어요. Beyla의 기본 버킷(0.005, 0.01, 0.025초…)이 거칠어 백분위가 버킷 경계로 보간되기 때문이에요.</p>
+
+<h3>eBPF가 어떻게 <code>{sku}</code>를 알았나</h3>
+
+<p>가장 의외였던 건 <code>http_route="/price/{sku}"</code>라는 라벨이었어요. 커널이 보는 건 <code>GET /price/sku-17</code> 같은 실제 요청 줄뿐이고, <code>{sku}</code>는 컨트롤러의 <code>@GetMapping</code>에만 있어요.</p>
+
+<p>OBI 소스를 찾아보니 <code>pkg/internal/transform/route/harvest/java</code>에 답이 있었습니다. 실행 중인 프로세스의 jar에서 클래스 파일을 읽어 스프링 매핑 애노테이션과 JAX-RS <code>@Path</code>의 경로 템플릿을 모으고, 커널에서 본 실제 경로를 거기에 맞춰요. 경로를 템플릿으로 묶지 못했다면 sku 값마다 라벨이 생겨서 실습-1에서 본 카디널리티 문제가 됐을 겁니다.</p>
+
+<p>하나 더 있었어요. 앱 프로세스가 연 파일 목록을 보니, 우리가 붙이지 않은 jar가 들어 있었습니다.</p>
+
+<div class="obsv-code">docker compose logs beyla | grep inject    →  msg="injecting OpenTelemetry eBPF instrumentation for Java process"
+docker compose exec app sh -c 'ls -l /proc/1/fd | grep jar'
+/app/zc.jar
+/pyroscope/pyroscope.jar
+/tmp/obi-java-agent.jar            ← Beyla 가 실행 중인 JVM 에 붙인 자바 에이전트</div>
+
+<p>Beyla가 HotSpot의 동적 attach로 자기 자바 에이전트를 JVM에 붙인 거예요. OBI 설정 문서는 이 에이전트를 TLS 추적, 가상 스레드 연결, JVM 런타임 지표용이라고 적어요. 자바는 OpenSSL이 아닌 자체 TLS 구현을 써서 5편의 "OpenSSL 함수에 uprobe를 거는" 방법이 통하지 않으니, 그 자리를 자바 에이전트로 메운 겁니다. 그래서 Beyla의 <code>OTEL_EBPF_JAVAAGENT_ENABLED</code>를 false로 넘겨 끄고 30초를 다시 돌려 봤어요.</p>
+
+<div class="obsv-code">OBI_JAVAAGENT=false docker compose --profile ebpf up -d app beyla   # compose 가 OTEL_EBPF_JAVAAGENT_ENABLED 로 넘긴다
+DURATION=30s ./run-load.sh</div>
+
+<p> 에이전트 jar는 붙지 않았고, 요청 77,646건이 k6와 정확히 같은 수로, <code>/price/{sku}</code> 라벨도 그대로 잡혔습니다. 평문 HTTP의 RED 지표는 eBPF만으로 나온 거예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "eBPF라서 프로세스를 안 건드린다"는 기본값이 아니다</div>
+  Beyla 3.38.0은 기본 설정으로 실행 중인 JVM에 자바 에이전트를 붙였어요. 앱 로그에는 JVM 경고(<code>bootstrap classpath has been appended</code>) 한 줄이 더 찍힐 뿐이에요. 운영 JVM에 무엇이 들어가는지 관리하는 곳이라면 <code>OTEL_EBPF_JAVAAGENT_ENABLED</code> 값을 명시적으로 정해 두세요. 이 주입 경로에는 OBI 0.4.0 이상 0.8.0 미만에 영향을 준 보안 취약점(CVE-2026-41433, 0.8.0에서 수정)이 있었어요. Beyla 3.38.0은 OBI 0.14.0 기반이라 해당하지 않습니다.
+</div>
+
+<h2>3. 프로파일 서버에는 14%만 들어왔다</h2>
+
+<p>이제 Pyroscope입니다. 탐색 실행의 플레임 그래프는 그럴듯했는데, 3분 부하의 CPU 합계가 95초였고 같은 부하를 다시 주니 182초가 나왔어요. 그래서 실행 A부터는 앱 컨테이너의 cgroup CPU 사용량(<code>/sys/fs/cgroup/cpu.stat</code>의 <code>usage_usec</code>)을 부하 앞뒤로 같이 쟀습니다(<code>run-load.sh</code>).</p>
+
+<div class="obsv-code">./run-load.sh
+    http_reqs......................: 726468 4035.827389/s
+window 1791619101 1791619282  app_cpu_seconds=744.3  (4.11 cores)
+rejected_uploads=14</div>
+
+<p>앱은 3분 동안 CPU를 744초(코어 4.1개) 썼는데, Pyroscope가 받은 CPU 프로파일의 합은 105.8초였어요. 14%입니다. 앱 로그에 답이 있었습니다.</p>
+
+<div class="obsv-code">[ERROR] Error uploading snapshot: 422 {"code":"unknown","message":"parsing IngestInput-pprof failed
+  loadJFRFromForm failed to decompress jfr: decompressed size exceeds maximum allowed size of 4194304 bytes"}</div>
+
+<p>→ 에이전트가 10초마다 보내는 JFR(JVM 이벤트 기록 형식) 묶음이 압축을 풀면 4MiB를 넘어서 서버가 422로 거절했다는 뜻이에요. 3분 동안 18번 정도의 업로드 중 14번이 버려졌어요. 서버의 <code>-validation.max-profile-size-bytes</code> 기본값이 4MiB이고, 2026년 1월 크기 제한 변경(#4734)으로 JFR 업로드에도 걸리게 됐어요. 초당 수 GB를 할당하는 이 앱은 문서가 권하는 할당 임계값(<code>512k</code>)으로도 10초치가 한도를 넘었습니다.</p>
+
+<p>서버 한도를 16MiB로 올리고 같은 부하를 다시 돌렸어요(실행 B). Pyroscope 컨테이너를 새 값으로 다시 만들어야 하니 프로필 전체를 다시 올립니다. 거절은 0건이 됐어요.</p>
+
+<div class="obsv-code">PYROSCOPE_MAX_PROFILE_BYTES=16777216 docker compose --profile ebpf up -d
+PYROSCOPE_MAX_PROFILE_BYTES=16777216 ./run-load.sh</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="30" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">실제 CPU(cgroup) 중 프로파일에 담긴 몫</text>
+  <text x="30" y="78" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">A 한도 4MiB</text>
+  <path d="M170 60 C 300 58, 450 61, 640 59 C 642 72, 641 84, 640 92 C 450 94, 300 91, 171 93 C 169 84, 170 72, 170 60 Z" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="5 5"/>
+  <path d="M170 60 C 190 59, 220 61, 236 60 C 237 72, 237 84, 236 92 C 220 93, 190 92, 171 93 C 169 84, 170 72, 170 60 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="246" y="82" font-family="Menlo, monospace" font-size="12" fill="#b3502f">105.8 / 744.3초 = 14%   (업로드 14번 거절)</text>
+
+  <text x="30" y="138" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">B 한도 16MiB</text>
+  <path d="M170 120 C 300 118, 450 121, 640 119 C 642 132, 641 144, 640 152 C 450 154, 300 151, 171 153 C 169 144, 170 132, 170 120 Z" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="5 5"/>
+  <path d="M170 120 C 300 118, 420 121, 574 119 C 575 132, 575 144, 574 152 C 420 153, 300 151, 171 153 C 169 144, 170 132, 170 120 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="186" y="141" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">658.0 / 768.4초 = 86%</text>
+
+  <text x="30" y="198" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">C 고친 뒤</text>
+  <path d="M170 180 C 300 178, 450 181, 640 179 C 642 192, 641 204, 640 212 C 450 214, 300 211, 171 213 C 169 204, 170 192, 170 180 Z" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="5 5"/>
+  <path d="M170 180 C 300 178, 450 181, 626 179 C 627 192, 627 204, 626 212 C 450 213, 300 211, 171 213 C 169 204, 170 192, 170 180 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="186" y="201" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">709.0 / 733.6초 = 97%</text>
+
+  <text x="350" y="242" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">14%짜리 플레임 그래프도 모양은 멀쩡해 보였다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 프로파일의 CPU 합계를 cgroup의 실제 CPU 초와 나란히 놓아 본 결과</div>
+
+<p>B는 86%, 5절의 C는 97%였어요. B가 왜 C보다 낮은지는 확인하지 못했어요. 거절은 없었습니다.</p>
+
+<p>무서운 점은 A의 플레임 그래프가 B와 거의 같은 모양이었다는 거예요. 보고서 함수가 차지하는 비율이 A 68.0%, B 74.2%로 비슷했습니다(모든 경로를 더한 값, <code>top-frames.py</code>). 비율은 비슷해도 "이 함수가 CPU를 몇 초 썼나"에는 7분의 1로 답해요. <span class="obsv-mark">프로파일도 수집 경로에서 말없이 버려질 수 있고, 플레임 그래프의 모양만으로는 그걸 알 수 없습니다.</span></p>
+
+<h2>4. 플레임 그래프는 예상과 다른 줄을 가리켰다</h2>
+
+<p>B 실행의 CPU 플레임 그래프입니다. 위에서 아래로 호출이 깊어지고, 가로 폭이 그 함수 아래에서 쓴 CPU 시간이에요. 검색창에 <code>lab/zc</code>를 넣어 앱 코드 프레임을 색으로 표시했습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 플레임 그래프 (flame graph)</div>
+  콜스택 표본을 합쳐서, 함수 하나를 막대 하나로 그린 그림입니다. 막대 폭이 그 함수와 그 아래 호출에 쓰인 몫이고, 막대 아래에 다른 막대가 없는 부분이 그 함수가 직접 쓴 몫이에요. Grafana는 위에서 아래로 내려가게 그립니다.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-04/cpu-flame.png" alt="Grafana의 CPU 플레임 그래프. 톰캣과 스프링 프레임 아래로 lab/zc/ReportService.formatRow가 가장 넓게 표시되고, 그 아래 String.format, Formatter.format, Formatter.parse, regex Matcher.find가 이어진다. 오른쪽에 좁게 PriceService가 보인다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 가장 넓은 막대는 보고서의 String.format, 그 아래는 정규식이었다</div>
+
+<p>앱을 만들 때는 <code>/price</code>의 BigDecimal 복리 계산이 가장 무거울 거라고 생각했어요. 코드 주석에도 그렇게 적어 뒀습니다. 플레임 그래프는 달랐어요. 그림의 가장 넓은 막대는 보고서의 <code>formatRow</code>로 전체 11.0분 중 6.63분(60%)이었고, 그 아래 <code>Formatter.parse</code>가 4.01분(36%), 그 아래는 <code>java.util.regex</code>였습니다. 할인 계산은 8.5%였어요. 다른 비율은 <code>top-frames.py</code>로 모든 경로를 더한 값이라 그림의 막대보다 조금 커요(<code>formatRow</code> 66.5%).</p>
+
+<div class="obsv-code">String.format("%08d|%-20s|%12.2f|%s%n", i, "item-" + i, i * 1.5, "x".repeat(64))</div>
+
+<p>JDK 21의 <code>Formatter.parse</code> 소스를 보면 이유가 나옵니다. <code>%</code> 바로 뒤가 <code>s</code>, <code>d</code> 같은 변환 문자 하나면 빠른 경로로 처리하지만, <code>%08d</code>, <code>%-20s</code>, <code>%12.2f</code>처럼 플래그나 폭이 붙으면 정규식 <code>FORMAT_SPECIFIER_PATTERN</code>으로 매칭해요. 줄 하나에 정규식 매칭이 세 번, 보고서 하나에 6,000번입니다.</p>
+
+<p>할당 플레임 그래프는 같은 메서드 안의 다른 줄을 가리켰어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-04/alloc-flame.png" alt="Grafana의 할당 플레임 그래프. ReportService.render 아래가 두 갈래로 나뉘어 왼쪽은 StringConcatHelper.newArray, 오른쪽은 formatRow와 String.format이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 할당은 200줄짜리 문자열 이어 붙이기가 3분의 1을 차지했다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: TLAB 할당 샘플</div>
+  JVM은 스레드마다 작은 메모리 구역(TLAB)을 주고 그 안에서 객체를 할당합니다. 에이전트는 새 TLAB을 받거나 큰 객체를 바깥에 할당하는 순간을 표본으로 기록하고, 그 크기로 전체 할당량을 추정해요. 그래서 바이트 수는 정확한 합이 아니라 추정치입니다.
+</div>
+
+<p>할당된 바이트의 87.9%가 보고서에서 나왔고, 그중 <code>formatRow</code>가 47.7%, <code>out = out + l</code> 반복(<code>StringConcatHelper.simpleConcat</code>)이 34.7%였어요. 이어 붙이기는 200줄뿐이지만 매번 길어지는 문자열 전체를 새 배열로 복사해요. <span class="obsv-mark">CPU와 할당은 같은 메서드 안에서도 서로 다른 줄을 가리킵니다.</span></p>
+
+<h2>5. 고치고 다시 잰다</h2>
+
+<p>보고서를 <code>StringBuilder</code> 하나에 직접 쓰는 구현을 만들고(<code>REPORT_IMPL=builder</code>), 같은 부하를 3분 돌렸어요. 결과가 원래 구현과 같은지는 몇 줄을 골라 비교했어요.</p>
+
+<div class="obsv-code">PYROSCOPE_MAX_PROFILE_BYTES=16777216 REPORT_IMPL=builder docker compose --profile ebpf up -d app beyla
+REPORT_IMPL=builder PYROSCOPE_MAX_PROFILE_BYTES=16777216 ./run-load.sh
+
+                         B (String.format)     C (StringBuilder)
+k6 처리량                   4,494 req/s          15,384 req/s
+앱 CPU (cgroup, 3분)          768초                734초
+보고서 1건당 CPU            약 2.1ms              약 0.24ms
+보고서 1건당 할당(추정)      약 6.4MB              약 0.77MB
+(보고서 1건당 값 = 프로파일의 render 합계 ÷ Beyla가 센 /report 수)</div>
+
+<p>두 실행 모두 코어 4개 남짓을 썼으니 같은 CPU로 3.4배를 처리한 셈이에요. B의 건당 값은 집계가 끝 몇 초를 놓쳐 조금 클 수 있어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-04/cpu-flame-after.png" alt="고친 뒤의 CPU 플레임 그래프. ReportService.render와 appendRow는 왼쪽으로 줄었고, 오른쪽의 PriceService.quote와 BigDecimal.pow가 가장 넓은 앱 프레임이 됐다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 고치고 나니 처음에 가장 무겁다고 짐작했던 BigDecimal.pow가 1위로 올라왔다</div>
+
+<p>고친 뒤의 그래프에서는 보고서가 CPU의 28.2%로 줄었고, <code>PriceService.quote</code>가 37.6%로 가장 넓어졌어요. 그 아래 <code>BigDecimal.pow</code>가 27.1%입니다. 짐작으로 BigDecimal부터 고쳤다면 CPU의 8.5%를 손봤을 거예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 코드 없이 붙이는 관측을 쓸 때</div>
+  &bull; 프로파일러를 붙였으면 한 번은 프로파일 CPU 합계를 컨테이너의 실제 CPU 초와 맞춰 봐요. 에이전트 로그의 <code>Error uploading snapshot</code>도 알람 대상이에요<br>
+  &bull; 할당이 많은 서비스는 서버의 프로파일 크기 한도를 올리거나, 할당 임계값을 키우거나, 업로드 간격(<code>PYROSCOPE_UPLOAD_INTERVAL</code>)을 줄여요<br>
+  &bull; Beyla를 쓰면 히스토그램 버킷을 서비스 지연대에 맞추고, 자바 에이전트 주입 여부를 설정으로 정해 둬요<br>
+</div>
+
+<h2>6. 5편과 맞춰 보면</h2>
+
+<p>5편은 eBPF가 "경계에서 일어나는 일"만 보고 비즈니스 맥락은 앱만 안다고 했어요. Beyla는 클래스 파일을 읽고 JVM에 에이전트를 붙여 그 경계를 조금 넘었지만, "이 주문이 어떤 사용자의 무엇인지"는 여전히 지표에 없었어요.</p>
+
+<p>이번에 쓴 Pyroscope 자바 에이전트는 eBPF가 아니라 JVM 안의 async-profiler였고, 샘플 간격 10ms는 5편의 "초당 약 100번"과 같았어요. 에이전트와 Beyla가 얹은 비용은 따로 재지 않았습니다.</p>
+
+
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>의존성이 webmvc 하나뿐인 앱에서 Pyroscope 에이전트로 CPU·할당 플레임 그래프를, Beyla로 HTTP RED 지표를 얻었다.</b> Beyla는 Docker Desktop의 6.12 커널에서 그대로 돌았고 요청 수는 k6와 거의 맞았다. 라우트 템플릿은 jar의 애노테이션에서 왔고, 기본 설정은 JVM에 자바 에이전트를 붙였다.<br><br>
+  프로파일은 처음에 서버의 4MiB 한도에 걸려 실제 CPU의 14%만 저장됐는데, 그래프 모양은 멀쩡했다. 한도를 올린 뒤의 그래프는 짐작과 다른 줄(String.format의 정규식, 문자열 이어 붙이기)을 가리켰고, 그 줄을 고치자 같은 CPU로 3.4배를 처리했다. 코드 없이 얻은 관측도 수집 경로까지 맞춰 봐야 믿을 수 있다.
+</div>
+
+</div>

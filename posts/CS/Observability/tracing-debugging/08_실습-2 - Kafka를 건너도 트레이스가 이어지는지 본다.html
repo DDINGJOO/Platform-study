@@ -1,0 +1,345 @@
+<!-- lead: 주문과 결제 사이에 Kafka를 두고 OTel 자바 에이전트만 붙여, producer와 consumer 스팬이 부모-자식으로 이어지는지 span link로 이어지는지 Tempo에서 확인했어요. 배치 리스너와 직접 만든 작업 큐에서 갈리는 모양도 실측했어요. -->
+<!-- tags: Kafka 트레이싱, span link, OpenTelemetry 메시징 규약, 컨텍스트 전파, Spring Kafka -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔍 추적과 디버깅, 실습-2</div>
+  1편. 관찰 가능성은 로그를 쌓는 일이 아니다<br>
+  2편. 모든 대시보드가 초록불인데, 주문은 실패하고 있었다<br>
+  3편. 트레이스는 큐를 어떻게 건너는가<br>
+  4편. 주문이 두 번 결제됐어요<br>
+  5편. user_id는 금지가 아니라 이사다<br>
+  6편. 카오스 엔지니어링은 관측 배관 위에 올라간다<br>
+  실습-1. 코드 한 줄 안 고치고 서비스 세 개를 추적한다<br>
+  <b>실습-2. Kafka를 건너도 트레이스가 이어지는지 본다</b> &larr; 지금 이 글<br>
+  실습-3. 로그의 trace_id에서 트레이스를 바로 연다<br>
+  실습-4. 지연을 주입하고 트레이스로 원인을 찾는다
+</div>
+
+<p>주문 API는 202를 돌려줬고 로그에도 에러가 없습니다. 그런데 결제 기록이 하나 비어요. 트레이스를 열어 보니 주문 서비스가 Kafka에 메시지를 넣은 데서 끝나 있습니다. 결제 컨슈머가 그 메시지를 받았는지, 받았다면 어디서 멈췄는지는 이 화면에 없어요.</p>
+
+<p>3편에서 트레이스는 메시지 헤더에 실려 큐를 건너고, 이을 때는 부모-자식과 span link 두 가지 고리가 있다고 했습니다. 이번 글은 그 말을 실제로 확인합니다. 실습-1처럼 앱 코드에는 계측 코드를 넣지 않고 OTel 자바 에이전트만 붙인 뒤, 에이전트가 Kafka 양쪽 스팬을 어떤 고리로 잇는지 Tempo에서 봤어요. 설정 하나에 따라 고리가 바뀌었고, 규약 문서가 권하는 기본값과 에이전트의 기본값이 달랐습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 에이전트는 producer 스팬과 consumer 스팬을 부모-자식으로 잇는가, span link로 잇는가?<br>
+  &bull; 메시징 시맨틱 규약이 권하는 모양과 에이전트 기본값은 같은가?<br>
+  &bull; 메시지를 묶음으로 받으면 트레이스는 어떻게 되나?<br>
+  &bull; 컨슈머가 다른 스레드로 일을 넘기면 어디서 끊기나?
+</div>
+
+<h2>1. 실습 환경: 주문, Kafka, 결제</h2>
+
+<p>주문 서비스는 주문을 받으면 결제를 HTTP로 부르지 않고 <code>orders</code> 토픽에 메시지를 넣은 뒤 바로 202를 돌려줍니다. 결제 서비스는 그 토픽을 구독하는 컨슈머예요. 메시지를 받으면 H2 DB에 결제 기록을 한 줄 넣습니다. Kafka는 브로커 하나로 띄웠어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 305" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrK1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrK2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M24 62 C 54 60, 84 63, 104 61 C 106 76, 105 92, 104 106 C 82 108, 52 105, 25 107 C 23 92, 24 76, 24 62 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="64" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">curl, k6</text>
+  <path d="M108 84 C 128 83, 146 85, 162 84" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrK1)"/>
+  <path d="M170 50 C 210 48, 250 51, 282 49 C 284 72, 283 96, 282 118 C 250 120, 208 117, 171 119 C 169 96, 170 72, 170 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="226" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">🛒 order</text>
+  <text x="226" y="104" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">POST /orders, 202</text>
+  <path d="M286 84 C 308 83, 326 85, 344 84" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrK1)"/>
+  <text x="315" y="72" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">send</text>
+  <path d="M352 44 C 392 41, 430 45, 462 43 C 464 70, 463 98, 462 124 C 430 126, 390 123, 353 125 C 351 98, 352 70, 352 44 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+  <text x="407" y="76" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">📨 Kafka</text>
+  <text x="407" y="98" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">orders 토픽</text>
+  <text x="407" y="114" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">KRaft 단일 노드</text>
+  <path d="M466 84 C 486 83, 504 85, 522 84" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrK1)"/>
+  <text x="494" y="72" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">poll</text>
+  <path d="M530 50 C 570 48, 610 51, 676 49 C 678 72, 677 96, 676 118 C 610 120, 568 117, 531 119 C 529 96, 530 72, 530 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="603" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">💳 payment</text>
+  <text x="603" y="104" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">@KafkaListener → H2</text>
+
+  <path d="M226 124 C 225 170, 226 200, 226 222" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrK2)"/>
+  <text x="236" y="178" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">OTLP</text>
+  <path d="M603 124 C 602 170, 520 215, 420 240" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrK2)"/>
+  <text x="600" y="190" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">OTLP</text>
+  <path d="M160 228 C 230 226, 300 229, 410 227 C 412 246, 411 264, 410 280 C 300 282, 228 279, 161 281 C 159 264, 160 246, 160 228 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="285" y="252" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">Collector → Tempo → Grafana</text>
+  <text x="285" y="272" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">실습-1과 같은 관측 스택</text>
+  <text x="560" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">두 서비스 스팬이 한 트레이스로 묶이는가?</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 주문과 결제 사이에 HTTP 대신 토픽이 있다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: KRaft</div>
+  Kafka가 클러스터 메타데이터를 ZooKeeper 없이 자체 합의 프로토콜로 관리하는 방식입니다. Kafka 4.0부터는 이 방식만 남았어요. 이번 실습은 한 프로세스가 브로커와 컨트롤러를 겸하는 단일 노드로 띄웠습니다.
+</div>
+
+<p>버전은 실습-1과 같고 Kafka만 더했어요. Kafka는 공식 이미지 <code>apache/kafka</code>의 최신 안정판 4.3.1을 썼습니다(4.3.2와 4.4.0은 아직 RC였어요). 설정은 compose 파일의 환경변수 몇 줄이 전부예요.</p>
+
+<div class="obsv-code">Spring Boot           4.1.1   (spring-boot-starter-kafka)
+OTel Java agent       2.32.0
+Apache Kafka          4.3.1   (apache/kafka 이미지, KRaft 단일 노드)
+OTel Collector        0.162.0 / Tempo 2.10.8 / Grafana 13.2.3 / k6 2.3.0
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/tracing-02-kafka">GitHub 저장소의 labs/observability/tracing-02-kafka</a>에 있습니다. 다른 실습과 동시에 띄워도 포트가 겹치지 않게 25000번대를 쓰도록 <code>.env</code>에 적어 뒀어요.</p>
+
+<div class="obsv-code">cd Platform-study/labs/observability/tracing-02-kafka
+docker compose up -d --build
+curl -XPOST localhost:25003/orders -H 'Content-Type: application/json' -d '{"sku":"A-100","qty":1}'
+python3 show-trace.py          # 가장 최근 주문 트레이스를 스팬 표로. 링크도 같이 찍는다
+# Grafana: http://localhost:25000 → Explore → Tempo</div>
+
+<h2>2. 기본값: 결제가 주문의 자식으로 붙었다</h2>
+
+<p>아무 설정도 바꾸지 않고 주문을 하나 넣었습니다. 결과는 한 트레이스였어요.</p>
+
+<div class="obsv-code">  시작     걸린 시간 서비스   종류      이름
++   0.0ms    8.0ms  order    SERVER    POST /orders
++   0.6ms    7.1ms  order    PRODUCER    orders publish          offset=2135
++   8.8ms    1.1ms  payment  CONSUMER      orders process        offset=2135
++   9.3ms    0.4ms  payment  CLIENT          INSERT shop.payments</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/tracing-debugging/images/lab-02/trace-child.png" alt="Grafana의 트레이스 화면. order의 POST /orders 아래 orders publish, 그 아래 payment의 orders process, 그 아래 INSERT shop.payments가 한 줄기로 이어진다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 결제 컨슈머의 process 스팬이 주문의 publish 스팬 바로 아래에 붙었다</div>
+
+<p>주문 쪽에는 PRODUCER 스팬 <code>orders publish</code>가, 결제 쪽에는 CONSUMER 스팬 <code>orders process</code>가 생겼어요. 계측 모듈 이름은 각각 <code>kafka-clients-0.11</code>과 <code>spring-kafka-2.7</code>이었습니다. 프로듀서는 Kafka 클라이언트 라이브러리에서, 컨슈머는 Spring의 리스너 컨테이너에서 잡았다는 뜻이에요. 그리고 <span class="obsv-mark">process 스팬의 부모가 publish 스팬</span>입니다. 링크는 하나도 없었어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: PRODUCER / CONSUMER 스팬</div>
+  메시지를 보내는 쪽과 받아 처리하는 쪽을 나타내는 스팬 종류입니다. HTTP의 CLIENT/SERVER와 달리, 보낸 쪽이 끝난 뒤에 받는 쪽이 한참 지나서 시작할 수 있어요. 그래서 두 스팬을 어떻게 이을지가 따로 정해져 있습니다.
+</div>
+
+<p>헤더에 실려 간 <code>traceparent</code>를 컨슈머 쪽 에이전트가 꺼내 부모로 삼은 거예요. 3편에서 그린 그림 그대로입니다. 그런데 3편에는 이런 문장도 있었어요. "OpenTelemetry의 메시징 규약은 기본값을 link 쪽에 둔다." 규약 문서를 다시 열어 봤습니다.</p>
+
+<div class="obsv-code">For each message it accounts for, the "Process" or "Receive" span SHOULD
+link to the message's creation context.
+These conventions use spans links as the default mechanism to correlate
+producers and consumer(s).
+Exclusively for single messages scenarios, the "Process" span MAY use the
+message's creation context as its parent.
+It is NOT RECOMMENDED to use the message creation context as the parent of
+"Process" spans (by default) if processing happens in the scope of another span.</div>
+
+<p>규약은 링크를 기본 수단으로 두고, process 스팬은 처리한 메시지마다 그 메시지를 만든 컨텍스트에 링크를 걸어야 한다(SHOULD)고 합니다. 부모로 삼는 건 메시지 한 건을 처리할 때만 허용(MAY)하고, 처리가 다른 스팬 안에서 일어나는 경우에는 기본으로 하지 말라(NOT RECOMMENDED)고 해요. 이번 리스너는 다른 스팬 안에서 돌지 않고 메시지도 한 건씩 받으니, 부모로 삼은 것 자체는 규약이 허용하는 범위예요. 어긋나는 곳은 링크입니다. <span class="obsv-mark">규약은 링크를 걸라고 하는데 에이전트 기본값에는 링크가 하나도 없었어요.</span> 3편의 "규약은 link가 기본"은 규약 기준으로 맞고, 에이전트 기본값은 그 링크를 빠뜨린 모양이었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: span link</div>
+  스팬과 스팬을 부모-자식이 아닌 관계로 잇는 참조입니다. 부모는 하나뿐이지만 링크는 여러 개를 걸 수 있고, 다른 트레이스의 스팬도 가리킬 수 있어요. Grafana에서는 스팬 상세의 References 칸에 나옵니다.
+</div>
+
+<h3>규약 버전이 하나 뒤처져 있었다</h3>
+
+<p>속성을 보면 이유를 짐작할 수 있어요. 스팬 이름이 <code>orders publish</code>이고 속성이 <code>messaging.operation=publish</code>, <code>messaging.kafka.consumer.group=payment</code>였습니다. 지금 규약은 이름을 <code>{operation.name} {destination}</code> 순서로, 동작 종류는 <code>messaging.operation.type</code>에 <code>send</code>, <code>process</code> 같은 값으로 적게 해요. 에이전트 소스의 <code>SemconvStability</code>를 보니 메시징은 기본으로 v1.24.0 규약을 내고, 새 규약은 opt-in으로만 켜집니다. 메시징 규약이 아직 Development 단계라서, 규약 문서도 계측 쪽에 "안정판이 되기 전에는 기본으로 내는 버전을 바꾸지 말라"고 적어 뒀어요.</p>
+
+<p>opt-in을 켜고 다시 넣어 봤습니다.</p>
+
+<div class="obsv-code">SEMCONV_OPT_IN=messaging docker compose up -d order payment    # OTEL_SEMCONV_STABILITY_OPT_IN=messaging</div>
+
+<div class="obsv-code">+   0.0ms  345.3ms  order    SERVER    POST /orders                (재시작 직후 첫 요청이라 느리다)
++ 227.6ms   95.1ms  order    PRODUCER    send orders             type=send
++ 354.5ms   25.4ms  payment  CONSUMER      process orders        type=process
+                                                                 link→ 34ae3a8f../e14a23bd13b0a357
++ 377.1ms    0.6ms  payment  CLIENT          INSERT shop.payments</div>
+
+<p>이름과 속성이 새 규약대로 바뀌었어요. 그리고 process 스팬에 링크가 하나 생겼습니다. 링크가 가리키는 <code>e14a23bd13b0a357</code>은 바로 위의 <code>send orders</code> 스팬이에요. 부모이면서 동시에 링크로도 걸린 겁니다. 규약이 권하는 "링크로 잇는다"를 지키면서 기존의 부모-자식 모양도 유지한 절충으로 보여요. 이 글의 나머지 실험은 기본값(opt-in 끔)으로 되돌려 돌렸습니다.</p>
+
+<div class="obsv-code">docker compose up -d order payment      # SEMCONV_OPT_IN 없이 두 서비스를 다시 띄워 기본값으로</div>
+
+<h2>3. 새 트레이스가 시작되는 두 경우</h2>
+
+<p>에이전트 문서에는 이런 설정이 있어요. <code>otel.instrumentation.messaging.experimental.receive-telemetry.enabled</code>. 2.32.0에서는 이 이름이 deprecated가 됐고 <code>otel.instrumentation.common.messaging.experimental.receive-telemetry.enabled</code>로 바뀌었어요(에이전트 저장소 <code>docs/instrumentation-list.yaml</code>). 실습 compose는 옛 이름의 환경변수를 썼고 2.32.0에서는 그대로 동작했습니다. 설명은 "컨슈머 쪽이 새 트레이스를 시작하고, 프로듀서 트레이스와는 span link 하나로만 이어진다"입니다. 켜고 주문 세 건을 2초 간격으로 넣었어요.</p>
+
+<div class="obsv-code">RECEIVE_TELEMETRY=true docker compose up -d payment
+# 주문 세 건을 넣은 뒤
+python3 show-trace.py                            # 주문 트레이스
+python3 show-trace.py '{name="orders receive"}'  # 결제 쪽 트레이스(TraceQL 로 골라 가장 최근 것)</div>
+
+<div class="obsv-code"># 주문 트레이스: publish 에서 끝난다
++   0.0ms   13.2ms  order    SERVER    POST /orders
++   2.6ms    9.4ms  order    PRODUCER    orders publish          offset=2148
+
+# 결제 쪽은 다른 트레이스
++    0.0ms 2027.8ms  payment  CONSUMER  orders receive            message_count=1   (부모 없음)
++ 2028.3ms    1.6ms  payment  CONSUMER    orders process          link→ d26064b2../59d1f34584a727bf
++ 2029.1ms    0.4ms  payment  CLIENT        INSERT shop.payments</div>
+
+<p>문서대로 결제 쪽은 <code>orders receive</code>를 뿌리로 하는 새 트레이스가 됐고, process 스팬이 링크로 주문 트레이스의 publish 스팬을 가리켰어요. 주문 세 건에 주문 트레이스 3개, receive 트레이스 3개가 생겼습니다.</p>
+
+<p>눈에 띈 건 receive 스팬의 길이예요. 2,027.8ms입니다. 메시지가 큐에서 2초를 기다린 게 아니에요. 주문을 2초 간격으로 넣었으니, 컨슈머가 <code>poll()</code>을 부르고 다음 메시지가 올 때까지 기다린 시간이 그대로 receive 스팬이 된 겁니다. <span class="obsv-mark">receive 스팬의 길이는 메시지의 대기 시간이 아니라 poll이 기다린 시간</span>이에요. 이걸 "큐 지연"으로 읽으면 한가할수록 큐가 느려 보이는 이상한 그래프가 나옵니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: poll</div>
+  Kafka 컨슈머가 브로커에 "새 메시지 있으면 달라"고 묻는 호출입니다. 메시지가 없으면 정해진 시간까지 기다렸다가 돌아와요. 한 번에 여러 건을 받아 올 수 있습니다.
+</div>
+
+<h3>묶음으로 받으면 링크만 남는다</h3>
+
+<p>두 번째 경우는 배치 리스너예요. <code>@KafkaListener(batch = "true")</code>로 poll 한 번에 온 메시지를 리스트로 받게 바꿨습니다(receive 설정은 다시 끔). 메시지가 여러 건 쌓이게 하려고 결제 서비스를 멈춘 채 주문 10건을 넣고, 결제를 다시 띄웠어요.</p>
+
+<div class="obsv-code">BATCH=true docker compose up -d payment     # 배치 리스너로 띄워 두고
+docker compose stop payment
+for i in $(seq 1 10); do curl -s -XPOST localhost:25003/orders -H 'Content-Type: application/json' -d '{"sku":"A-100","qty":1}' & done; wait
+docker compose start payment
+python3 show-trace.py '{resource.service.name="payment" &amp;&amp; name="orders process"}'</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/tracing-debugging/images/lab-02/trace-batch-links.png" alt="payment의 orders process 스팬 하나에 messaging.batch.message_count 10, References 10개가 달려 있고 각 링크의 TraceID가 모두 다르다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 메시지 10건이 process 스팬 하나가 됐고, 부모 대신 링크 10개가 달렸다</div>
+
+<p>process 스팬 하나가 부모 없이 새 트레이스를 시작했고, <code>messaging.batch.message_count=10</code>과 링크 10개가 붙었어요. 링크의 TraceID가 전부 다릅니다. 주문 10건이 각자 다른 트레이스였으니까요. 부모는 하나만 둘 수 있으니 10건을 다 이으려면 링크밖에 없습니다. 3편이 링크를 설명하며 든 이유가 그대로 나왔어요.</p>
+
+<p>대가도 있었습니다. 이 트레이스 안에 INSERT 스팬 10개가 나란히 붙었는데, 어느 INSERT가 어느 주문 것인지는 스팬만 봐서는 알 수 없어요. 결제 로그 10줄도 전부 같은 trace_id를 달고 찍혔습니다. 주문 하나를 따라가려면 링크를 눌러 주문 트레이스로 건너가야 해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrK3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="115" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">① 기본값</text>
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">② receive 켬</text>
+  <text x="585" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">③ 배치 리스너</text>
+
+  <path d="M30 50 C 90 48, 150 51, 200 49 C 202 120, 201 200, 200 290 C 150 292, 90 289, 31 291 C 29 200, 30 120, 30 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2"/>
+  <text x="44" y="78" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">POST /orders</text>
+  <text x="56" y="104" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">publish</text>
+  <text x="68" y="130" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">process</text>
+  <text x="80" y="156" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">INSERT</text>
+  <path d="M50 84 C 50 92, 51 98, 54 100" fill="none" stroke="#8a8272" stroke-width="1.4"/>
+  <path d="M62 110 C 62 118, 63 124, 66 126" fill="none" stroke="#8a8272" stroke-width="1.4"/>
+  <text x="115" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">트레이스 1개</text>
+  <text x="115" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">부모-자식, 링크 0</text>
+
+  <path d="M250 50 C 300 48, 400 51, 450 49 C 452 82, 451 100, 450 118 C 400 120, 300 117, 251 119 C 249 100, 250 82, 250 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2"/>
+  <text x="264" y="78" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">POST /orders</text>
+  <text x="276" y="104" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">publish</text>
+  <path d="M250 160 C 300 158, 400 161, 450 159 C 452 200, 451 240, 450 290 C 400 292, 300 289, 251 291 C 249 240, 250 200, 250 160 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.2"/>
+  <text x="264" y="188" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">receive</text>
+  <text x="276" y="214" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">process</text>
+  <text x="288" y="240" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">INSERT</text>
+  <path d="M340 210 C 380 190, 380 130, 330 108" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 5" stroke-linecap="round" marker-end="url(#arrK3)"/>
+  <text x="408" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">link</text>
+  <text x="350" y="275" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">주문 1건에 트레이스 2개</text>
+
+  <path d="M490 50 C 530 48, 560 51, 590 49 C 592 64, 591 74, 590 86 C 560 88, 530 85, 491 87 C 489 74, 490 64, 490 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2"/>
+  <text x="540" y="73" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">publish ×10</text>
+  <path d="M600 50 C 630 48, 650 51, 676 49 C 678 64, 677 74, 676 86 C 650 88, 630 85, 601 87 C 599 74, 600 64, 600 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2"/>
+  <text x="638" y="73" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">10 traces</text>
+  <path d="M490 160 C 540 158, 630 161, 676 159 C 678 200, 677 240, 676 290 C 630 292, 540 289, 491 291 C 489 240, 490 200, 490 160 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.2"/>
+  <text x="504" y="188" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">process (10건)</text>
+  <text x="516" y="214" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">INSERT ×10</text>
+  <path d="M520 178 C 510 140, 520 110, 532 92" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 5" stroke-linecap="round" marker-end="url(#arrK3)"/>
+  <path d="M560 178 C 590 140, 620 110, 632 92" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 5" stroke-linecap="round" marker-end="url(#arrK3)"/>
+  <text x="600" y="140" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">link ×10</text>
+  <text x="583" y="275" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">부모 없음, 새 트레이스</text>
+
+  <text x="350" y="318" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">설정 하나에 같은 주문이 한 트레이스도, 두 트레이스도 된다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 같은 코드, 같은 Kafka인데 트레이스 모양이 셋으로 갈렸다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 트레이스가 끊겼다고 단정하기 전에</div>
+  receive 설정을 켰거나 배치 리스너를 쓰면 주문 트레이스는 publish에서 끝나는 게 정상이에요. 이때 "Kafka 뒤로 전파가 안 된다"고 결론 내리면 틀립니다. 결제 쪽 스팬의 References(링크)를 먼저 확인하세요. 링크가 있으면 전파는 된 거고, 트레이스를 나눠 그렸을 뿐이에요.
+</div>
+
+<h2>4. 같은 JVM 안에서 끊기는 곳</h2>
+
+<p>3편 마지막 절은 컨슈머가 처리 속도를 높이려고 일을 스레드풀로 넘기면, MDC가 ThreadLocal이라 워커 스레드에서는 traceId가 안 찍힌다고 했어요. 결제 처리를 세 가지 방법으로 넘겨 보고, 각각 k6로 30초 동안 주문을 넣었습니다(VU 5개, 요청 사이 0.2초).</p>
+
+<div class="obsv-code">executor  : Executors.newFixedThreadPool(4) 에 submit
+queue     : 직접 만든 LinkedBlockingQueue 에 메시지만 넣고, 워커 스레드 4개가 꺼내 처리
+queue-ctx : 같은 큐에 OTel Context 를 같이 넣고, 워커가 꺼낼 때 복원</div>
+
+<div class="obsv-code">HANDOFF=queue docker compose up -d payment
+docker compose --profile load run --rm load
+./count.sh 75                  # 최근 75초 트레이스를 뿌리 스팬 이름별로 센다</div>
+
+<div class="obsv-code">방식        k6 주문   주문 트레이스   INSERT가 뿌리인 트레이스
+executor     710        710               0
+queue        695        695             695
+queue-ctx    710        710               0</div>
+
+<p>예상과 달랐던 건 <b>executor</b>예요. 직접 만든 스레드풀로 넘겼는데 끊기지 않았습니다. INSERT 스팬 710개가 전부 주문 트레이스 안에 들어갔고, 워커 스레드(<code>pool-4-thread-1</code>)가 찍은 로그에도 trace_id가 있었어요. 에이전트가 <code>java.util.concurrent</code>의 <code>execute</code>, <code>submit</code>, <code>schedule</code>을 계측해서 넘기는 순간의 컨텍스트를 작업에 실어 주기 때문입니다. 에이전트 지원 목록에도 Java Executors가 "Context propagation"으로 올라가 있어요.</p>
+
+<div class="obsv-code">+   0.0ms   12.9ms  order    SERVER    POST /orders
++   1.9ms    9.2ms  order    PRODUCER    orders publish
++  51.5ms    5.3ms  payment  CONSUMER      orders process        (56.8ms에 끝남)
++  92.1ms    0.8ms  payment  CLIENT          INSERT shop.payments  thread=pool-4-thread-1</div>
+
+<p>이 트레이스에서 INSERT는 부모인 process 스팬이 끝나고 35ms 뒤에 시작했어요. 리스너는 일을 넘기자마자 돌아왔으니 process 스팬은 "처리"가 아니라 "넘기기"까지만 잰 겁니다. 컨슈머 처리 시간을 process 스팬으로 보고 있었다면 실제보다 짧게 보여요.</p>
+
+<p>끊긴 건 <b>queue</b>였습니다. 메시지를 담은 객체만 큐에 넣으면 에이전트가 끼어들 자리가 없어요. 주문 695건마다 주문 트레이스는 process에서 끝났고, INSERT는 부모 없는 트레이스 695개로 따로 떨어졌습니다. 로그도 그대로 갈라졌어요.</p>
+
+<div class="obsv-code">INFO [trace_id=c0e4e26ddb9b72eee636b48c0e6860a8 span_id=625ef462b361a370] [ntainer#0-0-C-1] 주문 수신 052dabc7-...
+INFO [trace_id= span_id=]                                               [   pay-worker-0] 결제 완료 order=052dabc7-...</div>
+
+<p>같은 주문인데 "수신" 줄에는 trace_id가 있고 "완료" 줄에는 비어 있어요. 결제가 실패했다면 그 예외 로그를 trace_id로 찾을 수 없었을 겁니다. <span class="obsv-mark">에이전트는 스레드풀은 알아도, 우리가 만든 큐 안의 객체는 모릅니다.</span></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Context (OpenTelemetry)</div>
+  지금 실행 중인 스팬과 baggage 같은 값을 담은 불변 객체입니다. 스레드에 "현재 컨텍스트"로 붙어 있고, <code>Context.current()</code>로 꺼내 <code>makeCurrent()</code>로 다른 스레드에 다시 붙일 수 있어요.
+</div>
+
+<p>고친 방법은 3편의 캡처, 복원, 정리 그대로예요. 큐에 넣을 때 <code>Context.current()</code>를 같이 넣고, 워커가 꺼낼 때 그 컨텍스트를 붙였다가 블록이 끝나면 떼어 냅니다. 이 부분만 <code>opentelemetry-api</code> 의존성을 넣었어요. 에이전트가 이 API 호출을 자기 컨텍스트로 이어 줍니다.</p>
+
+<div class="obsv-code">// 넘길 때 (컨슈머 스레드)
+queue.add(new Job(payload, Context.current()));          // 캡처
+
+// 꺼낼 때 (워커 스레드)
+try (Scope ignored = job.ctx().makeCurrent()) {          // 복원
+    pay(job.payload());
+}                                                        // 정리: close 가 원래 컨텍스트로 되돌린다</div>
+
+<p>queue-ctx로 돌린 710건은 부모 없는 트레이스 없이 전부 주문 트레이스 안으로 돌아왔어요. 워커 로그에도 trace_id가 다시 찍혔습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 컨슈머 쪽 트레이스를 점검할 때</div>
+  &bull; 주문 수와 "DB나 HTTP 클라이언트 스팬이 뿌리인 트레이스" 수를 같이 세 보세요. 후자가 늘면 어딘가에서 컨텍스트를 안 싣고 넘기는 코드가 있어요<br>
+  &bull; 에이전트가 이어 주는 건 <code>Executor</code> 계열까지예요. 직접 만든 큐, 링 버퍼, 메시지를 객체로 넘기는 이벤트 버스는 <code>Context.current()</code>를 같이 실어야 해요<br>
+  &bull; 컨슈머가 일을 넘기는 구조라면 process 스팬 길이를 처리 시간으로 쓰지 마세요. 넘긴 뒤의 실제 처리 스팬을 따로 봐야 해요
+</div>
+
+<h2>5. 3편과 다르게 나온 두 가지</h2>
+
+<p>정리하면 3편의 설명과 실측이 어긋난 곳이 두 군데 있었어요. 둘 다 3편이 틀렸다기보다, 3편은 규약과 맨 MDC를 기준으로 말했고 이번 실습은 에이전트를 붙인 결과라서 생긴 차이입니다.</p>
+
+<p><b>첫째, 링크가 기본이 아니었습니다.</b> 규약은 링크를 기본으로 권하지만 에이전트 2.32.0의 기본값은 부모-자식이었어요. 규약이 걸라고 한 링크가 생긴 건 receive 설정을 켰을 때, 배치 리스너일 때(이 둘은 컨슈머 쪽이 새 트레이스), 새 규약을 opt-in 했을 때(부모는 그대로 두고 링크를 더 검)였습니다.</p>
+
+<p><b>둘째, 스레드풀로 넘겨도 끊기지 않았습니다.</b> 3편의 <code>executor.submit</code> 예시는 에이전트가 없을 때 이야기예요. 에이전트가 있으면 Executor로 넘기는 작업에 컨텍스트가 따라가고, MDC의 trace_id도 찍힙니다. 끊기는 건 에이전트가 볼 수 없는 자리, 이번 실습에서는 직접 만든 작업 큐였어요. 3편이 말한 <code>CompletableFuture</code> 기본 풀은 이번에 시험하지 않았어요. 에이전트의 Executor 계측 대상에 <code>ForkJoinTask</code>를 받는 <code>execute</code>, <code>submit</code>, <code>invoke</code>도 들어 있어서 이어질 가능성이 높지만, 직접 확인한 결과는 아닙니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>에이전트는 Kafka 헤더로 traceparent를 실어 나르고, 기본값으로는 결제 컨슈머의 process 스팬을 주문의 publish 스팬 자식으로 붙였다.</b> 규약이 걸라고 하는 span link는 receive 설정을 켜거나 배치로 받을 때 나타났고, 그때 컨슈머 쪽은 새 트레이스가 됐다. 새 규약을 opt-in 하면 부모는 그대로 두고 링크를 하나 더 걸었다.<br><br>
+  같은 JVM 안에서는 Executor로 넘긴 작업까지 에이전트가 이어 줬고, 직접 만든 큐로 넘긴 메시지에서 트레이스와 로그의 trace_id가 함께 끊겼다. 트레이스가 끊긴 것처럼 보이면 링크부터 확인하고, 링크도 없으면 컨텍스트를 싣지 않은 채 넘기는 곳을 찾으면 된다.
+</div>
+
+</div>

@@ -1,0 +1,23 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+repositories { mavenCentral() }
+
+// 같은 앱이 두 가지로 뜬다: Prometheus 가 긁어 가는 pull-app, OTLP 로 Collector 에 미는 push-app.
+// 어느 쪽을 쓸지는 환경변수(management.*.metrics.export.enabled)로 고른다.
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+    runtimeOnly 'io.micrometer:micrometer-registry-otlp'
+    // 스프링 부트 4 의 OTLP 지표 자동 설정은 OpenTelemetryProperties 가 클래스패스에 있어야 켜진다.
+    // micrometer-registry-otlp 만 넣으면 아무 경고 없이 내보내지 않는다(이 실습에서 처음에 겪었다).
+    runtimeOnly 'org.springframework.boot:spring-boot-opentelemetry'
+}

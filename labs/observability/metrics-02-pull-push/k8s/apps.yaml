@@ -1,0 +1,48 @@
+# 같은 이미지를 두 번 띄운다. pull-app 은 긁히고, push-app 은 민다.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: pull-app, namespace: obs }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: pull-app } }
+  template:
+    metadata:
+      labels: { app: pull-app }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      containers:
+        - name: app
+          image: obs-lab/metrics-02-pull-push:dev
+          imagePullPolicy: Never
+          ports: [{ containerPort: 8080 }]
+          env:
+            - { name: JAVA_TOOL_OPTIONS, value: "-Xmx128m" }
+            - { name: MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED, value: "false" }
+          resources: { limits: { memory: 384Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: push-app, namespace: obs }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: push-app } }
+  template:
+    metadata:
+      labels: { app: push-app }
+    spec:
+      containers:
+        - name: app
+          image: obs-lab/metrics-02-pull-push:dev
+          imagePullPolicy: Never
+          env:
+            - { name: JAVA_TOOL_OPTIONS, value: "-Xmx128m" }
+            - { name: MANAGEMENT_PROMETHEUS_METRICS_EXPORT_ENABLED, value: "false" }
+            - { name: MANAGEMENT_OTLP_METRICS_EXPORT_URL, value: "http://otel-collector:4318/v1/metrics" }
+            - { name: MANAGEMENT_OTLP_METRICS_EXPORT_STEP, value: "10s" }
+            - { name: OTEL_SERVICE_NAME, value: push-app }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.instance.id=$(POD_NAME)" }
+          resources: { limits: { memory: 384Mi } }

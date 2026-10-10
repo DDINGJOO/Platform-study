@@ -1,7 +1,8 @@
-"""Grafana Explore 화면을 헤드리스 크롬으로 캡처한다.
-사용: python capture.py <출력.png> <Explore 패널 JSON> [--wait 초] [--clip 셀렉터]
-패널 JSON 은 Grafana Explore URL 의 panes 값과 같은 모양이다."""
-import argparse, json, time, urllib.parse
+"""Grafana Explore 화면(또는 아무 URL)을 헤드리스 크롬으로 캡처한다.
+사용: python capture.py <출력.png> <Explore 패널 JSON | http로 시작하는 URL> [--wait 초] [--clip 셀렉터]
+패널 JSON 은 Grafana Explore URL 의 panes 값과 같은 모양이다. URL 을 주면 그 페이지를 그대로 찍는다
+(Grafana 대시보드, Prometheus·Alertmanager 화면 등). Grafana 주소는 GRAFANA_URL 로 바꾼다."""
+import argparse, json, os, time, urllib.parse
 from playwright.sync_api import sync_playwright
 
 ap = argparse.ArgumentParser()
@@ -17,8 +18,11 @@ ap.add_argument("--top", type=int, help="이 높이(px)부터 아래로 잘라 �
 ap.add_argument("--clip-height", type=int, help="--from-text 지점부터 이만큼만 찍는다(px)")
 a = ap.parse_args()
 
-panes = urllib.parse.quote(json.dumps({"a": json.loads(a.pane)}))
-url = f"http://localhost:3000/explore?schemaVersion=1&orgId=1&panes={panes}"
+if a.pane.startswith("http"):
+    url = a.pane
+else:
+    panes = urllib.parse.quote(json.dumps({"a": json.loads(a.pane)}))
+    url = f"{os.environ.get('GRAFANA_URL', 'http://localhost:3000')}/explore?schemaVersion=1&orgId=1&panes={panes}"
 with sync_playwright() as p:
     b = p.chromium.launch(channel="chrome", headless=True)
     pg = b.new_page(viewport={"width": a.width, "height": a.height}, device_scale_factor=2)

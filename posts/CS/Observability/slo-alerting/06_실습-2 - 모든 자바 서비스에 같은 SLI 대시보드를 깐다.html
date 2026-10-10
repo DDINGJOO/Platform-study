@@ -1,0 +1,318 @@
+<!-- lead: 대시보드 JSON 한 장으로 자바 서비스 둘에 같은 SLI 화면을 깔고 스레드 풀 포화와 GC 압박을 넣었어요. 서버 p99는 0.22초인데 k6는 6.5초를 기다렸고, GC 지표는 폭주가 끝난 뒤에 도착했어요. -->
+<!-- tags: Grafana 대시보드 프로비저닝, Micrometer JVM 지표, 톰캣 스레드 풀, G1 Full GC, jvm.gc.overhead -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔔 SLO와 경고, 실습-2</div>
+  1편. 알람은 언제 울려야 하나<br>
+  2편. 모니터만 보고 있는 사람은 값비싼 경고 시스템이다<br>
+  3편. 모든 자바 서비스가 같은 자리에서 아프다<br>
+  4편. 머신러닝이 임계값을 정해 주지는 않았다<br>
+  실습-1. SLO 하나로 burn rate 알람을 만들고 실제로 울린다<br>
+  <b>실습-2. 모든 자바 서비스에 같은 SLI 대시보드를 깐다</b> &larr; 지금 이 글
+</div>
+
+<p>주문 서비스에 요청을 몰아넣었습니다. 지연 패널의 p99는 224ms에서 움직이지 않았는데, 같은 시각 k6는 응답 하나를 6.5초씩 기다렸어요. 가장 심했던 15초 동안은 대시보드 전체가 비었습니다.</p>
+
+<p>3편의 공통 지표 목록을 Grafana 대시보드 JSON 한 장으로 만들어 서비스 두 개에 깔고, 스레드 풀 포화와 GC 압박을 넣어 어느 패널이 먼저 반응하는지 5초 단위로 기록했어요. 3편에 없던 함정도 하나 나왔습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 서비스 이름만 바꿔 같은 대시보드를 쓰려면 지표와 쿼리를 어떻게 맞춰야 하나?<br>
+  &bull; 톰캣 스레드가 다 차면 어느 패널이 움직이고, 어느 패널이 끝까지 모르나?<br>
+  &bull; 할당 폭주, 남는 데이터 증가, Full GC 연발 중 사용자 지연은 어디서부터 나빠지나?<br>
+  &bull; GC가 가장 심할 때 GC 패널은 무엇을 보여 줬나?
+</div>
+
+<h2>1. 실습 환경: 같은 코드, 다른 서비스 둘</h2>
+
+<p>실습-1의 앱으로 설정만 다른 <code>orders</code>와 <code>payments</code>를 띄웠어요. Prometheus가 5초마다 긁고, k6는 서비스마다 초당 30건을 보내며 자기가 잰 응답 시간을 원격 쓰기로 넣습니다(서버 타이머 비교용).</p>
+
+<div class="obsv-code">orders    톰캣 작업 스레드 20개(기본 200), 요청마다 200ms 지연(curl로 주입, 재기동하면 0으로 초기화)
+          GC는 지정하지 않음 → JVM이 Serial GC를 골랐다(2절)
+payments  톰캣 기본값, 요청 처리 5~14ms(평균 약 10ms)
+          -XX:+UseG1GC 로 G1을 직접 지정
+공통      -Xmx256m, 컨테이너 메모리 한도 512MB</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrT1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="120" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">📄 java-sli.json</text>
+  <path d="M40 44 C 90 42, 150 45, 200 43 C 202 70, 201 96, 200 120 C 150 122, 90 119, 41 121 C 39 96, 40 70, 40 44 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="120" y="70" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">$application</text>
+  <text x="120" y="90" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">= orders | payments</text>
+  <text x="120" y="110" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">패널 9개 + 실습용 1개</text>
+  <path d="M204 82 C 230 81, 250 83, 272 82" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrT1)"/>
+  <path d="M282 40 C 400 38, 540 41, 662 39 C 664 62, 663 84, 662 104 C 540 106, 400 103, 283 105 C 281 84, 282 62, 282 40 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="300" y="62" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">① 사용자가 겪는 것 (RED)</text>
+  <text x="300" y="88" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">가용성 · 서버 지연 p50/p99 · 처리량, 진행 중 요청</text>
+  <path d="M282 122 C 400 120, 540 123, 662 121 C 664 144, 663 166, 662 186 C 540 188, 400 185, 283 187 C 281 166, 282 144, 282 122 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="300" y="144" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">② 메모리 (USE)</text>
+  <text x="300" y="170" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">GC 일시정지 비중·최대 · 힙, GC 직후 힙 · GC 횟수</text>
+  <path d="M282 204 C 400 202, 540 205, 662 203 C 664 226, 663 248, 662 268 C 540 270, 400 267, 283 269 C 281 248, 282 226, 282 204 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="300" y="226" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d6591">③ CPU, 스레드, 파일 설명자</text>
+  <text x="300" y="252" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">process CPU · 톰캣 사용 중/최대 스레드 · 열린 fd / 한도</text>
+  <path d="M282 286 C 400 284, 540 287, 662 285 C 664 304, 663 322, 662 338 C 540 340, 400 337, 283 339 C 281 322, 282 304, 282 286 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-dasharray="6 6"/>
+  <text x="300" y="318" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">④ 실습 전용: k6 p99 vs 서버 p99</text>
+  <path d="M250 70 C 236 140, 236 220, 250 300" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrT1)"/>
+  <text x="120" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">증상에서 시작해</text>
+  <text x="120" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">원인 쪽 자원으로</text>
+  <text x="120" y="248" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">내려간다 (3편의 순서)</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 파일 하나, 변수 하나, 서비스 몇 개든 같은 화면</div>
+
+<p>쓴 버전은 실습-1과 같아요(Spring Boot 4.1.1, Micrometer 1.17.1, Java 21.0.12, Prometheus 3.15.0, Grafana 13.2.3, k6 2.3.0). 실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/slo-02-jvm-sli">GitHub 저장소의 labs/observability/slo-02-jvm-sli</a>에 있습니다. 앱은 실습-1 폴더의 코드를 같이 빌드해요.</p>
+
+<div class="obsv-code">cd Platform-study/labs/observability/slo-02-jvm-sli
+docker compose up -d --build
+docker compose --profile load run -d --rm -e TARGET=orders   -e RATE=30 -e DURATION=90m load
+docker compose --profile load run -d --rm -e TARGET=payments -e RATE=30 -e DURATION=90m load
+curl -X POST 'localhost:24180/chaos?latencyMs=200'     # orders 요청마다 200ms
+python3 scripts/panel-log.py orders   &gt; orders.csv     # 패널 대표값을 5초마다 기록(30초 창)
+python3 scripts/panel-log.py payments &gt; payments.csv
+bash scripts/gc-steps.sh                               # 4절의 GC 압박 세 단계
+# 5절의 GC 로그: compose 의 payments JAVA_TOOL_OPTIONS 끝에 -Xlog:gc:stdout 을 붙이고
+#   docker compose up -d payments 로 재기동한 뒤 docker compose logs -t payments
+# Grafana: http://localhost:24130 → SLI / 자바 서비스 공통 SLI</div>
+
+<h2>2. 대시보드는 JSON 한 장, 서비스 구분은 태그 하나</h2>
+
+<p>화면에서 만든 대시보드는 서비스마다 복사되고 복사본끼리 달라져요. 그래서 JSON 파일로 두고 Grafana가 기동할 때 읽게 했습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 프로비저닝 (provisioning)</div>
+  Grafana가 기동할 때 정해진 폴더의 파일을 읽어 데이터 소스와 대시보드를 만드는 기능입니다. 대시보드를 코드 리뷰로 바꿀 수 있어요.
+</div>
+
+<div class="obsv-code"># grafana/provisioning/dashboards/dashboards.yaml
+providers:
+  - name: java-sli
+    folder: SLI
+    type: file
+    allowUiUpdates: false        # 화면에서 고친 내용은 저장되지 않는다. 정본은 JSON
+    options:
+      path: /var/lib/grafana/dashboards</div>
+
+<p>같은 쿼리를 쓰려면 모든 지표에 서비스 이름이 있어야 해요. 설정 한 줄로 Micrometer가 <code>application</code> 태그를 달고, 대시보드는 <code>label_values(jvm_info, application)</code>로 선택 변수를 만들어 모든 쿼리에 넣었습니다.</p>
+
+<div class="obsv-code">management:
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true     # 서버 지연을 히스토그램 버킷으로도 내보낸다
+server:
+  tomcat:
+    mbeanregistry:
+      enabled: true                     # 이게 없으면 tomcat_threads_* 지표가 안 나온다</div>
+
+<p>패널은 3편의 여섯 지표 순서에 톰캣 스레드 패널을 더했어요. 그림 1의 배치이고, 주요 쿼리는 이렇습니다.</p>
+
+<div class="obsv-code">가용성     1 - (sum(rate(http_server_requests_seconds_count{application="$application",
+                 uri!~"/actuator.*", status=~"5.."}[$__rate_interval])) or vector(0))
+               / sum(rate(http_server_requests_seconds_count{...}[$__rate_interval]))
+지연 p99   histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{...}[...])))
+GC 비중    sum(rate(jvm_gc_pause_seconds_sum{application="$application"}[$__rate_interval]))
+힙         sum(jvm_memory_used_bytes{..., area="heap"})
+             / sum(jvm_memory_max_bytes{..., area="heap"} &gt; 0)
+GC 직후    jvm_memory_usage_after_gc{application="$application"}
+스레드     tomcat_threads_busy_threads, tomcat_threads_config_max_threads</div>
+
+<h3>같은 이미지인데 GC가 달랐다</h3>
+
+<p>처음 힙 쿼리는 G1을 가정해 분모를 <code>id=~".*Old Gen"</code>으로 골랐는데 orders 패널이 비었어요. 영역 이름이 <code>Tenured Gen</code>, GC 이름이 <code>Copy</code>와 <code>MarkSweepCompact</code>인 Serial GC였습니다.</p>
+
+<p>GC를 지정하지 않으면 JVM이 기계를 보고 고릅니다. OpenJDK 21 소스(<code>os::is_server_class_machine</code>)의 주된 조건은 CPU 2개 이상, 메모리 2GB에서 256MB를 뺀 1,792MB 이상이에요(패키지당 논리 프로세서가 여럿이면 물리 패키지 수도 따지는 단서가 붙어요). 이걸 만족하면 "서버급"으로 보고 G1을, 아니면 Serial을 씁니다. 컨테이너 안에서는 메모리 한도를 기계 메모리로 읽어서, 한도 512MB와 2GB로 띄운 <code>-XX:+PrintFlagsFinal</code>은 각각 <code>UseSerialGC = true {ergonomic}</code>, <code>UseG1GC = true {ergonomic}</code>였어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: GC 에르고노믹스 (ergonomics)</div>
+  JVM이 CPU 수와 메모리를 보고 GC 종류, 힙 크기 같은 기본값을 스스로 정하는 동작입니다. <code>{ergonomic}</code> 표시가 붙은 값이 그렇게 정해진 값이에요.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 공통 대시보드는 GC 종류를 가정하면 안 된다</div>
+  G1은 Eden과 Survivor 영역의 <code>max</code>를 -1로 내보내고 Old Gen에만 힙 최대값을 실어요. Serial은 영역마다 <code>max</code>가 있습니다. 그래서 분모를 "0보다 큰 max의 합"으로 바꿨어요. 한도 1,792MB 미만 컨테이너는 GC를 지정하지 않으면 Serial이 되고, 3편의 G1 거대 할당 신호도 나오지 않아요.
+</div>
+
+<h2>3. 스레드가 다 차자, 서버 타이머는 끝까지 몰랐다</h2>
+
+<p>orders는 요청당 약 210ms, 스레드 20개라 초당 약 95건이 한계예요. 평소 30건(스레드 7개쯤)에 45초 동안 초당 90건을 더 보냈습니다.</p>
+
+<div class="obsv-code">docker compose --profile load run --rm -e TARGET=orders -e RATE=90 -e DURATION=45s -e MAX_VUS=1000 load</div>
+
+<p><code>panel-log.py</code>가 5초마다 30초 창으로 계산해 기록한 값이에요. 그림의 패널은 Grafana의 <code>$__rate_interval</code>로 계산해서 처리량 꼭대기가 108처럼 조금 다르게 보여요. 08:14:03에 주입을 시작했습니다.</p>
+
+<div class="obsv-code">시각       서버 p99  k6 p99   초당 처리  진행 중 요청  사용 중 스레드
+08:14:02   0.224s   0.229s     30          7            7
+08:14:07   0.224s   0.505s     35         20           20     ← 4초 만에 20/20
+08:14:22   0.224s   2.03s      66         20           20
+08:14:42   0.224s   4.09s      93         20           20
+08:14:47   (스크레이프 실패)  4.66s                              ← 대시보드가 비기 시작
+08:14:57   (스크레이프 실패)  5.93s
+08:15:02   0.224s   6.02s      71          7            7
+
+k6 요약(주입분 45초): 3,629건 완료, 422건 보내지 못함, p99 6.56s, 최대 6.64s
+가용성: 주입 내내 100%</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/slo-alerting/images/lab-02/orders-threadpool-saturation.png" alt="orders 서비스의 공통 SLI 대시보드. 가용성과 서버 p99는 평평하고, 톰캣 사용 중 스레드는 20으로 붙고, 맨 아래 k6 p99는 6초 넘게 치솟는다. 08시 14분 45초 부근에 모든 패널이 비어 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 스레드는 4초 만에 찼고, 서버 지연 패널은 끝까지 평평했다</div>
+
+<p>가장 먼저 반응한 패널은 <b>톰캣 작업 스레드</b>예요. 4초 뒤 20/20이 됐고 처리량은 93건에서 멈췄습니다. <b>서버 타이머 p99는 0.224초에서 움직이지 않았고</b> k6 p99는 6초를 넘었어요. 3편의 "스레드 풀 대기는 서버 타이머 바깥"을 숫자로 보면 이래요. <span class="obsv-mark">서버 타이머가 0.22초라고 말할 때 사용자는 6초를 기다리고 있었습니다.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrT2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="40" y="62" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">k6</text>
+  <path d="M70 70 C 300 68, 500 71, 650 69" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrT2)"/>
+  <path d="M80 82 C 200 80, 330 83, 455 81 L 455 118 C 330 120, 200 117, 80 119 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+  <text x="267" y="106" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">⏳ 톰캣 큐에서 스레드를 기다림 (최대 6초 남짓)</text>
+  <path d="M460 82 C 520 80, 580 83, 640 81 L 640 118 C 580 120, 520 117, 460 119 Z" fill="#e8f3ea" stroke="#5a9e6f" stroke-width="2.2"/>
+  <text x="550" y="106" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">처리 0.21초</text>
+  <path d="M460 136 C 520 135, 580 137, 640 136" fill="none" stroke="#2e6b41" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M460 128 L 460 144 M 640 128 L 640 144" fill="none" stroke="#2e6b41" stroke-width="2.4" stroke-linecap="round"/>
+  <text x="550" y="164" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">서버 타이머 · 진행 중 요청</text>
+  <path d="M80 186 C 250 184, 450 187, 640 185" fill="none" stroke="#b3502f" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M80 178 L 80 194 M 640 178 L 640 194" fill="none" stroke="#b3502f" stroke-width="2.4" stroke-linecap="round"/>
+  <text x="360" y="212" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">k6 가 잰 시간 (p99 6.56초)</text>
+  <text x="360" y="238" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 대기열에 선 시간은 서버 안의 어떤 미터에도 안 잡혔다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 사용자가 기다린 6초 중 서버가 잰 것은 마지막 0.21초</div>
+
+<p>진행 중 요청 수(LongTaskTimer인 <code>http.server.requests.active</code>)도 20에서 멈췄어요. 이 값도 스레드를 얻어 처리를 시작한 요청만 세기 때문에, 큐에서 기다리는 요청은 보이지 않습니다(서버 p99가 0.224초로 고정된 건 버킷 경계 0.2013초와 0.2237초 사이 보간값이라서예요).</p>
+
+<h3>가장 심한 15초 동안 대시보드가 비었다</h3>
+
+<p>08:14:45부터 세 번의 스크레이프가 실패해 <code>up</code>이 0이 됐어요. <code>/actuator/prometheus</code>도 같은 스레드 20개로 처리되니 지표 요청도 큐에서 기다렸고, 5초를 넘자 Prometheus가 포기했습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 스크레이프 타임아웃 (scrape_timeout)</div>
+  Prometheus가 한 번 긁을 때 기다리는 최대 시간입니다. 설정이 없으면 10초와 스크레이프 간격 중 작은 값이라(Prometheus 소스), 이 실습은 5초였어요.
+</div>
+
+<p>그림 2의 모든 패널이 같은 자리에서 끊긴 이유예요. 가장 나쁜 순간에 데이터가 없고, 그 지표에 건 경고도 평가할 값이 없습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 스레드 포화를 보려면</div>
+  &bull; 서버 지연 옆에 <b>호출하는 쪽의 지연</b>(<code>http.client.requests</code>, 게이트웨이)을 두세요. 3편의 권고예요<br>
+  &bull; 사용 중 스레드 / 최대 스레드가 1에 붙는 시간을 경고 후보로 보세요. 이번에 가장 빨랐어요<br>
+  &bull; 액추에이터를 별도 포트(<code>management.server.port</code>)로 빼면 지표 요청이 업무 요청 뒤에 줄을 서지 않아요. 이번에는 해 보지 않았어요<br>
+  &bull; <code>up == 0</code>도 신호예요. "지표 없음"을 정상으로 읽지 마세요
+</div>
+
+<h2>4. GC 압박 세 단계: 지연은 마지막 단계에서야 움직였다</h2>
+
+<p>payments(G1)에 세 단계로 압박을 넣었어요. 백그라운드 스레드가 64KB 배열을 초당 지정량만큼 만들어 버리고(할당), 1MB 배열을 지정 개수만큼 붙잡습니다(남는 데이터).</p>
+
+<div class="obsv-code">09:19:00  1) 버려지는 객체만 초당 300MB      allocMbPerSec=300
+09:21:00  2) 붙잡아 두는 데이터 90MB 추가     retainMb=90
+09:23:00  3) 붙잡는 데이터 118MB, 초당 600MB  retainMb=118&amp;allocMbPerSec=600
+09:26:00  4) 되돌림</div>
+
+<p>이 첫 실행(09:19~09:26)에서 단계마다 패널 값이 처음 바뀐 시각과 크기를 적었어요(<code>panel-log.py</code> 5초 기록, 30초 창, 주입 전 1분 평균 대비).</p>
+
+<div class="obsv-code">                 1) 할당만           2) 남는 데이터       3) 꽉 찬 힙 + 할당
+GC 횟수/초       0.08 → 7.7 (6초)    변화 없음            7.4 → 30~57 (11초)
+GC 일시정지 비중  0 → 1.1%           변화 없음            1.2% → 10~21%
+GC 직후 힙       7.8% 그대로          7.8% → 77% (6초)     77% → 98~99.9%
+CPU(15코어 기준)  0.2% → 1% 안팎      1% 안팎             1% → 19% (6초) → 25%
+서버 p99         20ms 그대로          20ms 그대로          20ms → 77ms (6초) → 149ms
+k6 p99           18ms 그대로          18ms 그대로          18ms → 86ms → 164ms
+가용성           100%                100%                 100%</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/slo-alerting/images/lab-02/payments-gc-pressure.png" alt="payments 서비스의 공통 SLI 대시보드. 힙 패널은 두 계단으로 올라 거의 100%에 붙고, 지연과 CPU는 세 번째 단계에서만 오른다. GC 패널들은 압박이 끝난 직후 수백 퍼센트로 튀는 뾰족한 선이 하나 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 힙은 계단으로 오르고, 지연은 마지막 계단에서만 오른다</div>
+
+<p><b>1단계</b>는 GC 횟수가 100배 가까이 늘었지만 한 번에 1~2ms라 비중은 1%, 지연은 그대로였어요. 3편의 "볼 것은 횟수가 아니라 비중" 그대로입니다.</p>
+
+<p><b>2단계</b>에서는 GC 직후 힙(<code>jvm_memory_usage_after_gc</code>, 마지막 GC 뒤 오래 사는 영역 사용량을 그 영역 최대로 나눈 값. G1에서는 Old 영역 최대 = 힙 최대)만 다음 기록에서 7.8%에서 77%로 뛰었어요. 붙잡은 건 90MB인데 256MB 힙의 약 69%, 곧 177MB만큼 올랐습니다. G1 영역이 1MB(<code>G1HeapRegionSize = 1048576</code>)라 1MB 배열은 배열 머리 몇 바이트 때문에 거대 객체로 영역 두 개를 차지하고, 마지막 영역의 남는 공간은 쓰지 못한다고 보면 숫자가 맞아요(Oracle G1 문서의 거대 객체 설명, 실제로 <code>cause="G1 Humongous Allocation"</code> GC가 기록됨). 그래도 지연은 그대로였어요. 힙이 차 있는 것만으로는 장애가 아니었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Full GC (G1 Compaction Pause)</div>
+  힙 전체를 멈춘 채 정리하는 수집입니다. G1은 공간을 확보하지 못하면 여기로 넘어가요. Micrometer에서는 <code>gc="G1 Old Generation"</code>으로 보입니다.
+</div>
+
+<p><b>3단계</b>에서 힙이 99%에 붙자 Full GC가 연달아 일어났고, 6초 뒤 서버 p99와 CPU가 같이 뛰었어요. 이번에는 서버 타이머와 k6가 같이 움직였습니다. GC 멈춤은 처리 중인 요청 안에서 일어나니까요.</p>
+
+<h2>5. GC가 가장 심할 때, GC 패널은 10분의 1만 보여 줬다</h2>
+
+<p>그림 4의 GC 패널에는 이상한 게 하나 있어요. 첫 실행에서 압박을 되돌린 09:26:06에 GC 일시정지 비중이 533%, GC 횟수가 초당 1,516번으로 튀었습니다(기록 스크립트의 30초 창 기준. 그림은 계산 창이 짧아 약 830%, 1.5K까지 보여요). 1초에 5초를 멈출 수는 없으니, payments를 GC 로그(<code>-Xlog:gc:stdout</code>)를 켠 채 다시 띄워 재실행했어요. 이번에는 3단계만 2분 동안 넣었다가 되돌린 뒤 로그와 Micrometer 카운터를 10초 단위로 맞대 봤습니다.</p>
+
+<div class="obsv-code">10초 구간 끝   GC 로그의 Full GC   로그의 멈춤 합   Micrometer 누적 Full GC
+09:31:10            943           6,244ms            108
+09:31:40            882           7,314ms            328
+09:32:10            886           7,305ms            722
+09:32:40            926           7,202ms          1,214
+09:33:00            941           7,209ms          1,565     ← 09:33:01 되돌림
+09:33:10            190           1,489ms         11,159     ← 10초 만에 9,594 증가
+합계             11,159          87,449ms         11,159</div>
+
+<p>JVM은 10초마다 Full GC를 900번 안팎 하며 약 7.2초를 멈춰 있었는데, Micrometer 카운터는 같은 10초에 56~184번만 늘었어요. 되돌리자 밀린 9,594번이 10초 안에 들어왔고 합계는 로그와 같았습니다. 1단계를 60초 넣었을 때는 로그 536번, Micrometer 493번으로 거의 맞았어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: GC 알림 (GarbageCollectionNotification)</div>
+  JVM이 GC 한 번이 끝날 때마다 JMX로 보내는 이벤트로, 종류·원인·걸린 시간이 들어 있어요. Micrometer는 이 알림을 받아 <code>jvm_gc_pause_seconds</code>와 <code>jvm_gc_overhead</code>를 갱신합니다.
+</div>
+
+<p>Micrometer GC 지표는 이 알림을 받아서 셉니다(<code>JvmGcMetrics</code> 소스). 처리가 GC 속도를 못 따라가면 밀리는데, 어느 스레드가 왜 밀렸는지는 확인하지 못했어요. <span class="obsv-mark">GC가 가장 심한 동안 GC 패널은 실제의 10분의 1 정도를 보여 줬고, 나머지는 압박이 끝난 뒤에 도착했습니다.</span></p>
+
+<p><code>jvm_gc_overhead</code>는 더 늦었어요. 이 게이지는 알림이 올 때마다 멈춘 시간을 바로 더하지만, 분모가 5분으로 고정이라 원래도 천천히 오릅니다(<code>JvmHeapPressureMetrics</code> 기본 lookback 5분. 1분 단위로 움직이는 건 오래된 값이 빠지는 쪽뿐이에요). 3단계 3분 동안 0.009에서 0.097까지만 올랐고, 되돌린 직후 밀린 알림이 들어오자 0.526으로 뛰어 그 뒤로도 한동안 높게 남았어요. 이 값에만 건 경고는 장애가 끝난 뒤에 울렸을 거예요. 3편은 이 값을 "GC에 쓴 CPU 시간의 근사치"라고 소개했는데, 1.17.1 소스를 보면 실제로 더하는 값은 동시 수행 단계를 뺀 GC 이벤트의 소요 시간(벽시계)이에요. 지표 설명(description) 문구가 CPU 시간이라고 적고 있을 뿐입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: GC 경고는 GC 지표 하나에만 걸지 않는다</div>
+  &bull; 압박 직후 GC 비중이 100%를 넘게 튀면 밀린 알림일 수 있어요. 장애 시작으로 읽지 마세요<br>
+  &bull; 정확한 GC 시간은 GC 로그(<code>-Xlog:gc</code>)로 보세요. 이번에 로그는 밀리지 않았어요
+</div>
+
+<h2>6. 어느 패널이 먼저 반응했나</h2>
+
+<p>"먼저"는 주입 뒤 처음 값이 바뀐 5초 기록 기준이에요.</p>
+
+<div class="obsv-code">장애               제일 먼저(주입 뒤)          늦거나 끝까지 모른 패널
+스레드 풀 포화     톰캣 스레드 20/20 (4초)       서버 p99(끝까지 평평), 가용성(100%), 진행 중 요청(20에서 멈춤)
+                   k6 p99 (4초, 실습 전용)       모든 패널: 가장 심한 15초는 스크레이프 실패로 공백
+할당만 증가        GC 횟수 (6초)                 사용자 지표는 변화 없음(정상)
+남는 데이터 증가   GC 직후 힙 (6초)              사용자 지표는 변화 없음(정상)
+힙 포화 + Full GC  지연, CPU, GC 직후 힙 (6초)   GC 횟수·비중(재실행에서 실제의 약 10분의 1), jvm_gc_overhead(가장 늦음)</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>대시보드 JSON 한 장과 application 태그 하나로 서로 다른 GC를 쓰는 두 서비스에 같은 SLI 화면을 깔았고, 패널 하나하나는 3편이 말한 대로 움직였다.</b> 다만 자원 쪽 패널이 증상을 설명하려면 증상과 같은 시각에 값이 있어야 한다.<br><br>
+  스레드가 다 찼을 때는 지표 엔드포인트도 같은 스레드를 기다려 가장 심한 15초가 비었고, Full GC가 초당 90번일 때 Micrometer는 그 10분의 1만 셌다가 압박이 끝난 뒤 한꺼번에 받았다. 증상이 심할수록 그것을 설명할 숫자가 늦거나 빌 수 있다. 공통 대시보드는 같은 자리를 보여 주지만, 그 자리의 숫자가 언제 도착하는지는 따로 확인해야 한다.
+</div>
+
+</div>

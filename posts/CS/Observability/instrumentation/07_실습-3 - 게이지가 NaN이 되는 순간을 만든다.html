@@ -1,0 +1,280 @@
+<!-- lead: Gauge.builder에 지역 객체를 넘기면 언제 NaN이 될까요? 같은 값을 내는 게이지 다섯 개를 띄우고 GC 횟수와 함께 지켜봤어요. NaN 하나가 sum()을 통째로 지우는 모습과 strongReference, 필드 보관으로 고친 결과까지 실측으로 정리했어요. -->
+<!-- tags: Micrometer Gauge, NaN, WeakReference, strongReference, Serial GC -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔧 계측 라이브러리, 실습-3</div>
+  1편. Micrometer는 파사드다<br>
+  2편. 미터의 해부학<br>
+  3편. 게이지는 왜 약한 참조인가<br>
+  4편. 태그에는 왜 표준이 없는가<br>
+  실습-1. 같은 카운터가 Prometheus와 OTLP로 동시에 나간다<br>
+  실습-2. 한 요청에 Timer, DistributionSummary, LongTaskTimer를 걸어 본다<br>
+  <b>실습-3. 게이지가 NaN이 되는 순간을 만든다</b> &larr; 지금 이 글<br>
+  실습-4. MeterFilter로 태그 상한을 걸고 넘친 값을 쫓는다
+</div>
+
+<p>게이지 하나를 등록하고 <code>/actuator/prometheus</code>를 열었어요. <code>queue_size 42.0</code>이 보입니다. 2초 뒤에도 42, 4초 뒤에도 42였어요. 6초 뒤에 다시 여니 <code>NaN</code>이었습니다. 그 사이에 코드는 아무것도 하지 않았어요. 바뀐 건 JVM의 GC 횟수 하나였습니다.</p>
+
+<p>2편과 3편에서 게이지는 관측 대상을 약한 참조로 쥐고, 그 대상이 GC로 사라지면 값이 NaN이 된다고 했어요. 이번 글은 그 NaN을 일부러 만듭니다. 같은 값 42를 내는 게이지 여러 개를 띄우되 "관측 대상을 누가 쥐고 있나"만 다르게 하고, GC 횟수를 같이 찍으면서 어느 것이 언제 NaN이 되는지 지켜봤어요. NaN이 그래프와 쿼리에서 어떻게 보이는지도 확인했습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 지역 객체를 넘긴 게이지는 정확히 언제 NaN이 되는가?<br>
+  &bull; NaN이 된 게이지를 다시 등록하면 살아나는가?<br>
+  &bull; NaN은 Prometheus, OTLP, Grafana에서 어떻게 보이고, 알람은 울리는가?<br>
+  &bull; 강한 참조를 거는 세 가지 방법은 전체 GC를 버티는가?
+</div>
+
+<h2>1. 실습 환경: 값은 같고 주인만 다른 게이지들</h2>
+
+<p>기동할 때 게이지 다섯 개를 등록해요. 모두 <code>AtomicInteger(42)</code>를 읽습니다. 다른 점은 그 <code>AtomicInteger</code>를 누가 강하게 쥐고 있느냐 하나예요.</p>
+
+<div class="obsv-code">QueueGauges(MeterRegistry registry) {
+    // ① 지역 객체를 넘긴다. 생성자가 끝나면 아무도 강하게 쥐지 않는다
+    AtomicInteger local = new AtomicInteger(42);
+    Gauge.builder("queue.size", local, AtomicInteger::get)
+            .tag("case", "local").register(registry);
+
+    // ② registry.gauge(...) 의 반환값을 버린다(2편 버그 코드와 같은 모양)
+    registry.gauge("queue.size.shortcut", new AtomicInteger(42));
+
+    // ③ 필드로 보관한다
+    Gauge.builder("queue.size", held, AtomicInteger::get)
+            .tag("case", "field").register(registry);
+
+    // ④ 지역 객체지만 strongReference(true)
+    Gauge.builder("queue.size", strong, AtomicInteger::get)
+            .tag("case", "strong").strongReference(true).register(registry);
+
+    // ⑤ Supplier 형태. 람다가 지역 객체를 붙잡는다
+    Gauge.builder("queue.size", captured::get)
+            .tag("case", "supplier").register(registry);
+}
+
+// 기동이 끝난 뒤 ①과 같은 코드를 한 번 더 도는 엔드포인트
+@PostMapping("/register")   // case="late-local"</div>
+
+<p>GC를 관찰하는 엔드포인트도 두 개 만들었어요. <code>POST /gc</code>는 <code>System.gc()</code>를 부르고, <code>POST /alloc?mb=N</code>은 쓰레기만 만듭니다. 둘 다 그 시점까지의 GC 횟수를 돌려줘요. <code>mb=0</code>으로 부르면 아무것도 안 하고 횟수만 읽습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrI3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrI3g" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M30 30 C 90 28, 150 31, 196 29 C 198 50, 197 70, 196 86 C 150 88, 90 85, 31 87 C 29 70, 30 50, 30 30 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="113" y="54" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">레지스트리의 게이지</text>
+  <text x="113" y="74" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">WeakReference</text>
+  <path d="M200 58 C 250 56, 300 60, 346 58" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="3 6" stroke-linecap="round" marker-end="url(#arrI3)"/>
+  <text x="272" y="46" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">약하게 가리킴</text>
+  <path d="M354 32 C 400 30, 446 33, 486 31 C 488 50, 487 70, 486 86 C 446 88, 400 85, 355 87 C 353 70, 354 50, 354 32 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="420" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">AtomicInteger(42)</text>
+  <text x="420" y="76" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">case=local</text>
+  <text x="590" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">🗑️ GC 대상 &rarr; NaN</text>
+  <path d="M40 150 C 50 149, 60 151, 70 150" fill="none" stroke="#8a8272" stroke-width="1"/>
+  <path d="M30 140 C 90 138, 150 141, 196 139 C 198 160, 197 180, 196 196 C 150 198, 90 195, 31 197 C 29 180, 30 160, 30 140 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="113" y="164" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">레지스트리의 게이지</text>
+  <text x="113" y="184" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">WeakReference</text>
+  <path d="M200 168 C 250 166, 300 170, 346 168" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="3 6" stroke-linecap="round" marker-end="url(#arrI3)"/>
+  <path d="M354 142 C 400 140, 446 143, 486 141 C 488 160, 487 180, 486 196 C 446 198, 400 195, 355 197 C 353 180, 354 160, 354 142 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="420" y="166" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">AtomicInteger(42)</text>
+  <text x="420" y="186" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#2e6b41">case=field</text>
+  <path d="M554 140 C 600 138, 640 141, 676 139 C 678 158, 677 178, 676 194 C 640 196, 600 193, 555 195 C 553 178, 554 158, 554 140 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="615" y="164" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">QueueGauges 빈</text>
+  <text x="615" y="184" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">final 필드 held</text>
+  <path d="M550 168 C 530 167, 510 169, 492 168" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" marker-end="url(#arrI3g)"/>
+  <text x="350" y="236" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">강한 참조가 하나라도 있으면 GC가 가져가지 못한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 게이지는 같은 약한 참조다. 차이는 다른 누군가가 강하게 쥐고 있느냐뿐이다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 약한 참조 (WeakReference)</div>
+  가리키고는 있지만 GC가 객체를 치울지 판단할 때 세지 않는 참조입니다. 다른 강한 참조가 하나도 없으면 GC가 객체를 가져가고, 그 뒤로 <code>get()</code>은 <code>null</code>을 돌려줘요. Micrometer의 <code>DefaultGauge</code>는 이때 <code>Double.NaN</code>을 냅니다.
+</div>
+
+<div class="obsv-code">Spring Boot           4.1.1   (Micrometer 1.17.1, Java 21, -Xmx256m, 컨테이너 메모리 512MB)
+OTel Collector        0.162.0 (contrib, debug 익스포터)
+Prometheus            3.15.0  (5초마다 스크레이프)
+Grafana               13.2.3
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/instr-03-gauge">GitHub 저장소의 labs/observability/instr-03-gauge</a>에 있어요. 레지스트리는 Prometheus와 OTLP 두 개를 넣어서, NaN이 두 길에서 어떻게 나가는지도 같이 봤습니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/instr-03-gauge
+docker compose up -d --build
+curl -s localhost:22280/actuator/prometheus | grep ^queue_size
+curl -s -XPOST localhost:22280/register             # late-local 게이지 등록
+curl -s -XPOST 'localhost:22280/alloc?mb=0'         # GC 횟수만 읽기
+curl -s -XPOST localhost:22280/gc                   # 전체 GC 부탁
+# 2초마다 late-local 값과 GC 횟수를 같이 읽는다(3절)
+for i in $(seq 1 30); do
+  v=$(curl -s localhost:22280/actuator/prometheus | grep 'case="late-local"' | awk '{print $2}')
+  echo "$(date +%T) late-local=$v $(curl -s -XPOST 'localhost:22280/alloc?mb=0' | tail -1)"
+  [ "$v" = "NaN" ] &amp;&amp; break; sleep 2
+done
+# OTLP 로 나간 원문(5절)
+docker compose logs otel-collector --no-log-prefix | python3 show-otlp.py queue.size
+# Prometheus http://localhost:22290, Grafana http://localhost:22230</div>
+
+<h2>2. 기동 직후, 둘은 이미 NaN이었다</h2>
+
+<p>처음 띄운 실행(실행 1)에서 앱이 뜨자마자 읽은 값이에요.</p>
+
+<div class="obsv-code">queue_size{case="field"}    42.0
+queue_size{case="local"}    NaN
+queue_size{case="strong"}   42.0
+queue_size{case="supplier"} 42.0
+queue_size_shortcut         NaN
+
+GC 횟수: Copy=81, MarkSweepCompact=3</div>
+
+<p>지역 객체를 넘긴 ①과 반환값을 버린 ②는 한 번도 42를 보여 주지 않았어요. 앱이 뜬 직후에 읽은 GC 횟수가 이미 84번(젊은 GC 81, 전체 GC 3)이었어요. 첫 스크레이프 전에 지역 객체가 수거된 거예요. 2편의 버그 코드 <code>registry.gauge("queue.size", new AtomicInteger(0))</code>는 "어느 날부터 NaN"이 아니라, 이 조건에서는 <b>처음부터 NaN</b>이었어요.</p>
+
+<p>GC 이름이 낯설 수 있어요. <code>Copy</code>와 <code>MarkSweepCompact</code>는 Serial GC의 두 수집기 이름입니다. 컨테이너 안에서 JVM 플래그를 찍어 보니 <code>UseSerialGC = true {ergonomic}</code>이었어요. 우리가 고른 게 아니라 JVM이 컨테이너의 메모리 한도(512MB)를 보고 스스로 고른 값입니다. 운영 환경이 G1이라면 횟수와 시점은 달라질 수 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 젊은 GC와 전체 GC</div>
+  새로 만든 객체는 힙의 젊은 영역에 놓이고, 자주 도는 젊은 GC(여기서는 <code>Copy</code>)가 이 영역만 치웁니다. 몇 번 살아남은 객체는 올드 영역으로 옮겨지고, 그곳은 드물게 도는 전체 GC(<code>MarkSweepCompact</code>)가 치워요. 약한 참조만 남은 객체도 자기가 있는 영역이 수집될 때 사라집니다.
+</div>
+
+<h2>3. 등록하고 몇 초, 젊은 GC 한 번</h2>
+
+<p>기동 중의 GC에 휩쓸리지 않게, 앱이 다 뜬 뒤에 <code>/register</code>로 ①과 같은 코드를 한 번 더 돌렸어요. 실행 2는 이 <code>/register</code> 엔드포인트를 넣으려고 이미지를 다시 빌드해 스택을 새로 띄우고, 앱 컨테이너를 한 번 재시작한 뒤의 실행이에요. 기동 직후 GC 횟수(Copy=81, MarkSweepCompact=3)가 실행 1과 같았는데, 같은 앱이 같은 조건으로 떴기 때문으로 보여요. 그리고 2초마다 값과 GC 횟수를 같이 읽었습니다.</p>
+
+<div class="obsv-code">curl -s -XPOST localhost:22280/register
+
+시각       late-local   GC 횟수
+15:34:51   42.0         Copy=81, MarkSweepCompact=3
+15:34:53   42.0         Copy=81, MarkSweepCompact=3
+15:34:55   42.0         Copy=82, MarkSweepCompact=3   ← 젊은 GC 한 번
+15:34:57   NaN          Copy=82, MarkSweepCompact=3</div>
+
+<p><code>System.gc()</code>를 부르지 않았는데도 첫 확인 6초 뒤에 NaN이 됐어요. 실행 3에서도 15:36:32에 등록한 게이지가 15:36:37에 NaN이었고, 그 사이 <code>Copy</code>가 81에서 82로 하나 늘었어요. 이 앱은 스크레이프 요청을 받고 OTLP로 지표를 보내는 것만으로도 객체를 계속 만들고, 그래서 젊은 GC가 몇 초에 한 번씩 돕니다. <span class="obsv-mark">약한 참조만 남은 새 객체는 다음 젊은 GC 한 번이면 사라졌어요.</span></p>
+
+<h3>다시 등록하면 살아날까</h3>
+
+<p>같은 코드를 한 번 더 부르면 새 <code>AtomicInteger</code>로 바뀔 것 같지만, 그대로 NaN이었어요. 앱 로그에 이런 경고가 남았습니다.</p>
+
+<div class="obsv-code">WARN i.m.core.instrument.MeterRegistry : This Gauge has been already registered
+(MeterId{name='queue.size', tags=[tag(case=late-local)]}), the registration will be ignored.
+Note that subsequent logs will be logged at debug level.</div>
+
+<p>레지스트리는 이름과 태그 조합 하나에 미터를 하나만 둡니다. 같은 ID로 다시 등록하면 이미 있는 게이지, 곧 죽은 객체를 가리키는 게이지를 돌려주고 새 객체는 버려요. Micrometer 문서도 같은 이름·태그의 게이지를 다시 등록하면 무시된다고 적고 있어요. 경고는 첫 번째만 WARN이고, 그다음부터는 DEBUG로 내려가서 기본 설정에서는 다시 보이지 않습니다. NaN이 된 게이지를 살리려면 그 미터를 <code>registry.remove()</code>로 지우고 다시 등록해야 하는데, 이번 실습에서 그 방법까지 돌려 보지는 않았어요. 처음부터 강한 참조를 거는 쪽이 간단합니다.</p>
+
+<h2>4. 같은 코드인데 실행마다 달랐다</h2>
+
+<p>스택을 새로 띄운 실행 3에서는 결과가 달랐어요. 기동 직후에 ①이 42로 살아 있었습니다.</p>
+
+<div class="obsv-code">15:35:42  기동 직후        local=42.0  shortcut=NaN   Copy=80, MarkSweepCompact=3
+15:36:32  /register 호출   local=42.0                 Copy=81
+15:36:37  late-local=NaN   local=42.0                 Copy=82
+15:36:46  /gc 호출         local=NaN                  Copy=82, MarkSweepCompact=4</div>
+
+<p>①은 젊은 GC 두 번(81, 82번째)을 버티고, <code>System.gc()</code>가 부른 전체 GC에서 NaN이 됐어요. 기동 중에 만든 객체라서 올드 영역으로 옮겨진 뒤였던 것으로 보입니다. 올드 영역은 젊은 GC가 손대지 않으니, 약한 참조만 남아도 전체 GC가 돌 때까지 살아 있어요. 3편이 "다음 GC에 바로 사라진다고 외우면 곤란하다, 올드 영역에 올라가 있으면 한참 뒤에야 정리되기도 한다"고 한 그 경우를 실제로 만났습니다. 이 객체가 정말 올드 영역에 있었는지는 힙을 덤프해서 확인하지 않았어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 테스트에서 42가 나왔다고 안심하면 안 된다</div>
+  실행 1에서는 처음부터 NaN, 실행 3에서는 1분 넘게 42였어요. 같은 코드가 GC 시점에 따라 다르게 보여요. 로컬에서 몇 번 확인하고 넘어간 게이지가 운영에서 며칠 뒤 전체 GC를 만나 NaN이 될 수 있습니다. 지역 객체를 게이지에 넘기는 코드는 리뷰 단계에서 막는 게 확실해요.
+</div>
+
+<h2>5. NaN은 어떻게 보이나</h2>
+
+<p>앱의 두 레지스트리는 NaN을 그대로 내보냈어요. Prometheus 출력에는 <code>NaN</code>이라는 글자로, OTLP에서는 Gauge 데이터 포인트의 값으로 실렸습니다(실행 3, Collector debug 출력).</p>
+
+<div class="obsv-code">     -&gt; Name: queue.size
+     -&gt; DataType: Gauge
+Data point attributes:
+     -&gt; case: Str(local)
+Value: NaN
+Data point attributes:
+     -&gt; case: Str(late-local)
+Value: NaN</div>
+
+<p>Micrometer 문서는 객체가 수거되면 레지스트리 구현에 따라 "NaN을 보고하거나 아무것도 보고하지 않는다"고 적어요. 이번에 쓴 Prometheus와 OTLP 레지스트리는 둘 다 NaN을 보냈습니다. 시계열이 사라지지 않고 NaN 값으로 계속 들어와요. 이 차이가 쿼리에서 중요해집니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/instrumentation/images/lab-03/gauge-nan.png" alt="Grafana Explore 그래프. 42에 있는 게이지 선과 함께 보라색 sum(queue_size) 선이 168에서 그려지다가 15시 36분 30초 이후 사라진다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 게이지 하나가 NaN이 되자 합계 선이 통째로 사라졌다</div>
+
+<p>그림 2는 실행 3의 Grafana 화면이에요. 42에 있는 선들은 겹쳐서 하나로 보입니다(전체 GC 전에는 넷, 15:36:46의 전체 GC 뒤로는 셋). 보라색 <code>sum(queue_size)</code>는 168(42×4)로 그려지다가, late-local이 등록되고 NaN이 된 뒤로 그려지지 않아요. Grafana는 NaN 점을 선으로 잇지 않습니다. 실행 3이 끝날 무렵 같은 데이터에 몇 가지 쿼리를 더 던졌어요.</p>
+
+<div class="obsv-code">sum(queue_size)                         → NaN
+count(queue_size)                       → 5
+count(queue_size == queue_size)         → 3      (NaN 은 자기 자신과 같지 않다)
+sum(queue_size == queue_size)           → 126
+queue_size &lt; 1                          → 결과 없음
+absent(queue_size{case="local"})        → 결과 없음</div>
+
+<p>여기서 알람 쪽 문제가 보여요. "큐 크기가 1 미만이면 알린다"는 규칙은 NaN에 대해 아무것도 반환하지 않습니다. NaN과의 비교는 늘 거짓이거든요. 그렇다고 "지표가 없어지면 알린다"는 <code>absent()</code>도 울리지 않아요. 시계열은 멀쩡히 있고 값만 NaN이니까요. 게이지가 죽어도 <b>어떤 알람도 울리지 않는 상태</b>가 됩니다. 반대로 대시보드의 합계 패널은 다른 게이지 넷이 멀쩡한데도 비어 버려요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: NaN (Not a Number)</div>
+  부동소수점에서 "값이 정의되지 않음"을 나타내는 특별한 값입니다. NaN이 섞인 덧셈은 결과도 NaN이고, NaN과의 비교(<code>&lt;</code>, <code>&gt;</code>, <code>==</code>)는 늘 거짓이에요. 그래서 <code>x == x</code>는 NaN만 걸러 내는 조건이 됩니다.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: absent()</div>
+  주어진 조건에 맞는 시계열이 하나도 없을 때 1을 돌려주는 PromQL 함수입니다. "지표가 끊겼다"는 알람에 써요. 시계열이 NaN 값으로 계속 들어오는 경우는 "없음"이 아니라서 잡지 못합니다.
+</div>
+
+<h2>6. 고치는 세 가지는 전체 GC를 버텼다</h2>
+
+<p>실행 2와 실행 3에서 <code>System.gc()</code>로 전체 GC를 일으킨 뒤에도 세 게이지는 42였어요.</p>
+
+<div class="obsv-code">curl -s -XPOST localhost:22280/gc
+Copy=82, MarkSweepCompact=4
+
+queue_size{case="field"}      42.0     ← 빈의 final 필드가 쥔다
+queue_size{case="strong"}     42.0     ← .strongReference(true)
+queue_size{case="supplier"}   42.0     ← Supplier 람다가 쥔다
+queue_size{case="local"}      NaN
+queue_size{case="late-local"} NaN
+queue_size_shortcut           NaN</div>
+
+<p>세 방법이 살아남은 이유는 각각 달라요. 필드 보관은 스프링 빈이 살아 있는 동안 그 필드가 강한 참조라서예요. <code>strongReference(true)</code>는 Micrometer가 게이지 함수를 <code>StrongReferenceGaugeFunction</code>으로 감싸 객체를 직접 쥐게 합니다. Supplier 형태는 <code>Gauge.builder(String, Supplier)</code>가 내부에서 <code>strongReference(true)</code>를 켜 두고 있어요(Micrometer 1.17.1 <code>Gauge.java</code>). 람다가 지역 변수를 붙잡고, 그 람다를 레지스트리가 강하게 쥐는 구조예요.</p>
+
+<p>3편이 권한 순서는 필드 보관이 먼저였어요. 측정 대상의 주인은 비즈니스 코드여야 하고 게이지는 구경만 해야 한다는 이유였죠. 실측으로도 셋 다 같은 결과였으니, 고르는 기준은 동작이 아니라 수명 관리예요. 뒤의 둘은 그 객체를 <b>레지스트리가 살아 있는 한</b> 붙잡아 둡니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 게이지를 등록할 때</div>
+  &bull; <b>관측 대상은 필드나 빈으로 소유해요.</b> 큐, 캐시, 풀처럼 원래 오래 사는 객체를 넘기면 약한 참조여도 문제가 없어요<br>
+  &bull; <b>지역 객체를 넘기는 코드는 리뷰에서 막아요.</b> <code>registry.gauge(..., new ...)</code>의 반환값을 버리는 줄이 대표 신호예요<br>
+  &bull; <b>합계 쿼리는 NaN을 걸러요.</b> <code>sum(x == x)</code>처럼 쓰면 게이지 하나가 죽어도 나머지 합은 보여요. 대신 죽은 게이지는 <code>count(x != x) &gt; 0</code> 같은 규칙으로 따로 알려요<br>
+  &bull; <b>WARN 로그를 놓치지 않아요.</b> "already registered" 경고는 첫 번째만 WARN이에요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>지역 객체를 넘긴 게이지는 등록 후 첫 젊은 GC에서 NaN이 됐다. 이번 환경에서는 등록하고 5~6초 안이었다.</b> 기동 중에 등록한 게이지는 실행에 따라 처음부터 NaN이기도 했고, 올드 영역으로 옮겨진 뒤에는 전체 GC가 올 때까지 42를 유지하기도 했다. 죽은 게이지는 같은 ID로 다시 등록해도 살아나지 않았다.<br><br>
+  NaN은 조용하다. 시계열이 남아 있어 <code>absent()</code>도, NaN과의 비교도 알람을 울리지 않고, 합계 패널만 통째로 비운다. 필드 보관, <code>strongReference(true)</code>, Supplier 셋은 모두 전체 GC를 버텼다. 게이지가 살아 있는지는 게이지가 아니라 그 객체의 주인이 정한다.
+</div>
+
+</div>

@@ -1,0 +1,328 @@
+<!-- lead: Toxiproxy로 재고 DB 경로에 300ms 지연을 넣고 트레이스에서 원인 스팬을 찾았어요. W3C baggage 깃발로 특정 요청만 결제를 실패시키는 서블릿 필터를 만들고, 바깥에서 온 깃발도 통과한다는 것과 입구에서 막는 방법을 확인했어요. -->
+<!-- tags: Toxiproxy, W3C baggage, 카오스 엔지니어링, HikariCP, TraceQL -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔍 추적과 디버깅, 실습-4</div>
+  1편. 관찰 가능성은 로그를 쌓는 일이 아니다<br>
+  2편. 모든 대시보드가 초록불인데, 주문은 실패하고 있었다<br>
+  3편. 트레이스는 큐를 어떻게 건너는가<br>
+  4편. 주문이 두 번 결제됐어요<br>
+  5편. user_id는 금지가 아니라 이사다<br>
+  6편. 카오스 엔지니어링은 관측 배관 위에 올라간다<br>
+  실습-1. 코드 한 줄 안 고치고 서비스 세 개를 추적한다<br>
+  실습-2. Kafka를 건너도 트레이스가 이어지는지 본다<br>
+  실습-3. 로그의 trace_id에서 트레이스를 바로 연다<br>
+  <b>실습-4. 지연을 주입하고 트레이스로 원인을 찾는다</b> &larr; 지금 이 글
+</div>
+
+<p>주문 API가 갑자기 300ms씩 느려졌습니다. 주문 서비스 코드는 바뀐 게 없고, CPU도 메모리도 평소와 같아요. 느려진 곳은 주문 서비스가 아니라 그 뒤 어딘가입니다. 이번 글은 그 "어딘가"를 일부러 만들어 놓고 트레이스로 찾아봅니다.</p>
+
+<p>두 가지를 해요. 먼저 재고 서비스와 DB 사이에 네트워크 지연을 넣고 트레이스에서 원인 스팬을 찾습니다. 그다음 6편의 실험을 직접 만들어요. W3C baggage에 <code>chaos</code> 깃발을 실은 요청만 결제에서 실패시키는 서블릿 필터를 짜고, 다른 요청은 멀쩡한지 확인합니다. 6편이 경고한 "들어오는 baggage를 그대로 믿으면 안 된다"도 실제로 확인했어요. 바깥에서 헤더 한 줄만 붙이면 결제가 실패했습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; DB 경로에 300ms를 넣으면 트레이스의 어느 스팬이 늘어나나?<br>
+  &bull; 같은 300ms가 어떤 요청에서는 왜 600ms가 되나?<br>
+  &bull; baggage 깃발로 특정 요청만 실패시키면, 나머지 요청은 정말 멀쩡한가?<br>
+  &bull; 바깥에서 온 baggage를 믿으면 무슨 일이 생기고, 어떻게 막나?
+</div>
+
+<h2>1. 실습 환경: 재고 DB 앞에 Toxiproxy를 세웠다</h2>
+
+<p>실습-1의 세 서비스를 그대로 쓰되, 재고 서비스의 DB를 H2에서 Postgres로 바꿨어요. H2는 같은 JVM 안의 메모리 DB라서 네트워크가 없고, 지연을 끼울 자리도 없습니다. 재고 서비스는 Postgres에 직접 붙지 않고 Toxiproxy를 거쳐요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Toxiproxy</div>
+  두 프로그램 사이에 끼워 넣는 TCP 프록시입니다. HTTP API로 "toxic"을 걸면 지연, 대역폭 제한, 연결 끊기 같은 장애를 그 경로에만 만들어요. 앱은 Postgres 대신 Toxiproxy 주소로 접속할 뿐이라 코드는 그대로입니다.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrC1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M20 100 C 50 98, 80 101, 104 99 C 106 116, 105 132, 104 148 C 80 150, 50 147, 21 149 C 19 132, 20 116, 20 100 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="62" y="128" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">curl, k6</text>
+  <path d="M108 124 C 126 123, 140 125, 154 124" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrC1)"/>
+  <path d="M162 90 C 200 88, 240 91, 268 89 C 270 112, 269 136, 268 158 C 240 160, 198 157, 163 159 C 161 136, 162 112, 162 90 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="215" y="118" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">🛒 order</text>
+  <text x="215" y="140" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">BaggageGuard</text>
+
+  <path d="M272 108 C 300 80, 320 62, 348 56" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrC1)"/>
+  <path d="M356 30 C 390 28, 420 31, 446 29 C 448 46, 447 64, 446 80 C 420 82, 388 79, 357 81 C 355 64, 356 46, 356 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="401" y="60" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">📦 inventory</text>
+  <path d="M450 55 C 466 54, 478 56, 490 55" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrC1)"/>
+  <path d="M498 30 C 530 28, 560 31, 586 29 C 588 46, 587 64, 586 80 C 560 82, 528 79, 499 81 C 497 64, 498 46, 498 30 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+  <text x="542" y="54" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">☠️ Toxiproxy</text>
+  <text x="542" y="72" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">latency 300ms</text>
+  <path d="M590 55 C 606 54, 616 56, 628 55" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrC1)"/>
+  <text x="660" y="60" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">🐘 PG</text>
+
+  <path d="M272 140 C 300 170, 320 188, 348 194" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrC1)"/>
+  <path d="M356 170 C 400 168, 440 171, 470 169 C 472 190, 471 210, 470 230 C 440 232, 398 229, 357 231 C 355 210, 356 190, 356 170 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+  <text x="413" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">💳 payment</text>
+  <text x="413" y="218" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">ChaosFilter</text>
+  <text x="590" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">baggage: chaos=payment-fail</text>
+  <text x="590" y="210" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">이 깃발이 있으면 503</text>
+  <text x="350" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">장애 주입 지점 둘: 네트워크(Toxiproxy)와 요청 깃발(baggage)</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 하나는 경로 전체를 느리게 하고, 하나는 깃발 꽂힌 요청만 실패시킨다</div>
+
+<p>버전은 실습-1에 아래를 더했어요. 실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/tracing-04-chaos">GitHub 저장소의 labs/observability/tracing-04-chaos</a>에 있습니다.</p>
+
+<div class="obsv-code">Toxiproxy             2.12.0
+PostgreSQL            18.6 (alpine)   JDBC 드라이버 pgjdbc 42.7.13, 커넥션 풀 HikariCP 7.0.2
+opentelemetry-api     1.62.0 (스프링 부트가 정한 버전. 서블릿 필터 두 개에서만 쓴다)
+
+cd Platform-study/labs/observability/tracing-04-chaos
+docker compose up -d --build
+# Grafana http://localhost:25000, Toxiproxy API http://localhost:25005</div>
+
+<h2>2. 300ms를 넣고 원인 스팬을 찾는다</h2>
+
+<p>Toxiproxy의 <code>inventory-db</code> 경로에 latency toxic을 걸었어요. Postgres에서 재고 서비스로 돌아오는 데이터(downstream)를 300ms씩 늦춥니다.</p>
+
+<div class="obsv-code"># ① 지연 없음: 부하를 주고 스팬별 시간 보기
+docker compose --profile load run --rm -e DURATION=30s load &amp;&amp; sleep 12 &amp;&amp; python3 breakdown.py 50
+# ② 지연 넣고 같은 순서로
+curl -XPOST localhost:25005/proxies/inventory-db/toxics \
+  -d '{"name":"db-latency","type":"latency","stream":"downstream","attributes":{"latency":300,"jitter":0}}'
+docker compose --profile load run --rm -e DURATION=30s load &amp;&amp; sleep 12 &amp;&amp; python3 breakdown.py 50
+# ③ 지연 빼기
+curl -XDELETE localhost:25005/proxies/inventory-db/toxics/db-latency
+# breakdown.py 50 은 최근 50초 주문 트레이스의 스팬별 중앙값, p90 을 낸다</div>
+
+<p>지연이 없을 때와 있을 때 k6로 30초씩 이어서 주문을 넣었어요(VU 5개, 요청 사이 0.2초). k6가 잰 주문 응답 시간과, 같은 구간의 트레이스를 모아 스팬별로 걸린 시간을 낸 결과(<code>breakdown.py</code>)입니다.</p>
+
+<div class="obsv-code">                             지연 없음            300ms 지연
+k6 주문 응답 (중앙값 / p90)   36.9ms / 53.0ms      342.2ms / 358.1ms
+k6 처리량                     21.3건/초             8.9건/초
+
+스팬별 중앙값
+order    POST /orders           36.6ms               341.9ms
+order    GET (재고 호출)          2.3ms               304.2ms
+inventory GET /stock/{sku}        1.4ms               303.1ms
+inventory SELECT shop.stock       0.5ms               301.6ms   ← 여기서 늘었다
+order    POST (결제 호출)        36.3ms                37.7ms
+payment  POST /payments          35.4ms                36.1ms
+(스팬 집계에 쓴 트레이스: 지연 없음 558개, 300ms 지연 275개. Tempo 검색이 돌려준 만큼)</div>
+
+<p>트레이스를 위에서부터 따라 내려가면 늘어난 시간이 어디서 왔는지 보여요. 주문 전체가 305ms 늘었고, 재고 호출이 302ms, 재고 서버 스팬이 302ms, 그 안의 <code>SELECT shop.stock</code>이 301ms 늘었습니다. 결제 쪽은 그대로예요. <span class="obsv-mark">늘어난 시간이 사라지지 않고 내려가는 마지막 스팬이 원인 자리</span>입니다. 이번에는 JDBC 스팬이었고, 그 스팬의 <code>server.address</code> 속성이 <code>toxiproxy</code>였으니 DB 자체보다 그 앞 경로를 의심할 수 있어요.</p>
+
+<p>스팬 하나하나를 열지 않고 TraceQL 메트릭으로 한 번에 좁히는 방법도 있어요. 별도로 30초 돌린 지연 구간에서 CLIENT 스팬의 중앙값을 서비스와 이름별로 냈습니다.</p>
+
+<div class="obsv-code">{ kind = client } | quantile_over_time(duration, .5) by (resource.service.name, name)
+
+inventory  SELECT shop.stock   0.380s
+inventory  shop                0.380s
+order      GET                 0.383s
+order      POST                0.041s</div>
+
+<p>어느 서비스의 어느 호출이 느린지는 바로 보이지만 값은 0.380초예요. 스팬을 직접 모아 낸 중앙값은 0.30초 남짓이었습니다. 실습-1에서 본 것과 같은 일로 보여요. 이 함수는 원래 값이 아니라 버킷으로 근사한 분포에서 백분위를 냅니다. <b>어디가 느린지 고르는 데 쓰고, 얼마나 느린지는 스팬에서 확인</b>하는 게 안전해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: TraceQL 메트릭</div>
+  TraceQL로 고른 스팬에서 개수, 비율, 백분위 같은 시계열을 바로 계산하는 Tempo 기능입니다. <code>| quantile_over_time(duration, .5) by (...)</code>는 고른 스팬의 길이 중앙값을 묶음별로 냅니다. 이 실습은 Tempo의 local-blocks 설정을 켜 둬서 쓸 수 있었어요.
+</div>
+
+<h2>3. 300ms를 넣었는데 600ms가 걸렸다</h2>
+
+<p>부하를 끄고 지연을 건 채 주문을 2초 간격으로 세 건 넣었더니 1.22초, 0.72초, 0.68초가 걸렸어요. 첫 건은 트레이스를 열어 보지 않아 이 글에서는 설명하지 않습니다. 나머지 두 건도 300ms를 넣었는데 두 배가 넘어요. 마지막 건(0.68초)을 열어 봤어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/tracing-debugging/images/lab-04/trace-db-latency.png" alt="676ms 걸린 주문 트레이스. inventory GET /stock/{sku} 아래에 shop 스팬 302ms와 SELECT shop.stock 스팬 304ms가 차례로 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. SELECT 앞에 이름이 "shop"뿐인 스팬이 하나 더 있고, 그것도 300ms다</div>
+
+<p>재고 서버 스팬 아래에 JDBC 스팬이 두 개 있었어요. <code>SELECT shop.stock</code>(304ms) 앞에 이름이 <code>shop</code>뿐인 스팬(302ms)이 하나 더 있습니다. 속성을 보니 <code>db.statement</code>가 빈 문자열이었어요. 빈 SQL을 누가 보냈을까요.</p>
+
+<p>원인은 커넥션 풀의 검증이었습니다. HikariCP는 풀에서 커넥션을 꺼낼 때, 그 커넥션이 마지막으로 쓰인 지 500ms(<code>aliveBypassWindowMs</code> 기본값)가 넘었으면 살아 있는지 확인해요. 확인 방법은 JDBC의 <code>Connection.isValid()</code>이고, Postgres 드라이버는 이 호출에서 <b>빈 쿼리</b>를 서버에 보냅니다. 두 소스를 실습에 쓴 버전으로 확인했어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 커넥션 풀 (HikariCP)</div>
+  DB 연결을 미리 몇 개 열어 두고 요청마다 빌려 쓰고 돌려받는 장치입니다. 스프링 부트의 기본 풀이 HikariCP예요. 빌려줄 때 그 연결이 아직 살아 있는지 확인하는 단계가 있습니다.
+</div>
+
+<div class="obsv-code">// HikariCP 7.0.2  HikariPool.java
+aliveBypassWindowMs = Long.getLong("com.zaxxer.hikari.aliveBypassWindowMs", MILLISECONDS.toMillis(500));
+... elapsedMillis(poolEntry.lastAccessed, now) > aliveBypassWindowMs && isConnectionDead(...)
+
+// pgjdbc 42.7.13  PgConnection.isValid()
+((PgStatement)checkConnectionQuery).executeWithFlags("", QueryExecutor.QUERY_EXECUTE_AS_SIMPLE);</div>
+
+<p>빈 쿼리도 DB까지 다녀오는 왕복이라 300ms가 한 번 더 붙었어요. 에이전트는 이걸 SQL이 비어 있는 JDBC 스팬으로 남겼고, SQL에서 연산과 테이블을 뽑을 수 없으니 이름이 DB 이름 <code>shop</code>만 남은 겁니다.</p>
+
+<p>그래서 같은 지연이 트래픽에 따라 다르게 보였어요. 2절의 지연 구간(부하 30초)에서는 이 스팬이 275개 트레이스 중 13개에만 있었습니다. 요청이 0.2초마다 들어오니 커넥션이 500ms 안에 다시 쓰여서 검증을 건너뛴 거예요. 한가할 때 띄엄띄엄 오는 요청은 매번 검증을 거쳐 <span class="obsv-mark">DB 왕복 지연을 두 번</span> 냅니다. "새벽에만 API가 느리다"는 현상이 이런 모양일 수 있어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: DB 경로가 느릴 때 트레이스에서 볼 것</div>
+  &bull; 이름이 DB 이름뿐인 JDBC 스팬이 있으면 <code>db.statement</code>를 확인해요. 비어 있으면 커넥션 검증일 가능성이 커요<br>
+  &bull; 한가한 시간대 지연이 바쁜 시간대보다 크면 풀의 검증을 의심해요. <code>keepaliveTime</code>(HikariCP 7.0.2 기본 2분)으로 쉬는 커넥션을 미리 확인해도 꺼낼 때의 500ms 검증은 그대로예요. 소스상 keepalive 확인은 마지막 사용 시각을 갱신하지 않거든요. 검증 간격은 JVM 시스템 속성 <code>com.zaxxer.hikari.aliveBypassWindowMs</code>로 바꿀 수 있지만, 늘리면 죽은 커넥션을 늦게 알아채요(이번 실습에서는 바꿔 보지 않았어요)<br>
+  &bull; 지연 실험은 부하가 있을 때와 없을 때 둘 다 해요. 이번처럼 결과가 두 배 차이 날 수 있어요
+</div>
+
+<h2>4. baggage 깃발로 요청 하나만 실패시킨다</h2>
+
+<p>6편은 결제 서버를 통째로 죽이는 대신, baggage에 <code>chaos=payment-timeout</code> 같은 깃발을 실은 요청에만 장애를 일으키면 폭발 반경이 요청 하나가 된다고 했어요. 그 미들웨어를 결제 서비스에 서블릿 필터로 만들었습니다. 6편의 타임아웃 대신, 결과를 세기 쉬운 503 실패(<code>chaos=payment-fail</code>)로 바꿨어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: W3C baggage</div>
+  요청에 임의의 키-값을 실어 하위 서비스까지 전달하는 HTTP 헤더 규격입니다. <code>baggage: chaos=payment-fail,tier=gold</code>처럼 씁니다. traceparent와 별개의 규격이지만, OTel 에이전트는 기본 전파 방식(<code>tracecontext,baggage</code>)에 둘 다 넣어 같이 실어 나릅니다.
+</div>
+
+<div class="obsv-code">// payment 서비스 ChaosFilter (요약)
+String flag = Baggage.current().getEntryValue("chaos");   // 에이전트가 헤더를 풀어 둔 컨텍스트에서 꺼낸다
+if (flag != null) Span.current().setAttribute("chaos.flag", flag);
+if ("payment-fail".equals(flag)) {
+    Span.current().setAttribute("chaos.injected", true);
+    res.setStatus(503);                                     // 깃발이 있을 때만 실패
+    return;
+}
+chain.doFilter(req, res);</div>
+
+<p>결제 서비스는 헤더를 직접 파싱하지 않아요. 에이전트가 들어온 <code>baggage</code> 헤더를 풀어 현재 컨텍스트에 넣어 두고, 필터는 <code>Baggage.current()</code>로 꺼내기만 합니다. 주문 서비스는 아무것도 하지 않았어요. 주문의 에이전트가 받은 baggage를 결제 호출에 다시 실어 보냈습니다. 깃발을 단 주문과 안 단 주문을 하나씩 넣었어요.</p>
+
+<div class="obsv-code">curl -XPOST localhost:25003/orders -H 'Content-Type: application/json' \
+     -H 'baggage: chaos=payment-fail' -d '{"sku":"C-300","qty":1}'
+{"result":"payment_failed"} 502
+
+curl -XPOST localhost:25003/orders -H 'Content-Type: application/json' -d '{"sku":"C-300","qty":1}'
+{"result":"ok"} 200</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/tracing-debugging/images/lab-04/trace-chaos-flag.png" alt="깃발을 단 주문의 트레이스. payment POST /payments 스팬이 503 에러이고 속성에 chaos.flag payment-fail, chaos.injected true가 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 실패를 주입한 스팬에 깃발 값을 남겨 두면, 진짜 장애와 실험을 트레이스에서 구분할 수 있다</div>
+
+<p>"나머지 요청은 정말 멀쩡한가"를 보려고, k6로 30초 동안 평범한 주문을 넣는 사이에 깃발 단 주문 10건을 2초 간격으로 섞었어요. 그 1분 구간을 TraceQL로 셌습니다.</p>
+
+<div class="obsv-code">깃발 단 curl 10건                          → 10건 모두 502
+k6 642건                                    → 실패 129건, 전부 재고 없는 상품(B-200)의 409. 502 는 0건
+
+{ resource.service.name="payment" && kind=server }                    523
+{ resource.service.name="payment" && kind=server && status=error }     10
+{ resource.service.name="payment" && span.chaos.flag="payment-fail" }  10</div>
+
+<p>결제까지 간 523건(k6 513건 + 깃발 10건) 중 에러는 깃발 단 10건뿐이었어요. 6편이 말한 대로 폭발 반경이 요청 단위로 줄었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 폭발 반경 (blast radius)</div>
+  장애나 실험이 영향을 주는 범위입니다. 서버를 통째로 내리면 그 서버를 거치는 모든 요청이 반경 안에 들고, 깃발로 고른 요청에만 주입하면 그 요청들만 반경 안에 들어요.
+</div>
+
+<p>실패한 스팬마다 <code>chaos.flag</code>가 남아 있으니, 대시보드의 에러가 실험 때문인지 진짜 장애인지 TraceQL 조건 하나로 가를 수 있어요.</p>
+
+<h2>5. 바깥에서 온 깃발도 그대로 통과했다</h2>
+
+<p>4절의 첫 curl을 다시 보세요. 우리는 주문 서비스의 공개 주소에 헤더 한 줄을 붙였을 뿐이에요. <span class="obsv-mark">바깥의 누구든 같은 헤더로 결제를 실패시킬 수 있다는 뜻</span>입니다. 6편이 "들어오는 baggage는 남이 쓴 값"이라고 경고한 그대로였어요. 주문 서비스의 에이전트는 바깥에서 온 baggage를 우리 것과 구분하지 않고 하위로 넘겼습니다. 깃발 말고 다른 값도 마찬가지였어요.</p>
+
+<div class="obsv-code"># 결제 서비스가 받은 값은 ChaosFilter 가 찍은 로그로 본다
+docker compose logs payment | grep "받은 baggage"
+# 로그의 바이트 수는 받은 항목을 key=value 로 이어 붙인 문자열의 길이다
+
+보낸 헤더 (주문 서비스로)                      결제 서비스가 받은 baggage
+user.email=someone%40example.com,tier=gold   → tier=gold,user.email=someone@example.com
+pad=x...x (값 4,000바이트)                    → 1건, 4,004바이트 그대로
+pad=x...x (값 7,000바이트)                    → 1건, 7,004바이트 그대로
+pad=x...x (값 9,000바이트)                    → 주문 서비스가 400 으로 거절
+k0=v,...,k99=v (100개)                        → 64건만 도착</div>
+
+<p>이메일 같은 값도, 7KB짜리 값도 결제까지 그대로 실려 갔어요. 이 값은 주문 서비스가 부르는 모든 하위 호출에 붙어 다닙니다. 9,000바이트에서 막힌 건 baggage 규칙이 아니라 톰캣의 요청 헤더 크기 제한(스프링 부트 기본 8KB)이었어요. 100개를 보냈는데 64개만 도착한 건 OTel 자바 SDK의 baggage 전파기가 W3C 권고 한도(항목 64개, 8,192바이트)로 잘랐기 때문입니다. 헤더 하나에 100개가 들었을 때는 파서가 64개째에서 멈추고 나머지를 로그 한 줄 없이 버려요(SDK 1.66.0 소스. FINE 로그는 헤더 여러 개를 합쳐 한도를 넘을 때만 남깁니다). 6편이 "넘치면 구현이 항목을 버릴 수 있다"고 한 부분이 이렇게 나타났습니다.</p>
+
+<h3>입구에서 깃발을 걸러 낸다</h3>
+
+<p>그래서 입구인 주문 서비스에 필터를 하나 더 넣었어요. <code>X-Chaos-Token</code> 헤더가 정해 둔 값과 맞을 때만 chaos 깃발을 살려 두고, 아니면 깃발을 뺀 baggage를 현재 컨텍스트로 바꿔 끼운 채 다음으로 넘깁니다. 하위 호출은 에이전트가 현재 컨텍스트의 baggage를 싣고 나가니, 바꿔 끼운 쪽이 나가요.</p>
+
+<div class="obsv-code">// order 서비스 BaggageGuard (요약)
+Baggage baggage = Baggage.current();
+boolean trusted = !token.isEmpty() &amp;&amp; token.equals(req.getHeader("X-Chaos-Token"));
+if (baggage.getEntryValue("chaos") != null &amp;&amp; !trusted) {
+    Span.current().setAttribute("chaos.rejected", baggage.getEntryValue("chaos"));
+    Baggage cleaned = baggage.toBuilder().remove("chaos").build();
+    try (Scope ignored = Context.current().with(cleaned).makeCurrent()) {
+        chain.doFilter(req, res);                           // 깃발 뺀 baggage 로 계속
+    }
+    return;
+}
+chain.doFilter(req, res);</div>
+
+<div class="obsv-code">BAGGAGE_GUARD=true CHAOS_TOKEN=lab-token docker compose up -d order
+curl -XPOST localhost:25003/orders -H 'Content-Type: application/json' \
+     -H 'baggage: chaos=payment-fail,tier=gold' -d '{"sku":"C-300","qty":1}'
+curl -XPOST localhost:25003/orders -H 'Content-Type: application/json' -H 'X-Chaos-Token: lab-token' \
+     -H 'baggage: chaos=payment-fail,tier=gold' -d '{"sku":"C-300","qty":1}'
+
+토큰 없이 'baggage: chaos=payment-fail,tier=gold'      → 200, 200, 200
+   결제가 받은 baggage: tier=gold
+토큰과 함께 같은 헤더                                  → 502, 502, 502
+   결제가 받은 baggage: chaos=payment-fail,tier=gold</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 265" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrC2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="80" y="62" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">바깥 요청</text>
+  <text x="80" y="82" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">chaos, tier</text>
+  <text x="80" y="172" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">토큰 단 실험 요청</text>
+  <text x="80" y="192" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">chaos, tier + token</text>
+  <path d="M140 70 C 170 80, 200 100, 228 112" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrC2)"/>
+  <path d="M160 176 C 190 166, 210 150, 228 140" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrC2)"/>
+  <path d="M236 86 C 280 84, 330 87, 368 85 C 370 108, 369 140, 368 164 C 330 166, 278 163, 237 165 C 235 140, 236 108, 236 86 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="302" y="116" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">🛒 order</text>
+  <text x="302" y="140" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">BaggageGuard</text>
+  <path d="M372 104 C 420 80, 470 66, 520 62" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrC2)"/>
+  <text x="440" y="60" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">tier=gold</text>
+  <path d="M372 146 C 420 170, 470 184, 520 188" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrC2)"/>
+  <text x="420" y="228" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">chaos=payment-fail,tier=gold</text>
+  <path d="M528 40 C 570 38, 610 41, 676 39 C 678 56, 677 70, 676 84 C 610 86, 568 83, 529 85 C 527 70, 528 56, 528 40 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="602" y="68" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">💳 결제 정상 200</text>
+  <path d="M528 166 C 570 164, 610 167, 676 165 C 678 182, 677 196, 676 210 C 610 212, 568 209, 529 211 C 527 196, 528 182, 528 166 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="602" y="194" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">💳 주입 503 → 502</text>
+  <text x="350" y="256" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">깃발을 꽂을 자격은 입구에서 한 번 확인한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 같은 헤더라도 토큰이 없으면 깃발만 떼고 나머지 baggage는 넘긴다</div>
+
+<p>토큰 없이 온 깃발은 입구에서 떨어지고, 주문 스팬에는 <code>chaos.rejected</code>가 남았어요. 다만 이 필터는 <code>chaos</code> 키만 봅니다. <code>tier=gold</code>나 이메일 같은 다른 키는 여전히 하위로 흘러가요. 6편이 인용한 W3C 스펙의 프라이버시 절은 신뢰 경계에서 baggage를 벗겨 내라고 권합니다. 운영이라면 입구에서 허용 목록에 있는 키만 남기는 쪽이 맞아요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: baggage로 분기하는 코드는 입구에서 키를 거르는 코드와 한 묶음이에요</div>
+  &bull; 서비스 안쪽에 baggage로 동작을 바꾸는 코드(실패 주입, 라우팅, 기능 플래그)를 넣는 순간, 입구에 그 키를 걸러 내는 코드가 같이 있어야 해요<br>
+  &bull; 게이트웨이나 입구 서비스에서 허용한 키만 남기고, 실험용 키는 서명이나 토큰으로 자격을 확인해요<br>
+  &bull; 주입한 스팬에는 깃발 값을 속성으로 남겨요. 실험 중에 에러율 알람이 울려도 바로 가를 수 있어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>DB 경로에 300ms를 넣자 트레이스의 늘어난 시간이 주문, 재고 호출, 재고 서버를 거쳐 JDBC 스팬에서 멈췄고, 거기가 원인 자리였다.</b> 한가할 때는 커넥션 풀의 검증용 빈 쿼리가 왕복을 하나 더 만들어 같은 지연이 두 배로 보였다. baggage 깃발로 만든 실패 주입은 깃발 단 10건만 실패시키고 나머지 513건은 건드리지 않았다.<br><br>
+  그런데 그 깃발은 바깥에서도 꽂혔다. 에이전트는 들어온 baggage를 가리지 않고 실어 나르니, baggage로 동작을 바꾸는 코드는 입구에서 그 키를 거르는 코드와 함께 들어가야 한다.
+</div>
+
+</div>

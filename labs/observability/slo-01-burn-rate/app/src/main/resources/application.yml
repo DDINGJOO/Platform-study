@@ -1,0 +1,23 @@
+server:
+  port: 8080
+  tomcat:
+    threads:
+      max: ${TOMCAT_MAX_THREADS:200}
+    # 톰캣 스레드 지표(tomcat_threads_*)는 MBean 등록을 켜야 나온다.
+    mbeanregistry:
+      enabled: true
+spring:
+  application:
+    name: ${APP_NAME:slo-app}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      # 서버 지연을 Prometheus 히스토그램(_bucket)으로도 내보낸다. 대시보드 p99 계산용
+      percentiles-histogram:
+        http.server.requests: true

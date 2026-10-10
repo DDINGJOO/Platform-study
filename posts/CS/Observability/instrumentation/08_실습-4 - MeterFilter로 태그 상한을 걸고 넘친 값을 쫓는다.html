@@ -1,0 +1,265 @@
+<!-- lead: MeterFilter.maximumAllowableTags로 태그 값을 50개로 묶고 85건을 보냈더니 30건이 로그 한 줄 없이 사라졌어요. 거부를 세는 메타 지표, 필터 순서와 이름 바꾸기, 기동 뒤에 건 필터가 실제로 어떻게 동작하는지 실측으로 정리했어요. -->
+<!-- tags: Micrometer MeterFilter, maximumAllowableTags, 카디널리티 상한, max-uri-tags, renameTag -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔧 계측 라이브러리, 실습-4</div>
+  1편. Micrometer는 파사드다<br>
+  2편. 미터의 해부학<br>
+  3편. 게이지는 왜 약한 참조인가<br>
+  4편. 태그에는 왜 표준이 없는가<br>
+  실습-1. 같은 카운터가 Prometheus와 OTLP로 동시에 나간다<br>
+  실습-2. 한 요청에 Timer, DistributionSummary, LongTaskTimer를 걸어 본다<br>
+  실습-3. 게이지가 NaN이 되는 순간을 만든다<br>
+  <b>실습-4. MeterFilter로 태그 상한을 걸고 넘친 값을 쫓는다</b> &larr; 지금 이 글
+</div>
+
+<p>상품 조회 수를 상품 ID별로 세는 카운터가 있어요. 카디널리티가 걱정돼서 태그 값을 50가지까지만 받는 필터를 걸었습니다. 서로 다른 상품 85개를 한 번씩 조회했어요. 서버는 요청 85건을 처리했는데 조회 수 카운터를 다 더하니 55였습니다. 30건이 어디로 갔는지 앱 로그에는 한 줄도 없었어요.</p>
+
+<p>4편에서 Micrometer는 태그 정책을 정해 주지 않는 대신 정책을 만들 도구를 준다고 했어요. 붙이기(<code>commonTags</code>), 거부(<code>deny</code>), 바꾸기(<code>renameTag</code>), 상한(<code>maximumAllowableTags</code>)이요. 이번 글은 그 도구를 실제로 걸고 넘치게 만듭니다. 상한을 넘은 값이 어디로 가는지, 필터 순서가 정말 정책이 되는지, 기동 뒤에 건 필터는 어떻게 되는지를 출력으로 확인했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 상한을 넘은 미터는 어떻게 되고, 누가 그걸 알려 주는가?<br>
+  &bull; 버려진 횟수를 지표로 세려면 어떻게 하나?<br>
+  &bull; 거부 필터를 이름 바꾸기보다 앞에 걸면 거부를 피해 갈 수 있나?<br>
+  &bull; 기동이 끝난 뒤에 건 필터는 이미 있는 미터에 적용되는가?
+</div>
+
+<h2>1. 실습 환경: 필터 네 개와 상품 조회</h2>
+
+<p>앱은 상품 조회 <code>GET /items/{id}</code>에서 카운터 <code>item.views</code>에 상품 ID를 태그로 그대로 붙여요. 일부러 고카디널리티로 만든 거예요. 필터는 스프링 빈으로 등록합니다. 스프링 부트는 <code>MeterFilter</code> 빈을 모아 미터가 만들어지기 전에 레지스트리에 걸고, 여러 개면 <code>@Order</code> 순서를 따라요(부트 소스의 <code>MeterRegistryPostProcessor</code>가 <code>orderedStream()</code>으로 꺼냅니다).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 카디널리티 (cardinality)</div>
+  한 지표 이름 아래 만들어지는 서로 다른 태그 조합, 곧 시계열의 개수입니다. 상품 ID처럼 값이 끝없이 늘어나는 태그를 붙이면 시계열이 값 수만큼 늘고, 저장 비용과 쿼리 비용이 같이 늘어요.
+</div>
+
+<div class="obsv-code">@Bean @Order(1)   // ① user_id 태그가 붙은 미터는 받지 않는다
+MeterFilter denyUserId() {
+    return MeterFilter.deny(id -&gt; id.getTag("user_id") != null);
+}
+
+@Bean @Order(2)   // ② login 미터의 uid 태그를 user_id 로 바꾼다. 거부(①)보다 뒤에 걸었다
+MeterFilter renameUid() {
+    return MeterFilter.renameTag("login", "uid", "user_id");
+}
+
+@Bean @Order(3)   // ③ vip- 로 시작하는 상품은 상한과 상관없이 받는다
+MeterFilter acceptVip() {
+    return MeterFilter.accept(id -&gt; id.getName().equals("item.views")
+            &amp;&amp; id.getTag("item") != null &amp;&amp; id.getTag("item").startsWith("vip-"));
+}
+
+@Bean @Order(4)   // ④ item 태그 값은 50가지까지. 넘치면 거부하면서 횟수를 센다
+MeterFilter capItems() {
+    MeterFilter denyAndCount = new MeterFilter() {
+        @Override
+        public MeterFilterReply accept(Meter.Id id) {
+            DENIED.incrementAndGet();
+            return MeterFilterReply.DENY;
+        }
+    };
+    return MeterFilter.maximumAllowableTags("item.views", "item", 50, denyAndCount);
+}</div>
+
+<p>④의 <code>DENIED</code>는 <code>AtomicLong</code> 필드이고, <code>MeterBinder</code>로 <code>meter.filter.denied</code>라는 FunctionCounter를 만들어 그 값을 읽게 했어요. 3편에서 본 대로 FunctionCounter도 대상을 약하게 쥐니까 static 필드로 보관했습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: MeterBinder</div>
+  레지스트리를 받아 미터를 등록하는 일을 한곳에 모아 둔 인터페이스입니다. 스프링 부트는 <code>MeterBinder</code> 빈을 찾아 레지스트리가 준비되면 <code>bindTo(registry)</code>를 불러 줘요. 필터가 다 걸린 뒤에 불리니 순서를 신경 쓰지 않아도 됩니다.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: MeterFilter</div>
+  미터가 레지스트리에 등록되기 직전에 끼어드는 규칙입니다. ID를 바꾸는 <code>map</code>, 받을지 정하는 <code>accept</code>, 히스토그램 설정을 바꾸는 <code>configure</code> 세 가지 일을 할 수 있어요. <code>accept</code>는 <code>ACCEPT</code>, <code>DENY</code>, <code>NEUTRAL</code>(판단 보류) 중 하나를 돌려줍니다.
+</div>
+
+<p>부하는 앱 자신에게 보내요. <code>POST /fanout?n=N</code>은 스프링의 <code>RestClient</code>로 자기 <code>/items/0</code>부터 <code>/items/N-1</code>까지 차례로 부릅니다. 이때 URI를 <code>"/items/" + i</code>로 문자열을 이어 붙여 만들었어요. 이 선택이 2절에서 문제를 하나 더 만듭니다. 스프링 부트의 HTTP 클라이언트 URI 상한도 <code>management.metrics.web.client.max-uri-tags: 20</code>으로 낮춰 두었어요(기본 100).</p>
+
+<div class="obsv-code">Spring Boot           4.1.1   (Micrometer 1.17.1)
+Prometheus            3.15.0
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/instr-04-meterfilter">GitHub 저장소의 labs/observability/instr-04-meterfilter</a>에 있어요. 이 글의 숫자는 아래 명령을 차례로 친 한 번의 실행에서 나왔고, 뒤 절의 숫자는 앞 절의 값에 누적됩니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/instr-04-meterfilter
+docker compose up -d --build
+curl -s -XPOST 'localhost:22380/fanout?n=80'                 # 2절: 상품 0~79
+curl -s -XPOST 'localhost:22380/fanout?n=5&amp;prefix=vip-'      # 2절: vip-0~vip-4
+curl -s -XPOST 'localhost:22380/fanout?n=80'                 # 3절: 같은 80개를 한 번 더
+curl -s -XPOST 'localhost:22380/login?uid=alice'             # 4절
+curl -s -XPOST 'localhost:22380/login?uid=bob'
+curl -s -XPOST localhost:22380/late-filter                   # 5절
+curl -s -XPOST 'localhost:22380/fanout?n=80'
+curl -s localhost:22380/items/vip-99; curl -s localhost:22380/items/new-1
+docker compose logs app | grep WARN
+
+# 절마다 숫자를 읽은 명령
+M=$(curl -s localhost:22380/actuator/prometheus)
+echo "$M" | grep -c '^item_views_total{'                                  # 시계열 수
+echo "$M" | grep '^item_views_total{' | awk '{s+=$2} END {print s}'      # 합계
+echo "$M" | grep -E '^meter_filter_denied|^http_server_requests_seconds_count\{.*items'
+echo "$M" | grep -c '^http_client_requests_seconds_count'
+# Prometheus http://localhost:22390 → Table (그림 2)
+#   label_replace(sum(http_server_requests_seconds_count{uri="/items/{id}"}), "what", "1 server requests", "", "")
+#   or label_replace(sum(item_views_total), "what", "2 item_views sum", "", "")
+#   or label_replace(sum(meter_filter_denied_total), "what", "3 denied", "", "")
+#   or label_replace(count(item_views_total), "what", "4 item_views series", "", "")</div>
+
+<h2>2. 상한을 넘은 30건은 말없이 사라졌다</h2>
+
+<p>상품 85개(일반 80, vip 5)를 한 번씩 조회한 직후의 출력을 셌어요.</p>
+
+<div class="obsv-code">서버가 받은 조회 (http_server_requests_seconds_count{uri="/items/{id}"})   85
+item_views_total 시계열 수                                              55   (일반 50 + vip 5)
+item_views_total 합계                                                   55
+meter_filter_denied_total                                              30</div>
+
+<p>상한 50에 닿은 뒤 들어온 상품 50~79의 조회 30건이 카운터에 없어요. Micrometer의 <code>maximumAllowableTags</code>는 상한에 닿으면 넘겨받은 필터(<code>onMaxReached</code>)의 판단을 그대로 돌려줄 뿐이고, 로그를 남기는 코드가 없습니다. <code>MeterFilter.deny()</code>를 넘겼다면 30건은 흔적 없이 사라졌을 거예요. 우리가 넘긴 필터가 횟수를 셌기 때문에 <code>meter_filter_denied_total 30</code>이 남았습니다.</p>
+
+<p>vip 상품 5개는 상한을 넘은 뒤에 들어왔는데도 전부 등록됐어요. ③ <code>acceptVip</code>가 ④보다 앞에 있어서 <code>ACCEPT</code>를 먼저 냈고, Micrometer는 <code>ACCEPT</code>를 받으면 뒤 필터에 묻지 않습니다. 그래서 상한 필터는 vip 값을 보지도 못했고, 50개 안에 세지도 않았어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: noop 미터</div>
+  필터가 거부한 미터 대신 레지스트리가 돌려주는 빈 껍데기 미터입니다. <code>increment()</code>를 불러도 아무 일도 하지 않고 예외도 내지 않아요. 그래서 호출하는 코드는 거부된 줄 모릅니다.
+</div>
+
+<h3>스프링 부트의 URI 상한은 한 번 경고한다</h3>
+
+<p>같은 85건이 HTTP 클라이언트 쪽에서도 상한에 걸렸어요. <code>RestClient</code>의 지표 <code>http.client.requests</code>는 <code>uri</code> 태그에 URI 템플릿을 넣는데, 문자열을 이어 붙여 만든 URI는 템플릿이 따로 없어서 <code>/items/0</code>, <code>/items/1</code>이 각각 다른 값이 돼요. 서버 쪽은 스프링 MVC가 라우트 템플릿 <code>/items/{id}</code>를 알려 줘서 85건이 시계열 하나였던 것과 대비됩니다.</p>
+
+<div class="obsv-code">http_client_requests_seconds_count 시계열 수   20      (max-uri-tags: 20)
+
+WARN .s.b.m.m.MaximumAllowableTagsMeterFilter : Reached the maximum number of 'uri' tags
+     for 'http.client.requests'. Are you using 'uriVariables'?</div>
+
+<p>이 경고는 Micrometer가 아니라 스프링 부트의 <code>MaximumAllowableTagsMeterFilter</code>가 남겨요. 소스를 보면 <code>AtomicBoolean</code>으로 <b>처음 한 번만</b> 경고하고 그 뒤로는 조용히 거부합니다. 3절에서 같은 호출을 80번 더 하고 로그를 셌을 때도 이 경고는 한 줄뿐이었어요. 메시지가 권하는 <code>uriVariables</code>는 <code>client.get().uri("/items/{id}", i)</code>처럼 템플릿과 값을 나눠 넘기는 방식이에요. 그러면 <code>uri</code> 태그에 템플릿이 들어가 시계열이 하나로 모여요.</p>
+
+<h2>3. 버려진 횟수는 잃어버린 증가 횟수와 같다</h2>
+
+<p>같은 상품 80개를 한 번 더 조회했어요. 상품 0~49는 이미 등록된 미터라 그대로 늘고, 50~79는 다시 거부될 거예요.</p>
+
+<div class="obsv-code">서버가 받은 조회        165
+item_views_total 합계   105     (55 + 이번에 늘어난 50)
+meter_filter_denied     60      (30 + 이번에 거부된 30)
+http.client.requests 합계  40   (클라이언트 호출 165번 중 20개 시계열에 담긴 것만)
+WARN 로그 줄 수         1</div>
+
+<p>105 + 60 = 165로 맞아떨어져요. 거부 횟수가 "처음 거부된 상품 수"(30)에서 멈추지 않고, 거부된 상품이 조회될 때마다 늘었습니다. Micrometer 소스(<code>MeterRegistry.getOrCreateMeter</code>)를 보면 이유가 있어요. 받아들인 미터는 맵에 저장하지만, 거부해서 만든 noop 미터는 저장하지 않고 바로 돌려줍니다. 그래서 같은 ID로 다시 등록을 시도하면 필터 체인을 처음부터 다시 타요. 덕분에 <span class="obsv-mark">거부 필터 안에서 센 횟수는 잃어버린 <code>increment()</code> 횟수와 같아집니다.</span> 다만 이건 이번 실습의 코드가 매번 <code>Counter.builder(...).register()</code>를 부르기 때문이에요. 거부된 noop 미터를 필드에 받아 두고 계속 <code>increment()</code>하는 코드라면 필터를 다시 타지 않으니 첫 한 번만 세집니다.</p>
+
+<h2>4. 이름 바꾸기는 거부보다 먼저 돈다</h2>
+
+<p>4편은 필터 체인을 설명하면서 "필터는 등록된 순서대로 차례차례 적용되니까, 표기를 먼저 정규화하고 거부를 나중에 둬야 구멍이 안 생긴다"고 했어요. 그 말대로라면 거부(①)를 이름 바꾸기(②)보다 앞에 건 이번 설정에는 구멍이 있어야 합니다. <code>uid</code> 태그로 들어온 미터는 ①을 지날 때 아직 <code>user_id</code>가 아니니까요.</p>
+
+<div class="obsv-code">curl -s -XPOST 'localhost:22380/login?uid=alice'
+curl -s -XPOST 'localhost:22380/login?uid=bob'
+curl -s localhost:22380/actuator/prometheus | grep -c '^login'
+0</div>
+
+<p>둘 다 거부됐어요. Micrometer 소스를 보면 등록 과정이 두 단계로 나뉘어 있습니다. 먼저 <code>mapId()</code>가 <b>모든 필터의 <code>map()</code></b>을 순서대로 적용해 최종 ID를 만들고, 그다음 <code>accept()</code>가 그 최종 ID를 들고 필터를 처음부터 다시 돌며 묻습니다. 그래서 거부 필터는 늘 이름이 다 바뀐 뒤의 ID를 봐요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrI4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="70" y="34" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">login{uid=alice}</text>
+  <path d="M70 42 C 71 56, 70 66, 71 76" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrI4)"/>
+  <path d="M20 84 C 120 82, 220 85, 300 83 C 302 100, 301 116, 300 130 C 220 132, 120 129, 21 131 C 19 116, 20 100, 20 84 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="160" y="104" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">1단계 mapId: 모든 필터의 map()</text>
+  <text x="160" y="122" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">① 통과 &rarr; ② uid를 user_id로 &rarr; ③ &rarr; ④</text>
+  <path d="M304 107 C 330 106, 350 108, 372 107" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrI4)"/>
+  <text x="300" y="160" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">login{user_id=alice}</text>
+  <path d="M380 84 C 480 82, 580 85, 680 83 C 682 100, 681 116, 680 130 C 580 132, 480 129, 381 131 C 379 116, 380 100, 380 84 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="530" y="104" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">2단계 accept: 처음부터 다시</text>
+  <text x="530" y="122" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">첫 ACCEPT나 DENY에서 멈춘다</text>
+  <path d="M440 136 C 441 160, 440 180, 441 196" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrI4)"/>
+  <path d="M380 204 C 430 202, 470 205, 504 203 C 506 216, 505 228, 504 238 C 470 240, 430 237, 381 239 C 379 228, 380 216, 380 204 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="442" y="227" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">① DENY</text>
+  <path d="M520 204 C 570 202, 630 205, 680 203 C 682 216, 681 228, 680 238 C 630 240, 570 237, 521 239 C 519 228, 520 216, 520 204 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
+  <text x="600" y="227" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">②③④는 묻지 않음</text>
+  <text x="160" y="226" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">순서가 의미 있는 건</text>
+  <text x="160" y="246" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">map끼리, accept끼리다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 이름 바꾸기가 전부 끝난 뒤에 거부를 묻는다</div>
+
+<p>그러니 4편의 문장은 이렇게 고쳐 읽어야 해요. 순서가 의미 있는 건 <b>map끼리</b>(이름 바꾸기 두 개가 이어지면 앞의 결과를 뒤가 받는다), 그리고 <b>accept끼리</b>(첫 ACCEPT나 DENY에서 멈춘다)예요. 2절에서 vip가 상한을 피해 간 것이 accept끼리의 순서입니다. 이름 바꾸기와 거부 사이에는 순서가 없어서, 4편이 걱정한 구멍은 적어도 Micrometer 1.17.1에서는 생기지 않아요. 이 동작은 공식 문서의 MeterFilter 페이지에 적혀 있지 않고 소스에서 확인했습니다.</p>
+
+<h2>5. 기동 뒤에 건 필터는 거의 아무것도 막지 못했다</h2>
+
+<p>1편은 "MeterFilter는 미터가 등록되기 전에 걸려 있어야 하고, 늦게 걸면 경고가 남는다"고 했어요. 경고 다음에 실제로 무슨 일이 일어나는지 보려고, 이미 미터 수십 개가 등록된 상태에서 <code>item.views</code>로 시작하는 미터를 전부 거부하는 필터를 걸었습니다.</p>
+
+<div class="obsv-code">registry.config().meterFilter(MeterFilter.denyNameStartsWith("item.views"));
+
+WARN i.m.p.PrometheusMeterRegistry : A MeterFilter is being configured after a Meter has been
+registered to this registry. All MeterFilters should be configured before any Meters are registered. ...</div>
+
+<p>경고는 1편 말대로 남았어요. 그 뒤 상품 0~79를 한 번 더 조회하고, 처음 보는 <code>vip-99</code>와 <code>new-1</code>도 한 번씩 조회했습니다.</p>
+
+<div class="obsv-code">item_views_total{item="0"}       3.0     ← 늦은 거부 필터가 있는데도 계속 늘었다
+item_views_total{item="49"}      3.0
+item_views_total{item="vip-99"}  1.0     ← 새로 등록됐다
+(new-1 은 없음)
+meter_filter_denied_total        91      (60 + 상품 50~79 의 30 + new-1 의 1)
+item_views_total 시계열 수       56</div>
+
+<p>"<code>item.views</code>는 전부 거부"라는 필터를 걸었는데, 실제로 막힌 미터는 하나도 없었어요. 세 경우가 다 다른 이유입니다.</p>
+
+<p><b>이미 있던 미터(상품 0~49)는 계속 늘었습니다.</b> 늦은 필터를 걸면 Micrometer는 기존 미터를 "다시 확인할 것"(stale)으로 표시해요. 다음 등록 시도 때 ID를 다시 매핑하는데, 매핑한 ID의 미터가 맵에 이미 있으면 그걸 그대로 돌려주고 <code>accept()</code>는 묻지 않습니다. 거부 필터는 이미 있는 미터를 지우지 못해요.</p>
+
+<p><b>vip-99는 새로 등록됐어요.</b> ③ <code>acceptVip</code>가 먼저 <code>ACCEPT</code>를 냈고, 늦게 건 필터는 목록 맨 끝에 붙으니 차례가 오지 않았습니다.</p>
+
+<p><b>new-1은 거부됐지만, 늦은 필터 때문이 아니에요.</b> 앞의 ④ 상한 필터가 먼저 <code>DENY</code>를 냈습니다. <code>meter_filter_denied</code>가 30이 아니라 31 늘어난 게 그 증거예요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/instrumentation/images/lab-04/lost-views.png" alt="Prometheus 표. 서버 요청 247, item_views 합계 156, 거부 91, item_views 시계열 56이 나란히 보인다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 요청 247 = 기록 156 + 거부 91. 거부를 세지 않았다면 91은 어디에도 없었다</div>
+
+<p>그림 2는 실행 끝에 Prometheus에서 네 값을 나란히 본 화면이에요. 서버가 받은 조회 247건 중 156건이 카운터에 남았고, 91건이 거부됐어요. 거부를 세는 필터를 직접 만들지 않았다면 이 91은 서버 요청 수와 카운터 합계의 차이로만 짐작할 수 있었을 거예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 상한 필터는 이름의 앞부분으로 고른다</div>
+  <code>maximumAllowableTags</code>와 스프링 부트의 URI 상한 필터는 모두 <code>id.getName().startsWith(prefix)</code>로 대상을 골라요(두 소스 모두 확인). <code>item.views</code>로 건 상한은 <code>item.views.failed</code> 같은 다른 미터의 같은 태그 값도 같은 50개 안에서 셉니다. 스프링 부트의 <code>http.server.requests</code> 상한도 <code>http.server.requests.active</code>까지 같이 걸려요. 이 겹침을 이번 실습에서 넘치게 만들어 보지는 않았어요.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 태그 상한을 걸 때</div>
+  &bull; <b>상한에 닿으면 반드시 세요.</b> <code>MeterFilter.deny()</code>를 그대로 넘기지 말고, 거부하면서 카운터를 올리는 필터를 넘겨요. 그 카운터에 알람을 걸면 "누군가 고카디널리티 태그를 붙였다"를 바로 알 수 있어요<br>
+  &bull; <b>필터는 기동 전에 다 걸어요.</b> 스프링이면 <code>MeterFilter</code> 빈이나 <code>MeterRegistryCustomizer</code>로 등록해요. 기동 뒤 <code>registry.config().meterFilter()</code>는 이미 있는 미터를 막지 못해요<br>
+  &bull; <b>예외 허용(accept)은 상한보다 앞에 둬요.</b> accept끼리는 첫 판단이 이겨요. 거꾸로 두면 상한이 먼저 거부해요<br>
+  &bull; <b>클라이언트 URI는 템플릿으로 넘겨요.</b> <code>uri("/items/{id}", id)</code>로 쓰면 상한까지 가지 않아요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>태그 값 50개 상한을 넘은 미터는 noop으로 바뀌었고, Micrometer는 로그를 남기지 않았다.</b> 스프링 부트의 URI 상한은 경고를 한 번만 남겼다. 거부하면서 횟수를 세는 필터를 직접 넘기자 요청 247건 = 기록 156 + 거부 91로 맞아떨어졌다. 거부된 미터는 저장되지 않아 매번 필터를 다시 타기 때문이다.<br><br>
+  필터 순서는 map끼리, accept끼리만 의미가 있었다. 이름 바꾸기는 거부보다 먼저 돌아서 순서로 구멍이 생기지 않았고, 기동 뒤에 건 거부 필터는 이미 있는 미터도, 앞선 accept도 막지 못했다. 상한은 거는 것보다 넘친 것을 세는 쪽이 더 중요하다.
+</div>
+
+</div>

@@ -1,8 +1,8 @@
 """Tempo 에서 트레이스 하나를 꺼내 스팬을 시작 시각 순으로 찍는다.
 사용: python3 show-trace.py [traceID]   (없으면 결제까지 간 최근 트레이스)"""
-import json, sys, urllib.parse, urllib.request
+import json, os, sys, urllib.parse, urllib.request
 
-TEMPO = "http://localhost:3200"
+TEMPO = os.environ.get("TEMPO_URL", "http://localhost:3200")
 
 def get(path):
     with urllib.request.urlopen(TEMPO + path) as r:

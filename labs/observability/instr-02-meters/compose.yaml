@@ -1,0 +1,24 @@
+# 계측 라이브러리 실습-2: 한 요청에 Timer, DistributionSummary, LongTaskTimer를 걸어 본다.
+services:
+  app:
+    build: ./app
+    image: obs-lab/instr-02-meters:dev
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+    mem_limit: 512m
+    ports: ["${APP_PORT:-22180}:8080"]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_PORT:-22190}:9090"]
+    mem_limit: 512m
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "/scripts/reports.js"]
+    volumes:
+      - ./k6:/scripts:ro

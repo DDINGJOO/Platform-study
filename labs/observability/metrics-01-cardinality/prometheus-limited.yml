@@ -1,0 +1,13 @@
+# 6절: 앱 타깃에 sample_limit 을 건 설정. PROM_CONFIG=prometheus-limited.yml 로 띄운다.
+global:
+  scrape_interval: 5s          # 실습 시간을 줄이려고 5초로 줄였다(기본 1분)
+  extra_scrape_metrics: true   # scrape_body_size_bytes 를 남긴다
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: app
+    metrics_path: /actuator/prometheus
+    sample_limit: 2000       # 스크레이프 한 번에 시계열 2,000개가 넘으면 그 스크레이프를 통째로 버린다
+    static_configs:
+      - targets: ['app:8080']

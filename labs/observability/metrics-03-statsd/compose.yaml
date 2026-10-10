@@ -1,0 +1,62 @@
+# 메트릭 수집 실습-3: StatsD는 UDP 패킷을 말없이 버린다.
+# 호스트 포트: Grafana 21300, Prometheus 21390, statsd_exporter 지표 21302
+services:
+  statsd:
+    image: prom/statsd-exporter:v0.31.0
+    # READ_BUFFER 를 주면 UDP 소켓의 수신 버퍼(SO_RCVBUF)를 그 크기로 요청한다. 비우면 커널 기본값(net.core.rmem_default).
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec /bin/statsd_exporter ${READ_BUFFER:+--statsd.read-buffer=$READ_BUFFER} --statsd.listen-unixgram=/sock/statsd.sock --statsd.unixsocket-mode=777
+    volumes:
+      - sock:/sock                    # 5절: 같은 호스트 안이라면 유닉스 도메인 소켓으로도 받는다
+    user: "0"                         # 이미지 기본 사용자(nobody)는 볼륨 디렉터리에 소켓 파일을 만들 권한이 없다
+    cpus: ${STATSD_CPUS:-1}          # 받는 쪽이 바쁜 상황을 만들려고 CPU 를 줄여 본다
+    mem_limit: 256m
+    ports: ["${STATSD_WEB_PORT:-21302}:9102"]
+
+  kernel:
+    # statsd 컨테이너의 네트워크 네임스페이스에 들어가 /proc/net/snmp 를 읽는다.
+    # Udp RcvbufErrors = 소켓 수신 버퍼가 차서 커널이 버린 데이터그램 수.
+    image: prom/node-exporter:v1.12.1
+    network_mode: service:statsd
+    command: ["--collector.disable-defaults", "--collector.netstat"]
+    mem_limit: 64m
+
+  sender:
+    image: python:3.13-alpine
+    profiles: [send]
+    command: ["python", "-u", "/sender/send.py"]
+    environment:
+      TARGET: statsd:9125
+      RATE: ${RATE:-1000}
+      SECONDS: ${SECONDS_TO_SEND:-30}
+      STEPS: ${STEPS:-}
+      UNIX_SOCKET: ${UNIX_SOCKET:-}
+      NONBLOCK: ${NONBLOCK:-0}
+    volumes:
+      - ./sender:/sender:ro
+      - sock:/sock
+    mem_limit: 128m
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    mem_limit: 512m
+    ports: ["${PROM_PORT:-21390}:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    mem_limit: 300m
+    ports: ["${GRAFANA_PORT:-21300}:3000"]
+
+volumes:
+  sock:

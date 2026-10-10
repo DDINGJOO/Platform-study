@@ -1,0 +1,16 @@
+global:
+  # 실습은 SLO 창을 1/30 로 줄였다(가장 짧은 창 10초). 10초 창 안에 표본이 여러 개 들도록 2초마다 긁는다.
+  scrape_interval: 2s
+  # 기본값은 1분이다. 10초 창 기록 규칙을 1분마다 계산하면 의미가 없어서 5초로 줄였다.
+  evaluation_interval: 5s
+rule_files:
+  - /etc/prometheus/slo-rules.yaml
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+scrape_configs:
+  - job_name: slo-app
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['app:8080']

@@ -1,0 +1,27 @@
+server:
+  port: 8080
+spring:
+  application:
+    name: work
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_PROBABILITY:1.0}   # 기본값은 0.1 이다. exemplar 는 샘플링된 요청에만 붙는다
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: http://tempo:4318/v1/traces
+  # OpenTelemetry 스타터에 딸려 오는 OTLP 지표 내보내기는 끈다. 지표는 Prometheus 가 긁는다
+  otlp:
+    metrics:
+      export:
+        enabled: false

@@ -1,0 +1,343 @@
+<!-- lead: Sloth로 SLO 파일 하나에서 burn rate 경고를 만들고 에러를 넣어 울렸어요. 창을 1/30로 줄여 1%는 6분 18초, 10%는 24초 만에 page가 울렸고, ticket이 먼저 오거나 늦게 온 이유를 쟀어요. -->
+<!-- tags: Sloth, burn rate, multi-window alert, Alertmanager, 에러 예산 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔔 SLO와 경고, 실습-1</div>
+  1편. 알람은 언제 울려야 하나<br>
+  2편. 모니터만 보고 있는 사람은 값비싼 경고 시스템이다<br>
+  3편. 모든 자바 서비스가 같은 자리에서 아프다<br>
+  4편. 머신러닝이 임계값을 정해 주지는 않았다<br>
+  <b>실습-1. SLO 하나로 burn rate 알람을 만들고 실제로 울린다</b> &larr; 지금 이 글<br>
+  실습-2. 모든 자바 서비스에 같은 SLI 대시보드를 깐다
+</div>
+
+<p>에러율 1%를 주입하고 시계를 봤습니다. page 경고는 6분 18초 뒤에 울렸어요. 그런데 ticket 경고는 그보다 1분 30초 먼저 울렸고, 알림도 먼저 웹훅에 도착했습니다. 1편의 표대로라면 느린 쪽이 ticket이고, ticket은 page보다 늦게 와야 하는데요.</p>
+
+<p>1편이 설명한 다중 창 burn rate 경고를 실제로 만들고 울려 봤어요. SLO 파일 하나로 Sloth가 규칙을 만들고, Prometheus와 Alertmanager에 넣은 뒤 에러를 주입해 경고와 알림 시각을 초 단위로 적었습니다. 30일 창은 기다릴 수 없어 시간을 30분의 1로 줄였고, 그래서 달라지는 점도 같이 적었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; SLO 정의 파일 한 장에서 규칙이 몇 개, 어떤 모양으로 나오는가?<br>
+  &bull; 30일 창을 하루로 줄이면 무엇은 그대로고 무엇이 달라지는가?<br>
+  &bull; 에러율 1%와 10%에서 경고는 몇 초 만에 울리고, 알림은 언제 오는가?<br>
+  &bull; 에러를 멈추면 경고는 언제 꺼지고, 꺼졌다는 알림은 언제 오는가?
+</div>
+
+<h2>1. 실습 환경: 앱 하나, 경고 두 개, 수신기 하나</h2>
+
+<p>k6가 스프링 부트 앱의 <code>GET /api/work</code>에 초당 40건을 보내고, Prometheus가 2초마다 긁어요. 실패율은 실행 중에 <code>POST /chaos</code>로 바꿉니다. 경고는 Alertmanager를 거쳐 받은 시각을 찍는 파이썬 웹훅 수신기로 가요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrS1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrS1b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M28 30 C 80 28, 140 31, 190 29 C 192 52, 191 74, 190 94 C 140 96, 80 93, 29 95 C 27 74, 28 52, 28 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="109" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">📝 slo.yaml</text>
+  <text x="109" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">objective 99.9</text>
+  <path d="M194 62 C 225 61, 250 63, 278 62" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#arrS1b)"/>
+  <text x="236" y="50" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d6591">sloth generate</text>
+  <path d="M286 30 C 340 28, 400 31, 452 29 C 454 52, 453 74, 452 94 C 400 96, 340 93, 287 95 C 285 74, 286 52, 286 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="369" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">📜 slo-rules.yaml</text>
+  <text x="369" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">기록 규칙 15 + 경고 2</text>
+  <path d="M28 128 C 70 126, 110 129, 140 127 C 142 146, 141 166, 140 182 C 110 184, 70 181, 29 183 C 27 166, 28 146, 28 128 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="84" y="152" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">k6</text>
+  <text x="84" y="172" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">초당 40건</text>
+  <path d="M144 155 C 165 154, 180 156, 198 155" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrS1)"/>
+  <path d="M206 124 C 250 122, 290 125, 322 123 C 324 146, 323 168, 322 188 C 290 190, 250 187, 207 189 C 205 168, 206 146, 206 124 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+  <text x="264" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">☕ app</text>
+  <text x="264" y="170" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">POST /chaos</text>
+  <path d="M326 155 C 350 154, 368 156, 388 155" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrS1)"/>
+  <text x="357" y="143" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">2초</text>
+  <path d="M369 98 C 368 106, 370 114, 369 118" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrS1b)"/>
+  <path d="M396 124 C 440 122, 480 125, 512 123 C 514 146, 513 168, 512 188 C 480 190, 440 187, 397 189 C 395 168, 396 146, 396 124 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="454" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">Prometheus</text>
+  <text x="454" y="170" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">5초마다 규칙 평가</text>
+  <path d="M454 194 C 455 215, 453 232, 454 250" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrS1)"/>
+  <text x="520" y="228" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">firing 경고</text>
+  <path d="M386 258 C 430 256, 480 259, 522 257 C 524 278, 523 298, 522 314 C 480 316, 430 313, 387 315 C 385 298, 386 278, 386 258 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+  <text x="454" y="282" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">Alertmanager</text>
+  <text x="454" y="302" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">group_wait 30s</text>
+  <path d="M526 286 C 550 285, 570 287, 590 286" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrS1)"/>
+  <text x="640" y="280" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">📟 webhook</text>
+  <text x="640" y="300" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">/page /ticket</text>
+  <text x="560" y="150" text-anchor="start" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">📊 Grafana가</text>
+  <text x="560" y="172" text-anchor="start" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">burn rate를 그린다</text>
+  <text x="180" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">재는 것: 주입 시각 → firing → 수신 시각</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. SLO 파일 하나에서 규칙이 나오고, 경고는 웹훅 수신기까지 간다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Sloth</div>
+  SLO를 YAML로 적으면 Prometheus 기록 규칙과 경고 규칙을 만들어 주는 오픈 소스 도구입니다. burn rate 식과 창 조합을 손으로 쓰다 틀리지 않으려고 써요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Alertmanager</div>
+  Prometheus가 보낸 경고를 묶고 거른 뒤 메일, 메신저, 웹훅으로 알림을 보내는 별도 프로세스입니다. Prometheus는 "조건이 참인가"까지만 판단해요.
+</div>
+
+<p>쓴 버전은 아래와 같아요.</p>
+
+<div class="obsv-code">Sloth                 v0.16.0 (ghcr.io/slok/sloth)
+Prometheus            3.15.0
+Alertmanager          0.34.1
+Grafana               13.2.3
+k6                    2.3.0
+Spring Boot           4.1.1 (Micrometer 1.17.1, Java 21)
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/slo-01-burn-rate">GitHub 저장소의 labs/observability/slo-01-burn-rate</a>에 있어요. 아래 명령으로 띄우고, 경고 상태를 찍는 스크립트와 웹훅 로그를 각각 다른 터미널에 열어 둡니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/slo-01-burn-rate
+docker compose up -d --build
+docker compose --profile load up -d load       # 초당 40건, 180분 동안
+python3 scripts/watch-alerts.py                # 경고 상태가 바뀔 때마다 시각과 burn rate 출력
+docker compose logs -f webhook                 # 알림이 수신기에 도착한 시각
+# 정상 트래픽을 48분 이상 흘린 뒤 4절의 주입 명령을 친다(긴 창을 채우려고)
+# Grafana: http://localhost:24030 → 대시보드 SLO / SLO burn rate</div>
+
+<h2>2. SLO 파일 한 장에서 규칙 17개가 나왔다</h2>
+
+<p>SLO 정의의 핵심은 이래요(<code>labels</code>, <code>description</code> 줄은 뺐어요). <code>/api/work</code> 요청의 99.9%가 5xx가 아니어야 한다는 내용입니다.</p>
+
+<div class="obsv-code">version: "prometheus/v1"
+service: "slo-app"
+slos:
+  - name: "work-availability"
+    objective: 99.9
+    sli:
+      events:
+        error_query: sum(rate(http_server_requests_seconds_count{application="slo-app",uri="/api/work",status=~"5.."}[{{.window}}])) or vector(0)
+        total_query: sum(rate(http_server_requests_seconds_count{application="slo-app",uri="/api/work"}[{{.window}}]))
+    alerting:
+      name: WorkHighErrorBudgetBurn
+      page_alert:   { labels: { severity: page } }
+      ticket_alert: { labels: { severity: ticket } }</div>
+
+<p><code>{{.window}}</code> 자리에 Sloth가 창 길이를 하나씩 넣어 규칙을 만들어요. 창 옵션 두 개는 3절에서 설명할게요.</p>
+
+<div class="obsv-code">docker run --rm -v $PWD/sloth:/sloth ghcr.io/slok/sloth:v0.16.0 generate \
+  -i /sloth/slo.yaml --slo-period-windows-path=/sloth/windows --default-slo-period=1d \
+  &gt; prometheus/slo-rules.yaml</div>
+
+<p>나온 파일은 202줄, 규칙은 17개였어요(<code>promtool check rules</code>). 창마다 에러 비율을 미리 계산해 두는 기록 규칙 8개(경고 창 7개와 SLO 기간 1일 창 1개. 12분 창은 page 느린 단과 ticket 느린 단이 같이 써요), 목표·예산·기간·현재 burn rate 같은 메타 기록 규칙 7개, 그리고 경고 규칙 2개예요. 기록 규칙은 <code>slo:sli_error:ratio_rate10s</code>처럼 창 길이가 이름에 붙고, 내용은 위의 두 쿼리를 나눈 식입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 기록 규칙 (recording rule)</div>
+  PromQL 식을 정해진 간격마다 미리 계산해 새 시계열로 저장하는 Prometheus 규칙입니다. 경고 식이 긴 창의 <code>rate()</code>를 매번 다시 계산하지 않게 해 줘요.
+</div>
+
+<p>경고 규칙은 page와 ticket 하나씩입니다. page 쪽 식을 Prometheus 화면에서 펼쳐 보면 1편의 "두 창을 AND로 묶는다"가 그대로 들어 있어요. 빠른 단(2분 창과 10초 창이 둘 다 14.4배 초과)과 느린 단(12분 창과 1분 창이 둘 다 6배 초과)을 OR로 이어 한 경고로 만들었습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/slo-alerting/images/lab-01/prometheus-alerts.png" alt="Prometheus 경고 화면. page 경고 식에 10초 창과 2분 창을 14.4배로, 1분 창과 12분 창을 6배로 비교하는 두 조건이 or로 묶여 있고, 상태는 FIRING이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 단 두 개를 OR로 묶은 page 경고. for 절이 없다</div>
+
+<p>식에 <b><code>for</code> 절이 없다</b>는 점은 6절에서 다시 볼게요.</p>
+
+<h3>에러가 0건이면 SLI가 0이 아니라 "없음"이 된다</h3>
+
+<p>처음 파일에는 <code>error_query</code> 끝의 <code>or vector(0)</code>가 없었고, 정상 트래픽만 흘리자 기록 규칙과 오차 예산 잔량(<code>slo:period_error_budget_remaining:ratio</code>)이 전부 빈 결과였어요. Micrometer는 <code>status="500"</code> 시계열을 5xx가 처음 나올 때 만듭니다. 그 전에는 <code>sum(rate(...))</code>가 0이 아니라 빈 결과라, 나눈 값도 비어요. <code>or vector(0)</code>을 붙이자 0으로 찍혔습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 새로 배포한 서비스의 SLO 화면이 비어 있다면</div>
+  에러 쿼리가 아직 생기지 않은 시계열을 고르는지 보세요. 그 상태로는 "예산 100% 남음"과 "수집 안 됨"을 구분할 수 없고, 경고도 비교할 값이 없어요.
+</div>
+
+<h2>3. 30일을 하루로 줄였다: 무엇이 그대로고 무엇이 다른가</h2>
+
+<p>Sloth 기본값은 30일 기간에 창 네 쌍이고 가장 긴 창이 3일이에요. 창 목록을 바꾸는 <code>AlertWindows</code> 형식으로 기본 목록(<code>google-30d</code>)을 복사해 <b>SLO 기간과 모든 창 길이를 30분의 1</b>로 줄였습니다.</p>
+
+<div class="obsv-code">               30일 기본 (긴 창 / 짧은 창)   실습 1/30 (긴 창 / 짧은 창)   예산 소진   burn rate
+page 빠른 단     1h   / 5m                    2m     / 10s                  2%         14.4
+page 느린 단     6h   / 30m                   12m    / 1m                   5%          6
+ticket 빠른 단   1d   / 2h                    48m    / 4m                  10%          3
+ticket 느린 단   3d   / 6h                    2h24m  / 12m                 10%          1</div>
+
+<p>Sloth는 burn rate 계수를 "기간 × 소진 비율 ÷ 긴 창"으로 계산하니, 소진 비율은 그대로 두고 기간과 창만 줄이면 계수 14.4, 6, 3, 1이 똑같이 나와요. 1편의 표는 세 단인데 Sloth에는 1일/2시간 ticket 단이 하나 더 있습니다.</p>
+
+<p>그대로인 것은 <span class="obsv-mark">"에러율 몇 %면 예산을 몇 배 속도로 태우는가"라는 판정 기준</span>입니다. 바뀌는 것은 세 가지예요.</p>
+
+<p><b>첫째, 고정 지연은 30분의 1로 줄지 않습니다.</b> 스크레이프 2초, 규칙 평가 5초(기본 1분에서 줄였어요), <code>group_wait</code> 30초, <code>group_interval</code> 5분은 그대로라, 실습에서는 알림 지연이 운영보다 30배 크게 보여요.</p>
+
+<p><b>둘째, 짧은 창의 요청 수가 30분의 1입니다.</b> 5분 창은 1만 2천 건이지만 10초 창은 400건이라, 1% 에러면 창마다 0건에서 11건 남짓까지 출렁여요. SRE 워크북이 저트래픽 서비스에서 다루는 문제를 창을 줄여서 만든 셈입니다.</p>
+
+<p><b>셋째, 긴 창은 데이터가 그 길이만큼 쌓여야 찹니다.</b> 이번에는 정상 트래픽을 49분 흘리고 주입해서 2시간 24분 창이 반도 안 찬 상태였고, 이게 4절에서 ticket이 먼저 온 원인이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: group_wait와 group_interval</div>
+  Alertmanager가 알림을 묶어 보내는 시간 설정입니다. 새 경고 묶음이 생기면 <code>group_wait</code>(기본 30초)만큼 기다렸다가 첫 알림을 보내고, 그 뒤로는 묶음 안에 바뀐 게 있어도 <code>group_interval</code>(기본 5분) 간격으로만 다음 알림을 보내요. 해제 알림도 이 간격을 따릅니다.
+</div>
+
+<h2>4. 에러율 1%: page는 6분 18초, 그런데 ticket이 먼저 왔다</h2>
+
+<p>정상 트래픽을 49분 흘린 뒤 실패율을 1%로 올렸어요. 17분 40초 동안 4만 2,399건 중 439건이 실패했습니다(1.04%, burn rate 약 10). 빠른 단 14.4에는 못 미치고 느린 단 6은 넘는 장애예요.</p>
+
+<div class="obsv-code">curl -X POST 'localhost:24080/chaos?errorRate=0.01'    # 07:12:24 주입
+curl -X POST 'localhost:24080/chaos?errorRate=0'       # 07:30:04 중단</div>
+
+<p>감시 스크립트와 웹훅 로그를 시간순으로 합쳤어요(UTC).</p>
+
+<div class="obsv-code">07:12:24  1% 주입
+07:17:12  ticket firing   (+4:48)   burn 12m=4.3  2h24m=1.0   ← 느린 ticket 단
+07:17:47  웹훅 /ticket firing        (경고 뒤 35초)
+07:18:42  page firing     (+6:18)   burn 1m=12.5  12m=6.1     ← 느린 page 단
+07:19:17  웹훅 /page firing          (경고 뒤 35초)
+07:27:33  page 해제, 07:27:42 다시 firing (9초 끊김. 알림은 없었다)
+07:30:04  주입 중단
+07:30:32  page 해제       (중단 뒤 28초)
+07:34:17  웹훅 /page resolved        (해제 뒤 3분 45초)
+07:40:42  ticket 해제     (중단 뒤 10분 38초)
+07:42:47  웹훅 /ticket resolved      (해제 뒤 2분 5초)</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/slo-alerting/images/lab-01/burn-rate-1pct.png" alt="Grafana 대시보드. 에러 1% 주입 동안 10초 창 비율은 0에서 3% 사이를 출렁이고, 12분 창 burn rate는 천천히 올라 6을 넘는다. 아래 상태 막대에 ticket이 page보다 먼저 빨갛게 켜지고 page에 짧은 끊김이 하나 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 10초 창은 출렁이고, 12분 창은 천천히 6을 넘는다</div>
+
+<p><b>page가 6분 18초인 이유</b>: 에러율이 r이면 길이 W인 창의 비율은 주입 뒤 t분에 r × t ÷ W예요. 느린 page 단은 12분 창이 0.6%(6 × 0.1%)를 넘어야 합니다. 그 구간에 찍힌 짧은 창 burn rate가 11 안팎이었으므로 r ≈ 1.1%로 두면 t ≈ 6.5분이에요. 측정 6분 18초와 맞아요. 빠른 단은 울리지 못했어요(직후 2분 창 13.8).</p>
+
+<p><b>ticket이 먼저 온 이유</b>는 3절의 셋째 항목이에요. 느린 ticket 단은 2시간 24분 창이 0.1%를 넘으면 되고, 창이 가득 찼다면 14.4분이 걸려야 합니다. 그런데 이 창에는 주입 전 데이터가 49분 치뿐이었고 <code>rate()</code>는 있는 데이터로만 비율을 내요. 주입 뒤 4.8분의 에러율을 같은 시각 12분 창 값(burn 4.3)에서 역산하면 약 1.08%이고, 1.08% × 4.8 ÷ (49 + 4.8) ≈ 0.096%, burn rate로 0.96이에요. 실제로 firing 시점에 찍힌 값은 1.0이라 계산이 4% 남짓 모자랍니다. 창 가장자리에서 <code>rate()</code>가 하는 보정이나 에러율의 출렁임으로 짐작하지만, 어느 쪽인지는 확인하지 못했어요. 방향은 분명합니다. 창이 가득 찼다면 같은 식으로 0.36이었을 거예요.</p>
+
+<h3>page가 울리자 ticket은 화면에서 사라졌다</h3>
+
+<p>Alertmanager 설정에는 같은 SLO의 page가 울리는 동안 ticket을 보내지 않는 억제 규칙을 넣어 뒀어요.</p>
+
+<div class="obsv-code">inhibit_rules:
+  - source_matchers: [severity="page"]
+    target_matchers: [severity="ticket"]
+    equal: [sloth_slo]</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 억제 규칙 (inhibit rule)</div>
+  어떤 경고가 울리는 동안 관련된 다른 경고의 알림을 막는 Alertmanager 규칙입니다. 경고는 계속 firing이고 알림만 나가지 않아요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/slo-alerting/images/lab-01/alertmanager-inhibited.png" alt="Alertmanager 화면. page 묶음과 ticket 묶음에 경고가 하나씩 있고, ticket 경고 옆에 빨간 Inhibited 표시가 붙어 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. ticket은 살아 있지만 Inhibited. 이미 보낸 알림은 되돌리지 않는다</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrS2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="350" y="26" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">에러율 1% 를 17분 40초 동안 넣었을 때 (실습 시간)</text>
+  <path d="M50 52 C 120 50, 290 53, 398 51 L 398 64 C 290 66, 120 63, 50 65 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8"/>
+  <text x="224" y="62" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">에러 1.04% 주입 중</text>
+  <text x="8" y="112" text-anchor="start" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">page</text>
+  <path d="M174 98 C 250 96, 300 99, 346 97 L 346 118 C 300 120, 250 117, 174 119 Z" fill="#e5533c" fill-opacity="0.75" stroke="#b3502f" stroke-width="1.6"/>
+  <path d="M351 98 C 370 97, 390 99, 407 97 L 407 118 C 390 120, 370 117, 351 119 Z" fill="#e5533c" fill-opacity="0.75" stroke="#b3502f" stroke-width="1.6"/>
+  <text x="349" y="140" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">9초 끊김</text>
+  <text x="8" y="182" text-anchor="start" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">ticket</text>
+  <path d="M145 168 C 300 166, 480 169, 607 167 L 607 188 C 480 190, 300 187, 145 189 Z" fill="#e5a33c" fill-opacity="0.7" stroke="#c07f18" stroke-width="1.6"/>
+  <path d="M174 192 C 260 191, 330 193, 407 192" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="290" y="208" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">page 가 울리는 동안 억제됨</text>
+  <path d="M50 238 C 250 236, 450 239, 660 237" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrS2)"/>
+  <text x="50" y="256" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">0</text>
+  <text x="145" y="256" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#c07f18">4:48</text>
+  <text x="182" y="256" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">6:18</text>
+  <text x="398" y="256" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">17:40</text>
+  <text x="607" y="256" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#c07f18">28:18</text>
+  <text x="156" y="290" text-anchor="middle" font-size="15">📟</text>
+  <text x="186" y="290" text-anchor="middle" font-size="15">📟</text>
+  <text x="481" y="290" text-anchor="middle" font-size="15">✅</text>
+  <text x="648" y="290" text-anchor="middle" font-size="15">✅</text>
+  <text x="172" y="312" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">울림 알림 +35초</text>
+  <text x="481" y="312" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">해제 알림 +3분 45초</text>
+  <text x="630" y="312" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">+2분 5초</text>
+  <text x="560" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">주입을 멈춘 뒤</text>
+  <text x="560" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">page 28초, ticket 10분 38초</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 울리는 데 6분, 꺼지는 데 28초. 알림은 그보다 늦게 왔다</div>
+
+<h2>5. 에러율 10%: 24초 만에 울렸고, ticket은 장애가 끝난 뒤에 왔다</h2>
+
+<p>12분 창이 비워진 뒤 실패율을 10%로 올렸어요. 3분을 계획했는데 중단을 늦게 쳐서 5분 16초 동안 1만 2,640건 중 1,257건이 실패했습니다(9.94%, burn rate 약 100).</p>
+
+<div class="obsv-code">curl -X POST 'localhost:24080/chaos?errorRate=0.1'     # 07:44:08 주입
+curl -X POST 'localhost:24080/chaos?errorRate=0'       # 07:49:24 중단</div>
+
+<div class="obsv-code">07:44:08  10% 주입
+07:44:22  ticket firing   (+0:14)   ← 48분 창에 4절의 에러가 아직 남아 있었다(burn 4.0)
+07:44:32  page firing     (+0:24)   burn 10s=90.6  2m=16.5
+07:45:07  웹훅 /page firing          (경고 뒤 35초)
+07:49:24  주입 중단
+07:50:27  page 해제       (중단 뒤 63초)
+07:54:57  웹훅 /ticket firing        ← 장애가 끝나고 5분 33초 뒤
+07:55:09  웹훅 /page resolved        (해제 뒤 4분 42초)</div>
+
+<p>page까지 24초가 걸렸어요. 빠른 단의 2분 창이 1.44%를 넘으려면 이론상 0.0144 ÷ 0.0994 × 120초 ≈ 17.4초가 필요하고, 나머지는 고정 지연이에요. Sloth 규칙은 SLI 기록, 메타 기록, 경고의 세 그룹으로 나뉘고 그룹마다 따로 5초 간격으로 평가되니, 스크레이프(최대 2초), 기록 그룹 대기(최대 5초), 경고 그룹 대기(최대 5초)가 쌓여 최대 12초까지 더해질 수 있어요. 측정한 차이 6.6초는 그 범위 안이고, 이 몫은 창을 줄여도 줄지 않습니다. 운영 창(1시간)이었다면 같은 계산으로 약 8.7분입니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/slo-alerting/images/lab-01/burn-rate-10pct.png" alt="Grafana 대시보드. 10% 주입이 시작되자 10초 창 burn rate가 바로 100 근처로 뛰고 2분 창이 몇십 초 만에 14.4를 넘는다. 주입을 멈춘 뒤 1분 창이 먼저 0으로 내려가고 12분 창은 44에 머문다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 빠른 장애는 짧은 창이 먼저 잡고, 끝난 뒤에도 짧은 창이 먼저 내려온다</div>
+
+<p>눈여겨볼 줄은 07:54:57의 ticket 알림이에요. 첫 알림 차례에는 page가 울리고 있어 억제됐고, page가 풀린 뒤 다음 <code>group_interval</code> 차례에 나갔어요. 에러가 멈춘 지 5분 33초 뒤입니다. ticket은 "예산을 썼으니 근무 시간에 보라"는 경고라 긴 창이 장애 뒤에도 그 사실을 기억하니, 설계대로의 동작이에요. <span class="obsv-mark">억제 규칙은 알림을 지우지 않고 page가 끝날 때까지 미룹니다.</span> ticket 알림 본문에 시작 시각(<code>startsAt</code>)을 넣어 두면 헷갈리지 않아요.</p>
+
+<p>k6 실행 시간을 compose로 넘기지 않은 실수로 부하가 07:52:51에 끝나서, 그 뒤의 ticket 해제 시각은 싣지 않았어요. 07:54:57과 07:55:09의 두 알림은 부하가 끝난 뒤에 나갔지만, 각각 07:44:22부터 이어진 ticket firing과 07:50:27의 page 해제를 group_interval 차례에 보낸 것입니다.</p>
+
+<h2>6. 꺼지는 시간과 pending이 없다는 것</h2>
+
+<p>page 해제까지는 28초와 63초였어요. 1편 설명대로 짧은 창이 먼저 내려가 경고를 끕니다. 둘 다 느린 page 단이 마지막까지 참이었는데, 1% 실행에서는 1분 창이 10 안팎이라 6까지 내려오는 데 계산상 25초쯤, 10% 실행에서는 100 근처라 56초쯤 걸리고, 여기에 평가 지연이 더해져 28초와 63초가 됐어요. 해제 시간은 짧은 창 길이와 그 창에 쌓인 burn rate 크기가 같이 정합니다.</p>
+
+<p>해제 <b>알림</b>은 그보다 3분 45초, 4분 42초 늦었어요. 첫 알림(07:19:17)에서 5분 배수가 되는 시각에만 다음 알림이 나가서, 07:30:32의 해제는 07:34:17에 실렸습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: for 절과 pending</div>
+  Prometheus 경고 규칙에 <code>for: 5m</code>을 주면 조건이 5분 동안 계속 참이어야 firing이 되고, 그동안은 pending 상태로 기다립니다. <code>for</code>가 없으면 Prometheus 문서 표현대로 "Alerting rules without the <code>for</code> clause will become active on the first evaluation.", 곧 첫 평가에서 바로 활성이 돼요.
+</div>
+
+<p>pending에서 firing으로 넘어가는 시각을 재려 했는데 pending은 한 번도 기록되지 않았어요. <code>count_over_time(ALERTS{alertstate="pending"}[2h])</code>는 빈 결과였고 firing 표본은 page 210개, ticket 486개였습니다. Sloth 경고에는 <code>for</code>가 없어 첫 평가에서 바로 firing이 돼요. 다중 창 AND가 이미 튀는 값을 거른다는 판단으로 보여요.</p>
+
+<p>대신 그 대가가 그림 3 아래 상태 막대의 9초 끊김입니다. 07:27:33에 1분 창이 5.6으로 내려가자 page가 바로 풀렸고, 9초 뒤 6.0으로 돌아오자 다시 firing이 됐어요. Alertmanager는 그 사이 <code>group_interval</code> 차례가 없어서 알림을 보내지 않았지만, 경고의 시작 시각(<code>startsAt</code>)은 07:18:42에서 07:27:42로 바뀌었습니다. 해제 알림에 찍힌 시작 시각이 처음 울린 시각(07:18:42)보다 9분 늦은 이유예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: Sloth 경고를 운영에 넣을 때</div>
+  &bull; 경고가 문턱 근처에서 끊겼다 붙었다 하면 <code>for</code>보다 <code>keep_firing_for</code>를 검토해요. 조건이 거짓이 된 뒤에도 정해진 시간 동안 firing을 유지해서, 시작 시각이 바뀌는 일을 줄여 줘요<br>
+  &bull; <code>group_interval</code>은 해제 알림을 최대 그만큼 늦춰요. "언제 끝났나"는 알림 도착 시각이 아니라 본문의 <code>endsAt</code>으로 보세요<br>
+  &bull; 새 서비스, Prometheus 데이터를 잃은 직후, 레이블이 바뀐 직후에는 긴 창이 덜 차서 ticket이 예민해요. 그 시기의 ticket은 그 점을 감안해서 읽어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>SLO 파일 한 장에서 Sloth가 규칙 17개를 만들었고, 에러율 1%에서는 6분 18초, 10%에서는 24초 만에 page가 울렸다.</b> 시간은 30분의 1로 줄였지만 burn rate 계수는 그대로라 판정 기준은 같고, 고정 지연(평가 간격, group_wait, group_interval)과 창 안의 요청 수, 긴 창이 차는 데 걸리는 시간은 운영과 다르다.<br><br>
+  드러난 것은 판정 바깥의 일이었다. 덜 찬 긴 창 때문에 ticket이 먼저 왔고, 억제된 ticket은 장애가 끝난 뒤 도착했으며, for 없는 경고는 9초 끊기며 시작 시각을 잃었다. 경고는 식과 창과 알림 경로가 합쳐진 결과다.
+</div>
+
+</div>

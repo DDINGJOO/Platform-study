@@ -1,0 +1,261 @@
+<!-- lead: kind 클러스터에서 Prometheus가 긁는 앱과 OTLP로 미는 앱을 멈추고 지웠어요. pull은 10초 만에 알렸지만 빨리 종료된 파드는 up이 0이 아니라 없음이 됐고, push 시계열은 5분 동안 쿼리에 남았어요. -->
+<!-- tags: Prometheus up, absent_over_time, staleness, OTLP 수신, kubernetes_sd_configs -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📊 메트릭 수집, 실습-2</div>
+  1편. 관측 데이터의 경제학<br>
+  2편. 프로메테우스는 왜 긁어가는가<br>
+  3편. StatsD, UDP로 쏘고 잊어라<br>
+  4편. 드롭위저드는 왜 1분·5분·15분 비율을 따로 보냈나<br>
+  5편. 수집 기술의 최전선<br>
+  실습-1. 태그 하나가 시계열을 몇 개로 늘리는지 세어 본다<br>
+  <b>실습-2. 앱이 죽으면 pull과 push는 다르게 조용해진다</b> &larr; 지금 이 글<br>
+  실습-3. StatsD는 UDP 패킷을 말없이 버린다<br>
+  실습-4. 코드 없이 프로파일과 지표를 얻는다
+</div>
+
+<p>주문 서비스가 멈췄습니다. 대시보드의 주문 그래프는 마지막 값에서 평평하게 이어지고, 알람은 아직 울리지 않아요. 5분쯤 지나서야 그래프가 끊깁니다. 그 5분 동안 서비스가 정말 멈춘 건지, 주문이 없었던 건지, 지표 파이프라인이 고장 난 건지 알 수 없어요.</p>
+
+<p>2편은 pull 방식이 "침묵을 정보로" 만든다고 했습니다. 긁으러 갔다가 실패하면 <code>up</code>이 0이 되니까요. push는 데이터가 오지 않아도 그게 무슨 뜻인지 모릅니다. 이번 실습에서는 kind 클러스터에 같은 앱을 두 번 띄워, 하나는 Prometheus가 긁게 하고 하나는 OTLP로 Collector에 밀게 했어요. 그리고 앱을 멈추고, 없애고, 재배포하면서 각각이 몇 초 만에 알아차리는지를 쟀습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 앱 프로세스가 멈추면 pull과 push는 각각 몇 초 만에 알아차리는가?<br>
+  &bull; 파드가 아예 사라지면 <code>up == 0</code> 알람은 울리는가?<br>
+  &bull; push로 받은 시계열은 왜 끊긴 뒤에도 5분 동안 쿼리에 나오는가?<br>
+  &bull; Collector를 한 번 더 거치면 무엇이 달라지는가?
+</div>
+
+<h2>1. 실습 환경: 같은 앱, 두 가지 경로</h2>
+
+<p>앱은 0.1초마다 주문 카운터 <code>shop.orders</code>를 1씩 올리는 스프링 부트 앱이에요. 같은 이미지를 두 Deployment로 띄웠습니다.</p>
+
+<p><b>pull-app</b>은 <code>/actuator/prometheus</code>를 열어 둡니다. Prometheus는 쿠버네티스 API에서 파드 목록을 받아(<code>kubernetes_sd_configs</code>, <code>role: pod</code>) <code>prometheus.io/scrape: "true"</code> 애노테이션이 붙은 파드를 10초마다 긁어요. <b>push-app</b>은 Micrometer OTLP 레지스트리로 10초마다 OTel Collector에 지표를 밉니다. Collector는 받은 지표를 두 곳으로 보내요. 하나는 Prometheus의 OTLP 수신 엔드포인트로 그대로 밀고(경로 1), 다른 하나는 Collector 자신의 <code>:8889</code>에 Prometheus 형식으로 걸어 두어 Prometheus가 긁게 합니다(경로 2). 현장에서 둘 다 흔히 쓰는 구성이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrP1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrP1b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M20 22 C 250 19, 470 23, 680 20 C 682 120, 681 220, 680 296 C 470 299, 250 295, 21 298 C 19 220, 20 120, 20 22 Z" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="8 7"/>
+  <text x="34" y="44" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">kind 클러스터 obs-lab-metrics-02 (노드 1개)</text>
+
+  <path d="M40 66 C 90 64, 140 67, 180 65 C 182 84, 181 102, 180 118 C 140 120, 90 117, 41 119 C 39 102, 40 84, 40 66 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="110" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">pull-app</text>
+  <text x="110" y="109" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">/actuator/prometheus</text>
+
+  <path d="M40 196 C 90 194, 140 197, 180 195 C 182 214, 181 232, 180 248 C 140 250, 90 247, 41 249 C 39 232, 40 214, 40 196 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.6"/>
+  <text x="110" y="220" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">push-app</text>
+  <text x="110" y="239" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">OTLP 10초마다</text>
+
+  <path d="M250 196 C 300 194, 350 197, 392 195 C 394 214, 393 232, 392 248 C 350 250, 300 247, 251 249 C 249 232, 250 214, 250 196 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="321" y="220" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">OTel Collector</text>
+  <text x="321" y="239" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">:4318 받음, :8889 내놓음</text>
+  <path d="M184 222 C 210 221, 228 223, 244 222" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrP1)"/>
+
+  <path d="M480 106 C 540 104, 600 107, 650 105 C 652 126, 651 146, 650 164 C 600 166, 540 163, 481 165 C 479 146, 480 126, 480 106 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6"/>
+  <text x="565" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Prometheus</text>
+  <text x="565" y="152" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">10초 긁기, 규칙 5초</text>
+
+  <path d="M474 112 C 380 96, 280 90, 188 90" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#arrP1b)"/>
+  <text x="330" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">pull: API로 파드 목록을 받아 긁으러 간다</text>
+
+  <path d="M396 206 C 430 190, 450 170, 476 154" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrP1)"/>
+  <text x="478" y="200" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18">경로 1: OTLP 로 밀어 넣음</text>
+  <path d="M474 160 C 450 200, 430 230, 398 240" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" marker-end="url(#arrP1b)"/>
+  <text x="478" y="236" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5">경로 2: Collector 의 :8889 를 긁음</text>
+
+  <text x="350" y="284" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">같은 카운터가 세 시계열로 들어온다: pull-app, push-app, otel-collector</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 앱 하나를 긁기와 밀기로 나눠 띄웠다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 서비스 디스커버리 (service discovery)</div>
+  Prometheus가 긁을 대상 목록을 설정 파일 대신 외부에서 받아 오는 기능입니다. 쿠버네티스에서는 API 서버를 지켜보다가 파드가 생기면 대상에 넣고, 사라지면 뺍니다. 2편에서 pull이 쿠버네티스에서 이긴 이유로 든 바로 그 기능이에요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: OTLP (OpenTelemetry Protocol)</div>
+  OpenTelemetry가 정한 텔레메트리 전송 형식입니다. 앱이나 Collector가 이 형식으로 지표를 밀어 보내고, Prometheus 3는 <code>--web.enable-otlp-receiver</code>를 켜면 <code>/api/v1/otlp/v1/metrics</code>에서 직접 받아요.
+</div>
+
+<p>알람은 Prometheus 규칙 네 개로 걸었어요. 몇 초 만에 울리는지 보려고 <code>for</code>는 두지 않았습니다.</p>
+
+<div class="obsv-code">PullTargetDown      up{job="pull-app"} == 0                               긁으러 갔는데 실패했다
+PullTargetAbsent    absent(up{job="pull-app"})                            긁을 대상 자체가 없다
+PushSeriesAbsent    absent(shop_orders_total{job="push-app"})             밀어 넣던 시계열이 쿼리에서 사라졌다
+PushNoSampleFor30s  absent_over_time(shop_orders_total{job="push-app"}[30s])  최근 30초 동안 새 샘플이 없다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: absent()와 absent_over_time()</div>
+  <code>absent(식)</code>은 그 식이 지금 아무 시계열도 돌려주지 않을 때 1을 돌려줍니다. "있어야 할 것이 없다"를 알람으로 만드는 함수예요. <code>absent_over_time(식[30s])</code>는 지난 30초 안에 샘플이 하나도 없을 때 1을 돌려줘요.
+</div>
+
+<p>버전과 돌리는 법입니다. kind 클러스터는 이 실습 전용으로 만들고 끝나면 지워요.</p>
+
+<div class="obsv-code">kind                  0.33.0
+Spring Boot           4.1.1   (Micrometer 1.17.1)
+Prometheus            3.15.0  (--web.enable-otlp-receiver)
+OTel Collector        0.162.0 (contrib)
+Grafana               13.2.3
+실행 환경             Docker Desktop, Apple M5 Pro
+
+git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/metrics-02-pull-push
+./up.sh            # kind 클러스터 생성, 앱 이미지 빌드·적재, 배포
+./freeze.sh        # 시나리오 1: 두 앱 프로세스를 400초 멈춘다. 시작·끝 유닉스초를 찍는다
+python3 timeline.py &lt;시작-20&gt; &lt;끝+60&gt;   # 무엇이 언제 바뀌었는지
+./scale-zero.sh    # 시나리오 2: 두 Deployment 를 400초 동안 0개로
+python3 timeline.py &lt;시작-20&gt; &lt;끝+60&gt;
+./down.sh          # 클러스터 삭제
+# Prometheus http://localhost:21290, Grafana http://localhost:21200</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/metrics-02-pull-push">GitHub 저장소의 labs/observability/metrics-02-pull-push</a>에 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 스프링 부트 4에서 OTLP 레지스트리만 넣으면 아무것도 안 나간다</div>
+  처음에는 <code>micrometer-registry-otlp</code>만 의존성에 넣었어요. 앱은 잘 떴고 오류도 경고도 없었는데, Collector에는 한 줄도 오지 않았습니다. 스프링 부트 4.1.1의 <code>OtlpMetricsExportAutoConfiguration</code>은 <code>@ConditionalOnClass({ OtlpMeterRegistry.class, OpenTelemetryProperties.class })</code>로 걸려 있고, <code>OpenTelemetryProperties</code>는 <code>spring-boot-opentelemetry</code> 모듈에 있어요. 이 모듈을 추가하자 지표가 나갔습니다. push는 "안 나가고 있다"는 사실도 조용하다는 걸 시작부터 겪은 셈이에요.
+</div>
+
+<h2>2. 시나리오 1: 프로세스가 멈췄다</h2>
+
+<p>첫 번째는 앱이 응답하지 않는 상황입니다. kind 노드 안에서 두 앱의 자바 프로세스에 <code>SIGSTOP</code>을 보내 400초 동안 멈췄어요. 파드는 <code>Running</code> 그대로이고, 프로브를 두지 않았으니 쿠버네티스도 아무것도 하지 않습니다.</p>
+
+<div class="obsv-code">./freeze.sh      # 18:24:42 에 SIGSTOP, 18:31:22 에 SIGCONT
+
+python3 timeline.py 1791624260 1791624742   (멈춘 시각 기준으로 다시 정리)
+ +7초    pull up 1 → 0, pull 시계열이 쿼리에서 사라짐
++10초    ALERT PullTargetDown 발화
++25초    ALERT PushNoSampleFor30s 발화
++292초   push 시계열(OTLP)이 쿼리에서 사라짐
++295초   ALERT PushSeriesAbsent 발화
++296초   push 시계열(Collector :8889)이 사라짐 (그때까지 값 787 그대로)</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-02/freeze.png" alt="Grafana 대시보드. 위는 발화 중인 알람으로 PullTargetDown과 PushNoSampleFor30s는 18시 25분 무렵부터, PushSeriesAbsent는 18시 29분 30초 무렵부터 빨간 막대가 이어진다. 아래 왼쪽은 pull의 up이 18시 25분 직전에 0으로 떨어지는 모습, 오른쪽은 OTLP로 받은 값의 샘플 나이가 5분까지 늘어나다가 끊기고 Collector를 긁은 값의 나이는 0 근처에 머무는 모습이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. pull은 10초 만에 울렸고, push의 absent()는 5분을 기다렸다</div>
+
+<p>pull 쪽은 2편이 말한 그대로예요. 멈춘 뒤 첫 스크레이프(타임아웃 5초)가 실패하자 <code>up</code>이 0이 됐고, 규칙 평가 한 번 뒤에 알람이 울렸습니다. 그리고 <code>shop_orders_total{job="pull-app"}</code>은 같은 순간 쿼리 결과에서 빠졌어요. 스크레이프에 실패하면 Prometheus가 직전까지 받던 시계열에 "끝났다"는 표시(stale 표시)를 쓰기 때문입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: stale 표시와 lookback</div>
+  Prometheus는 쿼리 시각마다 최근 5분(lookback) 안의 마지막 샘플을 그 시계열의 값으로 씁니다. 다만 스크레이프나 규칙 평가가 "이 시계열은 끝났다"는 특수 값(stale 표시)을 써 두면 그 뒤로는 값을 돌려주지 않아요. 문서는 이 표시를 쓰는 주체를 스크레이프와 규칙 평가로 적고 있습니다.
+</div>
+
+<p>push 쪽 OTLP 시계열에는 그 표시를 써 줄 주체가 없어요. 앱이 마지막으로 민 샘플이 18:24:34였는데, 쿼리는 그 값을 5분 뒤인 18:29:34까지 돌려줬습니다. 오른쪽 아래 패널의 초록 선이 그 "샘플 나이"예요. 0에서 5분까지 늘어나다가 끊깁니다. 그래서 <code>absent()</code> 알람은 멈춘 지 295초 뒤에야 울렸어요. <span class="obsv-mark">push 시계열은 끊긴 뒤에도 lookback만큼 쿼리에 계속 나옵니다.</span> 반면 <code>absent_over_time(...[30s])</code>는 25초 만에 울렸어요. "지금 값이 있나"가 아니라 "최근에 새 샘플이 왔나"를 물었기 때문입니다.</p>
+
+<h3>Collector를 한 번 더 거치면 값이 멈춘 채 살아 있다</h3>
+
+<p>경로 2는 더 헷갈렸어요. Prometheus가 긁는 대상은 Collector라서, Collector가 멀쩡하면 <code>up{job="otel-collector"}</code>은 계속 1입니다. 그리고 Collector는 마지막으로 받은 값 787을 계속 내놓아요. Prometheus는 그 값을 10초마다 새 샘플로 받아 적으니 샘플 나이는 늘 10초 이내였습니다(오른쪽 아래 패널의 노란 선). 대시보드만 보면 "값이 들어오는데 안 늘 뿐"이에요. 이 값은 296초 뒤에야 사라졌습니다. Collector의 <code>prometheus</code> exporter 문서가 말하는 <code>metric_expiration</code> 기본값 5분이 지나서 Collector가 내놓기를 멈춘 거예요.</p>
+
+<p>2편은 Pushgateway의 함정으로 "한 번 밀어 넣은 시계열을 스스로 잊지 않는다"를 들었어요. Collector의 <code>prometheus</code> exporter는 5분 뒤에 잊긴 하지만, 그 5분 동안은 같은 함정이 그대로 나타났습니다. 끊긴 앱의 마지막 값이 새 샘플로 계속 저장돼요.</p>
+
+<h2>3. 시나리오 2: 파드가 사라졌다</h2>
+
+<p>두 번째는 앱이 아예 없어지는 상황입니다. 두 Deployment를 <code>replicas=0</code>으로 줄였다가 400초 뒤에 1로 되돌렸어요.</p>
+
+<div class="obsv-code">./scale-zero.sh      # 18:16:32 에 0 으로, 18:23:12 에 1 로
+
+up{job="pull-app"} 원본 샘플:  18:16:07 1   18:16:17 1   18:16:27 1   (그다음은 없음)
+
+ +15초   ALERT PullTargetAbsent 발화
+ +35초   ALERT PushNoSampleFor30s 발화
++301초   push 시계열(OTLP)이 쿼리에서 사라짐
++305초   ALERT PushSeriesAbsent 발화
+         PullTargetDown 은 한 번도 울리지 않았다</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-02/scale-zero.png" alt="같은 대시보드의 scale-zero 구간. 알람 패널에는 PullTargetAbsent, PushNoSampleFor30s, 조금 뒤 PushSeriesAbsent가 보이고 PullTargetDown은 없다. pull up 패널은 0으로 떨어지지 않고 그냥 끊겼다가 새 파드가 뜬 뒤 다시 1로 나타난다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 파드가 사라지자 up은 0이 되지 않고 그냥 없어졌다</div>
+
+<p>이번에는 <code>up</code>이 0이 된 적이 없어요. 1, 1, 1 다음에 아무것도 없습니다. 파드가 지워지자 서비스 디스커버리 목록에서 바로 빠졌고, 긁으러 갈 대상이 없으니 실패할 일도 없었던 거예요. Prometheus 문서도 "대상이 제거되면 이전 시계열은 곧 stale로 표시된다"고만 적고 있습니다. 2편은 "제거되기 전에 실패한 순찰은 up=0으로 남는다"고 했는데, 이번 실행에서는 그 실패한 순찰이 한 번도 없었어요. Prometheus는 대상이 빠지면 두 주기 남짓 기다렸다가 <code>up</code>을 포함한 그 대상의 시계열에 stale 표시를 써요(<code>scrape.go</code>의 <code>endOfRunStaleness</code>). 이번 앱처럼 빨리 종료되면 <b><code>up == 0</code>만 걸어 두어서는 알람이 울리지 않습니다.</b> 종료가 느려 Terminating 동안 목록에 남아 있으면 up=0이 찍힐 수 있는데, 아래 재배포에서 한 번 그랬어요. 울린 건 <code>absent(up{job="pull-app"})</code>였어요.</p>
+
+<p>push 쪽은 시나리오 1과 같았고, 하나가 달랐어요. 파드가 종료 신호를 받으면서 Micrometer가 마지막 값을 한 번 더 밀었습니다. 10초 주기 중간인 18:16:32에 값 5052가 들어왔어요. 그래서 마지막 샘플이 조금 늦게 찍혔고, 사라지기까지는 그 시각부터 다시 5분이었습니다.</p>
+
+<h3>재배포하면 어떻게 보이나</h3>
+
+<p>두 앱을 재배포해 봤어요.</p>
+
+<div class="obsv-code">kubectl --context kind-obs-lab-metrics-02 -n obs rollout restart deploy/pull-app deploy/push-app</div>
+
+<p>pull 쪽은 실행마다 결과가 달랐습니다. 한 번은 옛 pull 파드에 <code>up=0</code> 샘플이 하나(17:20:10) 찍힌 뒤 대상에서 빠졌고, 다른 한 번(18:34:23)은 0 없이 빠졌어요. 종료 중인 파드를 스크레이프가 마침 건드렸는지에 따라 갈리는 것으로 보입니다. <code>for</code> 없는 <code>up == 0</code> 알람이라면 재배포 때 가끔 헛알람이 울린다는 뜻이에요.</p>
+
+<p>push 쪽은 매번 같았어요. 옛 인스턴스의 시계열이 마지막 값(6697)을 단 채 18:39:24까지 5분 더 남아서, 새 인스턴스와 4분 52초 동안 겹쳤습니다. push-app은 <code>service.instance.id</code>를 파드 이름으로 보내서 옛 파드와 새 파드가 다른 인스턴스로 잡히고, 이 동안 <code>count(shop_orders_total{job="push-app"})</code>은 2였어요. 인스턴스를 합쳐 값을 더하는 쿼리라면 그동안 옛 값이 같이 더해집니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="30" y="28" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">앱이 멈춘 뒤(시나리오 1) 각 알람이 울리기까지</text>
+  <path d="M190 220 C 330 218, 500 221, 668 219" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+  <path d="M190 214 L 190 226 M282 214 L 282 226 M374 214 L 374 226 M466 214 L 466 226 M558 214 L 558 226 M650 214 L 650 226" fill="none" stroke="#3d3a34" stroke-width="2"/>
+  <text x="190" y="244" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">0</text>
+  <text x="282" y="244" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">1분</text>
+  <text x="374" y="244" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">2분</text>
+  <text x="466" y="244" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">3분</text>
+  <text x="558" y="244" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">4분</text>
+  <text x="650" y="244" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">5분</text>
+
+  <text x="30" y="66" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">pull: up == 0</text>
+  <path d="M190 52 C 195 51, 200 53, 205 52 C 206 60, 206 66, 205 72 C 200 73, 195 72, 191 72 C 189 66, 190 60, 190 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="214" y="67" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">10초</text>
+
+  <text x="30" y="106" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">push: absent_over_time</text>
+  <path d="M190 92 C 205 91, 218 93, 228 92 C 229 100, 229 106, 228 112 C 218 113, 205 112, 191 112 C 189 106, 190 100, 190 92 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="237" y="107" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">25초</text>
+
+  <text x="30" y="146" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">push: absent()</text>
+  <path d="M190 132 C 350 130, 500 133, 640 131 C 641 140, 641 146, 640 152 C 500 153, 350 151, 191 152 C 189 146, 190 140, 190 132 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="560" y="147" font-family="Menlo, monospace" font-size="12" fill="#b3502f">295초 →</text>
+
+  <text x="30" y="186" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">Collector 경유: 값 787 유지</text>
+  <path d="M190 172 C 350 170, 500 173, 640 171 C 641 180, 641 186, 640 192 C 500 193, 350 191, 191 192 C 189 186, 190 180, 190 172 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-dasharray="6 4"/>
+  <text x="560" y="187" font-family="Menlo, monospace" font-size="12" fill="#c07f18">296초 →</text>
+
+  <text x="350" y="278" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">push는 "끊겼다"를 묻는 방식에 따라 25초도 되고 5분도 된다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 같은 장애, 같은 Prometheus인데 알아차리는 시간은 식이 정했다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 조용해진 대상을 잡는 규칙</div>
+  &bull; pull 대상에는 <code>up == 0</code>과 함께 <code>absent(up{job="..."})</code>를 걸어요. 앞의 것은 "멈춤", 뒤의 것은 "사라짐"을 잡아요. 재배포 헛알람을 피하려면 <code>up == 0</code>에 <code>for: 1m</code> 정도를 줘요<br>
+  &bull; push 시계열에는 <code>absent()</code> 대신 <code>absent_over_time(지표[주기의 2~3배])</code>를 써요. <code>absent()</code>는 lookback(기본 5분)이 지나야 울려요<br>
+  &bull; Collector의 <code>prometheus</code> exporter를 거친다면 <code>up</code>은 앱이 아니라 Collector의 상태예요. 앱의 생사는 앱이 보낸 지표의 갱신 여부로 따로 봐요<br>
+  &bull; push 인스턴스를 합산하는 쿼리는 재배포 직후 몇 분 동안 옛 인스턴스가 함께 더해질 수 있어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>앱이 멈추자 pull은 10초 만에 up=0으로 알렸고, push 시계열은 마지막 값을 단 채 5분 동안 쿼리에 계속 나왔다.</b> 스크레이프 실패는 stale 표시를 남기지만, 밀어 넣은 샘플에는 그 표시를 써 줄 주체가 없어서 lookback이 끝날 때까지 남는다. Collector를 한 번 더 거치면 끊긴 앱의 마지막 값이 5분 동안 새 샘플로 저장됐다.<br><br>
+  pull도 만능은 아니었다. 이번처럼 빨리 종료되는 파드는 서비스 디스커버리 목록에서 바로 빠져 up이 0이 아니라 없음이 됐고, up == 0 알람은 울리지 않았다. 침묵을 정보로 바꾸는 건 수집 방식이 아니라, 그 침묵을 묻는 식이다.
+</div>
+
+</div>

@@ -1,0 +1,36 @@
+// 도커 소켓으로 컨테이너 로그를 읽어 Loki 로 보낸다.
+// 도커 데몬의 컨테이너를 전부 보게 되므로, 이 실습(compose 프로젝트)의 앱 컨테이너만 남긴다.
+discovery.docker "local" {
+  host = "unix:///var/run/docker.sock"
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=tracing-03-logs"]
+  }
+}
+
+discovery.relabel "apps" {
+  targets = discovery.docker.local.targets
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "order|inventory|payment"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service_name"
+  }
+}
+
+loki.source.docker "apps" {
+  host          = "unix:///var/run/docker.sock"
+  // relabel_rules 의 keep 은 대상을 거르지 않았다(Loki 자기 로그까지 들어왔다).
+  // 거르는 건 discovery.relabel 의 output 으로 넘겨야 한다.
+  targets       = discovery.relabel.apps.output
+  forward_to    = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

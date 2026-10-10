@@ -1,0 +1,24 @@
+# 값은 Alertmanager 기본값과 같게 적었다(group_wait 30s, group_interval 5m, repeat_interval 4h).
+route:
+  receiver: ticket
+  group_by: [alertname, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="page"]
+      receiver: page
+    - matchers: [severity="ticket"]
+      receiver: ticket
+receivers:
+  - name: page
+    webhook_configs:
+      - url: http://webhook:8080/page
+  - name: ticket
+    webhook_configs:
+      - url: http://webhook:8080/ticket
+# 같은 SLO 의 page 가 울리는 동안 ticket 은 보내지 않는다.
+inhibit_rules:
+  - source_matchers: [severity="page"]
+    target_matchers: [severity="ticket"]
+    equal: [sloth_slo]

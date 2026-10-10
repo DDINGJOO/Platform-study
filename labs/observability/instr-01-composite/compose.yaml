@@ -1,0 +1,27 @@
+# 계측 라이브러리 실습-1: 같은 카운터가 Prometheus와 OTLP로 동시에 나간다.
+services:
+  app:
+    build: ./app
+    image: obs-lab/instr-01-composite:dev
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+    mem_limit: 512m
+    ports: ["${APP_PORT:-22080}:8080"]
+    depends_on: [otel-collector]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    mem_limit: 256m
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-otlp-receiver
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_PORT:-22090}:9090"]
+    mem_limit: 512m

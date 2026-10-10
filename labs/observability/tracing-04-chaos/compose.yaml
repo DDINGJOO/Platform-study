@@ -1,0 +1,69 @@
+# 추적과 디버깅 실습-4: 지연을 주입하고 트레이스로 원인을 찾는다.
+#   order → inventory → (Toxiproxy) → Postgres
+#         → payment  (baggage 의 chaos 깃발로 실패 주입)
+include:
+  - ../stack/compose.yaml
+
+x-shop: &shop
+  build: ./app
+  image: obs-lab/tracing-04-chaos:dev
+  mem_limit: 512m
+  environment: &shop-env
+    JAVA_TOOL_OPTIONS: -Xmx256m -javaagent:/otel/opentelemetry-javaagent.jar
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    OTEL_METRICS_EXPORTER: none
+    OTEL_LOGS_EXPORTER: none
+
+services:
+  order:
+    <<: *shop
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: order
+      OTEL_SERVICE_NAME: order
+      SHOP_BAGGAGE_GUARD: ${BAGGAGE_GUARD:-false}
+      SHOP_CHAOS_TOKEN: ${CHAOS_TOKEN:-}
+    ports: ["${APP_PORT:-8080}:8080"]
+
+  inventory:
+    <<: *shop
+    depends_on:
+      postgres: { condition: service_healthy }
+      toxiproxy: { condition: service_started }
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: inventory
+      OTEL_SERVICE_NAME: inventory
+
+  payment:
+    <<: *shop
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: payment
+      OTEL_SERVICE_NAME: payment
+
+  postgres:
+    image: postgres:18.6-alpine
+    mem_limit: 256m
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "shop"]
+      interval: 2s
+      retries: 30
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes:
+      - ./toxiproxy.json:/config/toxiproxy.json:ro
+    ports: ["${TOXIPROXY_PORT:-8474}:8474"]
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "/scripts/orders.js"]
+    volumes:
+      - ./k6:/scripts:ro

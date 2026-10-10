@@ -1,0 +1,15 @@
+# 고리 하나씩 끊어 보기. 본 compose 와 같은 네트워크에 Prometheus 두 대를 더 붙인다.
+#   docker compose -f compose.yaml -f experiments/compose.yaml up -d prom-noflag prom-text
+services:
+  prom-noflag:          # exemplar-storage 플래그 없음
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_NOFLAG_PORT:-23391}:9090"]
+  prom-text:            # 플래그는 있지만 텍스트 형식으로만 긁는다
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--enable-feature=exemplar-storage"]
+    volumes:
+      - ./experiments/prometheus-text.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_TEXT_PORT:-23392}:9090"]

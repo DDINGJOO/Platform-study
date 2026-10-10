@@ -1,0 +1,23 @@
+# SLO 정의. Sloth 가 이 파일에서 Prometheus 기록 규칙과 경고 규칙을 만든다.
+version: "prometheus/v1"
+service: "slo-app"
+labels:
+  owner: "lab"
+slos:
+  # /api/work 요청의 99.9% 는 5xx 가 아니어야 한다.
+  - name: "work-availability"
+    objective: 99.9
+    description: "GET /api/work 가용성"
+    sli:
+      events:
+        # 5xx 가 한 번도 안 났으면 5xx 시계열 자체가 없어서 결과가 "없음"이 된다. 0 으로 채운다.
+        error_query: sum(rate(http_server_requests_seconds_count{application="slo-app",uri="/api/work",status=~"5.."}[{{.window}}])) or vector(0)
+        total_query: sum(rate(http_server_requests_seconds_count{application="slo-app",uri="/api/work"}[{{.window}}]))
+    alerting:
+      name: WorkHighErrorBudgetBurn
+      page_alert:
+        labels:
+          severity: page
+      ticket_alert:
+        labels:
+          severity: ticket
