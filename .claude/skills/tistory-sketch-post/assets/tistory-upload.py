@@ -104,14 +104,16 @@ def category_of(path, series):
 
 def title_of(path, series):
     """제목 = titles 덮어쓰기 > "접두어 " + 파일명(번호_ 뒤).
-    접두어는 파일명이 "N편"·"번외" 로 시작할 때만 붙인다. "Micrometer 1편" 처럼
-    하위 시리즈 이름으로 시작하는 파일에 상위 시리즈 이름을 겹쳐 붙이지 않기 위해서다."""
+    접두어는 파일명이 "N편"·"번외"·"실습-N" 으로 시작할 때만 붙인다. "Micrometer 1편" 처럼
+    하위 시리즈 이름으로 시작하는 파일에 상위 시리즈 이름을 겹쳐 붙이지 않기 위해서다.
+    실습 글은 "실습-1 - 주제" 파일명을 "실습-1 : 주제" 제목으로 바꾼다. 파일명에는 콜론을 못 쓴다."""
     conf = series.get(rel(path.parent), {})
     stem = re.sub(r"^\d+[a-z]?_", "", path.stem)
     if stem in conf.get("titles", {}):
         return conf["titles"][stem]
+    stem = re.sub(r"^(실습-\d+) - ", r"\1 : ", stem)
     prefix = conf.get("prefix")
-    return f"{prefix} {stem}" if prefix and re.match(r"(\d+편|번외)", stem) else stem
+    return f"{prefix} {stem}" if prefix and re.match(r"(\d+편|번외|실습-\d+)", stem) else stem
 
 
 def order_key(files):

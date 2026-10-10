@@ -29,6 +29,24 @@
 합 29편. `traffic-management/` 7편은 2026-10-10 작성. 2026-10-09 기준 `slo-alerting/` 2~4편, `metrics-pipeline/` 4편,
 `aggregation/` 2편이 미발행이고 나머지 17편은 발행돼 있다.
 
+## 실습 글 (2026-10-10 시작)
+
+개념 글마다 **직접 돌려 보는 글**을 붙인다. 코드는 `labs/observability/`, 화면은 Playwright 로 Grafana 를 캡처한다.
+
+- 파일명 `NN_실습-N - 주제.html`, 발행 제목은 업로더가 `<접두어> 실습-N : 주제` 로 만든다. 파일명에 콜론을 못 써서다.
+- 한 시리즈에 실습이 여러 편이어도 된다. 분량이 넘치면 나눈다. 번호는 개념 편 뒤에 이어 붙인다.
+- 이미지는 `<시리즈>/images/lab-NN/` 에 두고 jsDelivr URL 로 부른다. **이미지를 main 에 먼저 푸시**하고 글을 올린다.
+- 숫자와 화면은 실제로 돌린 결과만 쓴다. 다시 돌리면 값이 조금씩 다르다.
+
+| 시리즈 | 실습 | 상태 |
+|---|---|---|
+| 추적과 디버깅 | 실습-1 코드 한 줄 안 고치고 서비스 세 개를 추적한다 (OTel agent, Tempo) | 파일럿 작성 |
+| 추적과 디버깅 | Kafka를 건너는 컨텍스트 전파 / 로그에서 trace_id로 트레이스 열기(Loki) / 지연 주입과 baggage(Toxiproxy) | 계획 |
+| 메트릭 수집 | 태그 하나로 시계열 폭발 / pull과 push(kind) / StatsD UDP 유실 / Pyroscope·Beyla | 계획 |
+| 계측 라이브러리 | Composite 레지스트리 / 미터 고르기 / 게이지 NaN / MeterFilter | 계획 |
+| 집계와 분포 | 인스턴스 p99 평균의 오류 / 에러율 PromQL / exemplar | 계획 |
+| SLO와 경고 | Sloth burn rate 알람 발화 / 공통 JVM SLI 대시보드 | 계획 |
+
 ---
 
 # 백로그

@@ -1,0 +1,44 @@
+# 추적과 디버깅 실습-1: 코드 한 줄 안 고치고 서비스 세 개를 추적한다.
+include:
+  - ../stack/compose.yaml
+
+x-shop: &shop
+  build: ../app
+  image: obs-lab/shop:dev
+  environment: &shop-env
+    JAVA_TOOL_OPTIONS: -javaagent:/otel/opentelemetry-javaagent.jar
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    OTEL_METRICS_EXPORTER: none
+    OTEL_LOGS_EXPORTER: none
+
+services:
+  order:
+    <<: *shop
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: order
+      OTEL_SERVICE_NAME: order
+    ports: ["8080:8080"]
+
+  inventory:
+    <<: *shop
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: inventory
+      OTEL_SERVICE_NAME: inventory
+
+  payment:
+    <<: *shop
+    environment:
+      <<: *shop-env
+      SPRING_PROFILES_ACTIVE: payment
+      OTEL_SERVICE_NAME: payment
+      SHOP_PAYMENT_FAIL_RATE: ${PAYMENT_FAIL_RATE:-0}
+      SHOP_PAYMENT_SLOW_MS: ${PAYMENT_SLOW_MS:-0}
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "/scripts/orders.js"]
+    volumes:
+      - ./k6:/scripts:ro

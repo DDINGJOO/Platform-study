@@ -1,0 +1,38 @@
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+
+# 스팬에서 서비스 간 호출 관계와 RED 지표를 뽑아 프로메테우스로 보낸다.
+metrics_generator:
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+  processor:
+    service_graphs:
+      wait: 2s
+    local_blocks:
+      filter_server_spans: false
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics, local-blocks]
