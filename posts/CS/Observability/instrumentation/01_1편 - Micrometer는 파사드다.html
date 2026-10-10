@@ -86,6 +86,8 @@ implementation 'io.micrometer:micrometer-registry-prometheus'  // 프로메테�
 
 <p>로깅의 SLF4J가 정확히 같은 구조예요. 코드는 <code>log.info()</code>만 알고 뒤에 Logback이 오든 Log4j가 오든 신경 안 쓰죠. Micrometer는 그 아이디어를 메트릭에 적용한 겁니다. 파사드가 뒤에서 흡수하는 차이는 생각보다 많아요. 메트릭 이름 관례(<code>http.server.requests</code>를 프로메테우스에는 <code>http_server_requests</code>로 번역), 히스토그램 포맷(일반 vs 누적), 전송 방식(push vs pull)까지 전부요.</p>
 
+<p>이름 번역이 점을 밑줄로 바꾸는 데서 끝나지 않을 때도 있어요. 위 예시의 <code>orders.created</code>는 Prometheus 레지스트리로 내보내면 <code>orders_created_total</code>이 아니라 <code>orders_total</code>이 됩니다. Prometheus 자바 클라이언트(1.7.0)가 <code>_created</code>를 예약 접미사로 보고 떼어 낸 뒤 카운터 접미사 <code>_total</code>을 붙이기 때문이에요(실습-1에서 직접 확인했어요). 계측 코드는 그대로여도 쿼리에 쓰는 이름은 백엔드에 따라 달라질 수 있으니, 카운터 이름을 <code>.created</code>나 <code>.total</code>로 끝내지 않는 편이 안전해요.</p>
+
 <!-- ================= 2장 ================= -->
 <h2>2. 그런데 "공짜 메트릭"은 누가 주는 걸까</h2>
 
