@@ -1,0 +1,348 @@
+<!-- lead: 성능 테스트로 정한 벌크헤드 한계는 코드와 인스턴스 수가 바뀌면 낡아요. 리틀의 법칙과 TCP 혼잡 제어에서 빌린 넷플릭스 concurrency-limits, Envoy adaptive concurrency 필터로 한계를 스스로 찾는 방법과 앱과 메시 중 어디에 둘지를 정리했어요. -->
+<!-- tags: 적응형 동시성 제한, concurrency-limits, adaptive concurrency, 리틀의 법칙, 부하 차단 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-hand { font-family: 'Nanum Pen Script', cursive; font-size: 22px; color: #b3502f; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 7편</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  2편. 빨리 실패하는 서버는 한가해 보인다<br>
+  3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다<br>
+  4편. 요청을 한 번 더 보내면 빨라진다<br>
+  5편. 재시도는 공짜가 아니다<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  <b>7편. 임계값을 정하지 않는 동시성 제한</b> &larr; 지금 이 글
+</div>
+
+<p>봄에 부하 테스트를 돌려서 주문 서비스의 벌크헤드를 동시 실행 50개로 잡았습니다. 그 숫자로 몇 달 잘 지냈어요. 그사이 주문 조회 쿼리에 인덱스가 하나 붙었고, 오토스케일링 설정이 바뀌어 인스턴스 수가 절반이 되는 시간대가 생겼고, 결제 쪽 다운스트림은 리전을 하나 더 늘렸습니다. 벌크헤드 설정 파일은 한 줄도 바뀌지 않았고요.</p>
+
+<p>어느 날 저녁, 대시보드에 거절 건수가 올라옵니다. 그런데 CPU는 40%대에 머물러 있어요. 서버는 아직 여유가 있는데 50이라는 숫자가 먼저 문을 닫은 겁니다. 다른 날은 반대였어요. 거절은 0건인데 레이턴시가 몇 초까지 늘어나 호출자들이 줄줄이 타임아웃을 냈습니다. 같은 50이 어떤 날은 너무 작고 어떤 날은 너무 컸어요.</p>
+
+<p>6편에서 본 세 패턴은 모두 사람이 정한 숫자 위에서 움직였습니다. 이번 편은 그 숫자를 사람이 정하지 않으면 무엇이 정하느냐를 묻고, 그 장치를 애플리케이션 코드에 둘지 서비스 메시에 둘지도 같이 봐요.</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 50이라는 숫자는 누가 다시 재나</h2>
+
+<p>고정 한계가 낡는 이유는 서버가 감당할 수 있는 양이 서버 하나만의 성질이 아니기 때문입니다. 요청 하나를 처리하는 데 걸리는 시간은 코드가 바뀌면 달라지고, 다운스트림이 느려지면 달라지고, 같은 장비에 다른 프로세스가 붙어도 달라져요. 넷플릭스는 2018년 테크블로그 글 "Performance Under Load"에서 이 경험을 그대로 적어 뒀습니다. 성능 테스트와 프로파일링으로 동시성 한계를 손으로 재서 박아 뒀더니, 그 값은 잰 순간에는 정확했지만 <b>부분 장애, 오토스케일링, 레이턴시 특성을 바꾸는 코드 배포</b> 때문에 금방 낡았다고요.</p>
+
+<p>숫자가 낡는 방향은 둘입니다. 한계가 실제 용량보다 낮으면 서버가 처리할 수 있는 요청을 버립니다. 서두의 CPU 40% 거절이 이쪽이에요. 한계가 실제 용량보다 높으면 한계에 닿기 전에 서버 안에 줄이 생기고, 그 줄이 레이턴시가 되어 호출자에게 번집니다. 둘 중 어느 쪽이 더 나쁜지는 상황마다 다르지만, <span class="obsv-mark">고정값은 시스템이 바뀌는 만큼 둘 중 한쪽으로 기울어집니다.</span></p>
+
+<p>그럼 초당 요청 수(RPS)로 막으면 되지 않을까요? 넷플릭스 concurrency-limits 저장소의 README는 이걸 먼저 짚습니다. 보통은 부하 테스트로 서비스가 넘어지는 RPS를 재고 그보다 조금 낮게(README의 예는 75%) 토큰 버킷을 거는데, 오토스케일링하는 큰 분산 시스템에서는 이 값이 금방 낡는다는 거예요. 2장에서 보겠지만 요청 하나에 걸리는 시간이 바뀌면 같은 RPS도 전혀 다른 부하가 됩니다. 그래서 이 라이브러리는 RPS 대신 <b>동시에 처리 중인 요청 수</b>를 제한 대상으로 삼습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 동시성, 인플라이트 (in-flight)</div>
+  지금 이 순간 서버가 받아서 아직 응답을 보내지 않은 요청의 수예요. 실제로 처리 중인 것과 차례를 기다리는 것을 합친 값입니다. 6편의 벌크헤드가 세던 "지금 실행 중인 수"와 같은 종류의 숫자인데, 여기서는 서버 안에서 차례를 기다리는 요청까지 함께 셉니다.
+</div>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 리틀의 법칙으로 보면 한계는 곱셈 하나다</h2>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 리틀의 법칙 (Little's Law)</div>
+  정상 상태의 시스템에서 <b>L = λW</b>가 성립한다는 법칙이에요. L은 시스템 안에 머무는 평균 요청 수(동시성), λ는 평균 도착률(처리량), W는 요청 하나가 머무는 평균 시간(레이턴시)입니다. 도착 분포나 처리 순서에 상관없이 평균끼리 성립한다는 점이 이 법칙의 쓸모예요.
+</div>
+
+<p>숫자를 넣어 볼게요. 초당 200건이 들어오고 한 건이 평균 50ms 걸리면, 서버 안에는 평균 200 &times; 0.05 = <b>10건</b>이 머뭅니다. 같은 초당 200건인데 다운스트림이 느려져 한 건이 500ms 걸리기 시작하면 200 &times; 0.5 = <b>100건</b>이 됩니다. 도착률은 그대로인데 동시성이 열 배가 됐어요.</p>
+
+<div class="obsv-code">L = λ × W
+
+평소      200 req/s × 0.05 s =  10 in-flight
+느려지면  200 req/s × 0.5  s = 100 in-flight
+
+→ 같은 RPS 한계로는 이 차이가 안 보인다
+→ 동시성 한계는 레이턴시가 늘어난 만큼 먼저 닿는다</div>
+
+<p>동시성이 처리량과 레이턴시를 둘 다 품은 숫자라서 그렇습니다. concurrency-limits README도 한계를 <b>Limit = 평균 RPS &times; 평균 레이턴시</b>로 적어 둬요.</p>
+
+<p>그렇다고 줄이 전혀 없어야 하는 건 아닙니다. 넷플릭스 글은 도착과 처리 시간이 고르지 않으니 약간의 대기열은 있어야 자원을 다 쓸 수 있다고 적어요. 문제는 도착률이 처리율을 오래 넘는데 줄에 한계가 없을 때입니다. 레이턴시가 늘고, 모든 요청이 타임아웃을 내고, 마지막에는 메모리가 바닥나요. 그래서 찾고 싶은 한계는 정확히 이거예요. <span class="obsv-mark">레이턴시가 나빠지기 시작하기 직전까지 허용할 수 있는 인플라이트 수(처리 중 + 대기)</span>입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <!-- axes -->
+    <path d="M70 40 C 69 120, 71 220, 70 290 C 220 291, 450 289, 660 290" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="600" y="318" font-size="19" fill="#8a8272">동시성 N</text>
+    <text x="20" y="48" font-size="19" fill="#8a8272">값</text>
+    <!-- throughput curve: rises then flattens then slightly drops -->
+    <path d="M72 280 C 140 200, 220 130, 300 110 C 360 98, 440 100, 520 108 C 570 113, 610 122, 650 132" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+    <text x="110" y="150" font-size="21" fill="#2e6b41">처리량 X 📈</text>
+    <!-- latency curve: flat then rises -->
+    <path d="M72 250 C 160 249, 240 251, 300 247 C 380 238, 450 200, 520 150 C 570 112, 610 80, 650 52" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+    <text x="545" y="90" font-size="21" fill="#b3502f">레이턴시 W ⏳</text>
+    <!-- knee marker -->
+    <path d="M300 60 C 301 130, 299 210, 300 285" fill="none" stroke="#e5a33c" stroke-width="2.4" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <text x="250" y="52" font-size="22" fill="#c07f18">찾고 싶은 한계 🎯</text>
+    <!-- region labels -->
+    <text x="95" y="275" font-size="18" fill="#8a8272">줄이 거의 없음</text>
+    <text x="360" y="275" font-size="18" fill="#8a8272">더 받아도 처리량은 안 늘고 줄만 길어짐</text>
+    <text x="70" y="348" font-size="21" fill="#b3502f">한계 오른쪽에서 받은 요청은 처리되지 않고 기다리는 시간으로 바뀐다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 처리량이 눕기 시작하고 레이턴시가 일어서는 무릎이 동시성 한계다</div>
+
+<p>이 그림은 SLO와 경고 시리즈 4편의 범용 확장성 법칙(USL)이 그리던 곡선과 같은 모양입니다. 그 글에서는 경합(σ)과 일관성 유지(κ) 계수를 관측값에 맞춰 이 무릎이 어디쯤인지 미리 계산했어요. 이번 편의 방법은 계수를 맞추지 않습니다. 무릎 근처에서 레이턴시가 일어서는 순간을 실시간으로 읽고 그 자리에 한계를 맞춰요. 문제는 그 순간을 무엇으로 알아채느냐입니다.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. TCP는 이 문제를 먼저 풀었다</h2>
+
+<p>네트워크에도 같은 문제가 있습니다. 보내는 쪽은 경로 중간 라우터의 버퍼가 얼마나 남았는지 모르는 채로 패킷을 보내야 해요. 너무 적게 보내면 대역폭을 놀리고, 너무 많이 보내면 라우터 큐가 차서 지연이 늘고 결국 패킷이 버려집니다. TCP는 이걸 중앙 조율 없이, 보내는 쪽 혼자 관측한 신호만으로 풀어 왔어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 혼잡 윈도 (congestion window)</div>
+  TCP 송신자가 확인 응답(ACK)을 받기 전에 한꺼번에 내보낼 수 있는 데이터의 양이에요. 송신자는 이 값을 늘렸다 줄였다 하면서 경로가 감당하는 양을 더듬어 찾습니다. 동시성 제한에서는 "응답을 기다리는 요청을 몇 개까지 허용하나"가 이 값에 해당해요.
+</div>
+
+<p>넷플릭스 글이 밝힌 출발점이 이겁니다. 서버의 동시성 한계를 혼잡 윈도로 보고, 서버마다 자기 한계를 스스로 추정하게 한 거예요. 중앙 조율도, 하드웨어나 토폴로지에 대한 지식도 없이 한계를 추론하자는 거죠. TCP 혼잡 제어에는 신호를 읽는 방식이 크게 두 갈래 있어요.</p>
+
+<h3>손실 기반: AIMD</h3>
+
+<p>첫째는 <b>손실</b>을 신호로 씁니다. 문제가 없으면 한계를 조금씩(덧셈으로) 올리고, 패킷이 버려지면 크게(곱셈으로) 깎아요. 그래서 이름이 AIMD(Additive Increase, Multiplicative Decrease)입니다. concurrency-limits의 <code>AIMDLimit</code>를 열어 보면 구현이 몇 줄이에요. 요청이 드롭되거나 타임아웃(기본 5초)을 넘으면 한계에 <code>backoffRatio</code>(기본 0.9)를 곱하고, 아니면 인플라이트가 한계의 절반 이상일 때만 1씩 올립니다. 한계 100에서 타임아웃이 한 번 나면 90이 되는 식이에요. 결과는 늘렸다 물러나기를 반복하는 톱니 모양입니다. 올리다가 부딪히면 깎고, 다시 올리기를 계속 반복해요.</p>
+
+<p>손실 기반은 단순하지만 신호가 늦습니다. 타임아웃이 날 때쯤이면 줄은 이미 길어진 뒤예요.</p>
+
+<h3>지연 기반: Vegas</h3>
+
+<p>둘째는 <b>지연</b>을 신호로 씁니다. 줄이 전혀 없을 때의 왕복 시간을 기준으로 잡고, 지금 잰 왕복 시간이 그보다 길어지면 그만큼 어딘가에 줄이 생긴 것으로 봐요. TCP Vegas가 이 방식이고, concurrency-limits의 <code>VegasLimit</code>는 대기열 크기를 이렇게 추정합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: RTT, 최소 RTT (minRTT)</div>
+  RTT(round-trip time)는 요청을 보내고 응답을 받기까지의 시간이에요. 서버 쪽 리미터에서는 요청 하나를 받아서 끝내기까지의 시간을 이렇게 부릅니다. 최소 RTT는 그동안 관측한 가장 짧은 값으로, 줄 없이 처리만 했을 때의 시간으로 간주해요.
+</div>
+
+<div class="obsv-code">queue_use = limit × (1 − RTTnoLoad / RTTactual)
+
+예) limit 100, 최소 RTT 20ms, 지금 RTT 25ms
+    100 × (1 − 20/25) = 100 × 0.2 = 20건이 줄 서 있다고 본다</div>
+
+<p>추정한 줄이 작으면 한계를 올리고, 크면 내리고, 그 사이면 그대로 둡니다. concurrency-limits의 리미터는 아무 알고리즘도 지정하지 않으면 <code>VegasLimit</code>를 기본으로 씁니다.</p>
+
+<p>README의 권고는 이렇게 갈립니다. <span class="obsv-mark">서버 쪽 제한에는 지연 기반인 Vegas를, 클라이언트 쪽에는 손실 기반인 AIMD를</span> 권하고, 클라이언트에는 손실과 지연을 섞은 리미터도 선택지로 둡니다. README가 이유를 따로 적지는 않지만, 서버는 자기 처리 시간을 직접 재니 지연 신호가 깨끗하고, 클라이언트가 재는 시간에는 네트워크와 상대 서버의 사정이 섞여 있어서 거절이나 타임아웃이라는 분명한 신호가 더 믿을 만하기 때문으로 보여요.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 최소 RTT와 지금 RTT의 비율, 그리고 그 비율의 함정</h2>
+
+<p>넷플릭스 글이 소개한 알고리즘은 Vegas의 발상을 비율 하나로 줄였습니다. 줄이 없을 때의 레이턴시를 지금 잰 레이턴시로 나눈 값을 <b>기울기(gradient)</b>라고 부르고, 이 값으로 한계를 매번 고칩니다.</p>
+
+<div class="obsv-code">gradient = RTTnoload / RTTactual
+newLimit = currentLimit × gradient + queueSize      (queueSize = √currentLimit)
+
+limit 100, 최소 RTT 20ms 일 때
+  지금 RTT 20ms → 100 × 1.0 + 10 = 110   줄 없음, 한계를 넓힌다
+  지금 RTT 25ms → 100 × 0.8 + 10 =  90   줄이 생기는 중
+  지금 RTT 40ms → 100 × 0.5 + 10 =  60   줄이 길다, 크게 줄인다</div>
+
+<p>기울기가 1이면 줄이 없다는 뜻이니 한계를 넓히고, 1보다 작으면 줄이 생겼다는 뜻이니 그 비율만큼 줄입니다. 뒤에 더하는 <code>queueSize</code>는 버스트를 받아 줄 여유분이자 한계가 커지는 속도예요. 넷플릭스는 기본값을 현재 한계의 제곱근으로 정했습니다. 한계가 작을 때는 상대적으로 커서 빨리 자라고, 한계가 클 때는 상대적으로 작아서 안정적이라는 이유를 글에 적어 뒀어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="garr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <!-- request in -->
+    <text x="22" y="92" font-size="22" fill="#3d3a34">요청 📨</text>
+    <path d="M90 86 C 110 85, 125 87, 142 86" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#garr1)"/>
+    <!-- limiter box -->
+    <path d="M152 50 C 220 47, 290 51, 352 48 C 355 80, 354 100, 353 124 C 290 127, 220 123, 154 125 C 151 100, 152 74, 152 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+    <text x="172" y="82" font-size="23" fill="#4a7fb5">인플라이트 &lt; 한계?</text>
+    <text x="178" y="110" font-size="18" fill="#8a8272">세마포어 하나로 센다</text>
+    <!-- yes branch -->
+    <path d="M360 76 C 400 74, 430 75, 462 76" stroke="#5a9e6f" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#garr1)"/>
+    <text x="388" y="66" font-size="19" fill="#2e6b41">예</text>
+    <path d="M472 46 C 530 44, 600 48, 668 45 C 671 72, 670 92, 669 112 C 600 115, 530 111, 474 113 C 471 92, 472 68, 472 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+    <text x="492" y="76" font-size="22" fill="#2e6b41">처리하고 RTT를 잰다</text>
+    <text x="492" y="102" font-size="18" fill="#8a8272">성공, 무시, 드롭 중 하나로 보고</text>
+    <!-- no branch -->
+    <path d="M250 132 C 251 158, 250 175, 251 196" stroke="#e5533c" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#garr1)"/>
+    <text x="262" y="170" font-size="19" fill="#b3502f">아니오</text>
+    <path d="M150 206 C 220 203, 290 207, 352 204 C 355 230, 354 248, 353 268 C 290 271, 220 267, 152 269 C 149 248, 150 226, 150 206 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+    <text x="168" y="236" font-size="22" fill="#b3502f">바로 거절 🚫</text>
+    <text x="168" y="260" font-size="18" fill="#8a8272">429, UNAVAILABLE, 503</text>
+    <!-- update loop -->
+    <path d="M570 122 C 572 160, 560 190, 520 214" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#garr1)"/>
+    <path d="M410 222 C 470 219, 560 223, 650 220 C 653 246, 652 262, 651 282 C 560 285, 470 281, 412 283 C 409 262, 410 240, 410 222 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+    <text x="424" y="250" font-size="21" fill="#c07f18">한계 = 한계 × 기울기 + 여유분</text>
+    <text x="424" y="274" font-size="18" fill="#8a8272">기울기 = 기준 RTT / 지금 RTT</text>
+    <path d="M410 250 C 380 210, 360 170, 352 132" stroke="#c07f18" stroke-width="2" stroke-dasharray="8 8" fill="none" stroke-linecap="round" marker-end="url(#garr1)"/>
+    <text x="40" y="318" font-size="21" fill="#b3502f">한계는 설정 파일이 아니라 방금 끝난 요청들의 레이턴시가 정한다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 받을지 말지는 세마포어가, 한계를 몇으로 둘지는 끝난 요청의 RTT가 정한다</div>
+
+<p>코드에서는 이렇게 씁니다. 라이브러리의 <code>Limiter</code> 인터페이스는 <code>acquire()</code> 하나뿐이고, 한계를 넘으면 빈 <code>Optional</code>을 돌려줘요. 토큰을 받았다면 끝날 때 반드시 세 가지 중 하나로 알려야 합니다.</p>
+
+<div class="obsv-code">Limiter&lt;Void&gt; limiter = SimpleLimiter.newBuilder()
+        .limit(WindowedLimit.newBuilder()            // 표본을 창 단위로 묶어 한계를 고친다
+                .build(Gradient2Limit.newBuilder().build()))
+        .build();
+
+Optional&lt;Limiter.Listener&gt; token = limiter.acquire(null);
+if (token.isEmpty()) {
+    return reject();                 // 한계 초과: 기다리지 않고 바로 거절
+}
+try {
+    Order order = handle(request);
+    token.get().onSuccess();         // 이번 RTT를 표본으로 쓴다
+    return order;
+} catch (TimeoutException e) {
+    token.get().onDropped();         // 드롭으로 기록(AIMD 같은 손실 기반 알고리즘은 이걸로 한계를 깎는다)
+    throw e;
+} catch (Exception e) {
+    token.get().onIgnore();          // 너무 빨리 실패한 요청은 표본에서 뺀다
+    throw e;
+}</div>
+
+<p><code>onIgnore()</code>가 따로 있는 이유가 눈여겨볼 지점이에요. 인터페이스 주석은 이걸 "의미 있는 RTT를 재기 전에 실패한 요청"이라고 설명하고, 표본에 넣으면 인위적으로 낮은 RTT가 들어간다고 적어 둡니다. 2편에서 본 문제와 같은 모양이에요. 빨리 실패하는 요청은 레이턴시가 짧아서, 그대로 표본에 넣으면 리미터가 "줄이 없네" 하고 한계를 넓힙니다.</p>
+
+<h3>Gradient2는 최소 RTT를 버렸다</h3>
+
+<p>여기까지가 흔히 소개되는 설명입니다. "최소 RTT 대비 현재 RTT로 줄을 감지한다." 그런데 지금 저장소의 <code>Gradient2Limit</code> 소스를 열어 보면 설명이 다릅니다. 클래스 주석이 이유까지 적어 두고 있어요.</p>
+
+<p>RPC 요청은 요청마다 처리 복잡도가 다르고 데이터 크기도 넓게 퍼져 있어서 레이턴시가 들쭉날쭉합니다. 이런 환경에서 최소값을 기준으로 잡으면 <b>비현실적으로 낮은 기준 RTT에 끌려가</b> 부하를 과하게 버리게 된다는 겁니다. 아주 가벼운 요청 하나가 한 번 빨리 끝나면 그게 "줄 없는 상태"의 기준이 되고, 그 뒤의 보통 요청은 전부 줄 선 것처럼 보이니까요. 그래서 <code>Gradient2Limit</code>는 최소값 대신 <span class="obsv-mark">긴 창의 지수 평활 평균을 기준 RTT로</span> 쓰고, 지금 RTT와의 비율을 봅니다. 여유분 <code>queueSize</code>도 넷플릭스 글의 제곱근이 아니라 고정값 4가 기본이에요.</p>
+
+<div class="obsv-code">// Gradient2Limit 클래스 주석의 핵심 (기본값은 소스 기준)
+gradient = max(0.5, min(1.0, longtermRtt / currentRtt))
+newLimit = gradient × currentLimit + queueSize       // queueSize 기본 4
+newLimit = currentLimit × (1 − smoothing) + newLimit × smoothing   // smoothing 0.2</div>
+
+<p>실제 코드는 주석의 식에서 한 걸음 더 갑니다. 비율에 <code>rttTolerance</code>(기본 1.5)를 곱해서, 지금 RTT가 기준의 1.5배가 될 때까지는 줄로 치지 않아요. 기울기는 0.5와 1.0 사이로 잘려서 이상치 하나로 한계가 절반 아래로 꺾이지 않고, 새 값은 20%만 반영해 천천히 움직입니다. 그리고 지금 인플라이트가 한계의 절반도 안 되면 한계를 건드리지 않아요. 소스는 이걸 "app limited"라고 부르는데, 요청이 적어 한계에 닿지도 않는 동안 한계만 위로 떠오르는 걸 막는 장치입니다.</p>
+
+<p>대가도 있습니다. 평균은 부하가 오래 이어지면 같이 올라가요. 클래스 주석도 과부하 뒤에는 긴 창 평균이 지금 RTT의 몇 배까지 높아져 있을 수 있다고 인정하고, 그래서 긴 창 평균이 지금 RTT의 두 배를 넘으면 평균을 직접 깎는 보정이 들어가 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 기준 RTT는 어느 쪽으로도 틀릴 수 있다</div>
+  &bull; <b>최소값을 쓰면</b> 운 좋게 빨랐던 요청 하나가 기준이 됩니다. 기능이 추가돼서 모든 요청이 영구적으로 무거워져도 기준은 옛날 값에 머물러 있어서, 리미터는 그걸 줄로 읽고 한계를 계속 깎아요. 그래서 <code>GradientLimit</code>는 주기적으로 한계를 낮추고 최소 RTT를 다시 잽니다.<br>
+  &bull; <b>평균을 쓰면</b> 부하가 오래 이어질수록 기준이 같이 올라가, 느려진 상태를 정상으로 받아들이기 시작합니다.<br>
+  &bull; 어느 쪽이든 리미터가 보는 건 레이턴시뿐이에요. 레이턴시가 줄 때문인지, 요청 구성이 바뀌어서인지는 구분하지 못합니다. 무거운 리포트 요청과 가벼운 조회 요청이 한 리미터를 지나간다면 그 섞이는 비율만 바뀌어도 한계가 움직여요.
+</div>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 거절은 빨라야 하고, 다른 인스턴스에서는 받을 수 있어야 한다</h2>
+
+<p>한계를 정확히 찾아도 거절이 비싸면 소용이 없습니다. 거절된 요청이 스레드를 잡고 기다리면 리미터 자체가 부하가 돼요. 그래서 리미터는 한계 초과를 알면 <b>기다리지 않고 그 자리에서</b> 돌려보냅니다. 응답 형태는 통합마다 정해져 있어요. README 기준으로 서블릿 필터는 <b>429 Too Many Requests</b>, gRPC 서버 인터셉터는 <b>Status.UNAVAILABLE</b>을 돌려주고, 뒤에서 볼 Envoy 필터는 기본 <b>503</b>입니다.</p>
+
+<p>이렇게 초과분을 일부러 버리는 걸 부하 차단(load shedding)이라고 불러요. 모두 느리게 처리하다 모두 타임아웃을 내는 것보다 일부를 빨리 거절하는 쪽이 성공 건수가 많습니다. 넷플릭스 글은 초과분을 버리고 레이턴시를 낮게 유지하는 동안 오토스케일링 같은 대응이 따라올 시간을 번다고 적었어요. 리미터는 오토스케일링을 대체하지 않고, 인스턴스가 뜨는 동안 버티는 역할입니다.</p>
+
+<p>같은 글이 한계도 솔직하게 적어 둡니다. 한계는 서버마다 조율 없이 따로 정해지고 서버별 트래픽은 꽤 들쭉날쭉해서, <b>다른 곳에 여유가 있는데 한 서버가 거절하는 일</b>이 생긴다고요. 그 대응으로 넷플릭스는 클라이언트 쪽 로드 밸런싱과 한 번의 재시도를 들고, 그 재시도가 여유 있는 인스턴스에 닿는 비율이 거의 100%였다고 적었습니다. 넷플릭스 환경의 관측이니 수치를 그대로 기대하지는 말고 구조만 가져오면 됩니다. 거절이 빠르고, 재시도가 <b>다른 인스턴스</b>로 가고, 그 재시도가 5편의 재시도 예산 안에 있다면 거절은 장애가 아니라 경로 변경이 돼요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 모든 요청을 같은 줄에 세우지 않는다</div>
+  concurrency-limits는 한계를 요청 그룹별로 나눠 쓰는 파티션 리미터를 제공합니다. README 예시는 헤더나 호출자 정보로 요청을 가른 뒤 <b>실시간 트래픽에 90%, 배치에 10%</b>를 보장해요. 과부하가 오면 배치가 먼저 거절되고 사용자 요청은 몫을 지킵니다. 결제처럼 거절하면 안 되는 요청과 추천 목록처럼 버려도 되는 요청이 한 서버를 지난다면, 둘을 한 줄에 세우지 않는 것부터가 설계예요.
+</div>
+
+<p>이 방식이 잘 통하지 않는 경우도 정리해 둘게요.</p>
+
+<p><b>트래픽이 적은 서비스.</b> 표본 창 하나에 요청이 몇 개뿐이면 기준 RTT도 지금 RTT도 흔들리고, "app limited" 조건 때문에 한계가 움직이지 않는 시간도 길어요. 이런 곳은 고정 벌크헤드가 더 예측 가능할 수 있습니다.</p>
+
+<p><b>레이턴시가 자기 줄 때문이 아닐 때.</b> 다운스트림이 느려지면 이 서비스의 RTT도 늘고 리미터는 한계를 줄입니다. 느린 다운스트림에 덜 밀어 넣는 셈이라 대개는 원하는 동작이지만, 그 다운스트림이 기능 하나에만 쓰인다면 한 기능의 지연 때문에 전체 한계가 줄어요. 이럴 때는 리미터를 엔드포인트나 다운스트림 단위로 나눕니다.</p>
+
+<p><b>한계가 오르내리는 걸 그대로 경고에 걸 때.</b> 적응형 한계는 원래 움직이라고 만든 값입니다. 한계 값 자체에 고정 임계값을 걸면 이 글이 피하려던 문제로 돌아가요. 경고는 거절된 요청의 비율이나 SLO 쪽 burn rate(오류 예산이 타는 속도)에 거는 편이 낫습니다.</p>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 앱에 둘까, 서비스 메시에 둘까</h2>
+
+<p>여기까지는 애플리케이션 안의 라이브러리 이야기였습니다. 그런데 같은 장치가 프록시에도 있어요. Envoy에는 <b>adaptive concurrency 필터</b>가 있고, Envoy 소스의 확장 목록(extensions_metadata)에 상태가 stable(안정)로 올라가 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 사이드카 프록시, 서비스 메시</div>
+  애플리케이션 컨테이너 옆에 붙어서 들어오고 나가는 트래픽을 대신 받는 프록시가 사이드카예요. 이런 프록시들을 한곳에서 설정하는 구조 전체를 서비스 메시라고 부르고, Istio가 대표적입니다. 앱 코드를 고치지 않고 재시도, 타임아웃, 로드 밸런싱을 바꿀 수 있다는 게 장점이에요.
+</div>
+
+<p>Envoy 문서와 컨트롤러 소스가 보여 주는 동작은 앞에서 본 기울기 공식과 거의 같습니다. 주기적으로 동시성을 <code>min_concurrency</code>(기본 3)까지 낮춰 놓고 그 상태의 레이턴시를 재서 minRTT로 삼아요. 평소에는 짧은 창마다 완료된 요청의 레이턴시를 분위수(기본 p50)로 묶어 sampleRTT를 만들고, 두 값으로 한계를 고칩니다.</p>
+
+<div class="obsv-code">gradient  = (minRTT + B) / sampleRTT        B = minRTT × buffer (기본 25%)
+limit_new = gradient × limit_old + headroom  headroom = √(gradient × limit_old), 설정 불가
+
+minRTT 20ms → B 5ms
+  sampleRTT 25ms → gradient 1.0 → 100 × 1.0 + 10 = 110
+  sampleRTT 50ms → gradient 0.5 → 100 × 0.5 + √50 ≈ 57
+(gradient 는 0.5 ~ 2.0 범위, 한계 상한 max_concurrency_limit 기본 1000)</div>
+
+<p>넷플릭스 글의 식과 다른 점은 버퍼 B예요. minRTT보다 25%까지 느린 건 정상 흔들림으로 봐 주고, 그보다 느려야 한계를 줄입니다. 대신 minRTT를 다시 재는 동안에는 동시성이 3까지 묶이니 그동안 거절이 늘어요. 문서도 minRTT 측정 창에서 503이 눈에 띄게 늘 수 있다고 적고, 리셋과 503에 재시도를 켜되 <code>previous_hosts</code> 조건으로 다른 호스트에 보내라고 권합니다. 측정 시작을 무작위로 늦추는 jitter(기본 15%)는 모든 인스턴스가 한꺼번에 측정에 들어가지 않게 합니다.</p>
+
+<p>그럼 둘 중 어디에 둘까요. 기준을 넷으로 나눠 보면 판단이 쉬워집니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <!-- headers -->
+    <text x="215" y="40" font-size="25" fill="#4a7fb5">앱 라이브러리 ☕</text>
+    <text x="480" y="40" font-size="25" fill="#5a9e6f">메시 프록시 🛰️</text>
+    <path d="M190 52 C 330 50, 520 53, 680 51" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round"/>
+    <path d="M440 30 C 441 140, 439 260, 440 360" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 8" fill="none" stroke-linecap="round"/>
+    <!-- row 1 -->
+    <text x="20" y="92" font-size="22" fill="#3d3a34">언어 지원</text>
+    <text x="200" y="92" font-size="19" fill="#6b6558">언어마다 라이브러리가 있어야 함</text>
+    <text x="460" y="92" font-size="19" fill="#6b6558">언어와 상관없이 같은 설정</text>
+    <!-- row 2 -->
+    <text x="20" y="160" font-size="22" fill="#3d3a34">런타임 종속</text>
+    <text x="200" y="150" font-size="19" fill="#6b6558">배포 플랫폼과 무관</text>
+    <text x="200" y="174" font-size="19" fill="#6b6558">대신 코드에 들어감</text>
+    <text x="460" y="150" font-size="19" fill="#6b6558">사이드카가 모든 요청을 지나야 함</text>
+    <text x="460" y="174" font-size="19" fill="#6b6558">메시 API 지원 여부에 묶임</text>
+    <!-- row 3 -->
+    <text x="20" y="232" font-size="22" fill="#3d3a34">도메인 지식</text>
+    <text x="200" y="222" font-size="19" fill="#2e6b41">결제와 추천을 구분</text>
+    <text x="200" y="246" font-size="19" fill="#2e6b41">폴백, 멱등성, 요청 그룹</text>
+    <text x="460" y="222" font-size="19" fill="#b3502f">요청은 모두 HTTP 요청</text>
+    <text x="460" y="246" font-size="19" fill="#b3502f">폴백을 모름</text>
+    <!-- row 4 -->
+    <text x="20" y="304" font-size="22" fill="#3d3a34">관측 기준</text>
+    <text x="200" y="294" font-size="19" fill="#6b6558">메서드, 다운스트림 단위</text>
+    <text x="200" y="318" font-size="19" fill="#6b6558">직접 메트릭을 내보내야 함</text>
+    <text x="460" y="294" font-size="19" fill="#6b6558">프록시가 본 왕복 시간</text>
+    <text x="460" y="318" font-size="19" fill="#6b6558">게이지가 기본으로 나옴</text>
+    <path d="M20 340 C 240 337, 460 342, 680 339" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round"/>
+    <text x="40" y="385" font-size="22" fill="#b3502f">막는 일은 메시도 하지만, 무엇을 먼저 버릴지는 앱만 안다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 네 기준 중 도메인 지식만은 프록시로 옮길 수 없다</div>
+
+<p><b>언어 지원.</b> concurrency-limits는 자바 라이브러리입니다. 언어가 섞여 있으면 언어마다 같은 알고리즘을 찾아 붙여야 하지만, 프록시는 한 번의 설정으로 전부에 걸립니다.</p>
+
+<p><b>런타임 종속.</b> 프록시 쪽은 프록시가 그 트래픽을 전부 봐야 성립합니다. Envoy 문서는 이 필터가 로컬 클러스터 앞의 필터 체인에서, 그 클러스터로 가는 동시성을 통제할 수 있을 때 의도대로 동작한다고 적어요. 사이드카를 우회하는 요청이 있으면 한계는 의미를 잃습니다. 그리고 메시를 쓴다고 바로 켤 수 있는 것도 아닙니다. 이 글을 쓰는 시점에 Istio에서 목적지별 트래픽 정책을 적는 DestinationRule에는 이 필터를 위한 정식 필드가 없고, 넣자는 제안이 istio/api에 PR(#3661)로 열려 있는 상태예요. 지금은 Envoy 설정 조각을 직접 끼워 넣는 EnvoyFilter로 프록시 설정을 직접 패치해야 하고, 이 방식은 Istio 버전이 바뀌면 깨지기 쉽습니다. Envoy가 이 확장의 보안 수준을 unknown으로 표시하고, 앞뒤가 모두 신뢰할 수 있는 환경에서만 쓰라고 적어 둔 점도 같이 봐야 해요.</p>
+
+<p><b>도메인 지식.</b> 여기가 가장 크게 갈립니다. 과부하 상황에서 무엇을 먼저 버릴지는 업무 판단이에요. 추천 목록은 개인화를 포기하고 일반 목록으로 내줘도 되지만, 결제에는 그런 대체재가 없습니다. 거절된 결제를 다른 인스턴스로 다시 보내도 되는지는 그 요청이 멱등한지에 달려 있고요. 프록시는 이걸 모릅니다. 4편의 헤지 요청에서 본 것과 같은 구조예요. 기능은 프록시에 있어도, <span class="obsv-mark">그걸 켜도 되는 요청을 고르는 판단은 여전히 설정하는 사람 몫</span>입니다. 앱 라이브러리라면 요청 그룹별 파티션이나 폴백을 같은 코드 안에서 다룰 수 있어요.</p>
+
+<p><b>관측 기준.</b> 프록시가 재는 레이턴시는 프록시가 요청을 넘기고 응답을 받기까지의 시간이라, 앱 안에서 기다린 시간과 처리한 시간이 한 숫자로 섞입니다. 대신 지표는 공짜로 나와요. Envoy 필터는 <code>concurrency_limit</code>, <code>min_rtt_msecs</code>, <code>sample_rtt_msecs</code>, <code>gradient</code>(1000을 곱한 값), <code>rq_blocked</code> 같은 게이지와 카운터를 기본으로 냅니다. 앱 라이브러리는 더 잘게 볼 수 있지만 지표는 직접 내보내야 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 이렇게 나눠 둔다</div>
+  &bull; <b>언어가 여럿이고 요청 성격이 비슷한 서비스</b>라면 메시 쪽 적응형 제한이 운영 부담이 적습니다. 다만 메시가 그 필터를 정식으로 지원하는지부터 확인해요.<br>
+  &bull; <b>버릴 요청과 지킬 요청이 섞인 서비스</b>라면 앱 라이브러리로 그룹을 나눠 제한합니다. 결제와 배치를 한 한계에 묶지 않아요.<br>
+  &bull; 둘을 겹쳐 쓴다면 바깥(메시)은 서버를 지키는 넓은 안전망으로, 안쪽(앱)은 요청 그룹별 우선순위로 역할을 나눕니다. 두 리미터가 같은 레이턴시를 보고 동시에 한계를 깎으면 생각보다 많이 거절될 수 있어요.<br>
+  &bull; 경고는 한계 값이 아니라 <b>거절 비율</b>(<code>rq_blocked</code> 증가율, 앱의 거절 카운터)에 겁니다. minRTT 측정 창이 돌 때마다 잠깐씩 튀는 거절은 짧은 창만으로 울리지 않게 해요.
+</div>
+
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>성능 테스트로 정한 동시성 한계는 코드, 다운스트림, 인스턴스 수가 바뀌는 순간부터 낡습니다.</b> 리틀의 법칙(L = λW)으로 보면 동시성은 처리량과 레이턴시를 함께 담은 숫자라, 레이턴시가 일어서는 순간을 읽으면 한계를 스스로 찾을 수 있어요. 넷플릭스 concurrency-limits는 TCP 혼잡 제어에서 이 발상을 빌려 왔고(손실 기반 AIMD, 지연 기반 Vegas, 기울기 기반 Gradient), Gradient2에서는 최소 RTT가 기준을 너무 낮게 끌어내린다는 이유로 긴 창 평균으로 기준을 바꿨습니다.<br><br>
+  거절은 그 자리에서 빠르게 하고, 재시도는 다른 인스턴스로 보냅니다. Envoy에도 같은 원리의 필터가 있으니 막는 일은 프록시로 옮길 수 있어요. 하지만 무엇을 먼저 버릴지는 여전히 업무를 아는 코드가 정합니다. 숫자는 시스템이 찾게 두고, 사람은 무엇을 지킬지를 정하는 거예요.
+</div>
+
+</div>

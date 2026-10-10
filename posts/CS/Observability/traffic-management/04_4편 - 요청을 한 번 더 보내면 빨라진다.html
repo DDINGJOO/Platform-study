@@ -1,0 +1,344 @@
+<!-- lead: 서버 100대에 동시에 묻는 요청은 각 서버의 P99가 멀쩡해도 63.4% 확률로 느려져요. 사본을 한 번 더 보내는 hedged request와 tied request가 꼬리 레이턴시를 줄이는 원리, 부하와 멱등성의 대가, Envoy와 gRPC에서 실제로 되는 것을 정리했어요. -->
+<!-- tags: hedged request, 꼬리 레이턴시, The Tail at Scale, Envoy hedge_policy, gRPC hedging -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-hand { font-family: 'Nanum Pen Script', cursive; font-size: 22px; color: #b3502f; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 4편</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  2편. 빨리 실패하는 서버는 한가해 보인다<br>
+  3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다<br>
+  <b>4편. 요청을 한 번 더 보내면 빨라진다</b> &larr; 지금 이 글<br>
+  5편. 재시도는 공짜가 아니다<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  7편. 임계값을 정하지 않는 동시성 제한
+</div>
+
+<p>추천 목록 화면 하나를 그리려면 상품 데이터를 나눠 가진 샤드 100대에 동시에 물어봐야 한다고 해 볼게요. 대시보드를 열면 샤드는 한 대도 빠짐없이 건강합니다. 각자의 P99는 10ms 안쪽이에요. 그런데 화면을 띄우는 쪽의 레이턴시 그래프는 툭하면 수백 ms로 치솟습니다. 느린 서버를 찾으려고 샤드를 하나씩 뒤져 봐도 범인이 없어요.</p>
+
+<p>이 글은 두 가지 질문을 따라갑니다. <b>멀쩡한 서버 100대를 모으면 왜 느려지는가.</b> 그리고 그 처방으로 알려진 방법, 그러니까 <b>같은 요청을 한 번 더 보내는 것</b>이 왜 부하를 늘리는데도 빨라지는가. 마지막에는 "이건 서비스 메시로는 못 한다"는 흔한 설명이 실제 문서와 어떻게 다른지도 확인합니다.</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 하나씩은 멀쩡한데, 모으면 느리다</h2>
+
+<p>샤드 한 대가 100번 중 1번 느리다고 해 볼게요. 그런데 화면 하나는 100대의 응답을 <b>전부</b> 받아야 그려집니다. 하나라도 늦으면 화면 전체가 늦어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 팬아웃 (fan-out)</div>
+  요청 하나를 받은 서버가 그 일을 여러 하위 서버에 나눠 동시에 보내는 구조예요. 결과를 합치려면 가장 늦은 응답까지 기다려야 하므로, 전체 응답 시간은 하위 응답들 중 최댓값이 됩니다.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 꼬리 레이턴시 (tail latency)</div>
+  레이턴시 분포의 끝부분, 보통 P99나 P99.9 같은 높은 분위수를 말해요. 평균이나 중앙값은 멀쩡한데 드물게 아주 느린 요청들이 이 꼬리를 만듭니다.
+</div>
+
+<p>계산은 간단합니다. 한 대가 느리지 않을 확률이 0.99이고 100대가 서로 독립이라면, 100대 모두 제때 답할 확률은 0.99를 100번 곱한 값이에요.</p>
+
+<div class="obsv-code">샤드 한 대가 느릴 확률            p = 0.01
+100대가 모두 제때 올 확률         0.99^100 ≈ 0.366
+하나라도 느릴 확률            1 - 0.99^100 ≈ 0.634  → 63.4%
+
+팬아웃 10대                  1 - 0.99^10   ≈ 9.6%
+팬아웃 50대                  1 - 0.99^50   ≈ 39.5%
+팬아웃 200대                 1 - 0.99^200  ≈ 86.6%</div>
+
+<p>한 대 기준으로 1%였던 느린 요청이 화면 기준으로는 <span class="obsv-mark">세 번 중 두 번꼴</span>이 됩니다. 이 계산은 구글의 제프 딘(Jeff Dean)과 루이스 바로소(Luiz Barroso)가 2013년 미국 컴퓨터학회(ACM) 학회지 CACM에 실은 글 「The Tail at Scale」의 첫 예시와 같아요. 논문은 같은 그림에서 더 극단적인 경우도 보여 줍니다. 서버 한 대에서 1만 번에 1번만 1초를 넘더라도, 그런 서버 2,000대에 팬아웃하면 사용자 요청 다섯 번 중 거의 한 번이 1초를 넘는다는 거예요(1 - 0.9999^2000 ≈ 18.1%).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <!-- axes -->
+    <path d="M70 40 C 69 120, 71 210, 70 280 C 220 281, 450 279, 650 280" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="22" y="64" font-size="19" fill="#8a8272">100%</text>
+    <text x="34" y="285" font-size="19" fill="#8a8272">0%</text>
+    <text x="560" y="308" font-size="19" fill="#8a8272">팬아웃 대수 →</text>
+    <text x="80" y="36" font-size="20" fill="#8a8272">하나라도 P99를 넘을 확률</text>
+    <!-- 100% guide -->
+    <path d="M72 60 C 250 61, 450 59, 640 60" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <!-- tick labels -->
+    <text x="92" y="304" font-size="17" fill="#8a8272">10</text>
+    <text x="200" y="304" font-size="17" fill="#8a8272">50</text>
+    <text x="338" y="304" font-size="17" fill="#8a8272">100</text>
+    <text x="618" y="304" font-size="17" fill="#8a8272">200</text>
+    <!-- curve -->
+    <path d="M70 280 C 110 251, 170 212, 210 194 C 260 172, 302 154, 350 141 C 420 123, 468 112, 490 109 C 548 100, 598 93, 630 90" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
+    <!-- marker at 100 -->
+    <path d="M350 141 C 351 190, 349 240, 350 278" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-dasharray="2 6" stroke-linecap="round"/>
+    <path d="M343 134 C 348 132, 355 134, 357 140 C 358 147, 352 150, 346 149 C 341 147, 340 139, 343 134 Z" fill="#e5533c" stroke="#b3502f" stroke-width="1.4"/>
+    <text x="300" y="124" font-size="23" fill="#b3502f">100대 → 63.4% 🔥</text>
+    <!-- marker at 10 -->
+    <path d="M94 255 C 98 253, 103 255, 104 260 C 104 265, 99 267, 95 266 C 91 264, 90 258, 94 255 Z" fill="#5a9e6f" stroke="#2e6b41" stroke-width="1.2"/>
+    <text x="112" y="262" font-size="19" fill="#2e6b41">10대 → 9.6%</text>
+    <text x="478" y="150" font-size="19" fill="#4a7fb5">200대 → 86.6%</text>
+    <text x="120" y="330" font-size="21" fill="#b3502f">= 한 대의 1%가, 모으는 순간 전체의 다수가 된다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 각자의 P99는 그대로인데, 팬아웃이 늘수록 "누군가 한 명은 늦는다"가 기본값이 된다</div>
+
+<p>논문은 실제 구글 서비스의 측정값도 함께 싣습니다. 루트 서버에서 잰 단일 하위 요청의 P99는 10ms였는데, 하위 요청 <b>전부</b>가 끝나기까지의 P99는 140ms였어요. 그리고 95%만 끝나기까지의 P99는 70ms였습니다. 가장 느린 5%를 기다리는 데 전체 시간의 절반이 들어간다는 뜻이에요. 그러니 꼬리를 줄이려면 서버 하나하나를 더 빠르게 만드는 것보다 <b>그 느린 소수를 어떻게 피하느냐</b>가 더 효과적일 수 있습니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 늦은 요청은 대개 그 요청 탓이 아니다</h2>
+
+<p>처방의 출발점은 꼬리가 어디서 생기느냐입니다. 같은 요청인데 어떤 때는 2ms, 어떤 때는 200ms가 걸린다면 원인은 요청의 내용이 아니라 <b>그 순간 그 서버의 사정</b>일 가능성이 높아요. GC가 돌고 있었거나, 같은 디스크를 쓰는 배치가 있었거나, 앞에 쌓인 요청이 많아 큐에서 기다렸거나요. 논문도 같은 말을 합니다. 레이턴시의 원인은 그 요청에 고유한 것이 아니라 다른 형태의 간섭인 경우가 많다고요.</p>
+
+<p>그렇다면 같은 데이터를 가진 다른 복제본에 같은 요청을 보내면 그쪽은 아마 멀쩡할 겁니다. 두 서버가 동시에 꼬리에 걸릴 확률은 서로 독립이라는 가정에서 0.01 &times; 0.01 = 0.0001이니까요. 이게 <b>헤지 요청(hedged request)</b>의 발상입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 헤지 요청 (hedged request)</div>
+  가장 적당하다고 판단한 복제본에 먼저 요청을 보내고, 잠깐 기다려도 답이 없으면 다른 복제본에 같은 요청을 하나 더 보내는 방식이에요. 먼저 온 응답을 쓰고 나머지는 취소합니다.
+</div>
+
+<p>여기서 핵심은 <b>"잠깐 기다린다"</b>입니다. 처음부터 사본 두 개를 보내면 꼬리는 확실히 줄지만 부하가 그대로 두 배가 돼요. 논문이 제안하는 절충은 <span class="obsv-mark">첫 요청이 그 종류 요청의 95분위 레이턴시를 넘길 때까지 기다렸다가 사본을 보내는 것</span>입니다. 정의상 요청의 약 5%만 95분위를 넘으니 추가 부하도 약 5%로 묶이고, 그 5%가 바로 꼬리를 만드는 요청들이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrH2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <!-- time axis -->
+    <path d="M120 60 C 280 58, 460 62, 650 59" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrH2)"/>
+    <text x="664" y="64" font-size="18" fill="#8a8272">t</text>
+    <path d="M140 48 C 139 56, 141 64, 140 72" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+    <text x="140" y="40" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">0ms</text>
+    <path d="M330 48 C 329 56, 331 64, 330 72" fill="none" stroke="#c07f18" stroke-width="2.2" stroke-linecap="round"/>
+    <text x="330" y="40" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#c07f18">P95 지점</text>
+    <!-- replica A row -->
+    <text x="108" y="125" text-anchor="end" font-size="20" fill="#4a7fb5">복제본 A</text>
+    <path d="M140 120 C 300 118, 460 122, 600 119" fill="none" stroke="#e5533c" stroke-width="5" stroke-linecap="round" stroke-dasharray="10 7"/>
+    <text x="200" y="106" font-size="18" fill="#b3502f">GC 중이라 한참 걸림 🐢</text>
+    <text x="606" y="125" font-size="18" fill="#8a8272">✂ 취소</text>
+    <!-- wait bracket -->
+    <path d="M142 150 C 200 162, 270 162, 328 150" fill="none" stroke="#c07f18" stroke-width="2" stroke-linecap="round"/>
+    <text x="168" y="185" font-size="19" fill="#c07f18">95분위만큼은 기다린다</text>
+    <!-- replica B row -->
+    <text x="108" y="235" text-anchor="end" font-size="20" fill="#4a7fb5">복제본 B</text>
+    <path d="M332 74 C 333 130, 334 180, 336 222" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrH2)"/>
+    <path d="M338 230 C 360 229, 382 231, 404 230" fill="none" stroke="#5a9e6f" stroke-width="5" stroke-linecap="round"/>
+    <text x="350" y="262" font-size="18" fill="#2e6b41">사본은 금방 끝남 ✓</text>
+    <path d="M406 226 C 450 200, 520 160, 596 128" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH2)"/>
+    <text x="470" y="200" font-size="18" fill="#2e6b41">먼저 온 응답을 쓰고</text>
+    <text x="470" y="222" font-size="18" fill="#2e6b41">A에는 취소를 보낸다</text>
+    <text x="350" y="314" text-anchor="middle" font-size="21" fill="#b3502f">= 사본은 늦은 5%에게만 간다. 그래서 부하는 약 5%만 늘어난다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 헤지 요청은 "처음부터 두 번"이 아니라 "늦을 때만 한 번 더"다</div>
+
+<p>논문에 실린 수치는 이렇습니다. 구글의 분산 저장소 BigTable의 테이블에 저장된 키 1,000개를 서버 100대에서 읽어 오는 벤치마크에서, 10ms 지연 후 헤지 요청을 보내자 1,000개를 모두 받기까지의 P99.9가 <b>1,800ms에서 74ms</b>로 줄었어요. 요청은 <b>2%</b>만 더 보냈습니다. 논문은 여기에 한 가지를 더 붙입니다. 헤지 사본을 원래 요청보다 낮은 우선순위로 표시하면 오버헤드를 더 줄일 수 있다고요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 사본은 일을 두 번 시킨다: 취소와 tied request</h2>
+
+<p>헤지 요청에도 약점이 있습니다. 사본을 보낸 뒤 원래 요청이 그제야 실행을 시작하면, 두 서버가 <b>같은 일을 둘 다 처리</b>해요. 먼저 온 응답을 쓰고 나머지를 취소한다고 해도 취소 메시지가 도착했을 때는 이미 일이 끝나 있을 수 있습니다. 논문은 이걸 이렇게 정리해요. 95분위까지 기다리면 이 낭비를 묶을 수 있지만 혜택도 일부 요청에만 돌아간다. 헤지를 더 적극적으로 쓰려면 더 빠른 취소가 필요하다.</p>
+
+<p>그래서 나온 것이 <b>tied request</b>입니다. 꼬리의 흔한 원인이 "실행 전 큐에서 기다리는 시간"이라는 데서 출발해요. 일단 실행이 시작되면 완료 시간의 변동은 크게 줄어드니, <span class="obsv-mark">어느 쪽이 먼저 실행을 시작했는지를 서버끼리 알려 주면</span> 큐에 남은 쪽을 버릴 수 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: tied request</div>
+  클라이언트가 같은 요청을 서버 두 대의 큐에 거의 동시에 넣되, 각 요청에 상대 서버가 누구인지 적어 보내는 방식이에요. 한쪽이 실행을 시작하면 상대에게 취소 메시지를 보내고, 상대는 아직 큐에 있던 그 요청을 버리거나 우선순위를 크게 낮춥니다.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrH3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <!-- client -->
+    <path d="M40 135 C 85 133, 125 136, 160 134 C 162 160, 161 180, 162 200 C 125 202, 85 200, 42 201 C 39 180, 40 158, 40 135 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+    <text x="64" y="165" font-size="23" fill="#3d3a34">클라이언트</text>
+    <text x="58" y="190" font-size="16" fill="#8a8272">1ms 간격으로 두 번</text>
+    <!-- server A -->
+    <path d="M300 40 C 410 38, 520 41, 640 39 C 642 70, 641 100, 642 125 C 520 127, 410 125, 302 126 C 299 100, 300 70, 300 40 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+    <text x="318" y="70" font-size="21" fill="#2e6b41">서버 A (상대: B)</text>
+    <text x="318" y="100" font-size="18" fill="#2e6b41">큐가 비어 바로 실행 시작 ▶</text>
+    <!-- server B -->
+    <path d="M300 205 C 410 203, 520 206, 640 204 C 642 235, 641 262, 642 290 C 520 292, 410 290, 302 291 C 299 262, 300 235, 300 205 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+    <text x="318" y="235" font-size="21" fill="#4a7fb5">서버 B (상대: A)</text>
+    <text x="318" y="265" font-size="18" fill="#8a8272">앞에 요청이 쌓여 아직 대기 중 ⏳</text>
+    <!-- client to servers -->
+    <path d="M164 150 C 210 120, 250 95, 294 84" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH3)"/>
+    <path d="M164 186 C 210 214, 250 236, 294 246" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH3)"/>
+    <!-- cancel arrow -->
+    <path d="M560 130 C 566 155, 566 178, 560 198" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" marker-end="url(#arrH3)"/>
+    <text x="574" y="170" font-size="19" fill="#b3502f">취소 ✂</text>
+    <text x="420" y="320" font-size="19" fill="#b3502f">B는 큐에 있던 사본을 버린다</text>
+    <text x="40" y="250" font-size="19" fill="#8a8272">실행 시작이 곧</text>
+    <text x="40" y="274" font-size="19" fill="#8a8272">취소 신호가 된다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. tied request는 "누가 먼저 끝났나"가 아니라 "누가 먼저 시작했나"로 사본을 정리한다</div>
+
+<p>두 서버의 큐가 모두 비어 있으면 둘 다 바로 실행을 시작하고 취소 메시지는 엇갈려 날아갑니다. 그래서 논문은 두 요청 사이에 <b>평균 네트워크 지연의 두 배</b>(요즘 데이터센터에서 1ms 이하) 정도 간격을 두라고 권해요.</p>
+
+<p>효과는 꽤 큽니다. 논문의 BigTable 벤치마크(캐시에 없는 작은 읽기, 청크마다 복제본 3개)에서 1ms 뒤 tied request를 보내자 <b>중앙값이 16%, P99.9가 40% 가까이</b>(표의 값은 98ms에서 61ms, 38%) 줄었어요. 큰 정렬 작업이 같은 디스크를 두고 경쟁하는 상황에서도 비슷하게 줄었고, 디스크 사용률 증가는 두 경우 모두 1% 미만이었습니다. 취소가 중복 읽기를 대부분 없앴다는 뜻이에요.</p>
+
+<p>먼저 큐 길이를 물어보고 가장 한가한 서버로 보내는 방법은 어떨까요? 논문은 이쪽이 덜 효과적이라고 봅니다. 묻는 시점과 보내는 시점 사이에 부하가 바뀌고, 요청 하나의 처리 시간을 미리 가늠하기 어렵고, 모든 클라이언트가 같은 서버를 동시에 골라 쏠림이 생기기 때문이에요. 1편에서 본 군집 현상과 같은 이야기입니다.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 부하는 얼마나 늘고, 팬아웃은 그걸 어떻게 키우나</h2>
+
+<p>"5%만 늘어난다"는 숫자에는 조건이 붙어 있습니다. <b>지연 기준이 실제 95분위와 맞을 때</b>만 5%예요. 기준을 고정값으로 정해 두었는데 다운스트림이 전체적으로 느려지면 계산이 바뀝니다.</p>
+
+<div class="obsv-code">평소:    중앙값 25ms, P95 = 50ms,  헤지 기준 50ms  → 약 5%의 요청에 사본
+과부하:  레이턴시가 전체적으로 두 배, 중앙값 25 → 50ms
+         헤지 기준은 여전히 50ms     → 약 50%의 요청에 사본
+         다운스트림이 받는 요청 ≈ 1.5배 (이미 과부하인 곳에)</div>
+
+<p>과부하로 느려진 서버에 사본까지 몰리면 더 느려지고, 더 느려지면 사본이 더 많이 나갑니다. <span class="obsv-mark">꼬리를 줄이려던 장치가 과부하를 키우는 쪽으로 돌아서는</span> 거예요. 헤지가 통하는 전제는 "느린 건 일부 서버의 일시적 사정"인데, 다운스트림 전체가 느린 상황에서는 그 전제가 깨집니다. 어느 복제본에 사본을 보내도 똑같이 느리니까요.</p>
+
+<p>팬아웃은 이 증폭을 한 번 더 키웁니다. 루트 요청 하나가 하위 100개를 부르고 하위마다 5%씩 헤지하면 평소에도 하위 요청은 약 105개가 나가요. 이건 감당할 만합니다. 문제는 여러 계층이 각자 헤지할 때예요. 세 계층이 각각 원래 요청을 포함해 "최대 2개까지" 보내면 최악의 경우 맨 아래 계층에는 원래 요청 하나당 2 &times; 2 &times; 2 = <b>8개</b>가 도착할 수 있습니다. 과부하 때는 모든 계층이 동시에 기준을 넘기 쉬워 이 최악에 가까워져요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 헤지에는 브레이크가 같이 있어야 합니다</div>
+  &bull; <b>지연 기준을 측정값에 묶는다.</b> 상수로 박지 말고 최근 레이턴시 분포의 95분위를 따라가게 하거나, 최소한 과부하 때 어떻게 되는지 계산해 둡니다<br>
+  &bull; <b>사본 비율에 상한을 둔다.</b> gRPC는 재시도 제한(retryThrottling)이 헤지에도 적용돼요. 실패가 쌓여 토큰이 <code>maxTokens</code>의 절반 이하로 떨어지면 첫 요청은 나가지만 추가 사본은 보내지 않습니다<br>
+  &bull; <b>헤지는 한 계층에서만.</b> 가장 바깥이든 가장 안쪽이든 한 곳을 정하고, 나머지 계층은 사본을 만들지 않게 합니다<br>
+  &bull; <b>서버가 "그만"이라고 말할 수 있게 한다.</b> gRPC에서는 서버가 <code>grpc-retry-pushback-ms</code> 메타데이터로 추가 사본을 막거나 늦출 수 있어요<br>
+  재시도 예산을 비롯한 "재시도에 거는 브레이크"는 5편에서 자세히 다룹니다. 헤지 사본도 결국 재시도의 한 형태라 같은 장치가 필요해요.
+</div>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 두 번 실행돼도 되는 요청에만</h2>
+
+<p>부하보다 더 근본적인 조건이 하나 있습니다. 헤지 요청은 <b>같은 요청이 서버에서 두 번 실행될 수 있다</b>는 걸 전제로 해요. 취소는 "이제 결과가 필요 없다"는 통보일 뿐이고, 이미 실행된 일을 되돌리지는 않습니다.</p>
+
+<p>상품 목록을 읽는 요청이라면 두 번 실행돼도 아무 일 없어요. 결제 승인 요청이라면 이야기가 다릅니다. 첫 요청이 느렸을 뿐 실제로는 처리 중이었다면, 사본이 또 승인을 일으켜 <b>같은 주문이 두 번 결제</b>될 수 있어요. 큐에서 같은 메시지가 두 번 전달되어 생긴 중복 결제는 추적과 디버깅 시리즈 4편에서 다뤘는데, 헤지는 그 중복을 <b>클라이언트가 스스로 만들어 내는</b> 경우입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 멱등성 (idempotency)</div>
+  같은 요청을 여러 번 실행해도 결과가 한 번 실행한 것과 같은 성질이에요. 조회는 대개 멱등하고, "잔액에서 1만 원 차감" 같은 요청은 멱등하지 않습니다. 멱등하지 않은 요청도 요청마다 고유한 키를 붙여 서버가 두 번째를 걸러내게 하면 멱등하게 만들 수 있어요.
+</div>
+
+<p>공개 자료들도 이 조건을 분명히 적어 둡니다. 「The Tail at Scale」은 지금까지 다룬 기법들이 <b>시스템 상태를 바꾸는 중요한 변경을 하지 않는 연산</b>에 가장 잘 맞는다고 하고, 상태를 바꾸는 쪽은 응답 뒤로 미루거나 정족수 기반 합의 알고리즘처럼 원래 꼬리에 강한 방식으로 다룬다고 설명해요. gRPC의 재시도·헤지 설계 문서(gRFC A6)는 더 직접적입니다. 헤지는 <span class="obsv-mark">여러 번 실행돼도 부작용이 없는 메서드에만</span> 켜야 하고, 재시도 절에서는 gRPC에 메서드를 멱등하다고 표시하는 장치가 따로 없으니 그 판단은 서비스 소유자가 한다고 적어 둡니다.</p>
+
+<p>그러니 헤지를 켜기 전에 던질 질문은 "이 경로가 느린가"보다 "이 경로가 두 번 실행되면 무슨 일이 생기나"가 먼저입니다. 그리고 이 질문의 답은 <b>요청의 의미</b>를 아는 쪽만 알아요. 이 사실이 다음 장의 논쟁과 바로 이어집니다.</p>
+
+<!-- ================= 6장 ================= -->
+<h2>6. "서비스 메시로는 헤지를 못 한다"는 반만 맞다</h2>
+
+<p>헤지 요청을 소개하는 글에서 종종 이런 설명을 봅니다. 헤지에는 다운스트림에 대한 도메인 지식이 필요하니 애플리케이션 코드에서 만들어야 하고, <b>서비스 메시의 로드 밸런서로는 구현할 수 없다</b>. 그런데 실제 문서를 열어 보면 기능 자체는 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 서비스 메시와 사이드카</div>
+  서비스 메시는 서비스 사이의 호출을 애플리케이션 대신 처리하는 인프라 계층이에요. 보통 각 서비스 옆에 프록시(사이드카)를 하나씩 붙여 모든 송수신을 거치게 하고, 재시도·타임아웃·로드 밸런싱을 프록시 설정으로 정합니다. Istio가 쓰는 프록시가 Envoy예요.
+</div>
+
+<h3>Envoy: 기능은 있다, 단 타임아웃에서만</h3>
+
+<p>Envoy의 라우트 설정에는 <code>hedge_policy</code>가 있습니다. Envoy 아키텍처 문서는 "여러 업스트림 요청을 동시에 경주시켜 받아들일 만한 첫 응답을 다운스트림에 돌려준다"고 설명하면서 바로 제약을 붙여요. <b>현재 헤지는 요청(시도별) 타임아웃에 대한 응답으로만 수행된다.</b> 즉 <code>per_try_timeout</code>이 지나면 원래 요청을 끊지 않은 채 재시도를 하나 더 보내고, 늦게 오는 원래 응답도 함께 기다립니다.</p>
+
+<div class="obsv-code">match:                             # GET만 받는 라우트에만 헤지를 붙인다
+  prefix: "/recommendations"
+  headers:
+  - name: ":method"
+    string_match: { exact: "GET" }
+route:
+  cluster: recommendation
+  timeout: 1s                      # 전체 요청 상한
+  retry_policy:
+    retry_on: "5xx"
+    num_retries: 1                 # 사본은 재시도 횟수 안에서 나간다
+    per_try_timeout: 0.05s         # 이 시간이 지나면 사본 발사
+  hedge_policy:
+    hedge_on_per_try_timeout: true</div>
+
+<p>50ms 안에 답이 없으면 원래 요청을 살려 둔 채 사본을 하나 보내요. 사본은 재시도로 취급되어 <code>num_retries</code> 안에서만 나가고, 전체는 1초를 넘지 못합니다. 헤지 정책은 가상 호스트나 라우트 단위로 붙으니(둘 다 있으면 라우트 쪽이 이깁니다), 아예 GET만 매칭하는 라우트를 따로 만들어 거기에만 걸었어요. 5편에서 볼 <code>retriable_request_headers</code>로 메서드를 거르는 방법도 있지만, 소스를 읽어 보면 헤지 경로가 그 조건을 확인하는지 분명하지 않아서 라우트를 나누는 쪽을 택했습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 Envoy 문서와 소스에서 확인한 것</div>
+  &bull; <b>재시도 정책이 필수다.</b> 오류 조건과 최대 재시도 횟수를 정한 RetryPolicy가 있어야 <code>hedge_on_per_try_timeout</code>이 효과가 있어요<br>
+  &bull; <b>사본이 나간 뒤의 오류 응답은 버린다.</b> 이미 사본이 진행 중이라서요. 성공 응답은 언제 오든 바로 돌려줍니다<br>
+  &bull; <b>사본도 재시도의 횟수, 백오프, 상한을 따른다.</b> 소스에서 헤지 사본은 일반 재시도와 같은 경로로 나가요. 다만 <code>retry_on</code> 조건은 보지 않습니다. 그래서 재시도 백오프(기본 첫 재시도 0~24ms 무작위)만큼 늦게 출발하고, 클러스터의 재시도 상한(<code>max_retries</code> 서킷 브레이커나 5편의 <code>retry_budget</code>)에 걸리면 나가지 않습니다<br>
+  &bull; <b>진 쪽은 끊는다.</b> 라우터 소스(<code>resetOtherUpstreams</code>)는 응답 하나를 고른 뒤 나머지 업스트림 스트림을 리셋해요. 서버에서 이미 시작된 일까지 되돌리지는 않습니다<br>
+  &bull; <b>처음부터 여러 개 보내는 옵션은 아직 없다.</b> <code>initial_requests</code>, <code>additional_request_chance</code> 필드는 미구현(not-implemented)으로 표시돼 있어요<br>
+  &bull; <b>기준은 고정값이다.</b> 트리거가 <code>per_try_timeout</code> 하나라서 95분위를 따라 움직이지 않습니다. 4장의 과부하 계산이 그대로 적용돼요
+</div>
+
+<p>Istio를 쓴다면 한 겹이 더 있습니다. Istio VirtualService의 재시도 설정(<code>retries</code>)에는 <code>attempts</code>, <code>perTryTimeout</code>, <code>retryOn</code>, <code>backoff</code> 등은 있지만 헤지 항목은 없어요. 헤지를 쓰려면 EnvoyFilter 같은 방법으로 Envoy 설정을 직접 덧대야 합니다.</p>
+
+<h3>gRPC: 클라이언트 라이브러리가 직접 한다</h3>
+
+<p>gRPC는 사이드카 없이 클라이언트 라이브러리 안에서 헤지를 합니다. gRFC A6의 <code>hedgingPolicy</code>는 서비스 설정(service config)에 메서드별로 적어요.</p>
+
+<div class="obsv-code">{
+  "methodConfig": [{
+    "name": [{ "service": "catalog.RecommendationService", "method": "List" }],
+    "hedgingPolicy": {
+      "maxAttempts": 2,                    // 원래 요청 포함 총 2개
+      "hedgingDelay": "0.05s",             // 50ms 응답이 없으면 다음 사본
+      "nonFatalStatusCodes": ["UNAVAILABLE"]
+    }
+  }],
+  "retryThrottling": { "maxTokens": 10, "tokenRatio": 0.1 }
+}</div>
+
+<p>(주석은 설명용이고 실제 JSON에는 넣을 수 없어요.) 원래 요청은 즉시 나가고, <code>hedgingDelay</code> 동안 성공 응답이 없으면 다음 사본이 나갑니다. 어느 하나가 성공하면 나머지는 취소되고, <code>nonFatalStatusCodes</code>에 없는 오류가 오면 남은 사본을 모두 취소하고 그 오류를 돌려줘요. <code>maxAttempts</code>는 1보다 커야 하고, 클라이언트 기본 상한이 5라서 그보다 큰 값은 5로 취급됩니다. 앞에서 본 <code>retryThrottling</code>도 여기서 같이 걸어요. 다만 이건 설계 문서의 이야기이고 구현은 언어마다 다릅니다. A6 문서는 구현 현황을 "Java, .NET, Node, 그리고 헤지를 뺀 Go와 C-Core"로 적고, gRPC 공식 헤지 가이드도 Go는 미지원, C++은 아직 없다고 표시해요. C-Core 위에 올라간 언어도 마찬가지일 수 있으니 쓰는 구현의 문서부터 확인하세요.</p>
+
+<h3>그래서 무엇이 되고 무엇이 안 되나</h3>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <!-- left box: what mesh does -->
+    <path d="M30 50 C 130 47, 230 51, 330 48 C 333 140, 332 230, 331 300 C 230 303, 130 299, 32 301 C 29 230, 30 140, 30 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+    <text x="52" y="86" font-size="25" fill="#2e6b41">프록시·라이브러리가 해 줌 ⚙️</text>
+    <text x="52" y="126" font-size="19" fill="#3d3a34">· 기준 시간이 지나면 사본 발사</text>
+    <text x="52" y="160" font-size="19" fill="#3d3a34">· 먼저 온 성공 응답 채택</text>
+    <text x="52" y="194" font-size="19" fill="#3d3a34">· 진 쪽 스트림 끊기(취소)</text>
+    <text x="52" y="228" font-size="19" fill="#3d3a34">· 사본 개수, 전체 시간 상한</text>
+    <text x="52" y="262" font-size="19" fill="#3d3a34">· 사본 비율 제한(gRPC 토큰)</text>
+    <!-- right box: what a person decides -->
+    <path d="M370 50 C 470 48, 570 52, 670 49 C 673 140, 671 230, 672 300 C 570 303, 470 300, 372 302 C 369 230, 370 140, 370 50 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.6"/>
+    <text x="392" y="86" font-size="25" fill="#b3502f">여전히 사람이 정함 ✋</text>
+    <text x="392" y="126" font-size="19" fill="#3d3a34">· 이 경로가 두 번 돌아도 되나</text>
+    <text x="392" y="160" font-size="19" fill="#3d3a34">· 기준 시간을 몇 ms로</text>
+    <text x="392" y="194" font-size="19" fill="#3d3a34">· 어느 계층에서만 헤지하나</text>
+    <text x="392" y="228" font-size="19" fill="#3d3a34">· 과부하 때 부하가 몇 배가 되나</text>
+    <text x="392" y="262" font-size="19" fill="#3d3a34">· 서버 쪽 일은 정말 취소되나</text>
+    <path d="M336 175 C 345 173, 356 177, 364 175" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="1 6" stroke-linecap="round"/>
+    <text x="350" y="340" text-anchor="middle" font-size="21" fill="#b3502f">= 메시가 모르는 건 "헤지하는 법"이 아니라 "이 요청이 무엇인지"다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 기계 장치는 프록시로 내려갔지만, 판단은 내려가지 않았다</div>
+
+<p>정리하면 이렇습니다. "서비스 메시로는 헤지 요청을 구현할 수 없다"는 <b>기능 수준에서는 틀린</b> 설명이에요. Envoy에는 시도별 타임아웃 기반 헤지가 있고, gRPC는 (Java 등 일부 구현에서) 라이브러리 수준의 지연 기반 헤지와 제한 장치를 함께 제공합니다. 반면 그 설명이 근거로 든 부분, 즉 <b>도메인 지식이 필요하다</b>는 말은 맞아요. 프록시는 <code>POST /payments</code>가 두 번 실행돼도 되는지 모릅니다. 메서드나 헤더로 범위를 좁힐 수는 있지만, 그 규칙을 쓰는 건 요청의 의미를 아는 사람이에요.</p>
+
+<p>그러니 실무 판단은 "메시냐 코드냐"보다 <b>"누가 멱등성을 보증하고, 누가 기준값을 관리하나"</b>로 갈립니다. 멱등한 조회 경로에 타임아웃 하나면 충분하다면 프록시 설정으로 시작해도 돼요. 기준을 측정값에 따라 움직이거나 tied request처럼 서버 협조가 필요한 방식은 애플리케이션 쪽 일입니다. 패턴을 앱과 메시 중 어디에 둘지는 7편에서 다시 나눠 봅니다.</p>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>팬아웃은 각 서버의 꼬리를 전체의 기본값으로 만듭니다.</b> 서버 100대에 동시에 물으면 각자 1%만 느려도 요청의 63.4%가 느려져요. 느림의 원인은 대개 그 순간 그 서버의 사정이라, 95분위쯤 기다렸다가 다른 복제본에 사본을 보내면 약 5%의 추가 부하로 꼬리가 크게 줄고, 서버끼리 취소를 주고받는 tied request는 낭비를 더 줄입니다.<br><br>
+  대신 지연 기준이 고정돼 있으면 과부하 때 사본이 부하를 키우고, 두 번 실행되면 안 되는 요청에는 쓸 수 없어요. Envoy와 gRPC에는 헤지 기능이 실제로 있지만, 어떤 요청이 두 번 돌아도 되는지는 여전히 요청의 의미를 아는 사람이 정합니다. 헤지는 남는 용량을 꼬리 레이턴시와 맞바꾸는 일이고, 그 교환이 안전한지는 요청마다 따로 따져야 해요.
+</div>
+
+</div>

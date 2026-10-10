@@ -1,0 +1,321 @@
+<!-- lead: 계층마다 세 번씩 재시도하면 맨 아래 DB는 27배를 받아요. 멱등성, 지수 백오프와 지터, Finagle·Envoy·gRPC의 재시도 예산, Resilience4j Retry 지표로 재시도 폭풍을 막는 법을 정리했어요. -->
+<!-- tags: 재시도, 지수 백오프, 지터, retry budget, Resilience4j -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-hand { font-family: 'Nanum Pen Script', cursive; font-size: 22px; color: #b3502f; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 5편</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  2편. 빨리 실패하는 서버는 한가해 보인다<br>
+  3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다<br>
+  4편. 요청을 한 번 더 보내면 빨라진다<br>
+  <b>5편. 재시도는 공짜가 아니다</b> &larr; 지금 이 글<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  7편. 임계값을 정하지 않는 동시성 제한
+</div>
+
+<p>오후 2시, 재고 서비스의 DB가 30초쯤 느려집니다. 흔한 일이에요. 인덱스 통계가 갱신됐거나 무거운 배치가 잠깐 겹쳤겠죠. 평소라면 30초 뒤에 저절로 풀립니다. 그런데 이날은 풀리지 않습니다. DB에 들어오는 쿼리 수가 평소의 몇십 배로 뛰어 있고, 느려진 원인이 사라진 뒤에도 그 숫자가 내려오지 않아요.</p>
+
+<p>쿼리를 보낸 쪽을 따라가 보면 새로 들어온 사용자 요청은 거의 늘지 않았습니다. 늘어난 건 <b>재시도</b>예요. 게이트웨이도, 주문 서비스도, 재고 서비스도 "일시적인 오류니까 세 번까지 다시 해 보자"는 설정을 각자 갖고 있었습니다. 하나하나는 합리적인 설정이었어요. 그럼 무엇이 30초짜리 지연을 멈추지 않는 장애로 바꿨을까요?</p>
+
+<p>이번 편에서 볼 질문은 이렇습니다. 어떤 실패를 다시 보내도 되나? 계층마다 세 번씩 재시도하면 맨 아래는 몇 배를 받나? 왜 기다리는 시간에 무작위를 섞나? 재시도 총량은 어떻게 묶나? 재시도가 장애를 가리고 있다는 건 어떻게 알아보나?</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 다시 보내면 되는 실패, 다시 보내도 같은 실패</h2>
+
+<p>다운스트림은 생각보다 자주, 아주 짧게 아픕니다. 커넥션이 리셋되고, 스레드 풀이 잠깐 꽉 차고, 배포 중인 인스턴스가 요청을 하나 놓쳐요. 이런 실패는 몇백 밀리초 뒤에 다시 보내면 대개 성공합니다. 그대로 사용자에게 에러로 돌려주면 원인보다 큰 장애가 돼요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 일시 장애 (transient fault)</div>
+  원인이 짧은 시간 안에 저절로 사라지는 실패입니다. 같은 요청을 조금 뒤에 다시 보내면 성공할 가능성이 높아요. 반대로 요청 자체가 잘못됐거나 권한이 없는 실패는 몇 번을 다시 보내도 결과가 같습니다.
+</div>
+
+<p>그래서 재시도를 넣기 전에 세 가지를 정해야 합니다. <b>다시 보내도 되는 요청인가</b>(2장), <b>몇 번까지, 얼마 간격으로</b>(3장, 4장), 그리고 <b>다시 보내 봐야 소용없는 응답은 무엇인가</b>. 마지막 것은 기준이 비교적 분명합니다.</p>
+
+<p>HTTP로 보면 4xx는 대체로 "요청이 잘못됐다"는 뜻입니다. 입력 형식이 틀려 400을 받았다면 같은 입력을 다시 보내도 400이 돌아와요. AWS Builders' Library의 타임아웃·재시도 글도 클라이언트 오류는 나중에 보내도 성공하지 않으니 같은 요청으로 재시도하지 말라고 적어 둡니다. 재시도 후보는 5xx, 그중에서도 502·503·504와 응답 자체를 못 받은 경우(연결 리셋, 연결 실패)예요.</p>
+
+<p>예외가 둘 있습니다. 하나는 <b>429(Too Many Requests)</b>입니다. 요청이 틀린 게 아니라 "지금은 너무 많다"는 뜻이라 기다리면 성공할 수 있어요. 다른 하나는 <b>Retry-After 헤더</b>입니다. HTTP 명세(RFC 9110)는 503과 함께 보낸 Retry-After를 "서비스가 얼마 동안 이용 불가로 예상되는지"로 정의해요. 서버가 언제 다시 오라고 말해 줬다면 그 값이 내 백오프 계산보다 우선이에요.</p>
+
+<p>Envoy의 <b>retriable-4xx</b> 조건이 다루는 409도 조심해야 합니다. 문서는 409가 낙관적 잠금의 버전을 갱신해야 한다는 뜻일 때가 있고, 그런 경우 그대로 다시 보내면 매번 또 409로 실패하니 최신 값을 다시 읽은 뒤 쓰기를 시도해야 한다고 경고해요. 라이브러리가 대신해 줄 수 없는 재시도입니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 타임아웃은 실패가 아니라 "모름"이다</h2>
+
+<p>재시도를 처음 붙일 때 가장 흔히 놓치는 건 타임아웃의 의미예요. 500을 받았다면 서버가 처리하다 실패했다는 걸 압니다. 그런데 응답이 3초 안에 안 와서 끊었다면, 우리가 아는 건 <b>"응답을 못 받았다"</b>뿐입니다. 서버가 요청을 못 받았을 수도, 처리 중일 수도, 이미 처리를 끝내고 응답을 보내다 끊겼을 수도 있어요.</p>
+
+<p>조회는 두 번 해도 결과가 같습니다. 결제는 다릅니다. 첫 요청이 실제로는 승인됐는데 응답만 늦었다면 재시도는 <span class="obsv-mark">두 번째 결제</span>가 돼요. 추적과 디버깅 시리즈 4편의 중복 결제를 이번엔 호출하는 쪽이 스스로 만드는 셈입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 멱등성 (idempotency)</div>
+  같은 요청을 여러 번 보내도 한 번 보낸 것과 결과가 같은 성질입니다. 재시도해도 되는지는 응답 코드가 아니라 이 성질로 정해져요.
+</div>
+
+<p>RFC 9110은 PUT, DELETE와 GET 같은 안전한 메서드를 멱등하다고 정의하고, 응답을 읽기 전에 연결이 끊기면 이런 요청은 자동으로 다시 보낼 수 있다고 적어요. 멱등하지 않은 요청은 실제로 멱등하다는 것이나 원래 요청이 적용되지 않았다는 것을 알 방법이 없으면 자동 재시도하지 말라(SHOULD NOT)고 하고요.</p>
+
+<p>결제 같은 POST는 그 "알 방법"을 만들어 주면 됩니다. 클라이언트가 요청마다 고유한 <b>멱등성 키</b>를 붙이고, 서버는 같은 키의 두 번째 요청에 첫 번째 결과를 돌려주는 방식이에요. AWS Builders' Library도 부수 효과가 있는 API는 멱등성을 제공하지 않는 한 재시도에 안전하지 않다고 적어 둡니다.</p>
+
+<p>이 판단은 <b>도메인을 아는 쪽</b>만 할 수 있습니다. 프록시는 요청이 POST라는 건 알아도 그게 장바구니 담기인지 결제인지는 몰라요. Envoy의 <b>5xx</b> 조건은 응답이 5xx이거나 없으면 재시도할 뿐 메서드를 가려 주지 않고(retriable_request_headers로 메서드를 직접 걸러야 해요), Finagle 문서는 요청이 멱등한지 알 수 없어서 타임아웃을 기본으로 재시도하지 않는다고 적습니다. 4편의 헤지 요청처럼, 메시에 재시도를 켜는 건 쉽지만 어느 경로에 켤지는 사람이 정해야 해요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 계층마다 세 번이면 맨 아래는 스물일곱 번</h2>
+
+<p>서두의 구조는 게이트웨이 &rarr; 주문 서비스 &rarr; 재고 서비스 &rarr; DB였고, 세 계층이 각자 "최대 세 번 시도"를 갖고 있었습니다. DB 쿼리가 타임아웃 나면 어떻게 될까요?</p>
+
+<div class="obsv-code">계층마다 최대 3번 시도 (처음 1번 + 재시도 2번)
+
+게이트웨이 &rarr; 주문 서비스    : 3번
+주문 서비스 &rarr; 재고 서비스   : 3 &times; 3 = 9번
+재고 서비스 &rarr; DB           : 3 &times; 3 &times; 3 = 27번
+
+사용자 요청 1개 = DB 쿼리 최대 27개</div>
+
+<p>계층이 n개이고 각자 시도가 k번이면 맨 아래는 최대 k<sup>n</sup>배를 받습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="r5a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M40 40 C 110 37, 180 41, 240 38 C 243 54, 242 66, 241 80 C 180 83, 110 79, 42 81 C 39 66, 40 52, 40 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+    <text x="64" y="68" font-size="24" fill="#4a7fb5">사용자 요청 1개 🙋</text>
+    <path d="M140 86 C 141 96, 140 104, 141 112" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#r5a1)"/>
+    <path d="M40 120 C 110 117, 180 121, 240 118 C 243 134, 242 146, 241 160 C 180 163, 110 159, 42 161 C 39 146, 40 132, 40 120 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+    <text x="58" y="148" font-size="22" fill="#3d3a34">게이트웨이가 주문 호출</text>
+    <path d="M300 132 C 301 137, 299 142, 300 148 M316 132 C 317 137, 315 142, 315 148 M332 132 C 333 137, 331 142, 332 148" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
+    <text x="360" y="148" font-size="22" fill="#4a7fb5">3번</text>
+    <path d="M140 166 C 141 176, 140 184, 141 192" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#r5a1)"/>
+    <path d="M40 200 C 110 197, 180 201, 240 198 C 243 214, 242 226, 241 240 C 180 243, 110 239, 42 241 C 39 226, 40 212, 40 200 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+    <text x="58" y="228" font-size="22" fill="#3d3a34">주문이 재고 호출</text>
+    <path d="M300 212 C 301 217, 299 222, 301 228 M316 212 C 317 217, 315 222, 315 228 M332 212 C 333 217, 331 222, 331 228 M348 212 C 349 217, 347 222, 349 228 M364 212 C 365 217, 363 222, 363 228 M380 212 C 381 217, 379 222, 380 228 M396 212 C 397 217, 395 222, 397 228 M412 212 C 413 217, 411 222, 411 228 M428 212 C 429 217, 427 222, 429 228" fill="none" stroke="#e5a33c" stroke-width="3" stroke-linecap="round"/>
+    <text x="452" y="228" font-size="22" fill="#c07f18">9번</text>
+    <path d="M140 246 C 141 256, 140 264, 141 272" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#r5a1)"/>
+    <path d="M40 280 C 110 277, 180 281, 240 278 C 243 294, 242 306, 241 320 C 180 323, 110 319, 42 321 C 39 306, 40 292, 40 280 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+    <text x="58" y="308" font-size="22" fill="#b3502f">재고가 DB 쿼리 🔥</text>
+    <path d="M300 292 C 301 297, 299 302, 299 308 M313 292 C 314 297, 312 302, 312 308 M326 292 C 327 297, 325 302, 325 308 M339 292 C 340 297, 338 302, 339 308 M352 292 C 353 297, 351 302, 352 308 M365 292 C 366 297, 364 302, 364 308 M378 292 C 379 297, 377 302, 377 308 M391 292 C 392 297, 390 302, 390 308 M404 292 C 405 297, 403 302, 405 308 M417 292 C 418 297, 416 302, 417 308 M430 292 C 431 297, 429 302, 429 308 M443 292 C 444 297, 442 302, 444 308 M456 292 C 457 297, 455 302, 455 308 M469 292 C 470 297, 468 302, 468 308 M482 292 C 483 297, 481 302, 483 308 M495 292 C 496 297, 494 302, 496 308 M508 292 C 509 297, 507 302, 509 308 M521 292 C 522 297, 520 302, 520 308 M534 292 C 535 297, 533 302, 535 308 M547 292 C 548 297, 546 302, 548 308 M560 292 C 561 297, 559 302, 560 308 M573 292 C 574 297, 572 302, 572 308 M586 292 C 587 297, 585 302, 585 308 M599 292 C 600 297, 598 302, 598 308 M612 292 C 613 297, 611 302, 613 308 M625 292 C 626 297, 624 302, 624 308 M638 292 C 639 297, 637 302, 638 308" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+    <text x="604" y="338" font-size="22" fill="#b3502f">27번</text>
+    <text x="40" y="366" font-size="21" fill="#b3502f">각자 합리적인 "3번"이 곱해져서, 가장 약한 맨 아래가 27배를 맞는다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 재시도는 더해지지 않고 곱해진다</div>
+
+<p>"재시도 3번"은 두 가지로 읽힙니다. Resilience4j의 <code>maxAttempts</code>는 <b>처음 호출을 포함한</b> 횟수라 3은 재시도 2번이에요. "실패하면 세 번 더"로 읽으면 계층당 4번이고 세 계층이면 4<sup>3</sup> = <b>64배</b>입니다. AWS Builders' Library도 이 두 읽기가 섞여 있습니다. 다섯 단계 호출에서 "계층마다 재시도 세 번"이면 DB 부하가 <b>243배</b>라고 쓰는데, 243은 3<sup>5</sup>, 즉 계층당 세 번 <b>시도</b>로 센 값이에요. 글자 그대로 재시도 세 번(시도 네 번)이면 4<sup>5</sup> = 1024배입니다.</p>
+
+<p>더 나쁜 건 <b>타이밍</b>입니다. 재시도는 다운스트림이 이미 힘들 때 몰려와요. AWS 글의 표현대로 과부하로 생긴 실패에 부하를 늘리는 재시도를 얹으면 상황은 훨씬 나빠집니다. 원인이 사라져도 쌓인 재시도가 DB를 붙잡고, 또 타임아웃이 나고, 또 재시도가 생겨요. <span class="obsv-mark">처음 원인과 상관없이 재시도가 재시도를 만드는 상태</span>, 흔히 <b>재시도 폭풍(retry storm)</b>이라고 부르는 상태예요.</p>
+
+<p>가장 단순한 처방은 한 곳에서만 재시도하는 겁니다. AWS 글은 비용이 낮은 작업에 대해 "스택의 한 지점에서만 재시도"를 모범 사례로 들어요. 재고 서비스만 재시도하고 위 계층은 실패를 그대로 올리면 27이 3이 됩니다. 다만 모든 계층이 이 약속을 지켜야 해요. 라이브러리 기본값이나 메시 설정이 어딘가에서 재시도를 켜 두면 곱셈은 다시 시작되고, 그래서 5장의 예산이 필요합니다.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 얼마나 기다릴까: 백오프만으로는 부족하다</h2>
+
+<p>실패하면 늘 100ms 뒤에 다시 보낸다고 해 볼게요. 과부하로 실패하는 중이라면 100ms 뒤에도 과부하일 가능성이 높습니다. 그래서 실패할수록 기다리는 시간을 늘려요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 지수 백오프 (exponential backoff)</div>
+  재시도할 때마다 대기 시간에 일정한 배수를 곱해 늘리는 방식입니다. 100ms, 200ms, 400ms처럼요. 보통 상한(cap)을 둬서 대기 시간이 끝없이 길어지지 않게 합니다.
+</div>
+
+<p>그런데 같은 순간에 실패한 클라이언트 100개는 <b>같은 공식으로 같은 시간을 기다렸다가 같은 순간에</b> 다시 보냅니다. 부하가 덩어리째 뒤로 옮겨 갈 뿐이에요. AWS 아키텍처 블로그의 2015년 글 "Exponential Backoff And Jitter"(Marc Brooker)가 시뮬레이션으로 보여 준 것도 이겁니다. 상한 있는 지수 백오프만으로는 개선이 작았고, 경합을 흩뜨리지 못하고 다른 시점으로 옮기기만 했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 지터 (jitter)</div>
+  대기 시간에 일부러 섞는 무작위 값입니다. 같은 순간에 실패한 클라이언트들이 서로 다른 시각에 재시도하게 만들어서, 재시도가 한 시점에 몰리지 않게 해요.
+</div>
+
+<p>그 글이 비교한 세 가지 방식을 공식으로 적으면 이렇습니다. base는 첫 대기 시간, cap은 상한, attempt는 몇 번째 재시도인지예요.</p>
+
+<div class="obsv-code">상한 있는 지수 백오프:  sleep = min(cap, base &times; 2^attempt)
+
+Full Jitter:     sleep = random(0, min(cap, base &times; 2^attempt))
+Equal Jitter:    t = min(cap, base &times; 2^attempt)
+                 sleep = t/2 + random(0, t/2)
+Decorrelated:    sleep = min(cap, random(base, 이전 sleep &times; 3))</div>
+
+<p>지터를 넣자 클라이언트 100개 기준 호출 수가 절반 넘게 줄고 완료 시간도 크게 줄었습니다. 셋 중 Equal Jitter가 가장 약했고, Full과 Decorrelated의 우열은 분명하지 않다고 적혀 있어요. 결론은 지터를 섞은 백오프를 원격 클라이언트의 표준으로 삼자는 것이었습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <text x="30" y="44" font-size="24" fill="#b3502f">지수 백오프만 ⏱️</text>
+    <path d="M100 120 C 250 121, 450 119, 660 120" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M104 119 C 103 95, 105 75, 104 56 C 109 55, 113 56, 116 57 C 117 78, 115 98, 116 119 Z" fill="#f0b8a8" stroke="#e5533c" stroke-width="2.2"/>
+    <path d="M144 119 C 143 95, 145 75, 144 56 C 149 55, 153 56, 156 57 C 157 78, 155 98, 156 119 Z" fill="#f0b8a8" stroke="#e5533c" stroke-width="2.2"/>
+    <path d="M224 119 C 223 95, 225 75, 224 56 C 229 55, 233 56, 236 57 C 237 78, 235 98, 236 119 Z" fill="#f0b8a8" stroke="#e5533c" stroke-width="2.2"/>
+    <path d="M384 119 C 383 95, 385 75, 384 56 C 389 55, 393 56, 396 57 C 397 78, 395 98, 396 119 Z" fill="#f0b8a8" stroke="#e5533c" stroke-width="2.2"/>
+    <text x="410" y="78" font-size="20" fill="#b3502f">100개가 같은 순간에 다시 온다</text>
+    <text x="410" y="104" font-size="18" fill="#8a8272">덩어리가 뒤로 밀릴 뿐, 흩어지지 않음</text>
+    <path d="M60 170 C 250 172, 450 168, 660 170" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+    <text x="30" y="210" font-size="24" fill="#2e6b41">지수 백오프 + Full Jitter 🎲</text>
+    <path d="M100 270 C 250 271, 450 269, 660 270" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M111 245 C 112 252, 110 259, 110 267 M117 245 C 118 252, 116 259, 116 267 M124 245 C 125 252, 123 259, 123 267 M128 245 C 129 252, 127 259, 129 267 M132 245 C 133 252, 131 259, 131 267 M137 245 C 138 252, 136 259, 138 267 M141 245 C 142 252, 140 259, 142 267 M146 245 C 147 252, 145 259, 145 267 M152 245 C 153 252, 151 259, 153 267 M160 245 C 161 252, 159 259, 161 267 M173 245 C 174 252, 172 259, 174 267 M181 245 C 182 252, 180 259, 182 267 M187 245 C 188 252, 186 259, 186 267 M194 245 C 195 252, 193 259, 195 267 M200 245 C 201 252, 199 259, 201 267 M210 245 C 211 252, 209 259, 210 267 M220 245 C 221 252, 219 259, 220 267 M228 245 C 229 252, 227 259, 227 267 M237 245 C 238 252, 236 259, 237 267 M250 245 C 251 252, 249 259, 251 267 M262 245 C 263 252, 261 259, 262 267 M278 245 C 279 252, 277 259, 279 267 M293 245 C 294 252, 292 259, 292 267 M304 245 C 305 252, 303 259, 303 267 M322 245 C 323 252, 321 259, 321 267 M341 245 C 342 252, 340 259, 342 267 M360 245 C 361 252, 359 259, 359 267 M391 245 C 392 252, 390 259, 390 267" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round"/>
+    <text x="410" y="244" font-size="20" fill="#2e6b41">같은 100개가 시간 축에 흩어진다</text>
+    <text x="410" y="268" font-size="18" fill="#8a8272">한 순간의 최대 부하가 낮아짐</text>
+    <text x="600" y="296" font-size="18" fill="#8a8272">시간 →</text>
+    <text x="30" y="326" font-size="21" fill="#b3502f">기다리는 시간을 늘리는 것과, 서로 다른 시간을 기다리게 하는 것은 다른 일이다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 백오프는 간격을 벌리고, 지터는 클라이언트끼리 어긋나게 만든다</div>
+
+<p>같은 "지터"라도 도구마다 섞는 방식이 꽤 다릅니다.</p>
+
+<div class="obsv-code">Envoy 라우터      : Full Jitter. N번째 재시도는 [0, (2^N - 1) &times; 25ms) 중 무작위
+                    기본 base 25ms, 상한은 base의 10배(250ms)
+gRPC (gRFC A6)    : min(initialBackoff &times; multiplier^(n-1), maxBackoff) &times; random(0.8, 1.2)
+                    계산값의 &plusmn;20%
+Resilience4j      : ofExponentialRandomBackoff, 계산값의 &plusmn;randomizationFactor
+                    기본 0.5, 즉 &plusmn;50%</div>
+
+<p>gRPC는 특히 볼 만합니다. gRPC의 재시도 설계 문서인 gRFC A6는 원래 random(0, 계산값)의 Full Jitter였는데 2024년 8월 개정에서 &plusmn;20%로 바뀌었어요. 그래서 실제 대기가 maxBackoff를 조금 넘을 수 있다고 문서가 따로 적어 둡니다. "지터를 넣었다"만으로는 분포를 알 수 없으니 쓰는 라이브러리의 공식을 확인해야 해요.</p>
+
+<p>그리고 백오프와 지터는 재시도의 <b>시점</b>을 바꿀 뿐 <b>횟수</b>를 줄이지 않습니다. 3장의 27배는 지터를 넣어도 고르게 퍼진 27배예요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 재시도에 예산을 건다</h2>
+
+<p>"최대 3번"은 요청 하나의 상한입니다. 정상일 때는 거의 안 쓰이지만, 다운스트림이 통째로 실패하면 모든 요청이 상한까지 채워 재시도해요. 실패가 1%일 때 약 1.01배이던 부하가, 다운스트림이 가장 약할 때 3배가 됩니다. 그래서 나온 발상이 "재시도는 <span class="obsv-mark">전체 요청의 일정 비율까지만</span>"이라는 재시도 예산입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 재시도 예산 (retry budget)</div>
+  최근 요청량에 비례해 허용되는 재시도 총량입니다. 요청이 성공하거나 들어올 때마다 조금씩 쌓이고, 재시도할 때마다 꺼내 씁니다. 바닥나면 재시도하지 않고 실패를 바로 돌려줘요. 구현은 대개 토큰 버킷(일정량을 쌓아 두고 꺼내 쓰는 카운터)입니다.
+</div>
+
+<p>공개된 구현 셋은 같은 발상을 다르게 셉니다.</p>
+
+<p><b>Finagle RetryBudget</b>은 요청 비율로 셉니다. 소스의 기본값은 ttl 10초, 초당 최소 재시도 10회, 비율 0.2예요. 요청마다 예금(deposit)이 쌓이고 재시도할 때 인출(withdraw)하며, 예금은 ttl이 지나면 사라집니다. 그래서 최근 10초 요청의 약 20%만큼 재시도할 수 있고, 요청이 적은 클라이언트를 위해 초당 최소 횟수를 바닥으로 깔아 둬요.</p>
+
+<p><b>Envoy retry_budget</b>은 동시성으로 셉니다. 클러스터의 서킷 브레이커 설정 안에 있고, budget_percent(기본 20%)는 처리 중·대기 중 요청의 합 대비 <b>동시에 진행 중인 재시도</b>의 상한이에요(budget_interval을 주면 그 기간 안에 시작된 요청까지 셉니다). 바닥은 min_retry_concurrency(기본 3)이고, 예산을 설정하면 동시 재시도 수를 고정값으로 묶는 서킷 브레이커의 max_retries 대신 예산이 적용됩니다.</p>
+
+<p><b>gRPC retry throttling</b>은 실패와 성공의 균형으로 셉니다. 서버 이름마다 token_count를 maxTokens로 시작해, 실패마다 1을 빼고 성공마다 tokenRatio를 더해요. maxTokens의 절반 이하로 떨어지면 재시도와 헤지를 멈춥니다. 실패로 세는 건 재시도 대상(헤지라면 nonFatalStatusCodes) 상태 코드와 서버의 재시도 거부(pushback) 응답뿐이라 INVALID_ARGUMENT 같은 요청 오류는 빠져요. AWS Builders' Library가 말하는 로컬 토큰 버킷도 같은 계열입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="r5a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M40 60 C 100 57, 160 61, 210 58 C 213 80, 212 98, 211 118 C 160 121, 100 117, 42 119 C 39 98, 40 78, 40 60 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+    <text x="58" y="90" font-size="22" fill="#2e6b41">성공한 호출 ✅</text>
+    <text x="58" y="112" font-size="18" fill="#8a8272">토큰 +0.1</text>
+    <path d="M216 90 C 245 96, 268 112, 290 132" stroke="#5a9e6f" stroke-width="2.4" fill="none" stroke-linecap="round" marker-end="url(#r5a3)"/>
+    <path d="M40 210 C 100 207, 160 211, 210 208 C 213 230, 212 248, 211 268 C 160 271, 100 267, 42 269 C 39 248, 40 228, 40 210 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+    <text x="58" y="240" font-size="22" fill="#b3502f">실패한 호출 ❌</text>
+    <text x="58" y="262" font-size="18" fill="#8a8272">토큰 -1</text>
+    <path d="M290 222 C 268 230, 245 236, 218 240" stroke="#e5533c" stroke-width="2.4" fill="none" stroke-linecap="round" marker-start="url(#r5a3)"/>
+    <path d="M300 70 C 298 72, 293 76, 294 84 C 292 140, 294 200, 293 250 C 294 262, 302 268, 315 269 C 345 271, 370 270, 392 268 C 405 267, 412 260, 412 249 C 414 200, 412 140, 413 85 C 413 78, 408 73, 404 71" fill="none" stroke="#3d3a34" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M296 160 C 330 157, 370 162, 410 159 C 411 195, 410 228, 410 248 C 409 259, 402 264, 390 265 C 365 267, 340 267, 317 266 C 305 265, 295 259, 295 249 C 296 220, 296 190, 296 160 Z" fill="#a8d5b5" stroke="none"/>
+    <path d="M286 168 C 330 166, 380 170, 424 167" stroke="#e5a33c" stroke-width="2.6" stroke-dasharray="8 8" stroke-linecap="round" fill="none"/>
+    <text x="318" y="60" font-size="22" fill="#3d3a34">토큰 최대 10</text>
+    <text x="318" y="218" font-size="22" fill="#2e6b41">남은 토큰</text>
+    <text x="436" y="160" font-size="20" fill="#c07f18">절반(5) 선</text>
+    <text x="436" y="186" font-size="18" fill="#8a8272">이 선 이하로 내려가면</text>
+    <text x="436" y="210" font-size="18" fill="#8a8272">재시도와 헤지를 멈춘다 🛑</text>
+    <text x="436" y="248" font-size="18" fill="#8a8272">위로 올라오면 다시 허용</text>
+    <text x="40" y="318" font-size="21" fill="#b3502f">실패율이 약 9%를 넘게 이어지면 토큰은 줄기만 한다</text>
+    <text x="40" y="344" font-size="18" fill="#8a8272">gRPC 문서의 예시 설정 maxTokens 10, tokenRatio 0.1 기준</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 재시도 예산은 "최근에 얼마나 실패했나"로 재시도 자격을 정한다</div>
+
+<p>9%는 직접 계산한 값입니다. 실패율이 p면 호출당 토큰 변화의 기댓값은 &minus;p + (1&minus;p) &times; 0.1이고, 이게 0이 되는 p는 0.1 / 1.1 &asymp; 9.1%예요. tokenRatio를 정하는 건 "실패율 몇 %부터 재시도를 그만할지"를 정하는 일입니다.</p>
+
+<div class="obsv-code">다운스트림이 전부 실패하는 최악의 경우, 계층 3개
+
+요청마다 최대 3번 시도     : 3 &times; 3 &times; 3      = 27배
+재시도 예산 20% (계층마다)  : 1.2 &times; 1.2 &times; 1.2 &asymp; 1.73배</div>
+
+<p>계층마다 받은 요청의 20%까지만 재시도하면 세 계층을 곱해도 약 1.73배예요(Finagle처럼 요청 수의 비율로 예산을 세고 최소 바닥은 0으로 둔 단순 모델 기준입니다. Envoy의 예산은 동시 요청 수의 비율이라 타임아웃이 길면 배수가 달라져요). 정상일 때의 경험은 거의 그대로 두고, 가장 나쁠 때의 증폭만 크게 깎습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 예산이 막지 못하는 경우</div>
+  &bull; <b>최소 재시도 바닥은 클라이언트 수만큼 더해집니다.</b> 요청이 적은 클라이언트가 수백 개면 초당 10회, 동시 3개 같은 바닥만으로도 큰 양이 돼요.<br>
+  &bull; <b>20%도 공짜는 아닙니다.</b> 한계에서 버티는 다운스트림에는 1.2배가 마지막 한 걸음일 수 있어요. 예산은 증폭을 줄일 뿐 부하를 덜어 주지 않고, 그건 6편의 서킷 브레이커 몫입니다.<br>
+  &bull; <b>예산이 바닥나면 사용자는 에러를 봅니다.</b> 의도된 동작이니, 예산 소진은 장애 신호로 따로 봐야 해요.
+</div>
+
+<!-- ================= 6장 ================= -->
+<h2>6. Resilience4j로 쓰고, 재시도가 가린 장애를 지표로 본다</h2>
+
+<p>자바에서 직접 재시도를 짠다면 Resilience4j가 흔한 선택입니다. 지금까지의 원칙을 현재 API로 옮기면 이래요.</p>
+
+<div class="obsv-code">RetryConfig config = RetryConfig.custom()
+    .maxAttempts(3)                       // 처음 호출 포함 3번 = 재시도 2번
+    .intervalFunction(IntervalFunction.ofExponentialRandomBackoff(
+        Duration.ofMillis(200),           // 첫 대기
+        2.0,                              // 배수
+        0.5,                              // 지터 &plusmn;50%
+        Duration.ofSeconds(2)))           // 상한
+    .retryExceptions(ResourceAccessException.class, RetryableApiException.class)
+    .ignoreExceptions(BadRequestException.class)
+    .build();
+
+RetryRegistry retryRegistry = RetryRegistry.of(config);
+Retry retry = retryRegistry.retry("inventory");
+Supplier&lt;Stock&gt; call = Retry.decorateSupplier(retry, () -&gt; inventoryClient.get(sku));</div>
+
+<p><code>ofExponentialBackoff</code>에는 지터가 없으니 이름에 <b>Random</b>이 들어간 쪽을 고르고, 상한을 받는 오버로드를 씁니다. 재시도 대상은 <code>retryExceptions</code>로 좁히고(여기서는 연결 실패나 읽기 타임아웃 때 Spring의 HTTP 클라이언트가 던지는 unchecked 예외 <code>ResourceAccessException</code>을 예로 들었어요. <code>Supplier</code> 람다는 checked 예외를 던질 수 없어서, <code>ConnectException</code>을 직접 받으려면 <code>decorateCheckedSupplier</code>를 써야 합니다) 4xx에 해당하는 예외는 <code>ignoreExceptions</code>로 적어서 1장과 2장의 판단을 코드에 남겨요.</p>
+
+
+<p>이제 관측입니다. 재시도는 <span class="obsv-mark">잘 동작할수록 장애를 가립니다.</span> 다운스트림이 첫 시도의 30%를 실패해도 재시도가 다 살려 내면 사용자 에러율은 0에 가까워요. 대신 레이턴시가 늘고 다운스트림 부하는 약 1.3배가 돼 있습니다(재시도가 한 번에 성공한다고 칠 때고, 재시도도 같은 비율로 실패하면 더 늡니다).</p>
+
+<p><code>TaggedRetryMetrics.ofRetryRegistry(retryRegistry).bindTo(meterRegistry)</code>로 붙이는 지표는 <code>resilience4j.retry.calls</code> 하나이고, <code>kind</code> 태그가 결과를 네 갈래로 나눕니다.</p>
+
+<div class="obsv-code">kind="successful_without_retry"   한 번에 성공
+kind="successful_with_retry"      재시도 끝에 성공   &larr; 재시도가 가린 실패
+kind="failed_with_retry"          재시도했지만 끝내 실패
+kind="failed_without_retry"       재시도 대상이 아닌 예외로 실패</div>
+
+<p>함정이 하나 있습니다. Resilience4j 문서의 마이크로미터 페이지는 이 값을 <code>successful.with.retry</code>처럼 점으로 적고 게이지라고 소개하는데, 현재 소스(<code>AbstractRetryMetrics</code>)는 밑줄 값을 <b>FunctionCounter</b>(라이브러리가 쌓아 둔 누적값을 읽어 가는 카운터)로 등록해요. 프로메테우스로 내보내면 <code>resilience4j_retry_calls_total{kind="successful_with_retry"}</code> 모양이 됩니다. 점 표기를 경고 쿼리에 옮기면 아무것도 걸리지 않으니 실제로 노출된 값을 확인하고 씁니다.</p>
+
+<p>카운터는 누적값이라 "failed_with_retry가 100을 넘으면" 같은 고정 임계값은 오래 떠 있을수록 언젠가 반드시 넘습니다. 걸어야 하는 건 <b>증가율의 비율</b>이에요.</p>
+
+<div class="obsv-code">재시도 의존도 = rate(successful_with_retry + failed_with_retry)
+              / rate(모든 kind 합)
+
+최종 실패율   = rate(failed_with_retry + failed_without_retry)
+              / rate(모든 kind 합)</div>
+
+<p>최종 실패율은 사용자가 겪는 증상이라 SLO와 경고 시리즈 1편의 burn rate 경고로 다룹니다. 재시도 의존도는 그보다 먼저 움직이는 원인 쪽 신호예요. 평소 1%이던 값이 20%가 되면 다운스트림이 아프고 내 재시도가 그 부하를 키우고 있다는 뜻이니, 사람을 깨우기보다 티켓으로 넘기는 경고가 맞습니다. Envoy라면 <code>upstream_rq_retry</code>와 예산이나 서킷 브레이커 상한 때문에 재시도하지 못한 <code>upstream_rq_retry_overflow</code>가 같은 역할을 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 재시도는 한 계층에서만. 나머지 계층은 실패를 빨리 위로 올립니다<br>
+  &bull; 멱등하지 않은 호출(결제, 주문 생성)은 멱등성 키가 확인되기 전까지 재시도 대상에서 뺍니다<br>
+  &bull; 백오프에는 상한과 지터를 함께 두고, 쓰는 라이브러리의 지터 공식을 확인합니다<br>
+  &bull; 요청당 횟수 상한 위에 재시도 예산을 하나 더 겁니다<br>
+  &bull; 재시도 전체가 상위 타임아웃 안에 드는지 봅니다(Envoy 라우트 타임아웃은 모든 재시도를 포함)<br>
+  &bull; 경고는 누적 횟수가 아니라 재시도 의존도의 비율에 겁니다
+</div>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>재시도는 일시 장애를 가려 주는 대가로 다운스트림에 부하를 더 얹는 장치입니다.</b> 다시 보내도 되는지는 멱등성이 정하고, 계층마다 재시도하면 부하는 k<sup>n</sup>배로 곱해져요(세 번씩 세 계층이면 27배).<br><br>
+  백오프와 지터는 재시도의 시점을 흩뜨릴 뿐 양을 줄이지 않으니, 총량은 재시도 예산으로 묶고 재시도 의존도를 비율로 지켜봅니다. 재시도로 얻은 성공은 공짜가 아니라 다운스트림의 여유를 써서 얻은 성공이에요.
+</div>
+
+</div>

@@ -1,0 +1,313 @@
+<!-- lead: 빨리 실패하는 서버는 인플라이트도 사용률도 낮아 로드 밸런서가 요청을 몰아줘요. 블랙홀이 생기는 이유와 Envoy outlier detection, ALB 헬스 체크, OUT_OF_SERVICE 동시 탈락의 함정을 정리했어요. -->
+<!-- tags: 헬스 체크, outlier detection, 블랙홀 서버, OUT_OF_SERVICE, ALB -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-hand { font-family: 'Nanum Pen Script', cursive; font-size: 22px; color: #b3502f; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 2편</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  <b>2편. 빨리 실패하는 서버는 한가해 보인다</b> &larr; 지금 이 글<br>
+  3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다<br>
+  4편. 요청을 한 번 더 보내면 빨라진다<br>
+  5편. 재시도는 공짜가 아니다<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  7편. 임계값을 정하지 않는 동시성 제한
+</div>
+
+<p>주문 서버 열 대 중 한 대가 데이터베이스 커넥션을 잃었습니다. 그 서버는 요청이 오자마자 503을 돌려줍니다. 커넥션을 기다릴 일도, 쿼리를 돌릴 일도 없으니 응답이 2ms 만에 나가요. 대시보드를 열면 이 서버가 열 대 중 가장 한가합니다. 처리 중인 요청이 거의 없고 CPU도 낮아요.</p>
+
+<p>그런데 주문 실패율은 10%가 아니라 80%를 넘깁니다. 고장 난 건 열 대 중 한 대인데요. 1편의 로드 밸런서는 "처리 중인 요청이 가장 적은 서버"를 골랐습니다. 이번 편의 질문은 이겁니다. <b>가장 한가해 보이는 서버가 왜 가장 아픈 서버였을까요?</b> 그리고 로드 밸런서는 무엇을 보고 있어야 했을까요?</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 빨리 실패하면 요청을 빨아들인다</h2>
+
+<p>1편에서 본 최단 대기열 합류(JSQ)와 무작위 둘 중 덜 바쁜 쪽(power of two choices)은 모두 <b>인플라이트 요청 수</b>를 비교합니다. 이 숫자가 어떻게 정해지는지부터 볼게요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 인플라이트 요청 (in-flight request)</div>
+  로드 밸런서가 서버로 보냈지만 아직 응답을 받지 못한 요청입니다. 로드 밸런서가 자기 손으로 세는 숫자라서 서버에 물어보지 않고도 알 수 있어요.
+</div>
+
+<p>한 서버에 걸려 있는 인플라이트 요청 수는 리틀의 법칙으로 정해집니다. 평균 인플라이트 수 L은 그 서버가 받는 요청 속도 λ와 응답 시간 W의 곱이에요(L = λ &times; W). 로드 밸런서가 인플라이트 수를 맞추려 들면, 서버마다 L이 비슷해지도록 λ를 나눠 주게 됩니다. 그러면 λ = L / W, 즉 <b>응답이 빠른 서버일수록 요청을 더 받습니다.</b></p>
+
+<p>숫자를 넣어 볼게요. 정상 서버 아홉 대는 100ms에 응답하고, 고장 난 한 대는 2ms 만에 503을 돌려줍니다. 인플라이트가 모든 서버에서 같아지는 이상적인 경우를 가정합니다.</p>
+
+<div class="obsv-code">L = λ × W  →  λ = L / W   (서버마다 L 을 같게 맞춘다면)
+
+정상 서버  W = 0.100s  →  λ = L / 0.100 =  10 L
+고장 서버  W = 0.002s  →  λ = L / 0.002 = 500 L
+
+고장 서버 몫 = 500 / (500 + 9 × 10) = 500 / 590 ≈ 84.7%</div>
+
+<p>고장 난 서버 한 대가 전체 요청의 85% 가까이를 가져갑니다. 실제 로드 밸런서는 인플라이트를 이렇게 완벽하게 맞추지 못하니 정확한 비율은 달라지지만, 방향은 같아요. <span class="obsv-mark">실패가 빠를수록 그 서버는 한가해 보이고, 한가해 보일수록 요청이 몰립니다.</span> 이런 서버를 블랙홀(또는 싱크홀)이라고 부릅니다. AWS의 공개 글 「Implementing health checks」도 이 현상을 그대로 적어 둡니다. least requests 방식의 로드 밸런서에서는 빨리 실패하는 서버가 정상 서버보다 요청을 더 끌어당겨 플릿 안에 "블랙홀"을 만든다고요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="bh2a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M40 130 C 90 128, 140 131, 170 129 C 173 160, 172 180, 171 205 C 140 208, 90 205, 42 207 C 39 180, 40 155, 40 130 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+    <text x="58" y="165" font-size="24" fill="#4a7fb5">로드 밸런서</text>
+    <text x="54" y="192" font-size="17" fill="#6b6558">인플라이트 적은 쪽 ⚖️</text>
+    <path d="M180 150 C 260 120, 330 90, 410 72" stroke="#5a9e6f" stroke-width="2" fill="none" stroke-linecap="round" marker-end="url(#bh2a)"/>
+    <path d="M180 162 C 260 150, 330 140, 410 132" stroke="#5a9e6f" stroke-width="2" fill="none" stroke-linecap="round" marker-end="url(#bh2a)"/>
+    <path d="M180 192 C 260 220, 330 248, 405 262" stroke="#e5533c" stroke-width="9" fill="none" stroke-linecap="round" marker-end="url(#bh2a)"/>
+    <text x="230" y="98" font-size="18" fill="#2e6b41">10 L</text>
+    <text x="250" y="138" font-size="18" fill="#2e6b41">10 L</text>
+    <text x="232" y="262" font-size="20" fill="#b3502f">500 L 🌀</text>
+    <path d="M420 50 C 480 48, 560 51, 640 49 C 643 70, 642 82, 641 96 C 560 98, 480 95, 422 97 C 419 82, 420 66, 420 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+    <text x="436" y="80" font-size="20" fill="#2e6b41">정상 서버 100ms ✓</text>
+    <path d="M420 110 C 480 108, 560 111, 640 109 C 643 130, 642 142, 641 156 C 560 158, 480 155, 422 157 C 419 142, 420 126, 420 110 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+    <text x="436" y="140" font-size="20" fill="#2e6b41">정상 서버 100ms ✓</text>
+    <text x="500" y="186" font-size="20" fill="#8a8272">... 아홉 대</text>
+    <path d="M420 232 C 480 229, 560 233, 640 230 C 643 255, 642 270, 641 290 C 560 293, 480 290, 422 292 C 419 270, 420 250, 420 232 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+    <text x="436" y="262" font-size="20" fill="#b3502f">고장 서버 2ms 503 💥</text>
+    <text x="436" y="284" font-size="17" fill="#8a8272">인플라이트는 늘 0 근처</text>
+    <text x="350" y="322" text-anchor="middle" font-size="20" fill="#b3502f">= 가장 한가해 보이는 서버가 요청의 85%를 가져간다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 빠른 실패는 인플라이트를 낮추고, 낮은 인플라이트는 요청을 부른다</div>
+
+<p>여기서 놓치기 쉬운 점이 하나 있어요. 이 서버는 CPU도 낮습니다. 일을 안 하니까요. 그래서 서버가 스스로 재는 "사용률"을 받아 와도 같은 함정에 빠집니다. 응답 시간으로 고르는 방식(1편에서 본 Linkerd의 EWMA)도 마찬가지예요. 2ms짜리 503은 가장 빠른 응답으로 기록되니까요. 인플라이트든 CPU든 응답 시간이든, <b>바쁨이나 빠르기만 보는 기준은 빨리 실패하는 서버를 구분하지 못합니다.</b></p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 레이턴시는 호출자가 알고, 사용률은 서버가 안다</h2>
+
+<p>그럼 무엇을 봐야 할까요? 먼저 신호마다 <b>누가 그 값을 정확히 아는지</b>를 갈라 둘 필요가 있습니다. 같은 "서버 상태"라도 출처가 다르면 믿을 수 있는 정도가 달라져요.</p>
+
+<p>응답 시간과 에러는 <b>호출하는 쪽</b>이 가장 정확히 봅니다. 요청을 보낸 시각과 응답을 받은 시각을 둘 다 갖고 있고, 서버가 아예 응답하지 못한 경우(연결 거부, 타임아웃)도 호출자만 압니다. 로드 밸런서도 요청을 중계하는 호출자라서 이 신호에 관해서는 애플리케이션과 같은 자리에 있어요.</p>
+
+<p>반대로 <b>사용률</b>, 그러니까 스레드 풀이 얼마나 찼는지, 큐에 몇 개가 쌓였는지, 커넥션 풀에 여유가 있는지는 서버만 압니다. 밖에서 응답 시간만 보고 추정할 수는 있지만, 그건 이미 느려진 다음이에요. <span class="obsv-mark">서버 내부의 포화는 대개 서버가 유일한 출처입니다.</span></p>
+
+<p>서두의 고장 서버로 돌아가 보면, 호출자 쪽 신호(에러율 100%)는 정확히 문제를 가리키고 있었습니다. 서버 쪽 신호(사용률 낮음)는 "한가하다"고 말하고 있었고요. 로드 밸런서가 인플라이트만 봤기 때문에, 손에 쥐고 있던 에러 신호를 쓰지 않은 겁니다. 그러니 답은 "한 가지 신호를 더 좋은 것으로 바꾼다"가 아니라 <b>출처가 다른 신호를 함께 본다</b>예요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 사용률을 받아 오는 두 가지 방법</h2>
+
+<p>에러와 인플라이트는 로드 밸런서가 스스로 셉니다. 서버 사용률은 서버에게서 받아 와야 해요. 방법은 둘입니다. 로드 밸런서가 주기적으로 상태 엔드포인트를 <b>폴링</b>하거나, 서버가 응답 헤더에 현재 사용률을 실어 보내고 로드 밸런서가 그걸 <b>수동으로 추적</b>하는 방식이에요.</p>
+
+<p><b>폴링</b>은 트래픽과 상관없이 정해진 주기로 값을 받습니다. 처리량이 낮은 서비스에서 유리해요. 요청이 1분에 몇 개뿐이어도 사용률은 10초마다 새로 옵니다. 대신 비용이 로드 밸런서 수에 비례해요. 로드 밸런서 20대가 서버 200대를 10초마다 폴링하면 초당 400번의 상태 조회가 생깁니다(20 &times; 200 / 10).</p>
+
+<p><b>응답 헤더 추적</b>은 따로 드는 요청이 없습니다. 이미 오가는 응답에 값을 얹으니까요. 대신 값의 신선도가 트래픽에 묶입니다. 요청을 많이 받는 서버는 값이 계속 새로워지고, 요청을 못 받는 서버는 마지막 값에 머물러요. 여기서 반례가 하나 생깁니다. 사용률이 높다는 이유로 선택에서 빠진 서버는, 회복해도 그 사실을 알릴 응답이 오지 않습니다. 낡은 "바쁨" 값이 서버를 계속 밀어내는 거예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: ORCA (Open Request Cost Aggregation)</div>
+  서버가 자기 부하(CPU 사용률, 초당 요청 수, 직접 정한 지표)를 로드 밸런서에게 보고하는 형식입니다. gRPC와 Envoy가 이 형식을 씁니다.
+</div>
+
+<p>이 두 방식은 실제 구현에 그대로 들어 있습니다. Envoy의 <code>client_side_weighted_round_robin</code> 정책은 서버가 보낸 ORCA 부하 보고로 가중치를 정하는데, 기본은 <b>응답마다 실려 오는 보고</b>를 쓰고 1.39부터는 <code>enable_oob_load_report</code>를 켜면 <b>별도 스트림으로 주기 보고</b>를 받습니다(그 전 버전에는 필드만 있고 실제로 동작하지 않았어요. Envoy 문서와 gRPC 쪽 설계 문서 gRFC A58 모두 이 주기의 기본값을 10초로 적어 둡니다). HTTP 서버라면 <code>endpoint-load-metrics</code> 응답 헤더에 값을 실으면 돼요.</p>
+
+<p>앞의 반례에도 대비책이 있어요. <code>weight_expiration_period</code>(기본 3분) 동안 보고가 끊긴 서버는 낡은 가중치를 더 이상 쓰지 않습니다.</p>
+
+<p>그리고 이 정책에는 서두의 블랙홀을 겨냥한 항이 들어 있습니다. Envoy 문서가 적어 둔 가중치 공식은 이렇습니다.</p>
+
+<div class="obsv-code">weight = qps / (utilization + eps / qps × error_utilization_penalty)
+
+qps = 초당 요청 수, eps = 초당 에러 수 (둘 다 서버가 ORCA로 보고한 값)
+penalty 기본값 1.0
+
+두 서버가 똑같이 초당 100건을 받는다고 하면
+  정상 서버  utilization 0.60, 에러 0      →  100 / 0.60          ≈  167
+  고장 서버  utilization 0.05, 에러율 100%
+     페널티 없이  →  100 / 0.05                  = 2000   (정상의 12배)
+     페널티 1.0   →  100 / (0.05 + 1.0 × 1.0)    ≈   95   (정상보다 낮음)</div>
+
+<p>에러 항이 없으면 고장 서버의 가중치가 정상 서버의 12배입니다. 1장과 같은 블랙홀이에요. 에러율을 분모에 더하면 "한가함"의 이득이 상쇄되어 순위가 뒤집힙니다. 그런데 이 qps와 eps는 로드 밸런서가 센 값이 아닙니다. Envoy 문서와 gRFC A58 모두 엔드포인트가 보낸 값이라고 적어 둬요. 그러니 <span class="obsv-mark">서버가 자기 실패를 eps로 세어 보고하지 않으면 에러 항은 0이 되고, 블랙홀은 그대로 남습니다.</span> 호출자가 직접 본 에러로 고장 서버를 거르는 일은 다음 장의 outlier detection이 맡아요. 또 페널티를 얼마로 둘지는 서비스의 정상 사용률 범위에 달려 있어서, 기본값이 모든 서비스에 맞는다고 볼 근거는 없어요.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 기준을 셋으로 나누고, 고르기 전에 거른다</h2>
+
+<p>정리하면 로드 밸런서가 서버마다 들고 있어야 할 값은 셋입니다.</p>
+
+<div class="obsv-code">클라이언트 헬스     이 로드 밸런서가 본 그 서버의 에러, 연결 실패      (호출자 출처)
+서버 사용률         서버가 마지막으로 보고한 사용률                    (서버 출처)
+클라이언트 인플라이트  이 로드 밸런서가 그 서버에 걸어 둔 요청 수        (호출자 출처)</div>
+
+<p>셋을 한 점수로 합쳐 둘 중 하나를 고를 수도 있지만, 그 전에 할 일이 있어요. <b>명백히 고장 난 서버를 후보에서 먼저 빼는 것</b>입니다. 이유는 계산으로 보입니다. 서버 열 대 중 세 대가 고장이고 무작위로 두 대를 뽑는다면, 둘 다 고장일 확률은 3/10 &times; 2/9 = 1/15, 약 6.7%입니다. 이때는 비교를 아무리 잘해도 고장 서버로 보낼 수밖에 없어요. 하나만 고장인 경우도 문제입니다. 비교 기준에 인플라이트가 섞여 있으면 빨리 실패하는 쪽이 이길 수 있으니까요.</p>
+
+<p>후보를 먼저 거르면 둘 다 정상인 서버 중에서 뽑게 됩니다. 클러스터 일부가 오래 죽어 있어도, 뺄 수 있는 상한 안이라면 선택 단계는 정상 서버끼리만 비교해요(상한은 아래 주의 상자에서 봅니다). 이 거르기 단계를 공개 구현에서 가장 자세히 볼 수 있는 곳이 Envoy의 outlier detection입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: outlier detection (이상치 탐지)</div>
+  Envoy가 실제 트래픽의 응답을 보고 이상한 서버를 일정 시간 후보에서 빼는(eject) 기능입니다. 따로 검사 요청을 보내지 않아서 수동(passive) 헬스 체크라고도 불러요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="bh2b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M24 60 C 80 58, 140 61, 190 59 C 193 100, 192 130, 191 160 C 140 163, 80 160, 26 162 C 23 130, 24 95, 24 60 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+    <text x="44" y="92" font-size="22" fill="#3d3a34">후보 전체 10대</text>
+    <text x="44" y="122" font-size="20" fill="#5a9e6f">●●●●●●●</text>
+    <text x="44" y="148" font-size="20" fill="#e5533c">●●●</text>
+    <path d="M200 110 C 220 110, 235 110, 252 110" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#bh2b)"/>
+    <path d="M262 60 C 320 57, 390 61, 440 59 C 443 100, 442 130, 441 160 C 390 163, 320 160, 264 162 C 261 130, 262 95, 262 60 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+    <text x="282" y="92" font-size="22" fill="#c07f18">① 거르기 🧹</text>
+    <text x="282" y="122" font-size="18" fill="#6b6558">연속 5xx, 성공률</text>
+    <text x="282" y="148" font-size="18" fill="#6b6558">→ 3대 잠시 제외</text>
+    <path d="M450 110 C 470 110, 485 110, 502 110" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#bh2b)"/>
+    <path d="M512 60 C 570 57, 630 61, 680 59 C 683 100, 682 130, 681 160 C 630 163, 570 160, 514 162 C 511 130, 512 95, 512 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+    <text x="530" y="92" font-size="22" fill="#4a7fb5">② 둘 뽑기 🎲</text>
+    <text x="530" y="122" font-size="18" fill="#6b6558">정상 7대 중에서</text>
+    <text x="530" y="148" font-size="18" fill="#6b6558">덜 바쁜 쪽으로</text>
+    <text x="40" y="210" font-size="19" fill="#8a8272">거르지 않으면: 둘 다 고장일 확률 3/10 × 2/9 ≈ 6.7%</text>
+    <text x="40" y="240" font-size="19" fill="#8a8272">하나만 고장이어도 빨리 실패하는 쪽이 덜 바빠 보여 이긴다</text>
+    <text x="350" y="284" text-anchor="middle" font-size="20" fill="#b3502f">= 비교는 정상 서버끼리만 시킨다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 고르는 단계 앞에 거르는 단계를 둔다</div>
+
+<p>Envoy 문서에 적힌 탐지 방식과 기본값을 추리면 이렇습니다.</p>
+
+<div class="obsv-code">consecutive_5xx              5     연속 5xx 다섯 번이면 제외
+interval                     10s   분석 주기
+base_ejection_time           30s   제외 시간 = 이 값 × 연속 제외 횟수
+max_ejection_time            300s  제외 시간 상한
+max_ejection_percent         10%   클러스터에서 동시에 뺄 수 있는 최대 비율
+
+success rate 방식
+  success_rate_minimum_hosts   5     요청량 기준을 넘긴 서버가 5대 이상일 때만 동작
+  success_rate_request_volume  100   주기 안에 100건 이상 받은 서버만 계산
+  success_rate_stdev_factor    1900  1.9 로 해석. 기준선 = 평균 - 1.9 × 표준편차
+
+failure percentage 방식
+  failure_percentage_threshold 85    실패율 85% 넘으면 제외
+  enforcing_failure_percentage 0     기본은 꺼져 있다 (0%)</div>
+
+<p>읽어 보면 서두의 고장 서버는 연속 5xx 다섯 번 만에 빠집니다(열 대 중 한 대라 10% 상한 안에 들어요). 2ms짜리 실패라면 순식간이에요. 그리고 같은 서버가 다시 빠질 때마다 제외 시간이 30초, 60초, 90초로 늘어나 300초에서 멈춥니다.</p>
+
+<p>이 표에는 "통하지 않는 경우"도 함께 적혀 있습니다. 성공률 방식은 주기 안에 100건 이상 받은 서버가 다섯 대 이상이어야 돌아갑니다. 서버가 세 대뿐이거나 트래픽이 적은 서비스에서는 <b>아예 계산하지 않아요</b>. 평균과 표준편차로 이상치를 고르는 방식이라 표본이 적으면 판단할 근거가 없기 때문입니다. 또 하나, 모든 서버가 똑같이 나빠지면 평균도 같이 내려가서 누구도 이상치가 되지 않습니다. 성공률 방식은 "남들과 다른 서버"를 찾는 도구지 "나쁜 서버"를 찾는 도구가 아닙니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 작은 클러스터와 max_ejection_percent</div>
+  Envoy 소스는 "(지금 제외된 수 + 1) / 전체 서버 수"가 이 비율 이하일 때만 새로 뺍니다. 기본값 10%로 계산하면 열 대에서 한 대까지예요. 아홉 대 이하라면 첫 한 대부터 11%를 넘으니 <b>기본값으로는 한 대도 빠지지 않습니다.</b> Envoy가 <code>always_eject_one_host</code>(기본 false)라는 옵션을 따로 두고 "max_ejection_percent 값과 상관없이 최소 한 대는 뺀다"고 설명하는 이유예요. 열 대가 넘어도 비율은 그대로라서, 그림 2처럼 열 대 중 세 대를 빼려면 이 값을 30% 이상으로 올려야 합니다. 서버 수와 이 두 값을 함께 확인해 보세요.
+</div>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 플랫폼 로드 밸런서는 상태 코드만 본다</h2>
+
+<p>Envoy처럼 세밀한 로드 밸런서를 앞에 두지 않는 경우도 많습니다. 클라우드가 주는 로드 밸런서를 그대로 쓰는 경우죠. 이때 서버의 사용률은 어떻게 전달될까요? AWS Application Load Balancer(ALB)의 헬스 체크 문서를 보면 답이 정해져 있습니다.</p>
+
+<div class="obsv-code">HealthCheckPath             기본 /
+HealthCheckIntervalSeconds  기본 30   (instance, ip 대상)
+HealthCheckTimeoutSeconds   기본 5
+UnhealthyThresholdCount     기본 2    연속 2번 실패하면 제외
+HealthyThresholdCount       기본 5    연속 5번 성공하면 복귀
+Matcher (성공 코드)          기본 200, 200~499 중에서 지정</div>
+
+<p>판정 기준은 <b>응답 상태 코드</b>뿐입니다. 경로를 <code>/actuator/health</code>로 바꿔서 응답 본문에 사용률, GC 부담, 에러율이 다 들어 있어도 ALB는 그 숫자를 읽지 않아요. 문서가 설명하는 실패 사유도 <code>Target.ResponseCodeMismatch</code>(코드 불일치)와 <code>Target.Timeout</code>(시간 초과) 같은 것들입니다. 그러니 "사용률이 높으면 빼 달라"는 판단은 애플리케이션이 직접 내려서 <b>상태 코드로 번역해야</b> 합니다.</p>
+
+<p>ALB에도 헬스 체크와 별개로 실제 트래픽을 보는 장치가 있긴 합니다. Automatic Target Weights(ATW)는 타깃마다 HTTP 5xx와 연결 실패 비율을 같은 그룹의 다른 타깃과 비교해서, 유난히 높은 타깃을 이상(anomalous)으로 표시합니다. 건강한 타깃이 세 대 이상일 때 동작하고, 그 타깃으로 가는 트래픽을 실제로 줄이는 완화(anomaly mitigation)는 라우팅 알고리즘이 weighted random일 때만 켤 수 있어요. 서두의 장면처럼 진행 중인 요청이 가장 적은 곳으로 보내는 least outstanding requests를 고른 타깃 그룹이라면 감지만 하고 몫은 줄이지 않는다는 뜻입니다. 그리고 ATW가 보는 것도 결국 상태 코드와 연결 실패라서, 사용률은 여전히 전달할 길이 없습니다.</p>
+
+<p>기본값으로 계산하면 반응 속도도 보입니다. 30초 간격으로 두 번 연속 실패해야 빠지니, 고장 난 순간부터 제외까지 길게는 1분 가까이 걸려요. 서두의 2ms짜리 실패 서버는 그 1분 동안 계속 요청을 받습니다. 복귀는 다섯 번 연속 성공이 필요해서 2분 넘게 걸립니다.</p>
+
+<p>스프링 부트에서 이 번역을 맡는 게 헬스 상태입니다. 스프링 부트 문서의 기본 매핑은 <code>DOWN</code>과 <code>OUT_OF_SERVICE</code>를 503으로, <code>UP</code>과 <code>UNKNOWN</code>을 200으로 내보내요. 사용률을 보고 <code>OUT_OF_SERVICE</code>를 돌려주는 헬스 지표를 하나 만들면, ALB 입장에서는 그 서버가 503을 낸 것이고 두 번 연속이면 빠집니다.</p>
+
+<div class="obsv-code">@Component
+class UtilizationHealthIndicator implements HealthIndicator {
+    @Override
+    public Health health() {
+        double util = currentUtilization();          // 직접 잰 사용률 0.0~1.0
+        if (util &gt; 0.90) {
+            return Health.outOfService()             // → HTTP 503
+                .withDetail("utilization", util).build();
+        }
+        return Health.up().withDetail("utilization", util).build();
+    }
+}</div>
+
+<p>이 일을 대신해 주는 라이브러리로 Micrometer의 <code>micrometer-registry-health</code>가 있습니다. 메트릭에 조건을 걸어 "서비스 수준 목표"로 선언해 두면(예: GC 후 메모리 풀 사용률 90% 미만) 통과 여부를 물어볼 수 있어요. 다만 흔히 "스프링 부트가 이 레지스트리를 넣으면 헬스 엔드포인트에 자동으로 붙인다"고 설명되는데, 스프링 부트 소스(2.7.x와 3.5.x 브랜치, 4.x의 main)에는 이 레지스트리를 참조하는 자동 설정이 없습니다. 이름이 비슷한 <code>management.metrics.distribution.slo</code>는 히스토그램 버킷 경계를 정하는 설정이라 다른 기능이에요. 이 레지스트리를 제안한 Micrometer 이슈도 기본으로는 엔드포인트를 노출하지 않으니 목표 목록을 꺼내 쓰는 프레임워크의 헬스 엔드포인트에 직접 연결하라고 적어 둡니다. 위 코드처럼 연결하는 한 겹은 직접 둔다고 보는 게 안전해요.</p>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 전원이 동시에 OUT_OF_SERVICE가 되는 날</h2>
+
+<p>앞 장의 코드는 그럴듯해 보이지만 함정이 있습니다. 임계값 90%는 <b>모든 인스턴스에 똑같이</b> 걸려 있어요. 그리고 트래픽이 늘 때는 보통 모든 인스턴스가 같이 바빠집니다.</p>
+
+<p>서버 열 대가 모두 사용률 85%로 돌고 있다고 해 볼게요. 한 대가 잠깐 91%를 찍고 <code>OUT_OF_SERVICE</code>로 빠집니다. 그 서버가 받던 몫은 남은 아홉 대로 갑니다. 같은 양의 일을 아홉 대가 나누면 한 대당 85 &times; 10 / 9 &asymp; 94.4%예요. 모두 임계값을 넘었습니다. 다음 헬스 체크에서 전원이 503을 냅니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="bh2c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M30 60 C 110 58, 180 61, 200 59 C 203 110, 202 140, 201 170 C 180 173, 110 170, 32 172 C 29 140, 30 100, 30 60 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+    <text x="50" y="94" font-size="22" fill="#2e6b41">10대 × 85%</text>
+    <text x="50" y="126" font-size="18" fill="#6b6558">임계값 90% 아래</text>
+    <text x="50" y="154" font-size="18" fill="#6b6558">모두 UP ✓</text>
+    <path d="M210 115 C 232 115, 248 115, 266 115" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#bh2c)"/>
+    <path d="M276 60 C 350 58, 410 61, 440 59 C 443 110, 442 140, 441 170 C 410 173, 350 170, 278 172 C 275 140, 276 100, 276 60 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+    <text x="294" y="94" font-size="22" fill="#c07f18">한 대가 91% 🔸</text>
+    <text x="294" y="126" font-size="18" fill="#6b6558">OUT_OF_SERVICE</text>
+    <text x="294" y="154" font-size="18" fill="#6b6558">남은 9대 = 94.4%</text>
+    <path d="M450 115 C 472 115, 488 115, 506 115" stroke="#3d3a34" stroke-width="2.2" fill="none" stroke-linecap="round" marker-end="url(#bh2c)"/>
+    <path d="M516 60 C 590 58, 650 61, 676 59 C 679 110, 678 140, 677 170 C 650 173, 590 170, 518 172 C 515 140, 516 100, 516 60 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8"/>
+    <text x="534" y="94" font-size="22" fill="#b3502f">전원 503 💥</text>
+    <text x="534" y="126" font-size="18" fill="#6b6558">같은 임계값을</text>
+    <text x="534" y="154" font-size="18" fill="#6b6558">동시에 넘는다</text>
+    <text x="40" y="214" font-size="19" fill="#3d3a34">그다음은 로드 밸런서마다 다르다</text>
+    <text x="40" y="244" font-size="18" fill="#4a7fb5">ALB: 전부 unhealthy면 fail open, 전원에게 다시 보냄</text>
+    <text x="40" y="270" font-size="18" fill="#c07f18">Envoy: 가용 서버 50% 미만이면 panic, 헬스 무시</text>
+    <text x="40" y="296" font-size="18" fill="#b3502f">Kubernetes readiness: 전원이 엔드포인트에서 빠져 서비스 중단</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 한 대가 빠진 몫이 나머지를 임계값 위로 민다</div>
+
+<p>그다음에 무슨 일이 생기는지는 앞단에 무엇이 있느냐에 따라 갈립니다.</p>
+
+<p><b>ALB</b>는 문서에 이 경우를 적어 두었습니다. 타깃 그룹에 unhealthy 타깃만 남으면 헬스 상태와 상관없이 전부에게 요청을 보내요. "fail open"이라고 부릅니다. 서비스가 통째로 멈추지는 않지만, 헬스 체크가 아무것도 걸러 주지 못하는 상태가 됩니다. AWS의 「Implementing health checks」 글은 이 fail open이 모든 과부하나 부분 장애에서 기대대로 동작한다는 증명이 없어서 회의적으로 본다고 적고, 그래서 빠르게 반응하는 헬스 체크는 서버 자신만 보는 로컬 검사로 한정한다고 설명합니다. 참고로 fail open이 시작되는 기준은 타깃 그룹 헬스 설정(최소 healthy 타깃 수나 비율)으로 앞당길 수 있습니다.</p>
+
+<p><b>Envoy</b>에는 panic threshold가 있습니다. 가용 서버 비율이 기본값 50% 아래로 떨어지면 헬스 상태를 무시하고 전체 서버에 나눠 보내요(설정에 따라 아예 실패시키기도 합니다). outlier detection으로 빠진 서버도 panic 모드에서는 다시 요청을 받습니다.</p>
+
+<p><b>Kubernetes readiness 프로브</b>는 더 냉정합니다. 문서에 따르면 readiness가 실패한 파드는 서비스의 EndpointSlice에서 IP가 빠집니다. 전원이 빠졌을 때 다시 넣어 주는 예외는 문서에 적혀 있지 않아요. 헬스 엔드포인트를 readiness에 연결해 두었다면 사용률 급증 한 번에 서비스가 비어 버릴 수 있습니다.</p>
+
+<p>어느 경우든 공통점은 하나입니다. <span class="obsv-mark">모든 인스턴스가 같은 근거로 같은 판단을 같은 순간에 내리면, 헬스 체크는 고장 난 한 대를 빼는 장치에서 전원을 빼는 장치로 바뀝니다.</span> AWS 글의 권고도 같은 방향이에요. 한 대가 나쁠 때는 그 서버를 빼되, 플릿 전체가 힘들어 보이면 계속 요청을 처리하라고요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 플랫폼 로드 밸런서와 readiness에 걸리는 헬스 체크는 "이 프로세스가 요청을 받을 수 있나" 정도로 얕게 둡니다. 사용률 임계값을 상태 코드로 바꾸는 판단은 여기에 넣지 않는 쪽이 안전해요.<br>
+  &bull; 사용률은 <code>UP</code>을 유지한 채 상세 값이나 응답 헤더로 내보내고, 그 값을 비교하는 일은 로드 밸런서에 맡깁니다. 판단하는 쪽이 전체 서버를 함께 보고 있어야 "모두 바쁘다"와 "한 대만 이상하다"를 구분할 수 있어요.<br>
+  &bull; 사용자 정의 상태(예: <code>OVERLOADED</code>)를 만든다면 스프링 부트의 <code>management.endpoint.health.status.order</code>와 <code>status.http-mapping</code>을 함께 설정합니다. 문서에 따르면 매핑을 하나라도 직접 지정하면 <code>DOWN</code>과 <code>OUT_OF_SERVICE</code>의 기본 503 매핑이 사라지니, 그 둘도 다시 적어야 해요.<br>
+  &bull; 제외에 상한을 둡니다. Envoy라면 <code>max_ejection_percent</code>와 panic threshold가 그 상한이고, 직접 만든 로드 밸런서라면 "한 번에 몇 대까지 뺄 수 있나"를 정해 두어야 합니다.
+</div>
+
+<p>그리고 헬스 체크를 통과했다고 해서 그 서버가 제 속도를 낼 준비가 된 것도 아닙니다. 갓 뜬 인스턴스는 헬스 체크에는 200을 주면서 첫 요청들에는 한참 느리게 답하곤 해요. 이 간극은 3편에서 다룹니다.</p>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>빨리 실패하는 서버는 인플라이트도 사용률도 낮게 나와서, 바쁨만 보는 로드 밸런서에게 가장 매력적인 후보가 됩니다.</b><br><br>
+  에러와 응답 시간은 호출자가, 내부 포화는 서버가 압니다. 두 출처를 함께 보고, 고르기 전에 호출자가 본 에러로 고장 서버를 먼저 거르세요(Envoy outlier detection). ORCA 가중치의 에러 항은 서버가 자기 실패를 보고할 때만 통합니다. 플랫폼 로드 밸런서는 상태 코드만 보니 사용률 판단을 503으로 번역하고 싶어지지만, 같은 임계값을 모든 인스턴스에 걸면 전원이 함께 빠집니다. 헬스 체크는 한 대를 빼는 장치여야지, 전원을 빼는 장치가 되면 안 돼요.
+</div>
+
+</div>

@@ -1,0 +1,290 @@
+<!-- lead: 헬스 체크를 통과한 신규 인스턴스가 JIT 워밍업 때문에 P99를 튀게 만드는 이유와, AWS ALB·Envoy의 slow start로 몫을 천천히 늘리는 보호관찰, 그리고 똑똑한 로드 밸런서가 카나리 판정을 흐리는 문제를 정리했어요. -->
+<!-- tags: slow start, 워밍업, readinessProbe, startupProbe, 카나리 분석 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-hand { font-family: 'Nanum Pen Script', cursive; font-size: 22px; color: #b3502f; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 3편</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  2편. 빨리 실패하는 서버는 한가해 보인다<br>
+  <b>3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다</b> &larr; 지금 이 글<br>
+  4편. 요청을 한 번 더 보내면 빨라진다<br>
+  5편. 재시도는 공짜가 아니다<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  7편. 임계값을 정하지 않는 동시성 제한
+</div>
+
+<p>저녁 8시, 주문이 몰리기 시작합니다. 오토스케일링이 인스턴스 네 대를 새로 띄웠고, 헬스 체크도 전부 초록불로 통과했어요. 로드 밸런서는 그 네 대에 바로 제 몫의 트래픽을 나눠 줍니다. 그런데 바로 그 1~2분 동안 주문 API의 P99가 평소의 몇 배로 튀어요. 느린 요청을 하나씩 추적해 보면 거의 다 <b>방금 뜬 인스턴스</b>가 처리한 것입니다.</p>
+
+<p>헬스 체크는 분명 "정상"이라고 했어요. 그런데 정상인 서버가 왜 이렇게 느릴까요? 그리고 로드 밸런서는 이 인스턴스를 언제부터 다른 인스턴스와 똑같이 대해야 할까요? 이번 편은 그 질문을 따라갑니다. 끝에서는 반대 방향의 문제도 봅니다. 느린 인스턴스를 알아서 피하는 똑똑한 로드 밸런서가 카나리 배포의 판정을 흐리는 이야기예요.</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 헬스 체크 통과는 준비 완료가 아니다</h2>
+
+<p>헬스 체크가 묻는 건 보통 하나입니다. "이 포트로 요청을 보내면 200이 오는가?" 프로세스가 떠 있고 웹 서버가 요청을 받기 시작하면 이 질문에는 바로 "예"라고 답할 수 있어요. 하지만 그 순간의 인스턴스는 <span class="obsv-mark">요청을 받을 수는 있어도 빨리 처리할 준비는 안 된</span> 상태입니다. 자바 서비스라면 이유가 여럿 겹쳐요.</p>
+
+<p><b>클래스 로딩.</b> JVM은 클래스를 필요해지는 순간에 읽고, 링크하고, 초기화합니다. OpenJDK의 JEP(JDK 기능 제안서) 483 문서는 서버 애플리케이션이 시작할 때 JAR 수백 개를 훑고 클래스 파일 수천 개를 읽는다고 적고, 이 작업이 전부 "필요할 때, 게으르게" 일어난다고 설명합니다. 그래서 어떤 API의 첫 요청은 그 경로에 걸린 클래스를 처음 읽는 비용까지 함께 냅니다.</p>
+
+<p><b>JIT 컴파일.</b> 클래스를 다 읽은 다음에도 코드는 한동안 느리게 돕니다. 처음에는 바이트코드를 해석하며 실행하고, 자주 불리는 메서드를 찾아낸 뒤에야 네이티브 코드로 컴파일하기 때문이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: JIT 컴파일과 워밍업</div>
+  <b>JIT(Just-In-Time) 컴파일</b>은 JVM이 실행 중에 자주 쓰이는 메서드를 골라 기계어로 바꾸는 일입니다. <b>워밍업</b>은 그 컴파일이 충분히 끝나 최고 성능에 이르기까지의 구간이에요. JEP 515 문서는 이 구간을 "JIT가 핫 메서드를 네이티브 코드로 컴파일할 때까지 애플리케이션이 더 느리게 도는 초기 단계"라고 정의합니다. 무엇이 자주 쓰이는지는 실제로 돌려 봐야 알기 때문에, 이 구간은 코드가 실제로 실행돼야만 지나갑니다. 보통은 그 실행이 들어오는 트래픽이에요.
+</div>
+
+<p><b>커넥션과 캐시.</b> 데이터베이스나 다른 서비스로 가는 커넥션은 첫 호출 때 만들어지는 경우가 많고, TLS 핸드셰이크도 그때 합니다. 로컬 캐시는 비어 있어서 처음 몇백 건은 대부분 캐시 미스로 원본까지 다녀와요. 각각은 수십 밀리초짜리 비용이지만, 한 요청에 여러 개가 겹치면 P99를 쉽게 넘깁니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="tm3a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M70 40 C 69 120, 71 210, 70 270 C 220 271, 450 269, 660 270" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="22" y="52" font-size="19" fill="#8a8272">응답</text>
+    <text x="22" y="74" font-size="19" fill="#8a8272">시간</text>
+    <text x="600" y="296" font-size="19" fill="#8a8272">시간 →</text>
+    <path d="M118 40 C 119 120, 117 200, 118 268" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-dasharray="8 8" stroke-linecap="round"/>
+    <text x="84" y="296" font-size="20" fill="#2e6b41">헬스 체크 통과 ✅</text>
+    <path d="M80 205 C 250 203, 450 207, 650 204" fill="none" stroke="#e5a33c" stroke-width="2.2" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <text x="560" y="196" font-size="20" fill="#c07f18">평소 P99</text>
+    <path d="M120 58 C 140 70, 150 96, 170 120 C 195 150, 230 175, 280 196 C 330 215, 400 228, 480 233 C 540 236, 600 234, 650 235" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+    <text x="150" y="66" font-size="21" fill="#b3502f">클래스 로딩, 빈 캐시, 첫 커넥션 🐢</text>
+    <text x="250" y="150" font-size="21" fill="#b3502f">JIT가 핫 메서드를 컴파일하는 중</text>
+    <text x="420" y="258" font-size="20" fill="#2e6b41">워밍업 끝, 제 속도 😌</text>
+    <path d="M300 118 C 330 100, 380 92, 430 96" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#tm3a1)"/>
+    <text x="440" y="100" font-size="20" fill="#3d3a34">이 구간에도 제 몫을 다 받는다</text>
+    <text x="110" y="322" font-size="21" fill="#b3502f">"요청을 받을 수 있다"와 "빨리 처리한다" 사이에 시간이 있다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 헬스 체크는 곡선의 왼쪽 끝에서 이미 초록불이다</div>
+
+<p>JDK 24의 JEP 483과 JDK 25의 JEP 515는 이 구간을 줄이려고 클래스 로딩 결과와 실행 프로파일을 미리 캐시해 두는 기능입니다. JEP 483 문서는 Spring PetClinic 예제의 시작 시간이 JDK 23에서 4.486초, JDK 24의 AOT 캐시로 2.604초였다고 적어 둡니다. 다만 이건 <b>시작</b> 시간이고, 그 뒤의 워밍업은 JEP 515가 다루는 별개의 문제예요. 런타임이 구간을 줄여 줄 수는 있어도, 신규 인스턴스가 한동안 느리다는 사실 자체는 남습니다. 그래서 트래픽을 나누는 쪽도 이 사실을 알아야 해요.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 쿠버네티스 프로브 셋은 서로 다른 질문을 한다</h2>
+
+<p>쿠버네티스를 쓰면 "readinessProbe를 걸었으니 준비된 다음에 트래픽이 가겠지"라고 생각하기 쉽습니다. 프로브가 무엇을 묻는지 정확히 보면 기대와 조금 다릅니다. 쿠버네티스 문서가 정리한 세 프로브의 역할은 이래요.</p>
+
+<div class="obsv-code">startupProbe    시작이 끝났나?      허용 횟수를 넘겨 실패하면 컨테이너를 죽이고 재시작 정책을 따른다
+                                    성공할 때까지 나머지 두 프로브를 실행하지 않는다
+readinessProbe  트래픽을 받아도 되나?  실패하면 Service의 EndpointSlice에서 Pod IP를 뺀다
+                                    재시작하지 않는다. 수명 내내 주기적으로 돈다
+livenessProbe   살아는 있나?        허용 횟수를 넘겨 실패하면 컨테이너를 재시작한다</div>
+
+<p>셋 다 <b>예/아니오</b>로 답합니다. readinessProbe가 성공하는 순간 Pod IP는 엔드포인트 목록에 들어가고, 그다음부터는 다른 Pod와 같은 몫을 받아요. "조금만 받아도 된다"는 중간 답이 없습니다. Service 설정에도 신규 엔드포인트의 몫을 천천히 늘리는 항목은 없어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 엔드포인트 (endpoint)</div>
+  로드 밸런서가 요청을 보낼 수 있는 실제 대상 하나, 보통 "IP와 포트" 한 쌍입니다. 쿠버네티스에서는 준비된 Pod의 IP가 EndpointSlice라는 목록에 올라가고, AWS ALB에서는 같은 것을 타깃(target)이라고 불러요.
+</div>
+
+<p>그래도 readinessProbe로 할 수 있는 일은 있습니다. 준비 판정을 <b>워밍업이 끝난 뒤로 미루는</b> 거예요. Spring Boot 문서는 애플리케이션이 <code>ApplicationRunner</code>와 <code>CommandLineRunner</code>를 다 실행한 다음에야 Readiness 상태를 <code>ACCEPTING_TRAFFIC</code>으로 바꾼다고 적어 둡니다. 그러니 러너 안에서 자주 쓰는 API를 몇백 번 스스로 호출하면, 클래스 로딩과 커넥션 생성, 일부 JIT 컴파일을 트래픽이 오기 전에 끝낼 수 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 스스로 데우기의 한계</div>
+  &bull; 데워지는 건 <b>내가 호출한 경로뿐</b>입니다. 실제 트래픽의 요청 분포와 다르면 JIT는 엉뚱한 메서드를 최적화해요.<br>
+  &bull; 부수 효과가 없는 호출만 쓸 수 있습니다. 결제나 주문 생성 같은 쓰기 경로는 가짜 요청으로 데울 수 없어요.<br>
+  &bull; 워밍업이 길어지면 시작이 그만큼 늦어집니다. startupProbe나 livenessProbe의 허용 시간을 같이 늘리지 않으면, 데우는 도중에 컨테이너가 재시작될 수 있어요.<br>
+  &bull; Spring Boot 문서는 Liveness를 외부 시스템 점검에 묶지 말라고도 적습니다. 데이터베이스 하나가 흔들릴 때 전 플랫폼이 연쇄 재시작에 빠지기 때문이에요.
+</div>
+
+<p>정리하면 프로브는 "언제부터 받을지"를 정하고, "얼마나 받을지"는 정하지 않습니다. 얼마나 받을지는 로드 밸런서의 몫이에요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 보호관찰: 처음에는 덜 주고, 천천히 푼다</h2>
+
+<p>로드 밸런서 쪽에서 할 수 있는 가장 단순한 방법은 신규 인스턴스에 <b>정적 상한</b>을 거는 겁니다. "새로 들어온 인스턴스는 동시에 최대 N건까지만." 이렇게 몫을 줄여 받는 기간을 <b>보호관찰(probation)</b>이라고 부릅니다.</p>
+
+<p>그럼 보호관찰은 언제 풀까요? 생각할 수 있는 기준은 둘이에요.</p>
+
+<p><b>신호를 받으면 푼다.</b> 2편에서 본 것처럼 서버가 응답 헤더에 자기 사용률을 실어 보내는 구조라면, 로드 밸런서는 신규 인스턴스의 첫 사용률 응답을 받는 순간 보호관찰을 풀고 그때부터 그 값으로 판단할 수 있습니다. 판단할 정보가 생겼으니 정적 상한은 더 필요 없다는 논리예요.</p>
+
+<p><b>시간에 따라 푼다.</b> 인스턴스의 나이(uptime)에 비례해 몫을 조금씩 늘리는 방법입니다. 자바라면 Spring Boot Actuator가 Micrometer로 기본 등록하는 <code>process.uptime</code> 게이지(JVM 가동 시간)로 나이를 바로 알 수 있어요.</p>
+
+<p>둘은 서로 다른 것을 믿습니다. 신호 기준은 "사용률이 낮다고 보고하면 여유가 있다"를 믿어요. 그런데 워밍업 중인 인스턴스는 CPU를 JIT 컴파일에 쓰면서 요청은 아직 몇 건 못 받았으니, 첫 보고의 사용률이 낮게 나올 수 있습니다. 그 낮은 값을 믿고 상한을 풀면 그때부터 트래픽이 몰려요. 시간 기준은 이 함정을 피하지만, 워밍업이 실제로 언제 끝났는지는 모르고 <span class="obsv-mark">정해 둔 시간이 지났다는 것만</span> 압니다.</p>
+
+<p>신호 기준을 택한 구현도 있습니다. 2편에서 본 Envoy의 <code>client_side_weighted_round_robin</code>은 서버의 부하 보고로 가중치를 정하는데, 엔드포인트가 <code>blackout_period</code>(기본 10초) 동안 보고를 계속 보내기 전까지는 그 값을 쓰지 않고 유효한 가중치를 가진 다른 엔드포인트들의 중앙값(하나도 없으면 1)을 줍니다. 첫 보고 하나를 믿지 않는 장치예요. 다만 중앙값 몫은 "덜 주는" 몫이 아니라서, 몫을 깎는 일은 이 정책에서도 따로 켜는 slow start가 맡습니다. 몫을 깎는 쪽의 공개 구현은 대부분 시간 기준이고, 다음 장에서 둘을 봅니다.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. ALB와 Envoy의 slow start</h2>
+
+<h3>AWS ALB: 선형으로, 정해진 시간 동안</h3>
+
+<p>ALB는 타깃 그룹 속성 <code>slow_start.duration_seconds</code>로 이 기능을 제공합니다. AWS 문서에 적힌 동작은 이래요. 기본값은 0초(꺼짐)이고, 켜면 30~900초 사이로 정합니다. 타깃이 헬스 체크를 통과해 healthy가 되면 slow start에 들어가고, 로드 밸런서는 그 타깃에 보낼 수 있는 요청 수를 <b>선형으로</b> 늘립니다. 정한 시간이 지나거나 타깃이 unhealthy가 되면 slow start에서 빠져요.</p>
+
+<div class="obsv-code">aws elbv2 modify-target-group-attributes \
+    --target-group-arn &lt;타깃 그룹 ARN&gt; \
+    --attributes "Key=slow_start.duration_seconds,Value=120"</div>
+
+<p>신규 타깃은 healthy가 된 뒤 120초에 걸쳐 제 몫까지 올라간다는 뜻이에요. 값은 1장 그림의 곡선이 평평해지는 시점을 보고 정합니다. 측정하지 않고 고르면 짐작일 뿐이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: ALB에서는 slow start와 "똑똑한" 알고리즘을 같이 못 쓴다</div>
+  AWS 문서는 slow start를 <b>least outstanding requests</b>나 <b>weighted random</b> 라우팅 알고리즘과 함께 켤 수 없다고 적어 둡니다. 결국 ALB에서 slow start는 라운드로빈과만 쓸 수 있어요. 1편에서 본 "진행 중인 요청이 가장 적은 곳으로" 전략을 고르면 신규 인스턴스의 점진 증가를 포기해야 하고, 점진 증가를 고르면 요청 수 기반 분배를 포기해야 합니다. 둘 다 원하면 다른 계층(서비스 메시나 클라이언트 측 로드 밸런서)에서 해야 해요.
+</div>
+
+<h3>Envoy: 곡선의 모양까지 고른다</h3>
+
+<p>Envoy의 slow start는 라운드로빈, Least Request, 그리고 위에서 본 클라이언트 측 가중 라운드로빈에서 켤 수 있습니다. 설정은 로드 밸런싱 정책 아래의 <code>slow_start_config</code>예요.</p>
+
+<div class="obsv-code">round_robin_lb_config:          # Least Request면 least_request_lb_config
+  slow_start_config:
+    slow_start_window: 60s      # 이 시간 동안 가중치를 깎아서 준다
+    aggression:                 # 곡선 모양. 생략하면 1.0 = 선형
+      default_value: 1.0
+    min_weight_percent:         # 바닥값. 생략하면 10%
+      value: 10</div>
+
+<p>aggression은 런타임 값 형식이라 <code>runtime_key</code>를 함께 적으면 그 키로 실행 중에 값을 바꿀 수 있습니다. 필수 항목은 아니어서, 위처럼 <code>default_value</code>만 적어도 돼요. 0보다 커야 합니다.</p>
+
+<p>Envoy 문서가 적어 둔 식은 이렇습니다.</p>
+
+<div class="obsv-code">새 가중치 = 원래 가중치 × max(min_weight_percent, time_factor ^ (1 / aggression))
+time_factor = max(시작 후 경과 초, 1) / slow_start_window 초</div>
+
+<p>aggression이 1이면 지수가 1이라 선형으로 오르고, 1보다 크면 지수가 1보다 작아져서 초반에 빨리 오르며, 1보다 작으면 초반을 오래 눌러 둡니다. 60초 창과 바닥 10%로 직접 계산해 보면 차이가 꽤 커요.</p>
+
+<div class="obsv-code">경과(초)        6     15     30     45     60
+aggression 0.5   10%   10%    25%    56%   100%
+aggression 1.0   10%   25%    50%    75%   100%
+aggression 2.0   32%   50%    71%    87%   100%</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M80 50 C 79 130, 81 220, 80 280 C 250 281, 450 279, 640 280" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="26" y="66" font-size="19" fill="#8a8272">100%</text>
+    <text x="34" y="262" font-size="19" fill="#8a8272">10%</text>
+    <text x="40" y="286" font-size="19" fill="#8a8272">0</text>
+    <text x="606" y="306" font-size="19" fill="#8a8272">60초</text>
+    <text x="330" y="306" font-size="19" fill="#8a8272">30초</text>
+    <path d="M80 258 C 200 257, 450 259, 630 258" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <path d="M80 60 C 250 59, 450 61, 630 60" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <path d="M89 252 C 96 242, 100 236, 107 231 C 116 222, 124 215, 134 210 C 160 196, 190 180, 215 170 C 260 154, 305 138, 350 124 C 395 111, 440 99, 485 89 C 530 79, 575 69, 620 60" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+    <path d="M80 258 C 100 257, 120 259, 134 258 C 160 247, 190 236, 215 225 C 260 207, 305 188, 350 170 C 395 152, 440 133, 485 115 C 530 97, 575 79, 620 60" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
+    <path d="M80 259 C 150 258, 210 260, 251 258 C 290 247, 320 236, 350 225 C 380 211, 410 197, 440 182 C 470 166, 500 147, 530 127 C 560 106, 590 84, 620 60" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+    <text x="100" y="84" font-size="21" fill="#2e6b41">aggression 2 : 초반에 빨리</text>
+    <text x="100" y="108" font-size="21" fill="#4a7fb5">aggression 1 : 선형</text>
+    <text x="100" y="132" font-size="21" fill="#b3502f">aggression 0.5 : 천천히</text>
+    <text x="160" y="275" font-size="18" fill="#8a8272">바닥 10%</text>
+    <text x="90" y="332" font-size="21" fill="#b3502f">워밍업 곡선이 앞쪽에 몰려 있으면 aggression을 1보다 작게 둔다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 같은 60초 창이라도 aggression에 따라 신규 엔드포인트가 받는 몫이 달라진다</div>
+
+<p>가중치 퍼센트가 곧 트래픽 비율은 아니라는 점도 짚어 둘게요. 라운드로빈 기준으로, 인스턴스 열 대 중 한 대가 새로 들어와 가중치가 10%로 깎였다면, 그 인스턴스가 받는 몫은 전체의 0.1 / (9 + 0.1) &asymp; 1.1%입니다. 깎이지 않았다면 10%를 받았을 테니, 제 몫의 약 9분의 1이에요. 나머지는 기존 아홉 대가 나눠 받습니다.</p>
+
+<p>Envoy에서 slow start 엔드포인트가 빠지는 조건도 ALB와 비슷합니다(Envoy 문서 기준). 창이 끝나거나, 클러스터를 떠나거나, 액티브 헬스 체크에 실패할 때예요. 두 구현 모두 <b>"이제 빨라졌다"는 신호로 일찍 풀지는 않습니다.</b> 3장의 두 기준 중 시간 기준만 택한 셈이에요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 보호관찰이 통하지 않는 경우</h2>
+
+<p>slow start는 "기존 인스턴스가 대부분이고 새 인스턴스가 조금 섞일 때"를 위한 장치입니다. 그 전제가 깨지면 효과가 없거나 오히려 해가 돼요. 두 문서가 직접 적어 둔 경우가 셋이고, 문서가 말하지 않은 경우를 하나 더 보탭니다.</p>
+
+<p><b>전부 새것일 때.</b> Envoy 문서는 새 쿠버네티스 배포처럼 모든 엔드포인트가 새것이면 서로 비슷한 양을 받으니 slow start가 별 효과가 없다고 적습니다. ALB 문서도 같은 경우를 막아 둬요. 빈 타깃 그룹에 타깃을 한 번에 등록하면 slow start에 들어가지 않고, slow start가 아닌 healthy 타깃이 하나라도 있을 때만 신규 타깃이 slow start에 들어간다고 합니다. 깎인 몫을 대신 받아 줄 인스턴스가 없으면 몫을 깎을 수 없다는 뜻이에요. 그러니 <span class="obsv-mark">전체를 한 번에 교체하는 배포에서는 slow start가 아무것도 해 주지 않습니다.</span> 롤링 배포의 배치 크기를 작게 잡아야 의미가 생겨요.</p>
+
+<p><b>트래픽이 적거나 엔드포인트가 많을 때.</b> Envoy 문서는 이 경우 slow start를 권하지 않는다고 적습니다. 신규 엔드포인트가 요청을 거의 못 받는 굶주림이 생기고, 오래 굶다가 요청이 들어오는 순간 이미 커진 time_factor 때문에 가중치가 계단처럼 뛸 수 있다는 이유예요. 굶는 동안에는 워밍업도 진행되지 않습니다. JIT는 요청을 받아야 데워지니까요.</p>
+
+<p><b>그 계층에 엔드포인트가 하나뿐일 때.</b> 우선순위(priority)나 지역 가중치를 함께 쓰는데 넘어간 쪽에 엔드포인트가 하나뿐이면, 트래픽이 점진적으로가 아니라 한 번에 옮겨 간다고 Envoy 문서는 적어 둡니다. 나눠 받을 상대가 없으니 깎을 수가 없는 거예요.</p>
+
+<p><b>워밍업이 창보다 길 때.</b> 이건 문서가 아니라 식에서 바로 나오는 결론입니다. 창은 시간으로만 끝납니다. 창이 끝났는데 아직 느리면, 그다음부터는 1편과 2편의 일반 로드 밸런싱 판단에 맡겨져요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 먼저 신규 인스턴스의 워밍업 곡선을 잽니다. 인스턴스별 P99를 <code>process.uptime</code> 구간으로 나눠 보면 몇 초 뒤에 평평해지는지 보여요.<br>
+  &bull; slow start 창은 그 시점보다 조금 길게 잡습니다. 창이 짧으면 효과가 없고, 너무 길면 스케일 아웃한 용량을 늦게 씁니다. 부하가 몰려서 늘린 인스턴스라면 늦게 쓰는 것도 비용이에요.<br>
+  &bull; 롤링 배포의 배치 크기를 전체의 일부로 제한해서, 깎인 몫을 받아 줄 인스턴스를 항상 남깁니다.<br>
+  &bull; 트래픽이 적은 서비스라면 slow start 대신 앱 안에서 스스로 데우는 쪽(2장)이 낫습니다.
+</div>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 똑똑한 로드 밸런서가 배포 판정을 흐린다</h2>
+
+<p>지금까지는 신규 인스턴스를 보호하는 이야기였습니다. 이제 반대 방향을 볼게요. 1편과 2편에서 다룬 로드 밸런서는 느리거나 바쁜 인스턴스를 알아서 피합니다. 평소에는 장점인 이 성질이 배포 중에는 몇 가지 부작용을 냅니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">📖 용어: 카나리와 베이스라인</div>
+  <b>카나리</b>는 새 버전을 소수 인스턴스에만 먼저 배포해 실제 트래픽 일부로 검증하는 방식입니다. <b>베이스라인</b>은 그 비교 대상으로 같은 시각에 함께 띄운 기존 버전 인스턴스예요. 자동 카나리 분석은 두 그룹의 지표를 통계적으로 비교해 새 버전을 통과시킬지 판정합니다.
+</div>
+
+<p><b>느린 카나리는 트래픽을 덜 받는다.</b> 카나리가 베이스라인보다 느리면, 최소 요청 기반 로드 밸런서는 카나리의 진행 중 요청이 더 많이 쌓여 있는 걸 보고 다른 쪽을 고릅니다. 계산을 하나 해 볼게요. 초당 1,000건을 열 대가 나눠 받고 그중 한 대가 카나리라면, 공정하게는 카나리가 초당 100건, 분당 6,000건을 받아야 합니다. 로드 밸런서가 카나리를 피해서 제 몫의 60%만 준다면 분당 3,600건이에요. 판정에 쓸 표본이 40% 줄어듭니다.</p>
+
+<p>더 곤란한 건 그다음입니다. 트래픽을 덜 받으니 카나리의 부하가 내려가고, 부하가 내려가니 레이턴시도 덜 나빠 보입니다. <span class="obsv-mark">카나리 분석이 잡아야 할 성능 저하를 로드 밸런서가 먼저 가려 버리는</span> 셈이에요. 공정한 몫을 받았다면 드러났을 차이가 덜 드러납니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="tm3a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M40 40 C 120 37, 220 41, 300 39 C 303 90, 301 130, 302 170 C 220 173, 120 169, 42 171 C 39 130, 40 90, 40 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+    <text x="64" y="74" font-size="24" fill="#4a7fb5">라운드로빈 (공정 분배)</text>
+    <text x="64" y="108" font-size="21" fill="#3d3a34">카나리 몫 10%</text>
+    <text x="64" y="136" font-size="21" fill="#3d3a34">분당 6,000건</text>
+    <text x="64" y="160" font-size="19" fill="#2e6b41">느리면 느린 대로 드러난다</text>
+    <path d="M400 40 C 480 37, 580 41, 660 39 C 663 90, 661 130, 662 170 C 580 173, 480 169, 402 171 C 399 130, 400 90, 400 40 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.6"/>
+    <text x="424" y="74" font-size="24" fill="#b3502f">최소 요청 (피해 간다)</text>
+    <text x="424" y="108" font-size="21" fill="#3d3a34">카나리 몫 6%</text>
+    <text x="424" y="136" font-size="21" fill="#3d3a34">분당 3,600건</text>
+    <text x="424" y="160" font-size="19" fill="#b3502f">부하가 줄어 덜 느려 보인다</text>
+    <path d="M310 105 C 335 103, 365 103, 390 105" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#tm3a2)"/>
+    <text x="312" y="92" font-size="18" fill="#8a8272">카나리가 느리면</text>
+    <path d="M530 180 C 528 200, 520 215, 505 226" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#tm3a2)"/>
+    <text x="240" y="246" font-size="22" fill="#b3502f">표본 40% 감소 + 성능 저하가 가려짐 = 판정이 둔해진다 🙈</text>
+    <text x="150" y="284" font-size="20" fill="#8a8272">초당 1,000건, 열 대 중 한 대가 카나리, 제 몫의 60%만 받는다고 가정</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 느린 카나리를 피해 주는 로드 밸런서는 카나리 분석의 표본과 차이를 함께 줄인다</div>
+
+<p>비율을 어디서 나누느냐에 따라 블루그린이나 가중치 기반 전환에서도 같은 일이 생깁니다. ALB 리스너의 가중치 forward 규칙처럼 대상 그룹 단위로 비율을 나누면 그 비율은 지켜지고, 피해 가기는 각 그룹 안에서만 일어나요. 반면 두 버전의 엔드포인트를 한 풀에 섞고 인스턴스 수로 비율을 맞추면(위의 "열 대 중 한 대"가 이 구조입니다), 바쁜 쪽을 피하는 로드 밸런서 아래에서는 성능이 낮은 버전이 정해 둔 비율보다 덜 받습니다. 설정한 비율과 실제 비율이 달라져요.</p>
+
+<p>카나리 분석 도구를 쓰는 쪽이 공개한 권고도 이 방향입니다. Spinnaker의 카나리 모범 사례 문서는 카나리를 운영 클러스터와 비교하지 말고 <b>같은 시각에 배포한 같은 크기의 베이스라인</b>과 비교하라고 하고, 두 그룹이 같은 종류와 같은 양의 트래픽을 받아야 한다고 적습니다. 세 조건을 맞추는 이유로는 캐시 워밍업 시간과 힙 크기 같은 요인을 듭니다. 운영 클러스터는 이미 데워져 있으니, 새로 뜬 카나리와 비교하면 버전 차이가 아니라 워밍업 차이를 재게 되기 때문이에요. 1장의 곡선이 여기서 다시 나옵니다. 같은 문서는 지표마다 시계열 데이터가 최소 50개는 있어야 통계 분석이 정확하다고도 적습니다. 표본이 줄면 판정이 실제로 약해진다는 뜻이에요.</p>
+
+<p>나머지 부작용 셋도 같은 뿌리에서 나옵니다.</p>
+
+<p><b>초기 신호는 믿기 어렵다.</b> 신규 인스턴스와 주고받은 요청이 몇 건 안 될 때의 사용률이나 레이턴시는 표본이 작아서 흔들립니다. 그 값으로 이상을 빨리 감지하기도 어렵고, 3장에서 본 것처럼 낮은 값을 믿었다가 트래픽을 몰아줄 수도 있어요.</p>
+
+<p><b>분배가 고르지 않다.</b> 신호를 보고 고르는 로드 밸런서는 라운드로빈만큼 균일하게 나누지 않습니다. 인스턴스별 요청 수가 다른 게 정상이 되니, "요청 수가 한쪽으로 쏠렸다"는 것만으로는 이상을 판단할 수 없어요.</p>
+
+<p><b>회복한 인스턴스는 다시 선택된다.</b> 사용률을 시간 창으로 재면 나빴던 구간은 창 밖으로 밀려나 지워집니다. 잠시 느렸던 인스턴스가 회복하면 로드 밸런서는 다시 그 인스턴스를 고르기 시작해요. 회복이 진짜면 좋은 일이지만, 원인이 남아 있으면 같은 인스턴스가 다시 몰려 받고 다시 느려지는 반복이 생길 수 있습니다. ALB와 Envoy 모두 unhealthy가 됐다가 다시 healthy가 된 타깃을 slow start에 다시 넣는다고 문서에 적어 두는데(Envoy는 액티브 헬스 체크 기준), 회복한 인스턴스에게도 한 번 더 보호관찰을 거는 셈이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 카나리 판정에 쓰는 지표는 비율(에러율, 레이턴시 분위수)과 함께 <b>인스턴스별 요청 수</b>도 봅니다. 카나리가 제 몫보다 확연히 덜 받고 있다면 그 자체가 "카나리가 느리다"는 신호예요.<br>
+  &bull; 카나리 분석 구간에서 워밍업 시간은 뺍니다. 신규 카나리가 slow start 중이면 처음 몇 분은 일부러 덜 받으니까요.<br>
+  &bull; 베이스라인도 카나리와 같은 시각에 새로 띄워서, 두 그룹이 같은 워밍업 곡선 위에 서게 합니다.
+</div>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>헬스 체크와 readinessProbe는 "받아도 되는가"를 예/아니오로 답할 뿐이고, 갓 뜬 JVM은 클래스 로딩과 JIT 워밍업 때문에 한동안 느립니다.</b><br><br>
+  그래서 신규 인스턴스에는 보호관찰이 필요해요. ALB의 <code>slow_start.duration_seconds</code>와 Envoy의 <code>slow_start_config</code>는 정해진 시간 동안 몫을 깎았다가 천천히 돌려줍니다. 다만 대신 받아 줄 따뜻한 인스턴스가 있을 때만 통하고, 트래픽이 적으면 오히려 굶깁니다. 반대로 느린 인스턴스를 피하는 로드 밸런서는 카나리의 표본과 차이를 함께 줄이니, 판정할 때는 베이스라인도 같이 새로 띄워야 해요. 준비됐다는 판정과 빨라졌다는 사실 사이의 시간을 누군가는 관리해야 합니다.
+</div>
+
+</div>

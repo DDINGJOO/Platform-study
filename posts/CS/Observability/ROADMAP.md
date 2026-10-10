@@ -24,8 +24,9 @@
 | `aggregation/` | 집계와 분포 | 3 | 평균의 평균과 백분위 합산, 에러를 비중으로 보기, exemplar |
 | `slo-alerting/` | SLO와 경고 | 4 | SLI·SLO·에러 버짓·burn rate, 차트와 경고의 역할 분리, 공통 SLI, 고정 임계값과 예측 |
 | `tracing-debugging/` | 추적과 디버깅 | 6 | 세 주축, 비동기에서 성공 세기, 컨텍스트 전파, 멱등성, 태그와 span 속성, 카오스와 baggage |
+| `traffic-management/` | 트래픽 관리 | 7 | 다중 LB와 P2C, 블랙홀과 outlier detection, slow start와 카나리 왜곡, 헤지 요청, 재시도 증폭과 예산, 세 복원 패턴이 세는 것, 적응형 동시성 제한 |
 
-합 22편. 2026-10-09 기준 `slo-alerting/` 2~4편, `metrics-pipeline/` 4편,
+합 29편. `traffic-management/` 7편은 2026-10-10 작성. 2026-10-09 기준 `slo-alerting/` 2~4편, `metrics-pipeline/` 4편,
 `aggregation/` 2편이 미발행이고 나머지 17편은 발행돼 있다.
 
 ---
@@ -65,7 +66,11 @@ Gil Tene 이 만든 말이다. 원래 맥락은 **부하 생성기**다. 서버�
 
 ## B. 새 시리즈 후보
 
-### B-1. 트래픽 관리 → `traffic-management/` (우선순위 높음)
+### ~~B-1. 트래픽 관리 → `traffic-management/`~~ (2026-10-10 7편으로 씀)
+
+조사에서 나온 책 오류: "서비스 메시로는 헤지 요청을 못 한다"(Envoy `hedge_policy`, gRPC A6 가 있다), RateLimiter `limitForPeriod` 를 "동시 작업 한계치"로 설명, 옛 `ringBufferSize` API, "HTTP 502(unavailable)", 63.3%(→63.4%), Spring Boot 가 HealthMeterRegistry 를 자동 구성한다는 서술(그런 자동 설정 없음), 보호관찰 해제를 신호 기준으로만 설명(공개 구현은 시간 기준).
+남은 숙제: Envoy `retriable_request_headers` 가 헤지 경로를 막는지 소스로는 불분명 — 로컬 Envoy 로 확인하면 한 편 감.
+
 **블로그 어디에도 없는 주제다.** 실무 글에도 없다.
 
 - **최단 대기열 합류** 가 왜 라운드로빈보다 나은가, 그리고 왜 항상 그렇지는 않은가
