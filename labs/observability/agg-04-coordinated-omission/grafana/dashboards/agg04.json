@@ -1,0 +1,199 @@
+{
+ "uid": "agg04",
+ "title": "실습-4 조율된 누락",
+ "schemaVersion": 41,
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "refresh": "",
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "실행 시작부터 누적한 p99: k6 가 잰 값 vs 서버 타이머",
+   "description": "k6 원격 쓰기의 p99 는 테스트 시작부터 누적한 값이다. 서버 쪽도 앱 기동부터 쌓인 버킷 전체로 계산했다",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 10
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "spanNulls": true,
+      "scaleDistribution": {
+       "type": "log",
+       "log": 10
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "k6_http_req_duration_p99{run=\"closed\"}",
+     "legendFormat": "k6 닫힌 모델 (VU 10)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "k6_http_req_duration_p99{run=\"open\"}",
+     "legendFormat": "k6 열린 모델 (VU 300)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    },
+    {
+     "refId": "C",
+     "expr": "k6_http_req_duration_p99{run=\"starved\"}",
+     "legendFormat": "k6 열린 모델 (VU 20)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    },
+    {
+     "refId": "D",
+     "expr": "histogram_quantile(0.99, sum by (instance, le) (http_server_requests_seconds_bucket{uri=\"/work\"}))",
+     "legendFormat": "서버 타이머 {{instance}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "서버가 끝낸 요청 수 (초당, 10초 창)",
+   "description": "",
+   "gridPos": {
+    "x": 0,
+    "y": 10,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "spanNulls": true
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (instance) (rate(http_server_requests_seconds_count{uri=\"/work\"}[10s]))",
+     "legendFormat": "{{instance}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "k6 가 버린 반복 (누적)",
+   "description": "",
+   "gridPos": {
+    "x": 12,
+    "y": 10,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "spanNulls": true
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (run) (k6_dropped_iterations_total)",
+     "legendFormat": "{{run}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ]
+  }
+ ]
+}

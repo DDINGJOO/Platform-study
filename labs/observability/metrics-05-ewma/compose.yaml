@@ -1,0 +1,33 @@
+# 메트릭 수집 실습-5: 지수가중이동평균이 잊어 가는 속도를 잰다.
+# 호스트 포트: Grafana 23300, Prometheus 23390, 앱 /metrics 23080
+services:
+  app:
+    build: ./app
+    image: obs-lab/metrics-05-ewma:dev
+    environment:
+      SCHEDULE: ${SCHEDULE:-120:0,1800:100,1800:0}   # 초:초당건수. 2분 쉬고, 30분 초당 100건, 30분 0건
+      JAVA_TOOL_OPTIONS: -Xmx128m
+    volumes:
+      - ./data:/data
+    mem_limit: 256m
+    ports: ["${APP_PORT:-23080}:8080"]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    mem_limit: 384m
+    ports: ["${PROM_PORT:-23390}:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    mem_limit: 300m
+    ports: ["${GRAFANA_PORT:-23300}:3000"]

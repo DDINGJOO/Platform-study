@@ -165,6 +165,64 @@ IaC 작업일지에서 "코드 밖에 있는 자원을 어떻게 찾나"를 계�
 
 ---
 
+# 책 진도와 쓰기 계획 (2026-10-11)
+
+원자료 두 권: 책1 『SRE를 위한 마이크로서비스』(7장), 책2 『능력치 만렙 SRE』(17장). `~/Desktop/Book/*_ocr.pdf`.
+
+## 책1 진도 (4장 반 끝)
+
+| 장 | 상태 | 어디에 |
+|---|---|---|
+| 1 애플리케이션 플랫폼(문화·캡슐화·다루지 않는 주제) | 안 씀 | 4차 `platform-culture/` |
+| 2 애플리케이션 메트릭 | 거의 다 씀. 2.15 조율된 누락·2.16 부하 테스트 남음 | 1차 `aggregation/` |
+| 3 관찰 가능성과 디버깅 | 씀 | `tracing-debugging/` |
+| 4 차트와 경고 | 씀. 4.8.3 USL 은 식만 지나감 | 1차 `slo-alerting/` |
+| 5 멀티 클라우드와 지속적 전달의 안전성 | 안 씀 | 2차 `delivery-safety/` |
+| 6 소스 코드 관찰 가능성 | 안 씀 | 3차 `code-observability/` |
+| 7 트래픽 관리 | 씀(개념 7 + 실습 7) | `traffic-management/` |
+
+## 책2 진도 (거의 시작 전)
+
+| 장 | 상태 | 어디에 |
+|---|---|---|
+| 1 SRE 직무, 3 임시방편 아키텍처와 스파게티 코드 | 안 씀 | 4차 `platform-culture/` |
+| 2 신뢰성 통계 | `slo-alerting/` 4편에 일부 | 3차 `reliability-design/` |
+| 4 메트릭·이벤트·로그·트레이스 | 책1과 겹쳐 사실상 다룸 | 쓰지 않음 |
+| 5 트러블슈팅, 7 관측 데이터 과학, 8 신뢰성 아키텍처, 9 단순 반복 작업 자동화 | 안 씀 | 3차 `reliability-design/` |
+| 10 깃옵스·파이프라인 | 안 씀 | 2차 `delivery-safety/` 에 합침 |
+| 12 테스트 전략과 용량 설계 | 안 씀 | 1차 `slo-alerting/`(용량 설계) |
+| 13 운영 절차서와 저소음 알람, 14 장애 관리, 15 사후 분석, 16 카오스 | 안 씀(16은 `tracing-debugging/` 6편이 한 번 건드림) | 2차 `incident-response/` |
+| 6 인프라 운영, 11 서버리스·컨테이너·k8s, 17 채용 | 제외 | k8s 스터디와 겹치고, 채용은 블로그 소재로 애매 |
+
+## 묶음 순서
+
+| 묶음 | 대상 | 상태 |
+|---|---|---|
+| **1차** | 기존 시리즈 보강: 조율된 누락(A-2), 색각 이상 대시보드(A-4) → `aggregation/` · USL과 용량 설계(A-3, 책2 12장) → `slo-alerting/` · 1·5·15분의 기원(A-1) → `metrics-pipeline/` | 2026-10-11 작성·퇴고·감사 완료(9편). 개념 4편 두 곳(메트릭 수집 4편 EWMA 복원, SLO와 경고 4편 USL 역추론)을 실습대로 고침 |
+| 2차 | 새 시리즈 `posts/CS/DevOps/delivery-safety/`(책1 5장 + 책2 10장), `posts/CS/DevOps/incident-response/`(책2 13~16장) | 대기. 카테고리는 `DevOps/Delivery Safety`, `DevOps/Incident Response`(사용자 결정 2026-10-11, 티스토리에 먼저 만들어야 함) |
+| 3차 | 새 시리즈 `code-observability/`(책1 6장), `reliability-design/`(책2 2·5·7·8·9장) | 대기 |
+| 4차 | 새 시리즈 `platform-culture/`(책1 1장 + 책2 1·3장) | 대기 |
+
+**번호 규칙 보강**: 실습이 붙은 시리즈에 개념 글을 더할 때는 파일 앞 번호를 이어 붙인다(`07_4편 - …`).
+`N편` 번호는 개념끼리, `실습-N` 은 실습끼리 이어 간다. 목차도 파일 순서(쓴 순서)를 따른다.
+기존 파일명을 바꾸지 않는 이유는 매니페스트 키가 파일 경로라서다.
+
+### 1차 목록 (확정)
+
+| 시리즈 | 파일 | 실습 디렉터리 |
+|---|---|---|
+| aggregation | `07_4편 - 서버가 멈춘 동안 부하 생성기도 쉬었다.html` | |
+| aggregation | `08_실습-4 - 부하 생성기가 숨긴 지연을 다시 찾는다.html` | `labs/observability/agg-04-coordinated-omission/` |
+| aggregation | `09_5편 - 빨강과 초록만으로는 안 되는 이유.html` | |
+| aggregation | `10_실습-5 - 같은 대시보드를 색각 이상의 눈으로 본다.html` | `labs/observability/agg-05-colorblind/` |
+| slo-alerting | `07_5편 - 동시성을 늘리면 어느 지점부터 더 느려지는가.html` | |
+| slo-alerting | `08_6편 - 용량 설계는 부하 테스트 숫자에서 시작한다.html` | |
+| slo-alerting | `09_실습-3 - 동시성을 올려 가며 USL 곡선을 맞춘다.html` | `labs/observability/slo-03-usl/` |
+| metrics-pipeline | `10_6편 - 1분, 5분, 15분은 어디서 왔나.html` | |
+| metrics-pipeline | `11_실습-5 - 지수가중이동평균이 잊어 가는 속도를 잰다.html` | `labs/observability/metrics-05-ewma/` |
+
+---
+
 ## 글 쓸 때
 
 `.claude/skills/blog-post-pipeline/SKILL.md` 를 따른다. 목록 확정 → 병렬 작성 → 퇴고 → 감사.

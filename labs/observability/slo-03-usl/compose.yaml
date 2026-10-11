@@ -1,0 +1,28 @@
+# SLO와 경고 실습-3: 동시성을 올려 가며 USL 곡선을 맞춘다.
+# 앱 하나(락으로 경합·일관성 비용을 만든다), 닫힌 부하를 거는 k6, 곡선을 맞추는 파이썬.
+services:
+  app:
+    build: ./app
+    image: obs-lab/slo-03-usl:dev
+    mem_limit: 512m
+    cpus: ${APP_CPUS:-4}
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      PARALLEL_US: ${PARALLEL_US:-20000}
+      SERIAL_US: ${SERIAL_US:-1000}
+      COHERENCY_US: ${COHERENCY_US:-0}
+      CPU_US: ${CPU_US:-0}
+    ports: ["${APP_PORT:-22080}:8080"]
+
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    volumes:
+      - ./k6:/scripts:ro
+
+  fit:
+    build: ./fit
+    image: obs-lab/slo-03-usl-fit:dev
+    profiles: [fit]
+    volumes:
+      - ./results:/results

@@ -1,0 +1,175 @@
+{
+ "uid": "ewma",
+ "title": "EWMA 감쇠",
+ "time": {
+  "from": "now-70m",
+  "to": "now"
+ },
+ "refresh": "10s",
+ "schemaVersion": 39,
+ "panels": [
+  {
+   "type": "timeseries",
+   "title": "드롭위저드 Meter: 같은 계단을 세 속도로 따라간다 (초당 건수)",
+   "gridPos": {
+    "h": 9,
+    "w": 24,
+    "x": 0,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "min": 0,
+     "custom": {
+      "lineWidth": 2,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "lab_target_rate",
+     "legendFormat": "실제로 넣은 부하"
+    },
+    {
+     "refId": "B",
+     "expr": "lab_ewma_rate{meter=\"early\",window=\"m1\"}",
+     "legendFormat": "m1 (1분)"
+    },
+    {
+     "refId": "C",
+     "expr": "lab_ewma_rate{meter=\"early\",window=\"m5\"}",
+     "legendFormat": "m5 (5분)"
+    },
+    {
+     "refId": "D",
+     "expr": "lab_ewma_rate{meter=\"early\",window=\"m15\"}",
+     "legendFormat": "m15 (15분)"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "같은 사건, 세 가지 1분 비율 (초당 건수)",
+   "gridPos": {
+    "h": 9,
+    "w": 24,
+    "x": 0,
+    "y": 9
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "min": 0,
+     "custom": {
+      "lineWidth": 2,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "lab_target_rate",
+     "legendFormat": "실제로 넣은 부하"
+    },
+    {
+     "refId": "B",
+     "expr": "lab_ewma_rate{meter=\"early\",window=\"m1\"}",
+     "legendFormat": "드롭위저드 m1 (EWMA)"
+    },
+    {
+     "refId": "C",
+     "expr": "rate(lab_events_total[1m])",
+     "legendFormat": "프로메테우스 rate(...[1m])"
+    },
+    {
+     "refId": "D",
+     "expr": "lab_step_rate",
+     "legendFormat": "마이크로미터 STEP 1분"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "15분 비율: 미리 만든 Meter vs 부하와 함께 만든 Meter (초당 건수)",
+   "gridPos": {
+    "h": 9,
+    "w": 24,
+    "x": 0,
+    "y": 18
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "min": 0,
+     "custom": {
+      "lineWidth": 2,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "lab_target_rate",
+     "legendFormat": "실제로 넣은 부하"
+    },
+    {
+     "refId": "B",
+     "expr": "lab_ewma_rate{meter=\"early\",window=\"m15\"}",
+     "legendFormat": "early m15 (앱 기동 때 생성)"
+    },
+    {
+     "refId": "C",
+     "expr": "lab_ewma_rate{meter=\"late\",window=\"m15\"}",
+     "legendFormat": "late m15 (부하 시작 때 생성)"
+    }
+   ]
+  }
+ ]
+}

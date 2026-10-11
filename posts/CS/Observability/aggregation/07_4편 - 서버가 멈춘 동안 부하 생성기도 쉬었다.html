@@ -1,0 +1,311 @@
+<!-- lead: 부하 테스트의 p99가 6ms인데 같은 실행을 다르게 재면 1.27초였어요. 서버가 멈춘 동안 요청을 덜 보내 생기는 조율된 누락, 닫힌 모델과 열린 모델, HdrHistogram 보정, 서버 타이머가 못 보는 대기열을 정리했어요. -->
+<!-- tags: 조율된 누락, coordinated omission, HdrHistogram, wrk2, k6 arrival-rate -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📐 집계와 분포, 4편</div>
+  1편. 집계의 함정<br>
+  2편. 에러는 건수가 아니라 비율로 그린다<br>
+  3편. 히스토그램 위의 점을 클릭하면<br>
+  실습-1. 인스턴스 세 대의 p99를 평균 내면 틀린다<br>
+  실습-2. 에러율을 PromQL에서 비율로 그린다<br>
+  실습-3. 히스토그램 점을 눌러 트레이스로 넘어간다<br>
+  <b>4편. 서버가 멈춘 동안 부하 생성기도 쉬었다</b> &larr; 지금 이 글<br>
+  실습-4. 부하 생성기가 숨긴 지연을 다시 찾는다<br>
+  5편. 빨강과 초록만으로는 안 되는 이유<br>
+  실습-5. 같은 대시보드를 색각 이상의 눈으로 본다
+</div>
+
+<p>부하 테스트 결과표를 받았습니다. 웹 서버에 초당 일정한 요청을 보냈고, p99가 6.04ms예요. 그런데 바로 아래 줄의 p99.9는 1.41초입니다. 두 백분위 사이가 200배 넘게 벌어져 있는데, 표만 보면 "요청의 99%는 6ms 안에 끝나고 아주 드물게 느린 게 있다"로 읽혀요.</p>
+
+<p>이 표는 wrk2라는 부하 생성기의 README에 실린 예시입니다. 초당 2,000건을 보내는 30초 테스트 도중 아파치 프로세스를 1.4초 동안 멈췄어요. wrk2는 같은 실행을 두 방식으로 기록하는데, 원래의 wrk처럼 요청을 실제로 보낸 시각부터 잰 결과가 위의 표예요. 같은 실행을 wrk2 방식으로 다시 세면 p99는 <b>1.27초</b>가 됩니다. 서버는 똑같이 멈췄는데 p99가 6ms에서 1.27초로 바뀌었어요. 달라진 건 서버가 아니라 <b>부하 생성기가 시간을 재는 방식</b>뿐입니다.</p>
+
+<p>이번 편은 이 차이를 다룹니다. 서버가 멈춘 동안 부하 생성기는 무엇을 하고 있었나? 왜 이 누락에 "조율된"이라는 이름이 붙었나? 부하 테스트 도구는 이 문제를 어떻게 피하고, HdrHistogram은 사후에 어떻게 보정하나? 그리고 서버 쪽 타이머는 왜 같은 문제를 피할 수 없나?</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 100초 멈춘 서버의 p99.99가 1ms로 나온다</h2>
+
+<p>Azul Systems의 길 테네(Gil Tene)가 2012년 무렵부터 여러 콘퍼런스에서 한 발표 "How NOT to Measure Latency"에 이 문제를 가장 짧게 보여 주는 예가 있습니다. 숫자가 단순해서 그대로 옮겨 볼게요.</p>
+
+<div class="obsv-code">서버: 초당 100건을 여유 있게 처리하고, 건마다 1ms에 응답한다
+테스트: 200초 동안 10ms마다 한 건씩 요청을 보내고, 응답 시간을 기록한다
+
+  0 ~ 100초   정상. 1ms 응답 10,000건
+100 ~ 200초   서버가 통째로 멈춤 (100초)</div>
+
+<p>단순한 부하 생성기는 요청을 하나 보내고, 응답을 받은 다음, 다음 요청을 보냅니다. 멈춤이 시작되는 순간 보낸 요청 하나는 100초 뒤에야 응답을 받아요. 그동안 생성기는 그 응답을 기다리느라 다음 요청을 보내지 않습니다. 그래서 기록에는 이렇게 남아요.</p>
+
+<div class="obsv-code">기록된 것    1ms 10,000건 + 100초 1건
+
+p99.99       1ms        (실제로는 100초 가까이여야 한다)
+평균         약 11ms    (실제로는 25초 가까이여야 한다. 슬라이드 표기는 10.9ms)</div>
+
+<p>200초 중 절반을 멈춰 있던 서버의 p99.99가 1ms로 기록됐습니다. 실제로 사용자가 10ms마다 하나씩 독립적으로 도착했다면 멈춘 100초 동안 10,000명이 더 왔을 거예요. 멈춤 직후에 온 사람은 100초 가까이, 끝나기 직전에 온 사람은 10ms 남짓 기다렸겠죠. 그 10,000건을 넣으면 분포는 전혀 다릅니다. 발표 슬라이드가 적은 값은 중앙값 1ms, p75 약 50초, p99.99 약 100초, 평균 약 25초예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="co4a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <text x="24" y="34" font-size="23" fill="#3d3a34">시간 &#8594;</text>
+    <path d="M250 50 C 330 48, 420 51, 500 49 C 502 120, 501 220, 500 300 C 420 302, 330 299, 252 301 C 249 220, 251 120, 250 50 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="8 6"/>
+    <text x="300" y="42" font-size="22" fill="#b3502f">서버가 멈춘 구간 🧊</text>
+    <text x="24" y="92" font-size="22" fill="#4a7fb5">기록된 요청</text>
+    <path d="M40 120 C 250 121, 450 119, 680 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+    <path d="M60 120 L 60 104 M90 120 L 90 104 M120 120 L 120 104 M150 120 L 150 104 M180 120 L 180 104 M210 120 L 210 104 M240 120 L 240 104" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
+    <path d="M244 112 C 330 110, 420 113, 496 111" fill="none" stroke="#e5533c" stroke-width="5" stroke-linecap="round"/>
+    <text x="300" y="100" font-size="20" fill="#b3502f">한 건이 멈춤 내내 기다림</text>
+    <path d="M530 120 L 530 104 M560 120 L 560 104 M590 120 L 590 104 M620 120 L 620 104 M650 120 L 650 104" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
+    <text x="24" y="190" font-size="22" fill="#5a9e6f">사용자가 실제로 보낸 요청</text>
+    <path d="M40 220 C 250 221, 450 219, 680 220" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+    <path d="M60 220 L 60 204 M90 220 L 90 204 M120 220 L 120 204 M150 220 L 150 204 M180 220 L 180 204 M210 220 L 210 204 M240 220 L 240 204 M530 220 L 530 204 M560 220 L 560 204 M590 220 L 590 204 M620 220 L 620 204 M650 220 L 650 204" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+    <path d="M270 220 L 270 204 M300 220 L 300 204 M330 220 L 330 204 M360 220 L 360 204 M390 220 L 390 204 M420 220 L 420 204 M450 220 L 450 204 M480 220 L 480 204" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+    <path d="M270 244 C 360 246, 440 243, 498 245" fill="none" stroke="#e5533c" stroke-width="4" stroke-linecap="round"/>
+    <path d="M330 262 C 400 263, 450 262, 498 263" fill="none" stroke="#e5533c" stroke-width="4" stroke-linecap="round"/>
+    <path d="M420 280 C 450 281, 480 280, 498 281" fill="none" stroke="#e5533c" stroke-width="4" stroke-linecap="round"/>
+    <text x="512" y="270" font-size="20" fill="#b3502f">멈춘 동안 도착한 요청은</text>
+    <text x="512" y="292" font-size="20" fill="#b3502f">남은 시간만큼씩 기다린다</text>
+    <text x="24" y="322" font-size="21" fill="#b3502f">위 줄은 빨간 요청들을 보내지 않았다. 그래서 그 대기 시간이 분포에 없다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 생성기가 응답을 기다리는 동안 보내지 않은 요청이 바로 가장 느렸을 요청이다</div>
+
+<p>같은 발표에는 실제 벤치마크 결과도 하나 있습니다. 클라이언트 스레드 하나가 결과를 모은 실행에서 26.182초짜리 응답 하나가 전체 실행 시간의 1.29%를 차지했어요. 그 시간 동안 도착했어야 할 요청을 생각하면 p99는 최소 5.9초여야 하는데, 보고된 p99는 그보다 천 배쯤 작았다는 계산입니다. 100초짜리 멈춤 같은 극단적인 가정이 아니어도 같은 일이 일어난다는 얘기예요.</p>
+
+<p>연결이나 스레드가 여러 개인 생성기도 계산은 같습니다. 각 연결이 멈춤 한 번에 긴 기록을 하나씩 남기니, 멈춤 한 번이 남기는 느린 표본은 <b>동시 연결 수만큼</b>이에요. 연결 10개로 초당 100건을 보내며 5분 동안 열 번 멈췄다면 느린 표본은 100건 남짓이고, 전체 3만 건의 0.3%입니다. p99.9에는 걸리지만 p99에는 안 걸려요. 서두의 wrk2 예시에서 p99.9만 1.41초였던 것도 같은 이유입니다. 연결 100개로 초당 2,000건을 보냈고, README에 실린 히스토그램의 총 표본은 39,500건이에요(앞쪽 보정 구간을 뺀 수). 1.4초 멈춤 한 번이 남긴 느린 표본은 연결 수 정도인 100건 남짓이라 약 0.25%입니다. 닫힌 모델에서 <b>멈춤이 어느 백분위에 보이느냐는 멈춤의 길이가 아니라 연결 수와 총 표본 수의 비율</b>로 정해집니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 빠진 표본이 하필 가장 나쁜 표본이다</h2>
+
+<p>측정에서 표본 몇 개가 빠지는 건 흔한 일입니다. 네트워크가 잠깐 흔들리거나 로그 한 줄이 유실될 수 있어요. 흔히 이런 누락은 무작위라서 문제가 크지 않다고 여깁니다. 빠진 것들이 전체와 비슷한 분포를 가진다면 남은 표본의 백분위도 크게 틀리지 않을 테니까요. 그런데 테네는 발표의 "흔한 오류(Common fallacies)" 목록에 바로 이 생각, "측정의 글리치나 준무작위 누락은 큰 영향이 없다"를 올려 뒀습니다. 빠지는 표본이 정말 무작위인지부터 의심하라는 거예요.</p>
+
+<p>1장의 누락은 성격이 다릅니다. 생성기가 요청을 덜 보낸 시점이 <b>정확히 서버가 느렸던 시점</b>이에요. 서버가 빠를 때는 표본을 촘촘히 모으고, 느릴 때는 그만큼 표본을 덜 모읍니다. 빠진 표본이 나쁜 결과와 상관돼 있으니, 남은 표본은 체계적으로 좋은 쪽으로 치우쳐요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 조율된 누락 (coordinated omission)</div>
+  측정하는 쪽이 측정 대상의 상태에 맞춰 측정을 멈추거나 늦추는 바람에, 가장 나쁜 구간의 표본이 기록에서 빠지는 현상입니다. 빠진 표본이 무작위가 아니라 나쁜 결과와 함께 움직인다는 점이 핵심이에요.
+</div>
+
+<p>이 이름은 테네가 붙였습니다. 2013년 8월 mechanical-sympathy 메일링 리스트에 "내가 조율된 누락이라고 부르는 흔한 측정 기법의 문제"라는 글을 올렸고, 같은 스레드에서 구조를 이렇게 설명했어요. 테스트 스레드는 응답을 받아야 다음 요청을 보낸다. 응답이 느리면 원래 보냈을 요청을 놓친다. 그래서 긴 응답 시간이 보이는 자리에는 요청 사이의 긴 공백도 함께 보인다. 측정하는 쪽이 일부러 그런 게 아니라 측정 방식이 서버의 느림에 저절로 보조를 맞춘다는 뜻에서 "조율된"이라는 말을 썼다고 보면 됩니다.</p>
+
+<p>1편에서 레이턴시는 평균 대신 백분위로 보자고 했죠. 그런데 이 누락은 백분위까지 망가뜨립니다. 백분위는 "기록된 표본"의 순서에서 나오는 값이라, 표본을 모은 방식이 치우쳐 있으면 아무리 정확하게 계산해도 치우친 답이 나와요. 1편의 집계 함정이 계산을 잘못한 문제였다면, 이번 것은 <span class="obsv-mark">계산할 재료를 처음부터 덜 모은 문제</span>입니다.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 닫힌 모델과 열린 모델</h2>
+
+<p>그럼 요청을 응답과 상관없이 보내면 되지 않을까요? 부하 테스트 도구들은 이 갈림길을 <b>닫힌 모델</b>과 <b>열린 모델</b>이라는 이름으로 구분합니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 닫힌 모델과 열린 모델 (closed / open workload model)</div>
+  닫힌 모델은 사용자 수가 정해져 있고, 각 사용자가 앞 요청이 끝나야 다음 요청을 보냅니다. 처리량이 응답 시간에 따라 줄어들어요. 열린 모델은 요청이 정해진 도착률로 들어오고, 앞 요청이 끝났는지와 상관없이 다음 요청이 출발합니다.
+</div>
+
+<p>k6 문서가 이 구분을 가장 직접적으로 적어 둡니다. 닫힌 모델에서는 각 반복이 걸린 시간이 실행되는 반복 수를 정하고, 그래서 대상 시스템이 느려지면 도착률도 줄어든다고 해요. 그리고 "일부 테스트 문헌에서 이 문제를 조율된 누락이라고 부른다"고 덧붙입니다. k6에서 VU(가상 사용자) 수를 고정하는 실행기들이 닫힌 모델이고, 열린 모델은 <code>constant-arrival-rate</code>와 <code>ramping-arrival-rate</code> 두 실행기로 구현돼 있어요.</p>
+
+<p>닫힌 모델이 흔한 이유는 만들기 쉬워서예요. 반복문 안에서 요청을 보내고 응답을 기다리면 그게 닫힌 모델입니다. 동시성은 스레드나 연결 수 하나로 정해지고, 서버가 느려지면 생성기도 알아서 느려지니 생성기가 메모리나 연결을 바닥낼 일도 없어요. 열린 모델은 그 반대입니다. 서버가 느려져도 요청은 계속 출발하니, 응답을 기다리는 요청을 담아 둘 자리(스레드, VU, 연결)를 생성기 쪽에 넉넉히 마련해야 하고, 서버가 영영 응답하지 않을 때를 대비한 타임아웃도 정해야 해요. 만들기 쉬운 쪽이 멈춤을 덜 보는 쪽이라는 게 이 문제가 오래 남은 이유 중 하나입니다.</p>
+
+<p>다른 도구도 같은 선을 긋습니다.</p>
+
+<div class="obsv-code">도구        닫힌 모델                          열린 모델
+k6          constant-vus, ramping-vus 등        constant-arrival-rate, ramping-arrival-rate
+Gatling     injectClosed (constantConcurrentUsers 등)   injectOpen (constantUsersPerSec 등)
+JMeter      기본 Thread Group                   Open Model Thread Group (5.5부터, 실험 기능)
+wrk / ab    연결 수만큼 동시에 보내고 응답마다 다음 요청
+wrk2                                            -R 로 총 초당 요청 수를 고정</div>
+
+<p>JMeter의 기본 Thread Group은 스레드 하나가 요청을 보내고 응답을 받은 뒤 다음 요청으로 넘어가는 구조라 닫힌 모델이에요. 도착률로 부하를 정하는 Open Model Thread Group은 2022년 5.5 버전에 들어왔고, 문서에 아직 실험 기능이라고 적혀 있습니다. 그러니 "JMeter는 사용자를 독립적으로 흉내 낸다"는 말은 어떤 스레드 그룹을 쓰느냐에 따라 맞기도 틀리기도 해요.</p>
+
+<p>직접 짠 부하 생성기도 마찬가지입니다. 리액터(Project Reactor)로 끝없는 숫자 스트림을 만들고 <code>flatMap</code>으로 요청을 보내는 코드는 비동기라서 열린 모델로 보이기 쉬워요. 그런데 <code>flatMap</code>은 동시에 구독하는 내부 스트림 수에 기본 상한이 있습니다. 리액터 소스에서 인자 없는 <code>flatMap</code>은 <code>Queues.SMALL_BUFFER_SIZE</code>, 기본값 256을 씁니다. 그리고 이런 코드에 흔히 붙는 <code>limitRate(n)</code>은 이름과 달리 초당 속도를 정하지 않아요. 소스 주석대로 하류의 요청(backpressure)을 n개 단위로 쪼개 위로 전달할 뿐입니다. 결국 이 생성기는 <b>동시 요청 256개짜리 닫힌 모델</b>이에요. 서버가 멈추면 256개가 다 묶이고 그 뒤로는 아무것도 보내지 않습니다. 비동기냐 블로킹이냐가 아니라 <span class="obsv-mark">다음 요청의 출발이 앞 요청의 응답을 기다리느냐</span>가 기준이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 열린 모델도 VU가 바닥나면 다시 닫힌다</div>
+  k6의 도착률 실행기도 결국 VU가 요청을 보냅니다. 정해진 시각에 쉬는 VU가 없으면 그 반복은 보내지 않고 버려요. k6 문서는 이걸 <code>dropped_iterations</code>라는 카운터로 센다고 적습니다. 서버가 2초 멈추는 동안 초당 100건을 유지하려면 그 2초 동안 묶일 VU 200개가 미리 있어야 해요. 모자라면 멈춘 구간의 요청이 다시 빠지고, 조율된 누락이 돌아옵니다. 도착률 테스트에서는 <code>dropped_iterations</code>가 0인지부터 확인하세요.
+</div>
+
+<p>열린 모델이 언제나 정답이라는 뜻은 아닙니다. 접속한 사용자 수가 정해진 시스템, 예를 들어 사내 도구나 연결 풀이 고정된 배치 클라이언트는 실제로 닫힌 모델로 움직여요. 이때 닫힌 모델 테스트는 현실을 그대로 흉내 낸 겁니다. 문제는 인터넷의 사용자처럼 서로 모르는 사람들이 독립적으로 도착하는 서비스를 닫힌 모델로 재고, 그 백분위를 사용자 경험이라고 읽을 때 생겨요.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 보냈어야 할 시각부터 잰다</h2>
+
+<p>열린 모델로 부하를 주는 것만으로 끝나지 않습니다. 시간을 언제부터 재느냐도 정해야 해요. wrk2 README의 설명은 이렇습니다. wrk2는 정해진 처리량에 맞춰 요청을 보내고, 응답 시간을 <b>요청이 나갔어야 할 시각</b>부터 잰다. 그래서 늦어진 응답 하나가 그 뒤에 줄 선 요청들의 지연에도 반영된다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 의도한 시작 시각 (intended start time)</div>
+  부하 계획대로라면 요청이 출발했어야 할 시각입니다. 생성기 자신이 바빠서 실제로 늦게 보냈더라도 지연은 이 시각부터 셉니다. 생성기 쪽에서 생긴 밀림까지 사용자가 기다린 시간으로 치는 거예요.
+</div>
+
+<p>README는 다른 길도 짚어요. 앞 응답을 기다리지 않고 요청을 보내는 완전한 비동기 생성기도 이 누락을 피할 수 있지만, 연결 하나에서 요청과 응답이 차례로 오가는 대부분의 HTTP 작업에서는 그렇게 하기 어렵다는 거예요. 그래서 wrk2는 일정한 처리량으로 보내되, 늦게 나간 요청은 계획된 시각부터 재는 쪽을 택했습니다.</p>
+
+<p>이렇게 재면 생성기 자신의 사정(스레드가 모자라거나 연결이 다 쓰인 것)도 지연에 들어갑니다. 실제 사용자는 생성기 사정을 모르고 그냥 기다렸을 테니 이쪽이 맞아요. 서두의 6.04ms와 1.27초가 바로 이 두 방식의 차이입니다. README의 같은 표에서 p99.9는 1.41초와 1.42초로 거의 같았어요. 1장에서 계산한 대로 멈춤에 걸린 연결 100개의 첫 요청(약 0.25%)은 어느 방식으로 재도 상위 0.1% 안을 채우기 때문입니다. 누락은 p99처럼 "아주 나쁘지는 않은" 백분위를 가장 크게 속여요.</p>
+
+<p>이미 닫힌 모델로 모은 결과는 어떻게 할까요? 테네가 만든 <b>HdrHistogram</b>에 사후 보정 기능이 있습니다. wrk2도 내부 기록에 이 라이브러리(마이크 바커의 C 포트)를 씁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: HdrHistogram</div>
+  값의 범위와 유효 숫자 자릿수를 정해 두면 고정된 메모리로 넓은 범위의 지연을 기록하는 히스토그램 라이브러리입니다. Micrometer도 앱이 직접 계산하는 백분위(클라이언트 백분위)를 이 라이브러리로 구해요.
+</div>
+
+<p>보정 방법은 두 가지예요. 기록할 때 보정하는 <code>recordValueWithExpectedInterval(value, expectedInterval)</code>과, 다 기록한 뒤 복사본을 만드는 <code>copyCorrectedForCoordinatedOmission(expectedInterval)</code>입니다. 둘이 하는 일은 같아요. 기록된 값이 예상 간격보다 크면 그 값에서 예상 간격씩 줄여 가며 값을 더 채워 넣습니다. 예상 간격까지 내려오면 멈춰요.</p>
+
+<div class="obsv-code">예상 간격 100ms 로 보내던 닫힌 모델 생성기가 1,000ms 응답 하나를 받았다
+
+recordValue(1000)                      기록: 1000
+recordValueWithExpectedInterval(1000, 100)
+                                       기록: 1000, 900, 800, 700, 600, 500, 400, 300, 200, 100
+                                             (원래 값 1개 + 보내지 못한 9건을 추정해 채움)</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M60 240 C 250 241, 450 239, 660 240" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+    <path d="M60 240 C 59 180, 61 110, 60 40" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+    <text x="20" y="34" font-size="20" fill="#3d3a34">지연</text>
+    <text x="560" y="266" font-size="20" fill="#3d3a34">보냈어야 할 시각 &#8594;</text>
+    <path d="M90 240 C 89 160, 91 100, 90 52 C 100 51, 110 52, 118 53 C 119 110, 117 170, 118 240" fill="#c9d9ec" stroke="#4a7fb5" stroke-width="2.2"/>
+    <text x="74" y="46" font-size="18" fill="#4a7fb5">1000</text>
+    <path d="M140 240 C 139 170, 141 120, 140 72 C 150 71, 160 72, 168 73 C 169 130, 167 180, 168 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <path d="M190 240 C 189 180, 191 130, 190 92 C 200 91, 210 92, 218 93 C 219 140, 217 190, 218 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <path d="M240 240 C 239 190, 241 140, 240 112 C 250 111, 260 112, 268 113 C 269 150, 267 200, 268 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <path d="M290 240 C 289 200, 291 150, 290 132 C 300 131, 310 132, 318 133 C 319 170, 317 210, 318 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <path d="M340 240 C 339 210, 341 170, 340 152 C 350 151, 360 152, 368 153 C 369 180, 367 220, 368 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <path d="M390 240 C 389 220, 391 190, 390 172 C 400 171, 410 172, 418 173 C 419 200, 417 225, 418 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <path d="M440 240 C 439 225, 441 205, 440 192 C 450 191, 460 192, 468 193 C 469 210, 467 230, 468 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <path d="M490 240 C 489 230, 491 220, 490 212 C 500 211, 510 212, 518 213 C 519 222, 517 232, 518 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <path d="M540 240 C 539 236, 541 234, 540 230 C 550 229, 560 230, 568 231 C 569 234, 567 237, 568 240" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="140" y="62" font-size="18" fill="#c07f18">900</text>
+    <text x="536" y="222" font-size="18" fill="#c07f18">100</text>
+    <text x="300" y="70" font-size="21" fill="#4a7fb5">파란 막대: 실제로 기록된 한 건</text>
+    <text x="300" y="96" font-size="21" fill="#c07f18">점선 막대: 예상 간격마다 보냈다면 생겼을 대기</text>
+    <text x="60" y="292" font-size="21" fill="#b3502f">보정은 "멈춘 동안에도 같은 간격으로 왔을 것"이라는 가정 위에 서 있다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 보정은 긴 응답 하나 뒤에 놓친 요청들의 대기를 계단 모양으로 채워 넣는다</div>
+
+<p>계단의 모양을 보면 1장의 "제대로 잰" 분포와 같습니다. 멈춤 중에 10ms마다 도착한 요청들은 100초부터 10ms까지 고르게 기다렸을 테니까요. HdrHistogram 문서도 1장과 같은 가정(10ms 간격, 1ms 응답, 100초 멈춤)으로 설명하면서, 보정하지 않으면 99.99%가 1ms 이하로 보이고 보정하면 약 50%만 1ms 이하로 남는다고 적습니다.</p>
+
+<p>대신 조건이 셋 있어요.</p>
+
+<p><b>첫째, 예상 간격을 알아야 합니다.</b> 이 값은 "멈추지 않았다면 다음 요청이 언제 나갔을까"인데, 그걸 아는 건 부하 계획을 가진 생성기뿐이에요. 사용자가 언제 올지 모르는 서버는 이 값을 정할 수 없습니다. Micrometer가 HdrHistogram을 쓰면서도 보정 없는 <code>recordValue</code>만 호출하는 것도 그래서예요. Micrometer의 <code>TimeWindowPercentileHistogram</code> 소스가 그렇게 되어 있습니다.</p>
+
+<p><b>둘째, 보정은 추정입니다.</b> 문서는 사후 보정이 "모든 기록값의 예상 간격이 같다고 추정할 수 있을 때" 쓸모 있다고 적어요. 실제 도착이 들쭉날쭉하면 채워 넣은 값도 그만큼 틀립니다. 처음부터 열린 모델로 재는 게 언제나 낫고, 보정은 이미 모은 결과를 살릴 때 쓰는 수단이에요.</p>
+
+<p><b>셋째, 두 방법 중 하나만 씁니다.</b> 문서가 두 메서드 설명마다 "상호 배타적이며 한 데이터에는 하나만 써야 한다"고 적어 둡니다. 기록할 때 보정한 히스토그램에 사후 보정을 또 하면 같은 누락을 두 번 채우게 돼요. 같은 이유로, 열린 모델로 이미 제대로 잰 결과에 보정을 걸어서도 안 됩니다. 그 결과에는 채울 누락이 없으니, 예상 간격을 넘은 기록마다 있지도 않은 요청이 계단으로 더해져서 분포가 실제보다 나빠져요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 서버 타이머는 줄 선 시간을 처음부터 모른다</h2>
+
+<p>여기까지는 부하 생성기 이야기였어요. 운영 환경에는 생성기가 없고, 우리가 보는 지연은 대부분 서버가 스스로 잰 타이머입니다. 그럼 서버 타이머는 괜찮을까요? 같은 문제를 다른 모양으로 갖고 있습니다.</p>
+
+<p>스프링 부트의 <code>http.server.requests</code>는 서블릿 필터에서 시간을 재기 시작해요. 필터가 돈다는 건 요청이 이미 톰캣 작업 스레드를 하나 잡았다는 뜻입니다. 그 전 단계, 그러니까 커널이 연결을 받아 둔 대기열과 톰캣이 스레드가 비기를 기다리게 한 시간은 타이머 바깥이에요. SLO와 경고 3편에서 이 구멍을 "타이머가 켜지기 전 시간"이라고 불렀습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 연결 대기열 (accept queue, backlog)</div>
+  서버 프로세스가 아직 받아 가지 않은 연결이 커널에서 기다리는 줄입니다. 프로세스가 멈춰 있어도 커널은 연결을 이 줄에 받아 둘 수 있어서, 클라이언트는 연결은 됐는데 응답이 오지 않는 상태로 기다리게 돼요.
+</div>
+
+<p>JVM 전체가 멈추는 경우를 생각해 볼게요. GC의 전체 정지든, 컨테이너의 CPU 제한이든, 디스크 플러시든 상관없습니다. 멈춤이 시작될 때 이미 처리 중이던 요청은 멈춘 시간만큼 길게 기록돼요. 그런데 그런 요청은 몇 개 안 됩니다. 멈춘 동안 도착한 요청 대부분은 연결 대기열에서 기다리다가, 멈춤이 풀린 뒤에야 필터에 들어와서 평소처럼 몇 밀리초로 기록돼요. <span class="obsv-mark">가장 오래 기다린 요청들이 서버 타이머에는 가장 빠른 요청으로 남습니다.</span></p>
+
+<p>"몇 개 안 된다"는 계산할 수 있어요. 어느 순간 처리 중인 요청 수의 평균은 처리량에 평균 응답 시간을 곱한 값입니다(리틀의 법칙). 초당 100건을 건당 4ms에 처리하는 서버라면 0.4건이에요. 2초 멈추는 동안 도착하는 요청은 200건인데, 서버 타이머가 그 멈춤을 길게 기록하는 건 멈춘 순간 처리 중이던 평균 0.4건뿐입니다. <b>빠른 서버일수록 멈춤을 덜 봅니다.</b> 처리 중인 요청이 적으니까요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="co4b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M40 80 C 250 81, 450 79, 670 80" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#co4b)"/>
+    <path d="M60 72 L 60 88 M200 72 L 200 88 M330 72 L 330 88 M450 72 L 450 88 M620 72 L 620 88" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="30" y="60" font-size="19" fill="#5a9e6f">① 보냈어야 할 시각</text>
+    <text x="170" y="112" font-size="19" fill="#3d3a34">② 실제로 보낸 시각</text>
+    <text x="300" y="60" font-size="19" fill="#3d3a34">③ 연결 수락</text>
+    <text x="410" y="112" font-size="19" fill="#4a7fb5">④ 스레드가 잡음</text>
+    <text x="600" y="60" font-size="19" fill="#3d3a34">⑤ 응답</text>
+    <path d="M60 150 C 250 151, 450 149, 620 150" fill="none" stroke="#5a9e6f" stroke-width="7" stroke-linecap="round"/>
+    <text x="40" y="140" font-size="20" fill="#2e6b41">wrk2, 열린 모델 k6 (VU가 충분할 때): ①부터</text>
+    <path d="M200 200 C 350 201, 500 199, 620 200" fill="none" stroke="#e5a33c" stroke-width="7" stroke-linecap="round"/>
+    <text x="40" y="190" font-size="20" fill="#c07f18">닫힌 모델 생성기: ②부터, 그리고 ②가 밀린다</text>
+    <path d="M450 250 C 520 251, 580 249, 620 250" fill="none" stroke="#4a7fb5" stroke-width="7" stroke-linecap="round"/>
+    <text x="40" y="240" font-size="20" fill="#4a7fb5">서버 타이머 (http.server.requests): ④부터</text>
+    <path d="M330 280 C 380 281, 420 279, 450 280" fill="none" stroke="#e5533c" stroke-width="4" stroke-dasharray="1 7" stroke-linecap="round"/>
+    <text x="40" y="288" font-size="20" fill="#b3502f">③과 ④ 사이의 줄은 서버 지표 어디에도 없다</text>
+    <text x="40" y="320" font-size="21" fill="#b3502f">측정을 어느 지점에서 시작하느냐에 따라 같은 요청의 지연이 달라진다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 측정을 어느 지점에서 시작하느냐가 지연의 정의다</div>
+
+<p>트래픽 관리 실습-6에서 이걸 실제로 봤습니다. 하위 서비스가 느려져 톰캣 스레드가 다 찬 동안, 서버가 잰 결제 호출 p99는 9ms였어요. 같은 시간에 k6는 결제 호출에서만 수천 건의 5초 무응답을 셌습니다. 톰캣은 기본으로 연결을 8,192개까지 받아 두고 스레드를 기다리게 하니, 서버 타이머가 모르는 줄이 꽤 길어질 수 있어요.</p>
+
+<p>서버리스도 같은 구조입니다. AWS Lambda의 <code>Duration</code> 지표는 함수 코드가 이벤트를 처리하는 데 쓴 시간이고, 문서에 "콜드 스타트 시간을 포함하지 않는다"고 적혀 있어요. 실행 환경을 새로 띄우느라 사용자가 기다린 시간은 이 지표만 봐서는 안 보입니다.</p>
+
+<p>처리량도 같이 속습니다. 서버의 요청 수 지표는 끝난 요청만 셉니다. 멈춘 동안에는 끝난 요청이 없으니 처리량이 0으로 떨어졌다가, 풀린 직후 대기열에 쌓였던 요청이 한꺼번에 끝나면서 튀어요. 평균을 내면 평소와 비슷한 처리량이 나오고, 그사이 몇 초 동안 아무도 응답을 못 받았다는 사실은 사라집니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 서버 지표만 믿지 않는다</div>
+  &bull; 서버 타이머의 p99 옆에 <b>호출하는 쪽의 타이머</b>(<code>http.client.requests</code>, 게이트웨이나 로드 밸런서의 지연)를 같이 그려요. 두 선이 벌어지는 구간이 줄 선 시간이에요<br>
+  &bull; 최댓값을 지우지 마세요. 멈춤에 걸린 처리 중 요청 몇 건은 서버 타이머에도 남고, 그건 백분위보다 max에서 먼저 보여요<br>
+  &bull; GC 멈춤, 컨테이너 CPU 제한(throttling) 같은 "프로세스 전체가 멈추는" 지표를 지연 차트 옆에 둬요. 서버 p99가 멀쩡한데 이 지표가 튀었다면 의심할 근거가 됩니다
+</div>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 측정 방법부터 시험한다</h2>
+
+<p>테네가 이 절을 마무리하며 "교훈(Lessons learned)"으로 적은 조언이 이 문제의 가장 실용적인 처방입니다. <b>어떤 측정 방법을 쓰든 먼저 시험해 보라.</b> 일부러 멈춤을 일으키는 가짜 시스템에 내 측정 방법을 걸어 보고, 보고된 결과가 내가 그 시스템을 묘사할 말과 맞는지 보라는 거예요. 맞지 않으면 분석에 시간을 쓰기 전에 측정부터 고쳐야 합니다.</p>
+
+<p>이 조언이 좋은 이유는 정답을 미리 알 수 있다는 데 있어요. 30초마다 2초씩 멈추는 서버라면, 초당 일정한 요청이 독립적으로 온다고 할 때 요청의 약 6.7%(2/30)가 멈춤에 걸립니다. 그 요청들은 0초에서 2초 사이를 고르게 기다렸을 테니, 전체 p99는 멈춘 요청 중 상위 15% 근처인 약 1.7초여야 해요. 내 측정 도구가 p99를 몇 밀리초로 보고한다면 그 도구는 이 시스템을 잘못 묘사하고 있는 겁니다.</p>
+
+<p>부하 테스트를 설계할 때 확인할 것을 정리하면 이렇습니다.</p>
+
+<div class="obsv-code">1. 모델     사용자가 서로 모르고 독립적으로 오는 서비스인가? 그렇다면 열린 모델
+2. 여유    도착률 × 예상 최악 지연 만큼의 VU(또는 연결)를 미리 확보했나?
+           k6 라면 dropped_iterations 가 0 인가?
+3. 시작점  지연을 실제로 보낸 시각이 아니라 보냈어야 할 시각부터 재나?
+4. 보정    닫힌 모델 결과를 쓸 수밖에 없다면, 예상 간격으로 한 번만 보정했나?
+5. 대조    서버 타이머, 클라이언트 지연, 최댓값을 같은 시간축에 놓고 봤나?
+6. 요약    결과표에 p99, p99.9 가 있나? 도구의 기본 요약이 그걸 보여 주나?</div>
+
+<p>6번은 사소해 보이지만 실제로 걸립니다. k6의 실행 끝 요약은 기본으로 avg, min, med, max, p(90), p(95)만 보여 줘요(<code>summaryTrendStats</code> 기본값). 멈춤에 걸린 요청이 전체의 몇 퍼센트 안쪽이면 p95까지는 멀쩡하고 max만 몇 초로 튀어 있는 표가 나옵니다. 그 표는 "가끔 하나씩 느리다"로 읽히기 쉬워요. 이 글의 주제가 백분위 몇 개 사이에서 벌어지는 일이니, 요약에 p99와 p99.9를 넣어 두는 것부터가 측정 설계입니다.</p>
+
+<p>2번이 특히 놓치기 쉬워요. 열린 모델을 골랐다는 사실에 안심하고 VU 상한을 작게 두면, 정작 서버가 멈춘 순간에 생성기가 요청을 버립니다. 결과표에는 버린 요청이 지연으로 남지 않고, <code>dropped_iterations</code>라는 별도 숫자로만 남아요. 그 숫자를 보지 않으면 다시 닫힌 모델의 결과표를 읽게 됩니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "부하 테스트에서 p99가 좋았다"는 문장을 받으면</div>
+  &bull; 어떤 실행기(또는 스레드 그룹)를 썼는지 먼저 물어요. VU 고정이면 p99는 멈춤을 거의 못 본 값일 수 있어요<br>
+  &bull; p99와 p99.9, max가 몇 배씩 벌어져 있으면 의심하세요. 서두의 6.04ms와 1.41초가 그 모양이에요<br>
+  &bull; 서버 대시보드의 p99로 부하 테스트를 판정하지 마세요. 그 값은 연결 대기열과 스레드 대기를 처음부터 빼고 잰 값이에요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>응답을 받아야 다음 요청을 보내는 생성기는 서버가 멈춘 동안 측정도 멈춘다. 빠진 표본이 하필 가장 느렸을 요청이라, 백분위를 아무리 정확히 계산해도 좋은 쪽으로 치우친 답이 나온다. 이게 조율된 누락이다.</b><br><br>
+  피하는 길은 요청을 도착률로 보내고(열린 모델), 지연을 보냈어야 할 시각부터 재고, 생성기 쪽 여유가 바닥나지 않았는지(<code>dropped_iterations</code>) 확인하는 것이다. 이미 모은 결과는 HdrHistogram이 예상 간격을 가정해 보정해 줄 수 있지만, 그 가정은 생성기만 안다. 서버 타이머는 줄 선 시간을 처음부터 모르니 호출하는 쪽 지표와 최댓값을 같이 본다. 지연은 측정값이기 전에 측정을 어디서 시작했는지에 대한 정의다.
+</div>
+
+</div>

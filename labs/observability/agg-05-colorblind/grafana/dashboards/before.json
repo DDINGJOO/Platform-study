@@ -1,0 +1,207 @@
+{
+ "uid": "cvd-before",
+ "title": "실습-5 기본값 대시보드",
+ "schemaVersion": 41,
+ "editable": true,
+ "time": {
+  "from": "now-10m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "엔드포인트별 에러 비율",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 9
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (uri) (rate(http_server_requests_seconds_count{uri=~\"/api/.*\",outcome=\"SERVER_ERROR\"}[1m])) / sum by (uri) (rate(http_server_requests_seconds_count{uri=~\"/api/.*\"}[1m]))",
+     "legendFormat": "{{uri}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "엔드포인트별 p99 지연",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 9
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.99, sum by (uri, le) (rate(http_server_requests_seconds_bucket{uri=~\"/api/.*\"}[1m])))",
+     "legendFormat": "{{uri}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "SLO 상태 (에러 비율 1% 미만)",
+   "gridPos": {
+    "x": 0,
+    "y": 9,
+    "w": 12,
+    "h": 6
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (uri) (rate(http_server_requests_seconds_count{uri=~\"/api/.*\",outcome=\"SERVER_ERROR\"}[1m])) / sum by (uri) (rate(http_server_requests_seconds_count{uri=~\"/api/.*\"}[1m]))",
+     "legendFormat": "{{uri}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "decimals": 1,
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "value": null,
+        "color": "green"
+       },
+       {
+        "value": 0.01,
+        "color": "red"
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "textMode": "value_and_name",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   }
+  },
+  {
+   "id": 4,
+   "type": "timeseries",
+   "title": "응답 결과 (초당)",
+   "gridPos": {
+    "x": 12,
+    "y": 9,
+    "w": 12,
+    "h": 6
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (outcome) (rate(http_server_requests_seconds_count{uri=~\"/api/.*\"}[1m]))",
+     "legendFormat": "{{outcome}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "stacking": {
+       "mode": "normal"
+      },
+      "fillOpacity": 70
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "SUCCESS"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "green"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "SERVER_ERROR"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "red"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {}
+  }
+ ]
+}

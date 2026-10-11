@@ -1,0 +1,234 @@
+<!-- lead: 그라파나 기본값 대시보드와 고친 대시보드를 캡처해 1형, 2형, 3형 색각 이상 시뮬레이션을 걸었어요. 장애 난 선은 노랑이었고, 2형에게 초록 칸과 빨강 칸은 색차 97에서 6으로 모였어요. -->
+<!-- tags: 색각 이상 시뮬레이션, Machado 2009, 오카베-이토, Grafana 임계값, 접근성 대시보드 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📐 집계와 분포, 실습-5</div>
+  1편. 집계의 함정<br>
+  2편. 에러는 건수가 아니라 비율로 그린다<br>
+  3편. 히스토그램 위의 점을 클릭하면<br>
+  실습-1. 인스턴스 세 대의 p99를 평균 내면 틀린다<br>
+  실습-2. 에러율을 PromQL에서 비율로 그린다<br>
+  실습-3. 히스토그램 점을 눌러 트레이스로 넘어간다<br>
+  4편. 서버가 멈춘 동안 부하 생성기도 쉬었다<br>
+  실습-4. 부하 생성기가 숨긴 지연을 다시 찾는다<br>
+  5편. 빨강과 초록만으로는 안 되는 이유<br>
+  <b>실습-5. 같은 대시보드를 색각 이상의 눈으로 본다</b> &larr; 지금 이 글
+</div>
+
+<p>엔드포인트 다섯 개짜리 앱에 부하를 걸고, 3분째에 결제(<code>/api/checkout</code>)의 에러율을 5%로 올렸습니다. 그라파나에 패널을 만들고 쿼리만 넣은 대시보드를 열었더니, 에러 비율 그래프에서 솟아오른 선은 <b>노란색</b>이었어요. 빨간 선은 바닥에 깔려 있었고, 그건 아무 문제 없는 검색(<code>/api/search</code>)이었습니다. 색각 이상 시뮬레이션을 걸기도 전에 이미 색이 장애 위치를 잘못 가리킨 셈이에요.</p>
+
+<p>5편에서 그라파나 기본 팔레트의 초록과 빨강이 2형 색각 이상에게 거의 같은 색이 된다고 계산했습니다. 이번 글은 그 계산을 실제 대시보드 화면에 걸어 봅니다. 기본값 그대로인 대시보드와 색 말고도 단서를 붙인 대시보드를 같은 데이터로 띄우고, Playwright로 캡처한 이미지에 1형, 2형, 3형 시뮬레이션을 걸어 나란히 놓았어요. 화면과 숫자는 전부 이번에 돌린 결과입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 기본값 대시보드는 색각 이상의 눈에 어떻게 보이는가?<br>
+  &bull; 5편에서 계산한 색차가 실제 화면에서도 맞는가?<br>
+  &bull; 그라파나 설정만으로 색 말고 무엇을 더할 수 있는가? 그 대가는?<br>
+  &bull; 색각 이상을 고려했다는 오카베-이토 팔레트는 어디서 약한가?
+</div>
+
+<h2>1. 실습 환경: 대시보드 두 개, 시뮬레이션 넷</h2>
+
+<p>앱은 스프링 부트 하나에 엔드포인트가 다섯 개(<code>checkout</code>, <code>order</code>, <code>search</code>, <code>cart</code>, <code>login</code>)예요. 엔드포인트마다 정해진 에러율(0.2~0.4%)과 지연으로 응답하고, 관리용 엔드포인트로 실행 중에 바꿀 수 있습니다. k6가 초당 50건을 다섯 곳에 고르게 8분 동안 보내고, 3분째에 결제의 에러율을 5%, 지연을 200~400ms로 올렸어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="l5a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M20 60 C 70 58, 110 61, 140 59 C 142 80, 141 100, 140 120 C 110 122, 70 119, 22 121 C 19 100, 20 80, 20 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+    <text x="36" y="86" font-size="20" fill="#4a7fb5">앱 (엔드포인트 5)</text>
+    <text x="36" y="110" font-size="17" fill="#8a8272">k6 초당 50건</text>
+    <path d="M190 60 C 230 58, 270 61, 300 59 C 302 80, 301 100, 300 120 C 270 122, 230 119, 192 121 C 189 100, 190 80, 190 60 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+    <text x="206" y="96" font-size="20" fill="#3d3a34">Prometheus</text>
+    <path d="M350 40 C 400 38, 450 41, 480 39 C 482 70, 481 110, 480 140 C 450 142, 400 139, 352 141 C 349 110, 350 70, 350 40 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+    <text x="366" y="68" font-size="20" fill="#3d3a34">Grafana</text>
+    <text x="366" y="96" font-size="18" fill="#b3502f">before (기본값)</text>
+    <text x="366" y="122" font-size="18" fill="#2e6b41">after (고친 것)</text>
+    <path d="M530 56 C 580 54, 630 57, 680 55 C 682 80, 681 110, 680 134 C 630 136, 580 133, 532 135 C 529 110, 530 80, 530 56 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+    <text x="544" y="86" font-size="19" fill="#c07f18">캡처 → 시뮬레이션</text>
+    <text x="544" y="106" font-size="16" fill="#8a8272">1·2형 Machado</text>
+    <text x="544" y="124" font-size="16" fill="#8a8272">3형 Brettel</text>
+    <path d="M142 90 C 160 89, 172 91, 186 90" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#l5a)"/>
+    <path d="M302 90 C 320 89, 332 91, 346 90" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#l5a)"/>
+    <path d="M482 90 C 500 89, 512 91, 526 90" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#l5a)"/>
+    <text x="20" y="190" font-size="20" fill="#b3502f">같은 쿼리 네 개를 두 가지로 그리고, 이미지 하나를 네 가지 눈으로 본다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 데이터는 하나, 그리는 방법은 둘, 보는 눈은 넷</div>
+
+<div class="obsv-code">Spring Boot           4.1.1  (Micrometer 1.17.1, Java 21)
+Prometheus            3.15.0
+Grafana               13.2.3  (라이트 테마)
+k6                    2.3.0
+시뮬레이션            Python 3.12, numpy 2.3.4, Pillow 12.0.0, daltonlens 0.1.5 (컨테이너 안)
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/agg-05-colorblind">labs/observability/agg-05-colorblind</a>에 있어요. 장애 주입까지 이 순서로 쳤습니다.</p>
+
+<div class="obsv-code">cd Platform-study/labs/observability/agg-05-colorblind
+docker compose up -d --build
+date +%s &gt; out/start.txt
+docker compose --profile load run --rm load &gt; out/k6.log 2&gt;&amp;1 &amp;     # 초당 50건, 8분
+sleep 180
+curl -X POST "localhost:21081/admin/route?name=checkout&amp;err=0.05&amp;base=200"   # 결제 에러 5%, 지연 200~400ms
+sleep 300; date +%s &gt; out/end.txt
+# Grafana: http://localhost:21000 → 「실습-5 기본값 대시보드」, 「실습-5 고친 대시보드」
+# 캡처 명령은 README 에 있다(out/start.txt, out/end.txt 로 시간 범위를 정한다). 캡처를 sim/in/ 에 둔 뒤
+./sim/run.sh                     # sim/out/ 에 시뮬레이션 이미지와 색차 표
+docker compose --profile load down -v</div>
+
+<p>8분 동안 24,001건을 보냈고 그중 198건(0.82%)이 실패했어요. 결제에는 초당 10건만 가니 1분 창의 에러 비율은 5% 언저리에서 흔들려요. 그림에서 결제 선이 5.83%까지 올랐다가 끝에는 3.64%였던 것도 그래서예요. 그림의 p99가 약 443ms로 주입한 최대 지연(400ms, k6가 잰 max 401.88ms)보다 큰 건 <code>histogram_quantile</code>이 0.358~0.447초 버킷 안에서 보간한 값이기 때문이에요. 대시보드 JSON은 손으로 만들지 않고 <code>grafana/make-dashboards.py</code>가 만듭니다. 두 대시보드의 차이를 코드로 비교할 수 있게 하려고요.</p>
+
+<h2>2. 기본값 대시보드: 장애 난 선은 노랑이었다</h2>
+
+<p>기본값 대시보드는 패널 네 개에 쿼리와 단위만 넣었습니다. stat 패널의 임계값만 1%로 바꿨고 색은 그라파나 기본(초록, 빨강) 그대로예요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/aggregation/images/lab-05/before.png" alt="기본값 대시보드. 에러 비율과 p99 그래프에서 checkout 선만 노란색으로 솟아 있고, stat 패널은 checkout만 빨간 칸, 나머지는 초록 칸이며, 응답 결과 누적 그래프는 전부 초록이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 정상 색각으로 본 기본값 대시보드. 범인은 노란 선이고 빨간 선은 멀쩡하다</div>
+
+<p>먼저 걸린 건 색의 순서였어요. 5편에서 본 대로 Classic palette는 시리즈 순서대로 초록, 진한 노랑, 파랑, 주황, 빨강을 줍니다. Prometheus가 돌려준 결과가 <code>uri</code> 알파벳 순이라 <code>cart</code>가 초록, <code>checkout</code>이 노랑, <code>search</code>가 빨강이 됐어요. 정상 색각에서도 "빨간 선이 문제"라고 읽으면 틀립니다. 색은 의미가 아니라 순서로 정해졌으니까요. 게다가 라이트 테마에서 이 노랑(#E0B400, 캡처 이미지에 찍힌 값)은 5편에서 계산한 대로 흰 배경과의 대비가 1.96:1로 기본 팔레트에서 가장 낮은 색이에요. 1픽셀 노란 선이 장애를 맡았습니다.</p>
+
+<p>오른쪽 아래 누적 그래프는 색과 상관없는 문제를 보여 줍니다. 성공과 에러를 한 축에 쌓으니 초당 50건 중 0.4건인 에러가 바닥의 빨간 실선 하나로 눌렸어요. 2편이 성공은 면으로, 에러는 점으로 따로 그리라고 한 이유가 이 화면이에요.</p>
+
+<h2>3. 색각 이상의 눈으로 본 기본값 대시보드</h2>
+
+<p>같은 이미지에 시뮬레이션 셋을 걸었습니다. 1형과 2형은 5편에서 쓴 마샤두(2009) 행렬의 심한 정도 1.0, 즉 이색형이에요. 3형은 마샤두 모델이 잘 맞지 않는다는 DaltonLens의 정리를 따라 DaltonLens 라이브러리의 Brettel(1997) 구현을 썼습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/aggregation/images/lab-05/before-grid.png" alt="기본값 대시보드를 정상, 2형, 1형, 3형으로 시뮬레이션한 네 장. 2형과 1형에서는 stat 패널 다섯 칸이 모두 누런 갈색이 되어 checkout 칸만 조금 어둡고, 선 색도 대부분 누런색으로 모인다. 3형에서는 checkout 칸만 분홍빛 빨강으로 남는다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 2형과 1형의 눈에는 stat 패널 다섯 칸이 같은 갈색 계열이다</div>
+
+<p>가장 크게 달라진 건 stat 패널입니다. 정상 색각에서는 빨간 칸 하나가 바로 눈에 들어오는데, 2형 시뮬레이션에서는 다섯 칸이 전부 누런 갈색이고 결제 칸만 조금 어두워요. 숫자로 확인하려고 <code>cart</code> 칸과 <code>checkout</code> 칸의 배경색을 같은 상대 위치에서 뽑아 색차(CIE76 &Delta;E)를 쟀습니다(<code>sim/tiles.py</code>).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 색차 &Delta;E (CIE76)</div>
+  두 색을 CIE Lab 색 공간에 놓고 잰 거리입니다. 값이 클수록 다르게 보여요. 이 글에서는 절대 기준으로 쓰지 않고, 같은 계산으로 상황끼리(정상과 시뮬레이션, 팔레트와 팔레트) 비교하는 데만 씁니다.
+</div>
+
+<div class="obsv-code">stat 패널 cart 칸 vs checkout 칸의 색차 (sim/tiles.py)
+                정상     2형      1형      3형      흑백
+라이트 테마      97.3      6.4     34.5     76.2     11.9
+다크 테마       116.0     22.0     25.8     96.6     10.6</div>
+
+<p>라이트 테마의 2형에서 97.3이 6.4가 됐어요. 5편에서 팔레트 색 두 개로 계산한 110.5 &rarr; 6.5와 비슷한 정도로 줄었어요(남은 색차가 원래의 6.6%와 5.9%). 1형은 34.5가 남았는데, 그림에서도 결제 칸이 확실히 어두워요. 5편에서 말한 대로 1형에서는 빨강이 어두워지면서 밝기 차이가 생기기 때문입니다. 3형에서는 빨강이 그대로 남았고요. <span class="obsv-mark">기본값 대시보드가 가장 크게 무너지는 건 가장 흔한 2형</span>이었습니다.</p>
+
+<p>예상하지 못한 건 테마 차이였어요. 같은 대시보드를 다크 테마(URL에 <code>&amp;theme=dark</code>)로 찍으면 2형 색차가 22.0으로 세 배 넘게 큽니다. 그라파나는 테마마다 같은 이름의 색에 다른 hex를 씁니다. 같은 자리에서 뽑은 다크 테마의 빨강 칸 색은 #E21A20으로 라이트 테마(#E65960)보다 진하고 어두웠고, 그만큼 밝기 차이가 생겼어요. 그래도 흑백 색차는 두 테마 모두 11 안팎이라, 빨강과 초록이 밝기로 갈리는 정도는 작습니다.</p>
+
+<p>선 그래프는 칸보다 더 어렵습니다. 2형 시뮬레이션에서 초록(<code>cart</code>), 주황(<code>order</code>), 빨강(<code>search</code>) 세 선이 모두 비슷한 올리브색 1픽셀 선이 돼요. 솟은 선이 무엇인지 알려면 범례의 작은 색 칩과 대조해야 하는데, 그 칩도 같은 색으로 바뀌었습니다. 팔레트 색끼리 잰 값은 이렇게 나왔어요(<code>sim/simulate.py</code>, 캡처에 실제로 찍힌 라이트 테마 hex 기준, 2형·1형·3형 중 가장 가까워지는 쌍 순).</p>
+
+<div class="obsv-code">그라파나 Classic palette (라이트)   정상   2형    1형    3형   흑백
+blue - purple                       39.7   14.6    4.8   44.6    0.0
+green - red                        110.5    6.5   37.3   88.9   11.3
+semi-dark-yellow - orange           45.5    7.4   18.8   34.8    9.7
+green - orange                      95.3   38.0   16.9   74.5    4.2
+green - blue                       113.3   98.4  102.7   17.3   11.7</div>
+
+<p>흑백 열도 볼 만합니다. 파랑과 보라는 0.0으로 흑백에서 완전히 같은 회색이고, 초록과 주황도 4.2예요. 기본 팔레트는 밝기를 거의 쓰지 않고 색상만으로 시리즈를 나누고 있다는 뜻입니다.</p>
+
+<h2>4. 시뮬레이션이 맞게 돌았는지부터 확인했다</h2>
+
+<p>행렬은 저자 페이지의 표에서 옮겨 적었으니 오타가 있으면 그림 전체가 틀립니다. 그래서 같은 이미지를 DaltonLens 라이브러리의 <code>Simulator_Machado2009</code>로도 돌려 픽셀 단위로 비교했어요.</p>
+
+<div class="obsv-code">before deutan: DaltonLens Machado 와 채널 차이 최대 1, 평균 0.851
+before protan: DaltonLens Machado 와 채널 차이 최대 1, 평균 0.819
+after deutan:  DaltonLens Machado 와 채널 차이 최대 1, 평균 0.787</div>
+
+<p>0~255 값에서 최대 1 차이라 반올림 정도예요. 선형 RGB로 풀어서 곱한다는 처리 방식도 같다는 뜻입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 선형 RGB (linear RGB)</div>
+  화면에 저장된 sRGB 값은 사람 눈에 맞게 감마 곡선으로 눌러 둔 값입니다. 빛의 세기에 비례하는 값으로 되돌린 것이 선형 RGB예요. 색을 섞거나 행렬을 곱하는 계산은 이 값에서 해야 맞습니다.
+</div>
+
+<h2>5. 고친 대시보드: 색은 그대로 쓰고 단서를 더했다</h2>
+
+<p>고친 대시보드는 같은 쿼리 네 개에 아래 설정만 더했습니다. 전부 그라파나의 표준 옵션과 오버라이드예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 필드 오버라이드 (field override)</div>
+  패널 전체에 적용되는 기본 설정 위에, 이름이나 쿼리로 고른 특정 시리즈에만 다른 설정을 덮어쓰는 그라파나 기능입니다. 시리즈마다 색, 선 모양, 축 위치를 따로 줄 때 써요.
+</div>
+
+<div class="obsv-code">무엇을                      그라파나 설정
+선 다섯 개 구분             시리즈별 오버라이드: color(오카베-이토) + custom.lineStyle(실선, 파선, 점선 …)
+범례                        displayMode "table", calcs [lastNotNull, max], Last 내림차순 정렬
+임계값                      custom.thresholdsStyle "dashed+area" (1%, 300ms)
+stat 칸 상태                색 #56B4E9 / #D55E00 + 값 매핑 "✓ 정상", "✕ 초과"
+성공과 에러                  성공은 면, 에러는 custom.drawStyle "points" + 오른쪽 축</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 값 매핑 (value mapping)</div>
+  값이나 값의 범위를 정해진 글자, 색, 아이콘으로 바꿔 보여 주는 그라파나 설정입니다. 여기서는 0~1% 미만을 "✓ 정상", 1% 이상을 "✕ 초과"로 바꿨어요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/aggregation/images/lab-05/after-grid.png" alt="고친 대시보드를 정상, 2형, 1형, 3형으로 시뮬레이션한 네 장. 모든 그림에서 checkout은 굵은 실선이고 나머지는 파선과 점선이며, 범례 표 맨 위에 checkout 3.64%가 있고, stat 패널에 ✕ 초과와 ✓ 정상 글자가 보이고, 임계선 위가 칠해져 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 색이 바뀌어도 굵은 실선, 범례 표 첫 줄, ✕ 글자, 칠한 영역은 그대로다</div>
+
+<p>네 장 모두에서 "결제가 SLO를 넘었다"가 읽힙니다. 색은 여전히 바뀌어요. 2형에서 stat의 주홍 칸은 겨자색이 되고, 3형에서 임계 영역은 분홍빛이 됩니다. 그래도 칸에 "✕ 초과"가 적혀 있고, 결제 선은 혼자 굵은 실선이고, 범례 표 첫 줄에 3.64%가 있어요. 임계값은 점선과 칠한 영역으로 위치가 보이니 선이 그 안에 들어갔는지를 색 없이 판단할 수 있습니다. WCAG 1.4.1이 요구하는 "색이 유일한 수단이 아닐 것"을 그라파나 설정만으로 채울 수 있었어요.</p>
+
+<p>대가도 있었습니다. 값 매핑을 걸자 stat 칸에서 숫자가 사라졌어요. 매핑된 글자가 값 자리를 대신하기 때문입니다. 3.6%라는 숫자는 위쪽 시계열 범례 표에서 읽어야 해요. 선 다섯 개에 선 모양 다섯 개를 주니 범례 표가 오른쪽 자리를 차지해서 그래프 폭이 줄었고, x축 눈금이 하나만 남았습니다. 그리고 결제를 굵은 실선으로 고정한 건 이 실습이 결제를 주인공으로 정해 뒀기 때문이에요. 어느 선이 문제일지 모르는 대시보드라면 범례 표 정렬과 임계 영역이 그 역할을 해야 합니다.</p>
+
+<h2>6. 오카베-이토도 약한 쌍이 있다</h2>
+
+<p>고친 대시보드의 색으로 쓴 오카베-이토 팔레트도 같은 계산을 해 봤습니다.</p>
+
+<div class="obsv-code">오카베-이토                         정상   2형    1형    3형   흑백
+orange - reddishpurple              88.6   81.3   87.6   11.2    9.8
+bluishgreen - blue                  70.1   55.4   58.0   11.3   11.8
+skyblue - bluishgreen               59.5   48.8   51.9   13.0   12.1
+orange - yellow                     35.1   16.9   24.9   28.6   18.5
+bluishgreen - reddishpurple         87.5   18.1   36.2   55.7    3.1</div>
+
+<p>2형과 1형에서는 그라파나 팔레트보다 확실히 낫습니다. 가장 가까워지는 쌍도 2형에서 16.9예요(그라파나는 6.5). 대신 3형에서 주황과 자주가 11.2, 청록과 파랑이 11.3으로 붙고, 청록과 자주는 흑백에서 3.1이에요. 그림 4의 3형 시뮬레이션에서 <code>cart</code>(자주)와 <code>order</code>(주황) 파선이 비슷한 분홍으로 보이는 게 이 숫자입니다. 그 두 선을 가른 건 색이 아니라 파선의 간격이었어요. <span class="obsv-mark">팔레트는 약한 쌍을 줄여 줄 뿐 없애 주지는 않습니다.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 대시보드를 고친 뒤 캡처해서 흑백과 2형 시뮬레이션 두 장만 먼저 봐요. 이번 실습에서 가장 크게 무너진 게 2형이었고, 흑백은 밝기로 갈리는지를 보여 줘요<br>
+  &bull; Classic palette를 쓴다면 색이 시리즈 순서로 정해진다는 걸 기억해요. "빨간 선"이라고 부르지 말고 이름으로 불러요<br>
+  &bull; 상태를 나타내는 칸에는 값 매핑으로 글자를 넣되, 숫자가 사라지니 숫자는 옆 패널에 남겨 둬요<br>
+  &bull; 임계값은 Show thresholds를 "As filled regions and lines (dashed)"로 켜면 색 없이도 경계가 보여요
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 시뮬레이션은 이색형 기준의 근사다</div>
+  이번 그림은 심한 정도 1.0, 즉 이색형으로 그렸어요. 실제로 가장 흔한 2형 이상 삼색형은 이보다 가볍게 보입니다. 반대로 화면 밝기, 선 굵기, 보는 거리에 따라 실제로는 더 안 보일 수도 있어요. 시뮬레이션은 "여기가 위험하다"를 찾는 도구이지 통과 판정이 아니에요.
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>기본값 대시보드에서 장애 난 결제 선은 노랑이었고 빨간 선은 멀쩡한 검색이었다. 2형 시뮬레이션에서 stat 패널의 초록 칸과 빨강 칸은 색차 97.3에서 6.4로 모여 다섯 칸이 같은 갈색이 됐다.</b><br><br>
+  오카베-이토 색에 선 모양, 범례 표, 점선 임계 영역, "✕ 초과" 글자를 더한 대시보드는 네 가지 눈 모두에서 같은 결론을 보여 줬다. 그 대가로 stat 칸의 숫자가 사라졌고, 오카베-이토도 3형과 흑백에서 약한 쌍이 남았다. 색은 순서로 배정되고 눈마다 다르게 무너지니, 색이 사라져도 남는 단서를 하나씩 더 붙이는 것이 대시보드를 모두에게 읽히게 한다.
+</div>
+
+</div>

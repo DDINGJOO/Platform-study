@@ -1,0 +1,312 @@
+<!-- lead: 드롭위저드 Meter에 초당 100건을 30분 넣었다 빼며 m1·m5·m15를 1초마다 기록해 이론 곡선과 겹쳐 봤어요. 60초 창·마이크로미터 STEP과의 차이, 첫 tick의 함정, 리눅스 로드 애버리지까지 쟀어요. -->
+<!-- tags: Dropwizard Meter, m15_rate, 지수가중이동평균, 로드 애버리지, Micrometer STEP -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📊 메트릭 수집, 실습-5</div>
+  1편. 관측 데이터의 경제학<br>
+  2편. 프로메테우스는 왜 긁어가는가<br>
+  3편. StatsD, UDP로 쏘고 잊어라<br>
+  4편. 드롭위저드는 왜 1분·5분·15분 비율을 따로 보냈나<br>
+  5편. 수집 기술의 최전선<br>
+  실습-1. 태그 하나가 시계열을 몇 개로 늘리는지 세어 본다<br>
+  실습-2. 앱이 죽으면 pull과 push는 다르게 조용해진다<br>
+  실습-3. StatsD는 UDP 패킷을 말없이 버린다<br>
+  실습-4. 코드 없이 프로파일과 지표를 얻는다<br>
+  6편. 1분, 5분, 15분은 어디서 왔나<br>
+  <b>실습-5. 지수가중이동평균이 잊어 가는 속도를 잰다</b> &larr; 지금 이 글
+</div>
+
+<p>오래된 자바 서비스의 대시보드에서 주문 처리량 패널이 <code>m15_rate</code>를 그리고 있다고 해 볼게요. 장애가 나서 주문이 10분 동안 끊겼다가 돌아왔는데, 그래프는 그 10분 동안 천천히 내려가다가 다시 천천히 올라옵니다. 장애가 언제 시작되고 언제 끝났는지 그래프만 봐서는 알 수 없어요.</p>
+
+<p>6편에서 드롭위저드 Meter의 1분비·5분비·15분비가 그 시간 동안의 평균이 아니라 지수 감쇠의 시간 상수라고 정리했습니다. 이번에는 그 말을 숫자로 확인해요. Meter에 초당 100건을 30분 넣었다 빼면서 세 값을 1초마다 기록하고, 이론 곡선 100 &times; (1 - e^(-t/τ))와 겹쳐 봤어요. 같은 사건을 다른 방식의 "1분 비율"로도 셌고, 리눅스 커널의 로드 애버리지도 따로 쟀습니다. 숫자와 화면은 전부 이번에 실제로 돌린 결과예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; Meter의 세 값은 이론 곡선을 얼마나 정확히 따라가는가?<br>
+  &bull; 부하가 끝난 뒤 각 값이 1 밑으로 내려오기까지 얼마나 걸리는가?<br>
+  &bull; 같은 사건을 EWMA, 최근 60초 창, 마이크로미터 STEP으로 세면 무엇이 다른가?<br>
+  &bull; 부하가 들어오는 중에 만든 Meter는 왜 15분비를 5.5초 만에 채우는가?<br>
+  &bull; 누적 카운트만 남았을 때 감쇠 평균을 되살릴 수 있는가?<br>
+  &bull; 리눅스 로드 애버리지도 같은 곡선을 그리는가?
+</div>
+
+<h2>1. 실습 환경: 같은 사건을 네 군데에 기록한다</h2>
+
+<p>앱은 스프링 없이 자바 파일 하나(<code>EwmaLab.java</code>)예요. 10ms마다 정해진 건수를 <code>mark()</code>하고, 같은 건수를 네 곳에 똑같이 기록합니다. 드롭위저드 Meter 두 개와 마이크로미터 카운터 하나, 그리고 직접 센 누적 카운트예요. Meter를 두 개 둔 이유는 4절에서 나옵니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Meter (드롭위저드)</div>
+  사건이 일어날 때마다 <code>mark()</code>를 부르면 누적 건수, 평균 비율, 그리고 1분·5분·15분 지수 가중 비율(m1, m5, m15)을 들고 있는 계측 객체입니다. 비율은 초당 건수로 돌려줘요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="l5a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<g font-family="'Nanum Pen Script', cursive">
+<path d="M30 30 C 129 28, 228 32, 330 29 C 332 96, 331 162, 331 230 C 228 232, 129 228, 31 231 C 29 162, 30 96, 30 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+<text x="48" y="62" font-size="24" fill="#4a7fb5">EwmaLab 앱 (자바 21)</text>
+<text x="48" y="94" font-size="20" fill="#3d3a34">⏱️ 10ms마다 mark, 0 → 초당 100 → 0</text>
+<path d="M48 112 C 88 110, 127 114, 168 111 C 170 121, 169 130, 169 140 C 127 142, 88 138, 49 141 C 47 130, 48 121, 48 112 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2"/>
+<text x="56" y="133" font-size="19" fill="#e5533c">Meter early</text>
+<text x="180" y="133" font-size="18" fill="#8a8272">앱이 뜰 때 생성</text>
+<path d="M48 148 C 88 146, 127 150, 168 147 C 170 157, 169 166, 169 176 C 127 178, 88 174, 49 177 C 47 166, 48 157, 48 148 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+<text x="56" y="169" font-size="19" fill="#3d3a34">Meter late</text>
+<text x="180" y="169" font-size="18" fill="#8a8272">부하가 처음 올 때 생성</text>
+<path d="M48 184 C 88 182, 127 186, 168 183 C 170 193, 169 202, 169 212 C 127 214, 88 210, 49 213 C 47 202, 48 193, 48 184 Z" fill="#fffdf7" stroke="#7b5ea7" stroke-width="2"/>
+<text x="56" y="205" font-size="19" fill="#7b5ea7">STEP Counter</text>
+<text x="180" y="205" font-size="18" fill="#8a8272">마이크로미터, 1분 단위</text>
+<path d="M334.0 90.0 C 369.3 89.0, 405.2 90.4, 440.0 90.0" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" marker-end="url(#l5a1)"/>
+<text x="350" y="80" font-size="18" fill="#8a8272">1초마다</text>
+<path d="M450 60 C 523 58, 595 62, 670 59 C 672 80, 671 100, 671 120 C 595 122, 523 118, 451 121 C 449 100, 450 80, 450 60 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<text x="466" y="88" font-size="21" fill="#2e6b41">samples.csv 📄</text>
+<text x="466" y="110" font-size="18" fill="#8a8272">matplotlib로 이론 곡선과 겹침</text>
+<path d="M334.0 190.0 C 369.3 189.9, 403.8 190.9, 440.0 190.0" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" marker-end="url(#l5a1)"/>
+<text x="344" y="180" font-size="18" fill="#8a8272">/metrics, 5초</text>
+<path d="M450 160 C 523 158, 595 162, 670 159 C 672 180, 671 200, 671 220 C 595 222, 523 218, 451 221 C 449 200, 450 180, 450 160 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.4"/>
+<text x="466" y="188" font-size="21" fill="#c07f18">Prometheus → Grafana</text>
+<text x="466" y="210" font-size="18" fill="#8a8272">rate(...[1m])와 나란히</text>
+<path d="M30 262 C 250 260, 460 264, 670 261" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8" fill="none"/>
+<path d="M30 285 C 129 283, 228 287, 330 284 C 332 311, 331 338, 331 365 C 228 367, 129 363, 31 366 C 29 338, 30 311, 30 285 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+<text x="48" y="315" font-size="21" fill="#b3502f">probe 컨테이너 🔥</text>
+<text x="48" y="345" font-size="18" fill="#3d3a34">CPU 태우기 8개를 10분 켰다 끈다</text>
+<path d="M334.0 325.0 C 369.3 325.9, 404.7 325.0, 440.0 325.0" stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round" marker-end="url(#l5a1)"/>
+<text x="348" y="315" font-size="18" fill="#8a8272">10ms마다 읽기</text>
+<path d="M450 295 C 523 293, 595 297, 670 294 C 672 315, 671 335, 671 355 C 595 357, 523 353, 451 356 C 449 335, 450 315, 450 295 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+<text x="466" y="322" font-size="21" fill="#3d3a34">/proc/loadavg</text>
+<text x="466" y="344" font-size="18" fill="#8a8272">Docker VM 전체 값</text>
+<text x="30" y="392" font-size="21" fill="#b3502f">= 같은 사건을 네 가지 방식으로 세고, 커널의 로드 애버리지는 따로 잰다</text>
+</g></svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 사건을 네 가지로 세고, 커널의 로드 애버리지는 따로 잰다</div>
+
+<p>부하 계획은 환경변수 <code>SCHEDULE</code>로 줍니다. 기본값 <code>120:0,1800:100,1800:0</code>은 2분 쉬고, 30분 동안 초당 100건, 다시 30분 동안 0건이라는 뜻이에요. 앱은 1초마다 모든 값을 <code>data/samples.csv</code>에 한 줄씩 남기고, <code>/metrics</code>로도 내보내서 Prometheus가 5초마다 긁어 갑니다.</p>
+
+<div class="obsv-code">Dropwizard Metrics    4.2.40   (5.0.8 도 EWMA.java 는 같은 코드)
+Micrometer            1.17.1   (SimpleMeterRegistry, CountingMode.STEP, step 60초)
+JDK                   Eclipse Temurin 21
+Prometheus            3.15.0
+Grafana               13.2.3
+그림                  python 3.13 + matplotlib 3.11.2
+실행 환경             Docker Desktop (리눅스 6.12.76 linuxkit, CONFIG_HZ=1000, CPU 15개), Apple M5 Pro</div>
+
+<p>드롭위저드는 4.2.x를 골랐어요. 5.0.x는 패키지 이름이 <code>io.dropwizard.metrics5</code>로 바뀐 판인데, 두 판의 <code>EWMA.java</code>를 비교해 보니 패키지 선언 말고는 한 줄도 다르지 않았습니다. 기존 코드가 대부분 쓰는 <code>com.codahale.metrics</code> 쪽으로 맞췄어요. 실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/metrics-05-ewma">GitHub 저장소의 labs/observability/metrics-05-ewma</a>에 있고, Docker만 있으면 됩니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/metrics-05-ewma
+docker compose up -d --build        # 62분 동안 계획대로 돈다
+# Grafana: http://localhost:23300 → 대시보드 "EWMA 감쇠"
+
+# 62분 뒤, 그림과 숫자
+docker build -t obs-lab/metrics-05-ewma-plot:dev plot
+docker run --rm -v "$PWD:/work" obs-lab/metrics-05-ewma-plot:dev plot/plot_ewma.py data/samples.csv out/
+python3 plot/prom_ewma.py           # 5절. 스택을 내리기 전에 돌린다
+docker compose down -v</div>
+
+<h2>2. 30분 넣고 30분 뺐더니 이론 곡선과 겹쳤다</h2>
+
+<p>먼저 Grafana에서 본 세 값입니다. 초록 선이 실제로 넣은 부하예요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-05/grafana-meter.png" alt="Grafana 패널. 16시 24분에 부하가 0에서 100으로 오르자 m1은 몇 분 만에 100에 붙고, m5는 30분 뒤 거의 100, m15는 87 근처까지만 오른다. 16시 54분에 부하를 끄자 m1은 곧바로, m5는 20분쯤에 걸쳐, m15는 30분이 지나도 12 근처에 남아 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 같은 계단을 세 값이 세 가지 속도로 따라간다</div>
+
+<p>15분비는 30분 동안 같은 부하를 받고도 100에 닿지 못했어요. 부하를 끄고 30분이 지난 오른쪽 끝에서도 아직 12 근처에 있습니다. 1초마다 남긴 CSV로 같은 곡선을 그리고 이론 곡선을 점선으로 겹치면 이렇습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-05/step-response.png" alt="matplotlib 그래프. m1, m5, m15 실측 곡선 위에 이론 곡선 100 곱하기 1 빼기 e의 마이너스 t 나누기 타우를 검은 점선으로 겹쳤고, 세 곡선 모두 점선과 거의 구분되지 않는다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 점선(이론)이 실측선 밑으로 숨어서 거의 보이지 않는다</div>
+
+<p>시점별 값을 꺼내 보면 6편의 표와 맞아요. 괄호 안이 이론값입니다.</p>
+
+<div class="obsv-code">부하를 켠 뒤        m1                 m5                 m15
+   +60초        63.18 (62.90)      18.11 (17.99)       6.44 ( 6.40)
+  +300초        99.33 (99.32)      63.21 (63.15)      28.34 (28.31)
+  +900초       100.00 (100.0)      95.02 (95.01)      63.21 (63.19)
+ +1799.5초     100.00 (100.0)      99.75 (99.75)      86.47 (86.46)    ← 끄기 직전
+
+부하를 끈 뒤
+   +60초        36.82 (37.10)      81.68 (81.81)      80.89 (80.94)
+  +900초         0.00 ( 0.00)       4.97 ( 4.96)      31.81 (31.79)
+ +1795초         0.00 ( 0.00)       0.25 ( 0.25)      11.77 (11.76)
+
+1 밑으로 내려오기까지   m1 279초      m5 1,384초      m15 30분 안에 못 내려옴
+(초당 100건, 30분 켜고 30분 끔. results/plot_ewma.txt)</div>
+
+<p>각 값이 시간 상수만큼 지난 시점(m1은 60초, m5는 300초, m15는 900초)에 정확히 63.2 언저리에 있어요. 6편에서 계산한 "1분 동안 꽉 찬 부하는 1분값을 63%까지만 올린다"가 그대로 나왔습니다. m1이 1 밑으로 내려오는 데 279초, m5는 1,384초가 걸렸는데, 이론값 4.6분(276초)과 23.0분(1,381초)에 3초 차이예요. 15분비는 30분이 지나도 11.77이 남았고, 이론대로라면 1 밑으로 내려오는 건 끈 뒤 약 67분째예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: tick (드롭위저드)</div>
+  Meter가 그동안 쌓인 건수로 지수 평균을 한 번 갱신하는 동작입니다. 5초마다 한 번이고, 4.x에서는 따로 도는 스레드 없이 <code>mark()</code>나 <code>getOneMinuteRate()</code>가 불릴 때 밀린 tick을 한꺼번에 처리해요.
+</div>
+
+<p>이론과 가장 크게 벌어진 순간은 m1에서 5.66이었어요. 부하를 켜고 끈 직후입니다. Meter는 5초에 한 번만 값을 바꾸는데 이론 곡선은 연속으로 움직이니, 계단의 한 칸만큼 차이가 납니다. 3절 그림 4의 파란 선에 보이는 계단이 그 5초 tick이에요. <span class="obsv-mark">tick 사이의 계단을 빼면 Meter는 6편의 식을 그대로 계산하고 있었습니다.</span></p>
+
+<h2>3. 같은 사건, 세 가지 "1분 비율"</h2>
+
+<p>같은 사건을 다른 방식으로 센 1분 비율 둘을 나란히 놓았어요. 하나는 최근 60초 동안 늘어난 건수를 60초로 나눈 값으로, Prometheus <code>rate(...[1m])</code>와 같은 발상입니다. 다른 하나는 마이크로미터 <code>SimpleMeterRegistry</code>를 STEP 모드로 둔 카운터예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: STEP 카운트 모드 (Micrometer)</div>
+  카운터 값을 정해진 간격(step)마다 0으로 되돌리고, <code>count()</code>는 직전에 끝난 간격 동안의 건수를 돌려주는 방식입니다. 비율을 받아 가는 백엔드(푸시 방식 레지스트리)가 이 방식을 써요. 간격 경계는 앱이 뜬 시각이 아니라 벽시계 기준으로 나뉩니다.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-05/three-1m-rates.png" alt="부하를 켠 직후와 끈 직후를 나란히 그린 그래프. 60초 창 비율은 60초 동안 직선으로 오르내리고, STEP 1분은 60초 지점에서 한 번에 바뀌며, 드롭위저드 m1은 5초 계단을 그리며 천천히 따라간다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 이름은 모두 "1분"인데, 60초 뒤에 있는 위치가 셋 다 다르다</div>
+
+<div class="obsv-code">                   켠 뒤 +30초   +60초   +120초  |  끈 뒤 +30초   +60초   +120초
+드롭위저드 m1          39.29     63.18    86.45   |      60.71     36.82    13.55
+최근 60초 창           51.65     99.98   100.00   |      50.02      0.02     0.00
+마이크로미터 STEP       0.00     99.98   100.00   |     100.00      0.02     0.00</div>
+
+<p>60초 창은 60초 동안 직선으로 올라 정확히 60초 뒤에 100이 되고, 끈 뒤에도 정확히 60초 만에 0이 됩니다. 1분보다 오래된 사건은 하나도 남기지 않아요. STEP은 진행 중인 1분을 보여 주지 않고 직전 1분의 결과만 보여 주니, 켠 뒤 30초에는 아직 0이고 끈 뒤 30초에는 아직 100입니다. m1은 둘과 달리 60초 뒤에 63, 끈 뒤 60초에 37이 남아요.</p>
+
+<p>STEP 값이 부하를 켠 지 정확히 59.5초 뒤에 바뀐 건 우연이에요. 마이크로미터의 <code>StepValue</code>는 <code>clock.wallTime() / stepMillis</code>로 간격을 나누니, 경계는 앱이 뜬 시각이 아니라 벽시계의 정각 분입니다. 이번 실행은 부하 시작이 정각 분 직후였어요. 부하가 30초쯤에 시작됐다면 첫 1분의 STEP 값은 50 근처였을 겁니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "1분 비율"끼리 섞어 비교하지 않아요</div>
+  &bull; 드롭위저드에서 Prometheus로 옮기면서 <code>m1_rate</code> 패널을 <code>rate(...[1m])</code>로 바꾸면, 같은 사건에서 그래프 모양이 달라져요. 꺾이는 시점이 더 날카롭고 장애 뒤 꼬리가 사라집니다<br>
+  &bull; 마이크로미터 STEP 값은 최대 1분 늦게 보여요. 진행 중인 1분은 아직 숫자가 없어요<br>
+  &bull; 경고 임계값을 옮길 때는 숫자만 옮기지 말고, 이전 숫자가 무엇을 계산하던 값이었는지부터 확인해요
+</div>
+
+<h2>4. 부하 중에 만든 Meter는 15분비를 5.5초 만에 채운다</h2>
+
+<p>여기서 예상과 다른 결과가 하나 나왔어요. Meter를 두 개 둔 이유입니다. <code>early</code>는 앱이 뜰 때 만들어서 부하가 오기 전 2분 동안 0을 들고 있었고, <code>late</code>는 부하가 들어오는 첫 순간에 만들었어요. 운영에서 서비스가 트래픽을 받는 중에 재시작되거나, 요청이 처음 들어올 때 Meter를 지연 생성하는 경우가 <code>late</code>에 해당합니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-05/early-vs-late.png" alt="부하를 켠 뒤 10분 동안의 m15. 앱이 뜰 때 만든 Meter는 천천히 올라 10분 뒤 49 근처, 부하가 시작될 때 만든 Meter는 6초쯤에 곧바로 100이 된다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 같은 사건을 센 15분비가 언제 만들어졌느냐에 따라 5.5초 만에 100이 되기도 한다</div>
+
+<div class="obsv-code">부하를 켠 뒤 +5.5초 (late 의 첫 tick 직후)
+  early : m1 =   7.92   m5 =   1.64   m15 =   0.55
+  late  : m1 = 100.20   m5 = 100.20   m15 = 100.20</div>
+
+<p><code>late</code>의 세 값은 첫 tick에서 모두 100.20이 됐어요. 첫 5초 동안 501건이 들어왔다는 뜻입니다. 원인은 <code>EWMA.tick()</code>의 분기예요.</p>
+
+<div class="obsv-code">if (initialized) {
+    rate = oldRate + (alpha * (instantRate - oldRate));   // 두 번째 tick부터
+} else {
+    rate = instantRate;                                   // 첫 tick: 섞지 않고 그대로
+    initialized = true;
+}</div>
+
+<p>첫 tick은 평균을 0에서 출발시키지 않고 첫 5초의 비율로 바로 시작해요. <code>early</code>는 부하가 오기 전에 이미 0인 표본으로 첫 tick을 마쳤기 때문에 이론 곡선을 따라갔고, <code>late</code>는 부하 구간 안에서 첫 tick을 맞아 처음부터 100이 됐습니다. 부하를 끈 뒤에도 차이가 남았어요. 실행의 마지막 기록(끈 뒤 1,806.5초)에서 15분비는 <code>early</code>가 11.64, <code>late</code>가 13.46이었습니다. <span class="obsv-mark">15분비가 "15분 동안 쌓인 기록"처럼 보여도, Meter가 만들어진 시각에 따라 첫 5초만 보고 정해진 값일 수 있어요.</span></p>
+
+<p>6편의 시간 상수 설명이 틀린 건 아니에요. 첫 tick 이후에는 두 Meter 모두 같은 α로 섞습니다. 다만 출발점이 0이 아니라 첫 5초의 비율이라서, "1 - e^(-t/τ)로 천천히 오른다"는 그림은 부하가 오기 전에 tick을 한 번이라도 돈 Meter에서만 성립해요.</p>
+
+<h2>5. 누적 카운트만으로 감쇠 평균을 되살릴 수 있을까</h2>
+
+<p>4편의 요약은 드롭위저드의 1분비·5분비·15분비가 지수가중이동평균이라 "누적 카운트만으로는 되살릴 수가 없었고, 그래서 게시 시점에 계산해 따로 보내야 했다"고 정리했어요. 직접 해 봤습니다. Prometheus가 5초마다 긁어 간 <code>lab_events_total</code>만 꺼내, 이웃한 두 점의 차이를 5초로 나눠 "5초 비율"을 만들고, 드롭위저드와 같은 식을 표준 라이브러리 파이썬으로 돌렸어요(<code>plot/prom_ewma.py</code>). 그리고 같은 시각에 Prometheus가 긁어 간 <code>early</code> Meter의 m1/m5/m15와 비교했습니다.</p>
+
+<div class="obsv-code">python3 plot/prom_ewma.py
+
+점 745개, 62.0분
+m1:  비교한 점 738개, 평균 |차이| 0.110, 최대 |차이| 3.150 (초당 건수)
+m5:  비교한 점 738개, 평균 |차이| 0.109, 최대 |차이| 0.657
+m15: 비교한 점 738개, 평균 |차이| 0.088, 최대 |차이| 0.223
+
+  m15 +10.4분  카운트로 계산 43.382   Meter 가 낸 값 43.255
+  m15 +41.4분  카운트로 계산 45.798   Meter 가 낸 값 45.901</div>
+
+<p>평균 차이가 초당 0.1건 남짓이었어요. 남은 차이는 Meter의 tick 시각과 Prometheus가 긁는 시각이 몇 초 어긋난 데서 옵니다(최대 차이 3.15도 부하를 켜고 끈 직후 계단 한 칸이에요). 다만 이 재현이 성립한 데는 전제가 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 재현이 성립한 조건</div>
+  &bull; <b>시작 상태가 같았어요.</b> Prometheus 기록과 <code>early</code> Meter가 둘 다 부하가 없는 2분 안에서 시작했어요. 그래서 둘 다 0에서 출발했습니다<br>
+  &bull; <b>카운트가 끊기지 않았어요.</b> 62분 동안 앱 재시작도, 카운터 리셋도, 긁기 실패도 없었어요. 리셋이 있으면 그 구간을 따로 처리해야 해요<br>
+  &bull; <b>시작 상태를 모르면 앞 구간이 필요해요.</b> 0이 아닌 상태에서 계산을 시작하면, 시작값의 영향이 1% 밑으로 줄어들 때까지 시간 상수의 4.6배(m15라면 약 69분)의 카운트가 앞에 더 있어야 해요<br>
+  &bull; <b><code>late</code> Meter는 재현하지 않았어요.</b> 첫 tick이 언제였는지, 곧 Meter가 언제 만들어졌는지를 모르면 4절의 출발점을 맞출 수 없어요
+</div>
+
+<p>긁는 간격도 확인했어요. 1초 간격으로 남긴 <code>results/samples.csv</code>의 누적 카운트를 5초, 30초, 60초 간격으로 솎아서, 간격에 맞춰 α = 1 - e^(-Δt/τ)를 다시 잡고 계산했습니다(<code>plot/resample_ewma.py</code>).</p>
+
+<div class="obsv-code">python3 plot/resample_ewma.py results/samples.csv
+
+간격  5초: m1 평균 0.047 최대 1.58, m5 평균 0.055 최대 0.34, m15 평균 0.046 최대 0.11
+간격 30초: m1 평균 0.047 최대 1.30, m5 평균 0.055 최대 0.31, m15 평균 0.046 최대 0.11
+간격 60초: m1 평균 0.039 최대 1.04, m5 평균 0.052 최대 0.30, m15 평균 0.045 최대 0.10
+(Meter 값과의 차이, 초당 건수. 부하 시작 직후 30초는 뺐다)</div>
+
+<p>60초 간격으로 솎아도 차이가 늘지 않았어요. 이번 부하는 간격 안에서 비율이 일정한 계단이었기 때문입니다. 구간 안에서 비율이 일정하면 5초 tick 열두 번을 섞은 결과와 60초 한 번에 e^(-60/τ)로 섞은 결과가 같아요. 부하가 몇 초 단위로 들쭉날쭉하면 긴 간격에서는 차이가 생길 수 있는데, 그 경우는 이번에 재지 않았습니다.</p>
+
+<p>정리하면 <b>위 조건이 맞을 때 감쇠 평균은 누적 카운트로 밖에서 다시 계산해 거의 그대로 되살릴 수 있었습니다.</b> 그러니 4편 요약의 "누적 카운트만으로는 되살릴 수가 없었다"는 수학적으로는 너무 강한 말이에요. 대신 쿼리 언어 안에서는 맞는 말입니다. 4편이 다룬 2010년 무렵의 그라파이트 렌더 함수에는 지수 이동 평균이 없었고(<code>exponentialMovingAverage</code>는 2017년 2월 graphite-web PR #1792로 들어왔어요), 지금의 PromQL 함수 목록에도 없어요. 기록 규칙을 자기 자신에 되먹이는 식의 우회는 이번에 시험하지 않았습니다. 계산이 불가능했던 게 아니라, 그 백엔드의 쿼리 안에 계산해 줄 함수가 없었던 거예요.</p>
+
+<h2>6. 리눅스 로드 애버리지도 같은 곡선일까</h2>
+
+<p>드롭위저드가 상수를 가져온 원본도 쟀어요. <code>loadavg/run.sh</code>는 작은 파이썬 컨테이너를 띄워 <code>/proc/loadavg</code>를 10ms마다 읽고, 값이 바뀐 순간만 기록합니다. 2분 동안 그대로 기록하고, CPU를 태우는 무한 루프 프로세스 8개를 10분 동안 돌린 뒤 죽이고, 다시 15분 동안 기록했어요.</p>
+
+<div class="obsv-code">./loadavg/run.sh                     # 약 27분. BASE=120 ON=600 OFF=900 BURN=8, 결과는 data/loadavg.csv
+docker run --rm -v "$PWD:/work" obs-lab/metrics-05-ewma-plot:dev plot/plot_loadavg.py data/loadavg.csv out/
+python3 plot/infer_loadavg.py data/loadavg.csv</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: /proc/loadavg</div>
+  리눅스 커널이 로드 애버리지를 내보내는 파일입니다. 앞의 세 숫자가 1분·5분·15분 값이고, 네 번째는 "지금 실행 가능한 수/전체 수"예요. 컨테이너 안에서 읽어도 컨테이너가 아니라 그 커널(여기서는 Docker Desktop VM) 전체 값이 나와요.
+</div>
+
+<p>결과는 깔끔하지 않았어요. 같은 Docker VM에서 다른 실습들이 부하 시험을 돌리고 있었고, 그 부하가 그대로 섞였습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/metrics-pipeline/images/lab-05/loadavg.png" alt="리눅스 로드 애버리지 1분, 5분, 15분 값과 이론 곡선. 처음 4분은 1분 값이 이론 곡선 근처로 오르지만, 5분과 10분 무렵 다른 컨테이너의 부하가 섞여 1분 값이 26과 20까지 튀고, 끈 뒤에는 기준선 아래로 내려가기도 한다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 커널 로드 애버리지는 VM 전체 값이라 다른 컨테이너의 부하까지 같이 그린다</div>
+
+<p>태우기 전 1분 동안의 1분값 평균(기준선)은 5.79였어요. 켜고 4분쯤까지는 1분값이 이론 곡선(기준선 + 8 &times; (1 - e^(-t/τ))) 근처로 올랐지만, 5분과 10분 무렵 1분값이 26과 20까지 튀었습니다. 우리가 넣지 않은 부하예요. 그래서 이 그래프로 곡선 모양을 맞춰 보는 건 포기했습니다. 대신 잡음과 상관없이 확인할 수 있는 것 두 가지를 봤어요.</p>
+
+<p><b>첫째, 갱신 간격.</b> 두 번째 갱신부터 마지막 갱신까지 1,615.317초 동안 323번 바뀌었으니 평균 간격은 5.00098초예요. 10ms 간격으로 읽었으니 간격 하나하나는 10ms 오차가 있지만, 323번의 평균은 그보다 훨씬 정확합니다. 4.5초에서 5.5초를 벗어난 간격은 하나도 없었어요. 이 VM의 커널은 <code>CONFIG_HZ=1000</code>이라 한 틱이 1ms이고, <code>LOAD_FREQ = 5*HZ+1</code> = 5,001틱 = 5.001초예요. 6편에서 본 "+1"이 측정에서 그대로 보였습니다.</p>
+
+<p><b>둘째, 세 값에 같은 표본이 들어가는가.</b> 커널은 5초마다 센 작업 수 n 하나를 세 평균에 똑같이 넣어요. 그렇다면 1분값이 바뀐 폭만 보고 n을 거꾸로 구할 수 있습니다. n = (새 1분값 - 이전 1분값 &times; 1884/2048) / (1 - 1884/2048)이에요. 그 n을 5분값과 15분값의 식에 넣어 처음부터 다시 계산하고 실제 값과 비교했어요. 다른 컨테이너의 부하는 n에 같이 들어가니 잡음이 문제가 되지 않습니다.</p>
+
+<div class="obsv-code">python3 plot/infer_loadavg.py data/loadavg.csv
+
+구한 n: 최소 0.1, 최대 48.0, 평균 9.41 (323번)
+커널 고정소수점 상수 (2014, 2037)   5분 : 평균 |오차| 0.005, 최대 0.013
+                                    15분: 평균 |오차| 0.009, 최대 0.022
+이론값 e^(-5.001/300), e^(-5.001/900) 5분 : 평균 |오차| 0.013, 최대 0.034
+                                      15분: 평균 |오차| 0.037, 최대 0.097</div>
+
+<p>1분값에서 거꾸로 구한 표본만으로 5분값과 15분값이 소수 둘째 자리 안에서 재현됐어요. <code>/proc/loadavg</code>가 소수 둘째 자리에서 반올림한 값이라 0.005 안팎의 오차는 피할 수 없습니다. 눈에 띄는 건 15분값이에요. 커널의 고정소수점 상수 2037/2048로 계산하면 평균 오차가 0.009인데, 이론값 e^(-5.001/900)으로 계산하면 0.037로 네 배가 됩니다. 6편에서 계산한 "2037로 올림한 탓에 실제 시간 상수가 15분이 아니라 약 15.5분"이 27분짜리 기록에서 구분될 만큼 드러난 거예요. 단, 두 비교 모두 n은 커널의 1분 상수 1884/2048로 거꾸로 구했어요. 1분 상수까지 이론값으로 바꿔 비교하지는 않았으니, 이 차이는 5분·15분 상수만 바꿨을 때의 차이예요. 구한 n의 최댓값 48은 우리가 띄운 8개보다 훨씬 커서, 다른 실습의 부하가 같은 커널에 얼마나 섞였는지도 보여 줍니다.</p>
+
+<p><span class="obsv-mark">커널은 6편에서 읽은 식과 상수 그대로, 5.001초마다 같은 표본을 세 평균에 넣고 있었습니다.</span> 드롭위저드와 다른 점은 입력이에요. 커널의 n은 그 순간에 실행 중이거나 기다리는 작업 수 하나를 찍은 값이라, 다른 프로세스가 마침 그 순간에 몰리면 그대로 표본이 됩니다.</p>
+
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 감쇠 평균을 읽을 때</div>
+  &bull; 장애가 끝났는지는 m1이나 1분 로드 애버리지로 판단하지 않아요. 이번 실측에서 m1이 1 밑으로 내려오기까지 4분 39초가 걸렸어요. 끝났는지는 창 비율(<code>rate(...[1m])</code>)이나 원래 지표로 봐요<br>
+  &bull; 트래픽을 받는 중에 재시작했다면 m5, m15는 첫 5초의 비율로 시작했을 수 있어요. 배포 직후 대시보드는 m1이나 창 비율로 봐요<br>
+  &bull; 드롭위저드에서 Prometheus로 옮겼는데 옛 그래프와 비교해야 한다면, 끊김 없이 남은 누적 카운트로 같은 식을 밖에서 돌리면 돼요(간격에 맞춰 α를 다시 잡아요). 그 밖의 경우라면 창 비율로 새로 기준을 잡는 편이 단순해요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>드롭위저드 Meter의 m1/m5/m15는 5초 tick의 계단을 빼면 이론 곡선 100 &times; (1 - e^(-t/τ))를 그대로 따라갔다.</b> 시간 상수만큼 지난 시점에 세 값 모두 63.2 언저리였고, 부하를 끈 뒤 m1은 279초, m5는 1,384초 만에 1 밑으로 내려왔으며, m15는 30분이 지나도 11.77이 남았다. 같은 "1분 비율"이라도 60초 창은 60초 만에 0이 되고, STEP은 최대 1분 늦게 바뀐다.<br><br>
+  예상과 다른 곳은 출발점이었다. 부하가 들어오는 중에 만든 Meter는 첫 tick에서 평균을 섞지 않아 15분비가 5.5초 만에 100이 됐다. 그리고 시작 상태가 같고 끊김 없는 누적 카운트가 남아 있으면 감쇠 평균은 밖에서 다시 계산해 거의 그대로 되살릴 수 있었다. 안 되는 곳은 4편 시절의 그라파이트와 지금의 PromQL 같은 쿼리 언어 안이다. 감쇠 평균은 계산하기 어려운 숫자가 아니라, 어디서 언제부터 계산했는지를 같이 알아야 읽을 수 있는 숫자다.
+</div>
+
+</div>
