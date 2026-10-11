@@ -1,0 +1,80 @@
+# 트래픽 관리 실습-5: 세 겹 재시도가 부하를 몇 배로 늘리는지 센다.
+#   k6 -> Envoy:10000 -> svc-a -> Envoy:10001 -> svc-b -> Envoy:10002 -> svc-c (실패)
+# 재시도 정책은 ENVOY_MODE(envoy/<모드>.yaml)로 바꾼다: retry, retry-nocb, budget, edge-only
+# 주소는 고정 IP 로 박았다(198.18.0.0/15 는 RFC 2544 벤치마크용 대역이라 다른 사설망과 안 겹친다). 이름(DNS)으로 부르면 Envoy 를 다시 만들 때 앱이 옛 주소나 조회 실패(UnresolvedAddressException)에 걸렸다.
+networks:
+  lab:
+    ipam:
+      config: [{ subnet: 198.18.27.0/24 }]
+x-svc: &svc
+  build: ./app
+  image: obs-lab/tm-05-retry:dev
+  mem_limit: 384m
+
+services:
+  svc-a:
+    <<: *svc
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx192m
+      SERVICE_NAME: svc-a
+      DOWNSTREAM_URL: http://198.18.27.10:10001     # 자기 사이드카(a_out 리스너)를 거쳐 svc-b 로
+      BASE_MS: "2"
+    networks: { lab: { ipv4_address: 198.18.27.11 } }
+  svc-b:
+    <<: *svc
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx192m
+      SERVICE_NAME: svc-b
+      DOWNSTREAM_URL: http://198.18.27.10:10002     # b_out 리스너를 거쳐 svc-c 로
+      BASE_MS: "2"
+    networks: { lab: { ipv4_address: 198.18.27.12 } }
+  svc-c:
+    <<: *svc
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx192m
+      SERVICE_NAME: svc-c
+      BASE_MS: "5"
+      FAIL_RATE: ${C_FAIL_RATE:-1}           # 맨 아래가 이 비율로 503 을 낸다
+      LOG_ARRIVALS: ${LOG_ARRIVALS:-false}   # true 면 도착 시각을 로그로 (백오프 간격 측정)
+    networks: { lab: { ipv4_address: 198.18.27.13 } }
+
+  envoy:
+    image: envoyproxy/envoy:v1.39.3
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--concurrency", "2"]
+    volumes:
+      - ./envoy/${ENVOY_MODE:-retry}.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "${ENVOY_PORT:-27100}:10000"
+      - "${ENVOY_ADMIN_PORT:-27101}:9901"
+    depends_on: [svc-a, svc-b, svc-c]
+    networks: { lab: { ipv4_address: 198.18.27.10 } }
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_PORT:-27190}:9090"]
+    networks: [lab]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["${GRAFANA_PORT:-27130}:3000"]
+    networks: [lab]
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "--quiet", "/scripts/load.js"]
+    volumes:
+      - ./k6:/scripts:ro
+      - ./out:/out
+    networks: [lab]

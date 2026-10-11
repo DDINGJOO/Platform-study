@@ -1,0 +1,23 @@
+server:
+  tomcat:
+    threads:
+      max: ${LAB_TOMCAT_THREADS:200}
+    mbeanregistry:
+      enabled: true          # tomcat_threads_busy_threads 지표
+management:
+  server:
+    port: ${LAB_MGMT_PORT:9090}   # 지표는 요청 처리 스레드와 다른 커넥터로 뺀다(README 함정 1)
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+    tags:
+      app: ${LAB_APP:app}
+lab:
+  pattern: ${LAB_PATTERN:none}
+  downstream: ${LAB_DOWNSTREAM:http://downstream:8080}
+  cb-ignore-bulkhead: ${LAB_CB_IGNORE_BULKHEAD:false}

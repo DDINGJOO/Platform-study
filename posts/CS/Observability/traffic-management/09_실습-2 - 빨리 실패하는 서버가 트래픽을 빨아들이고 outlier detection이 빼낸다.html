@@ -1,0 +1,312 @@
+<!-- lead: 서버 다섯 대 중 한 대가 즉시 503을 내게 만들고 Envoy의 ROUND_ROBIN, P2C, FULL_SCAN이 그 서버에 얼마나 보내는지 쟀어요. outlier detection 기본값이 다섯 대에서 아무도 빼지 못한 이유와, 상한을 올린 뒤 빠지고 돌아오는 과정을 통계와 사건 로그로 정리했어요. -->
+<!-- tags: Envoy outlier detection, max_ejection_percent, 블랙홀 서버, LEAST_REQUEST, update_merge_window -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 실습-2</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  2편. 빨리 실패하는 서버는 한가해 보인다<br>
+  3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다<br>
+  4편. 요청을 한 번 더 보내면 빨라진다<br>
+  5편. 재시도는 공짜가 아니다<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  7편. 임계값을 정하지 않는 동시성 제한<br>
+  실습-1. 느린 서버 한 대를 라운드로빈과 P2C가 다르게 피한다<br>
+  <b>실습-2. 빨리 실패하는 서버가 트래픽을 빨아들이고 outlier detection이 빼낸다</b> &larr; 지금 이 글<br>
+  실습-3. 갓 뜬 인스턴스에 slow start를 걸면 무엇이 달라지나<br>
+  실습-4. Envoy 헤지 요청으로 꼬리 지연을 깎는다<br>
+  실습-5. 세 겹 재시도가 부하를 몇 배로 늘리는지 센다<br>
+  실습-6. 같은 장애에 비율 제한, 벌크헤드, 서킷 브레이커를 걸어 본다<br>
+  실습-7. 동시성 한계를 스스로 찾는 리미터를 돌려 본다
+</div>
+
+<p>서버 다섯 대 중 한 대가 데이터베이스 연결을 잃었습니다. 요청이 오면 아무 일도 하지 않고 1ms 안에 503을 돌려줘요. 고장 난 건 다섯 대 중 한 대니 실패율은 20%쯤이어야 할 것 같습니다. 그런데 로드 밸런서를 "덜 바쁜 서버로 보내는" 방식으로 바꿔 두었더니 실패율이 35%, 다른 설정에서는 87%까지 올라갔어요.</p>
+
+<p>2편은 빨리 실패하는 서버가 한가해 보여서 요청을 빨아들인다고 했고, 그 서버를 걸러 내는 장치로 Envoy의 outlier detection을 소개했어요. 이번 글은 그 두 이야기를 직접 돌려 봅니다. <b>고장 난 서버가 실제로 몫을 얼마나 가져가는지, 그리고 outlier detection이 그 서버를 언제 빼고 언제 돌려보내는지</b>를 Envoy 통계와 접근 로그로 확인했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 즉시 503을 내는 서버는 정책마다 몫을 얼마나 가져가나?<br>
+  &bull; outlier detection을 기본값으로 켜면 다섯 대 중 고장 난 한 대가 빠지나?<br>
+  &bull; 빠진 서버는 언제 돌아오고, 돌아올 때 무슨 일이 생기나?<br>
+  &bull; 고친 서버가 다시 요청을 받기까지 얼마나 걸리나?
+</div>
+
+<h2>1. 실습 환경: 다섯 대 중 한 대를 고장 낸다</h2>
+
+<p>실습-1과 같은 앱을 다섯 대 띄웠어요. 모두 40~60ms 걸려 응답하고, 동시 처리 한도는 두지 않았습니다. app-5는 실행 중에 <code>POST /chaos?fail=true</code>를 받으면 그때부터 요청을 처리하지 않고 바로 503을 돌려줘요. 재시작 없이 고장과 수리를 켜고 끌 수 있게 한 손잡이입니다. k6는 초당 200건을 Envoy로 보냅니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrB1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrB1r" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M24 118 C 56 116, 90 119, 112 117 C 114 134, 113 152, 112 168 C 88 170, 56 167, 25 169 C 23 152, 24 134, 24 118 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="68" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">k6</text>
+  <text x="68" y="158" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">200건/초</text>
+  <path d="M116 143 C 140 142, 158 144, 182 143" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M190 96 C 236 93, 280 97, 316 95 C 318 126, 317 160, 316 192 C 280 194, 236 191, 191 193 C 189 160, 190 126, 190 96 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="253" y="128" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">Envoy</text>
+  <text x="253" y="150" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">정책 + outlier</text>
+  <text x="253" y="166" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">detection</text>
+  <path d="M320 112 C 360 80, 392 52, 430 38" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M320 128 C 360 110, 392 96, 430 90" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M320 144 C 360 143, 392 142, 430 142" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M320 160 C 360 176, 392 188, 430 194" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrB1)"/>
+  <path d="M320 178 C 360 210, 392 236, 430 246" fill="none" stroke="#e5533c" stroke-width="3.2" stroke-linecap="round" marker-end="url(#arrB1r)"/>
+  <path d="M438 20 C 490 18, 540 21, 580 19 C 582 34, 581 46, 580 58 C 540 60, 490 57, 439 59 C 437 46, 438 34, 438 20 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="509" y="45" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">app-1  40~60ms</text>
+  <path d="M438 72 C 490 70, 540 73, 580 71 C 582 86, 581 98, 580 110 C 540 112, 490 109, 439 111 C 437 98, 438 86, 438 72 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="509" y="97" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">app-2  40~60ms</text>
+  <path d="M438 124 C 490 122, 540 125, 580 123 C 582 138, 581 150, 580 162 C 540 164, 490 161, 439 163 C 437 150, 438 138, 438 124 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="509" y="149" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">app-3  40~60ms</text>
+  <path d="M438 176 C 490 174, 540 177, 580 175 C 582 190, 581 202, 580 214 C 540 216, 490 213, 439 215 C 437 202, 438 190, 438 176 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="509" y="201" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">app-4  40~60ms</text>
+  <path d="M438 228 C 490 226, 540 229, 580 227 C 582 242, 581 254, 580 266 C 540 268, 490 265, 439 267 C 437 254, 438 242, 438 228 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+  <text x="509" y="253" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">💥 app-5  즉시 503</text>
+  <text x="640" y="236" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">활성 요청</text>
+  <text x="640" y="256" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">거의 늘 0</text>
+  <text x="300" y="285" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">POST /chaos?fail=true 한 줄로 고장, fail=false 로 수리</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 고장 난 서버는 일을 안 하니 Envoy가 보기에 늘 가장 한가하다</div>
+
+<div class="obsv-code">Envoy                 1.39.3
+Spring Boot           4.1.1    (Java 21)
+Prometheus 3.15.0 · Grafana 13.2.3 · k6 2.3.0
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/traffic/tm-02-outlier">GitHub 저장소(DDINGJOO/Platform-study)의 labs/traffic/tm-02-outlier</a>에 있어요. <code>run.sh</code>는 Envoy를 새 설정으로 띄우고, app-5를 고장 낸 뒤 k6를 돌리고, 끝나면 app-5를 고쳐 둡니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/traffic/tm-02-outlier
+docker compose up -d --build
+export RATE=200
+./run.sh rr                              # 각 90초
+./run.sh p2c
+./run.sh fullscan
+./run.sh p2c-od-default                  # outlier detection 기본값
+DURATION=240s ./run.sh p2c-od-20 170 &amp;&amp; mv out/p2c-od-20 out/p2c-od-20-heal   # 4장: 170초에 app-5 수리
+DURATION=120s ./run.sh p2c-od-20          # 5장: 고치지 않고 2분, 사건 로그 확인
+DURATION=120s ./run.sh p2c-od-20-nomerge  # 5장: update_merge_window 0
+RATE=600 DURATION=60s ./run.sh p2c        # 2장: 600건/초 (같은 이름의 200건/초 결과를 덮어쓴다)
+RATE=600 DURATION=60s ./run.sh fullscan
+docker compose --profile load down -v
+# 고장·수리를 손으로 할 때: curl -X POST 'localhost:26105/chaos?fail=true'</div>
+
+<h2>2. 고장 난 서버가 가져간 몫: 20%, 35%, 67%</h2>
+
+<p>outlier detection 없이 정책만 바꿔 90초씩 돌렸습니다. 표는 Envoy 접근 로그에서 첫 10초를 뺀 값이에요.</p>
+
+<div class="obsv-code">200건/초, 90초, outlier detection 없음
+                  app-5 몫     app-1~4 각각     k6 실패율
+ROUND_ROBIN        20.0%        20.0%           19.99%
+P2C                34.7%        16.1~16.8%      34.65%
+FULL_SCAN          67.4%         8.1~8.2%       67.33%</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-02/rps-four-policies.png" alt="인스턴스별 초당 요청 수. 라운드로빈 구간은 다섯 대가 모두 초당 40건, P2C 구간은 app-5가 약 70건이고 나머지가 약 33건, FULL_SCAN 구간은 app-5가 약 135건이고 나머지가 약 16건, 마지막 outlier 기본값 구간은 P2C와 같다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 왼쪽부터 라운드로빈, P2C, FULL_SCAN, P2C + outlier 기본값. 빨간 선이 고장 난 app-5다</div>
+
+<p>라운드로빈은 고장을 모르니 정확히 5분의 1을 보냈어요. 요청 수를 기준으로 고르는 두 방식은 app-5에 더 많이 보냈고, 더 꼼꼼하게 고르는 FULL_SCAN이 가장 많이 보냈습니다. <span class="obsv-mark">"덜 바쁜 서버"를 정확히 찾을수록 고장 난 서버를 더 정확히 찾아갑니다.</span></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 블랙홀 서버</div>
+  요청을 빨리 실패시켜서 로드 밸런서에게 가장 한가해 보이는 서버입니다. 몫이 정상 서버보다 커져서 전체 실패율이 고장 난 서버 비율보다 높아져요. 2편에서 AWS 글을 인용해 소개한 현상이에요.
+</div>
+
+<h3>P2C는 부하가 늘어도 35%에서 멈췄다</h3>
+
+<p>2편은 리틀의 법칙으로 "모든 서버의 활성 요청이 같아지면" 고장 서버가 열 대 중 85%를 가져간다고 계산했어요. 이번 실습 조건(정상 51ms, 고장 0.5ms 안팎, 다섯 대)으로 같은 계산을 하면 96%쯤이 나옵니다. 실측은 그보다 훨씬 낮았어요. 그래서 초당 600건으로 올려 다시 돌렸습니다.</p>
+
+<div class="obsv-code">app-5 몫           200건/초     600건/초 (60초)
+P2C                34.7%        35.9%
+FULL_SCAN          67.4%        87.0%</div>
+
+<p>FULL_SCAN은 부하를 올리자 87%로 올라갔고 P2C는 거의 그대로였어요. 둘의 차이는 동률에서 나옵니다. 초당 200건에서는 정상 서버 하나가 받는 활성 요청이 평균 1개도 안 돼서, 정상 서버도 활성 요청이 0인 순간이 많아요. FULL_SCAN은 0인 서버들 중에서 무작위로 고르니 app-5가 매번 이기지는 못합니다. 부하가 오르면 정상 서버가 0인 순간이 줄어서 app-5가 이기는 경우가 늘어나요. 2편의 계산은 이 극한을 말한 것이고, 실측은 부하가 높아질수록 그쪽으로 다가갔어요.</p>
+
+<p>P2C는 구조가 달라요. 실습-1에서 본 대로 Envoy는 후보 둘을 복원 추출하고, 두 번째 후보는 활성 요청이 <b>더 적을 때만</b> 이깁니다. app-5의 활성 요청은 거의 늘 0이니 이렇게 정리돼요.</p>
+
+<div class="obsv-code">서버 다섯 대, P2C에서 app-5가 뽑히는 경우
+  두 후보 모두 app-5                  1/5 × 1/5           =  4%   무조건
+  app-5가 첫 후보, 상대는 정상 서버   1/5 × 4/5           = 16%   동률이어도 app-5
+  app-5가 둘째 후보, 상대는 정상 서버 4/5 × 1/5           = 16%   상대가 1개 이상일 때만
+  합                                  최대 36%            (실측 34.7%, 35.9%)</div>
+
+<p>app-5가 후보에 들어가지 않으면 아무리 한가해 보여도 고를 수 없어요. 그래서 P2C에서 블랙홀의 몫에는 상한이 있습니다. 서버가 n대면 1 &minus; (1 &minus; 1/n)&sup2;이고, 열 대라면 19%예요. 2편 도입부의 "열 대 중 한 대가 고장인데 실패율 80%"는 전수 비교에 가까운 방식에서 나오는 숫자이고, P2C에서는 무작위 추출이 그 쏠림을 막아 줍니다. 그래도 정상 몫의 거의 두 배라는 사실은 남아요.</p>
+
+<h2>3. 기본값 outlier detection은 다섯 대에서 아무도 빼지 않았다</h2>
+
+<p>P2C에 outlier detection을 기본값 그대로 켰습니다. 설정은 한 줄이에요.</p>
+
+<div class="obsv-code"># envoy/p2c-od-default.yaml (일부)
+outlier_detection: {}     # consecutive_5xx 5, interval 10s, base_ejection_time 30s,
+                          # max_ejection_percent 10 이 기본값</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 제외 (ejection)</div>
+  outlier detection이 이상한 서버를 일정 시간 동안 로드 밸런싱 후보에서 빼는 일입니다. 시간이 지나면 자동으로 돌아와요(uneject). Envoy 통계에서는 <code>ejections_*</code>로 시작하는 카운터와 게이지가 이 일을 셉니다.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: max_ejection_percent</div>
+  클러스터에서 동시에 빼 둘 수 있는 서버 비율의 상한입니다. 장애가 번져 서버 대부분이 이상해 보일 때 outlier detection이 클러스터를 비워 버리지 않게 막는 안전장치예요. 기본값은 10%입니다.
+</div>
+
+<p>결과는 그림 2의 마지막 구간입니다. outlier detection이 없을 때와 똑같이 app-5가 34.7%를 받았어요. Envoy 통계를 열어 보니 감지는 됐는데 제외는 한 번도 안 됐습니다.</p>
+
+<div class="obsv-code">curl -s localhost:26901/stats | grep outlier_detection   (90초 실행 뒤, 0이 아닌 줄만)
+ejections_detected_consecutive_5xx:               1247   ← 연속 5xx 다섯 번을 1247번 감지
+ejections_detected_consecutive_gateway_failure:   1247
+ejections_detected_success_rate:                    10
+ejections_detected_failure_percentage:              10
+ejections_enforced_total:                            0   ← 실제로 뺀 횟수
+ejections_overflow:                               2514   ← 상한에 걸려 못 뺀 횟수
+ejections_active:                                    0</div>
+
+<p>2편의 주의 상자가 계산한 그대로예요. Envoy 소스(<code>outlier_detection_impl.cc</code>의 <code>ejectHost</code>)는 "(지금 빠져 있는 수 + 1) &divide; 전체 호스트 수 &times; 100"이 <code>max_ejection_percent</code> 이하일 때만 뺍니다. 다섯 대면 첫 한 대부터 20%라 기본값 10%를 넘어요. 감지할 때마다 <code>ejections_overflow</code>만 올라갔습니다. 2514는 연속 5xx 감지 1247번, gateway failure 감지 1247번, 성공률 감지 10번, 실패 비율 감지 10번을 더한 수와 같아요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "감지됨"과 "뺐음"은 다른 카운터다</div>
+  &bull; <code>ejections_detected_*</code>가 오른다고 서버가 빠진 게 아니에요. 실제로 뺀 횟수는 <code>ejections_enforced_*</code>, 지금 빠져 있는 수는 <code>ejections_active</code>예요<br>
+  &bull; 대시보드나 경보를 detected 쪽에 걸면 "outlier detection이 일하고 있다"고 착각하기 쉬워요. <code>ejections_overflow</code>가 오르고 있다면 상한에 막혀 있다는 뜻이에요<br>
+  &bull; 503은 gateway failure(502, 503, 504)로도 감지되지만 <code>enforcing_consecutive_gateway_failure</code> 기본값이 0이라 그 경로로는 빼지 않아요
+</div>
+
+<h2>4. 상한을 20%로 올리면: 30초, 60초, 90초</h2>
+
+<p><code>max_ejection_percent</code>만 20으로 올리고 4분 동안 돌렸어요. 170초에 app-5를 고쳤습니다. 이 실행은 사건 로그를 켜기 전에 돌려서 접근 로그로만 봤고, 사건 로그는 5장의 120초 실행에서 봤어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: outlier 사건 로그 (outlier detection event log)</div>
+  Envoy가 서버를 빼거나 돌려보낼 때마다 그 시각, 이유(연속 5xx 등), 실제로 뺐는지(<code>enforced</code>)를 JSON 한 줄로 남기는 로그입니다. 통계 카운터는 몇 번 일어났는지만 알려 주지만, 이 로그는 언제 일어났는지를 알려 줘요.
+</div>
+
+<div class="obsv-code"># envoy/p2c-od-20.yaml (일부)
+outlier_detection:
+  consecutive_5xx: 5            # 기본값
+  interval: 10s                 # 기본값. 복귀 판정은 이 주기에만 한다
+  base_ejection_time: 30s       # 기본값
+  max_ejection_percent: 20      # 다섯 대 중 한 대를 뺄 수 있게</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-02/rps-outlier-20.png" alt="인스턴스별 초당 요청 수. app-5는 시작 직후 0으로 떨어지고 14시 9분 25초쯤과 14시 10분 35초쯤 잠깐 초당 10건 가까이 튄 뒤 다시 0이 되며, 14시 12분 15초 이후 다른 서버와 같은 초당 40건으로 올라온다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 고장 난 app-5는 두 번 잠깐 돌아왔다가 다시 빠지고, 고친 뒤에도 35초를 더 기다렸다</div>
+
+<p>접근 로그로 app-5가 요청을 받은 구간을 뽑으면 이렇습니다(부하 시작 기준).</p>
+
+<div class="obsv-code">  시각         app-5가 받은 요청        그다음 빠져 있던 시간   설정상 제외 시간
+  0.3초        5건, 전부 503            34.7초                 30초 × 1
+  35.0초       76건, 전부 503           68.9초                 30초 × 2
+  105.1초      71건, 전부 503           99.0초                 30초 × 3
+  (170초에 app-5 수리)
+  205.1초~     1399건, 전부 200         빠지지 않음
+
+240초 동안 503: 152건 / 48000건 (0.31%)    outlier detection 없을 때는 34.7%</div>
+
+<p>제외 시간이 30초, 60초, 90초로 늘어나는 건 2편의 설명 그대로예요. 표의 34.7초, 68.9초, 99.0초는 마지막 503부터 다음 요청까지를 잰 값이라 두 가지가 섞여 있어요. 하나는 복귀 판정 주기입니다. Envoy 소스의 <code>checkHostForUneject</code>는 <code>interval</code>(10초) 주기 타이머 안에서만 불려서, 실제 제외 시간은 설정값보다 0~10초 길어질 수 있어요. 다른 하나는 5장에서 볼 1초 지연이에요. 5장의 120초 실행 사건 로그로 재면 첫 제외는 33.7초, 두 번째 제외는 정확히 60.0초였어요.</p>
+
+<p>그림 3에서 눈여겨볼 곳은 끝부분이에요. 170초에 app-5를 고쳤는데, app-5는 205초에야 돌아왔어요. 세 번째 제외의 90초가 끝나야 했기 때문입니다. <span class="obsv-mark">제외 시간이 늘어나는 장치는 계속 고장 난 서버를 오래 빼 두는 대신, 고친 서버도 그만큼 늦게 돌려보냅니다.</span> 이 실습에서는 서버 한 대의 용량을 35초 동안 쓰지 못했어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-02/ejections-active.png" alt="ejections_active 게이지가 시작 직후 1로 올라가 14시 12분 15초쯤 0으로 내려갈 때까지 한 번도 0으로 내려가지 않는다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 같은 시간의 ejections_active. 두 번의 짧은 복귀가 게이지에는 보이지 않는다</div>
+
+<p>그림 4는 같은 시간의 <code>ejections_active</code> 게이지예요. 시작부터 수리 뒤 복귀까지 1에서 한 번도 내려가지 않았습니다. 이 게이지는 outlier detection이 판정한 값이라, 복귀(UNEJECT)와 재제외(EJECT) 사이 42~70ms 동안만 0으로 내려갔어요(5장 사건 로그). 2초 간격 수집에 잡힐 수가 없는 길이예요. 그림 3에서 app-5가 1초쯤 요청을 받은 건 판정이 로드 밸런서에 늦게 반영된 시간이고, 게이지와는 별개입니다. 복귀와 재제외를 보려면 사건 로그나 앱 쪽 요청 수를 봐야 합니다.</p>
+
+<h2>5. 돌아올 때마다 503이 1초씩 더 나가는 이유</h2>
+
+<p>위 표에서 이상한 숫자가 있어요. 처음 제외될 때는 503 다섯 건 만에 빠졌는데, 돌아왔다가 다시 빠질 때는 76건, 71건을 받았습니다. 연속 5xx 기준은 그대로 5인데요. 고치지 않고 2분 돌린 실행에서 사건 로그를 봤습니다.</p>
+
+<div class="obsv-code">{"type":"CONSECUTIVE_5XX","timestamp":"...05:14:40.792Z","action":"UNEJECT",...}
+{"type":"CONSECUTIVE_5XX","timestamp":"...05:14:40.834Z","action":"EJECT","num_ejections":2,"enforced":true,...}
+
+같은 실행의 접근 로그: 다시 뺀 시각(부하 시작 35.8초) 이전 app-5 요청 5건, 이후 57건
+                       마지막 요청은 다시 뺀 시각보다 0.98초 뒤</div>
+
+<p>Envoy는 복귀 42ms 뒤에 이미 "다시 뺐다"고 기록했어요. 그런데 그 뒤로 1초 가까이 app-5에 요청을 계속 보냈습니다. 판정은 바로 났는데 로드 밸런서에 반영되는 게 늦은 거예요. 원인은 클러스터 설정 <code>common_lb_config.update_merge_window</code>였습니다. Envoy API 문서는 이 창 안에서 생긴 헬스 체크, 가중치, 메타데이터 변경을 모아 창이 끝날 때 한 번에 전달하고, 첫 변경은 바로 적용하며, 설정하지 않으면 1000ms라고 적어 둬요. 복귀가 첫 변경이라 바로 적용됐고, 42ms 뒤의 재제외는 창에 묶여 1초 뒤에 적용된 겁니다. 처음 제외될 때는 그 앞에 다른 변경이 없었으니 바로 적용됐고요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: update_merge_window</div>
+  호스트 상태 변경을 일정 시간 모아서 한 번에 워커 스레드에 전달하는 창입니다. 서버가 많은 클러스터에서 헬스 상태가 계속 바뀔 때 로드 밸런서를 매번 다시 만드는 비용을 줄이려고 둔 설정이에요.
+</div>
+
+<p>창을 0으로 끄고 같은 조건으로 2분 돌려 비교했어요. 두 설정 모두 한 번씩만 돌렸고, 돌린 시각과 호스트 부하도 달랐어요. 그래서 건수 자체보다 회차마다 503이 5건 남짓에서 멈췄다는 모양을 보면 돼요.</p>
+
+<div class="obsv-code">P2C + outlier 20%, 200건/초, 120초, app-5 고장 상태 유지
+                               app-5가 받은 503 (제외 1회차 / 2회차 / 3회차)    k6 실패율
+update_merge_window 1s(기본)   8 / 62 / 73       합 143건                        0.59%
+update_merge_window 0s         6 / 5 / 5         합 16건                         0.06%</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">복귀 직후 재제외가 언제 반영되나</text>
+  <path d="M60 110 C 250 108, 450 111, 650 109" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+  <path d="M60 230 C 250 228, 450 231, 650 229" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+  <text x="60" y="66" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">merge window 1초 (기본값)</text>
+  <text x="60" y="186" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">merge window 0</text>
+  <path d="M120 96 C 121 104, 119 116, 120 124" fill="none" stroke="#2e6b41" stroke-width="3" stroke-linecap="round"/>
+  <text x="112" y="88" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">복귀</text>
+  <path d="M150 96 C 151 104, 149 116, 150 124" fill="none" stroke="#b3502f" stroke-width="2" stroke-dasharray="3 4" stroke-linecap="round"/>
+  <text x="158" y="88" text-anchor="start" font-family="Menlo, monospace" font-size="11" fill="#b3502f">재제외 판정 +42ms</text>
+  <path d="M122 112 C 200 98, 300 98, 398 112 C 300 126, 200 126, 122 112 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <text x="260" y="117" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">503 60~70건</text>
+  <path d="M400 96 C 401 104, 399 116, 400 124" fill="none" stroke="#b3502f" stroke-width="3" stroke-linecap="round"/>
+  <text x="400" y="146" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">창이 끝나야 반영 (약 1초)</text>
+  <path d="M120 216 C 121 224, 119 236, 120 244" fill="none" stroke="#2e6b41" stroke-width="3" stroke-linecap="round"/>
+  <text x="112" y="208" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">복귀</text>
+  <path d="M150 216 C 151 224, 149 236, 150 244" fill="none" stroke="#b3502f" stroke-width="3" stroke-linecap="round"/>
+  <text x="158" y="208" text-anchor="start" font-family="Menlo, monospace" font-size="11" fill="#b3502f">재제외 +수십 ms</text>
+  <path d="M122 232 C 128 226, 142 226, 148 232 C 142 238, 128 238, 122 232 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <text x="225" y="266" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">503 5건 남짓</text>
+  <text x="500" y="212" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">판정 즉시 후보에서 빠진다</text>
+  <text x="350" y="292" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 판정은 같고, 반영 시각만 1초 차이 난다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 복귀가 창을 열고, 바로 뒤의 재제외가 그 창에 갇힌다</div>
+
+<p>창을 끄자 재제외 때 503이 다섯 건 남짓에서 멈췄고, 2분 동안 나간 503이 143건에서 16건으로 줄었어요. 다만 이 창은 서버가 많은 클러스터에서 CPU를 아끼려고 기본으로 켜 둔 장치라, 끄는 것이 늘 옳다고 보지는 않습니다. 고장이 오래가는 서버가 30초, 60초마다 1초씩 실패를 더 낸다는 사실을 알고 정하면 돼요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; outlier detection을 켤 때는 클러스터 크기부터 봐요. 열 대 미만이면 기본 <code>max_ejection_percent</code> 10%로는 한 대도 못 빼요. 상한을 올리거나 <code>always_eject_one_host</code>를 켜요<br>
+  &bull; 경보는 <code>ejections_enforced_*</code>와 <code>ejections_overflow</code>에 걸어요. detected만 보면 실제로 빠졌는지 모르고, <code>ejections_active</code>는 짧은 복귀를 놓쳐요<br>
+  &bull; 고친 서버는 남은 제외 시간이 끝나야 돌아와요. 제외가 반복된 서버라면 최대 <code>max_ejection_time</code>(기본 300초)에 판정 주기 10초까지 더해질 수 있어요<br>
+  &bull; LEAST_REQUEST를 쓴다면 outlier detection은 선택이 아니라 짝이에요. 이번 실습에서 P2C만으로는 실패율이 고장 서버 비율의 1.7배가 됐어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>즉시 503을 내는 서버 한 대가 다섯 대 중 라운드로빈에서 20%, P2C에서 35%, FULL_SCAN에서 67~87%를 가져갔어요.</b> P2C는 후보에 들어야 고를 수 있어서 블랙홀에 상한이 있고, 전수 비교는 부하가 높을수록 리틀의 법칙이 말하는 극한에 다가갔어요.<br><br>
+  outlier detection은 기본값 그대로면 다섯 대에서 한 대도 빼지 못했어요. 상한을 20%로 올리자 실패율이 0.31%로 내려갔고, 제외 시간은 30초, 60초, 90초로 늘었고 판정 주기 때문에 그보다 최대 10초 길어질 수 있었어요. 복귀 직후의 재제외는 update_merge_window 1초에 묶여 매번 70건 안팎의 503을 더 냈습니다. 고장 난 서버를 걸러 내는 장치는 켜는 것보다 실제로 빼고 있는지 확인하는 일이 더 중요합니다.
+</div>
+
+</div>

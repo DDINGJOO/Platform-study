@@ -1,0 +1,22 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+repositories { mavenCentral() }
+
+// 스프링 부트 4.1.1 에 Resilience4j 스프링 부트 모듈을 붙여 뜨는지만 본다.
+// gradle bootJar -Pmodule=spring-boot3  또는  -Pmodule=spring-boot4
+def module = findProperty('module') ?: 'spring-boot4'
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-aspectj'
+    implementation "io.github.resilience4j:resilience4j-${module}:2.4.0"
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+}

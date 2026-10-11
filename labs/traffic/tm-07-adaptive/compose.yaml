@@ -1,0 +1,62 @@
+# 트래픽 관리 실습-7: 동시성 한계를 스스로 찾는 리미터를 돌려 본다.
+# 같은 앱을 네 대 띄우고 /work 앞에 두는 것만 바꾼다: 고정 100, Gradient2(요청마다), Gradient2(1초 창), Vegas.
+x-app: &app
+  build: ./app
+  image: obs-lab/tm-07-adaptive:dev
+  mem_limit: 448m
+
+services:
+  app-fixed:
+    <<: *app
+    environment: { JAVA_TOOL_OPTIONS: -Xmx160m, LAB_LIMITER: fixed, LAB_FIXED: "100", LAB_APP: fixed }
+    ports: ["${FIXED_PORT:-28282}:8080"]
+
+  # Gradient2 를 창 없이 바로 건 경우. 과부하에서 한계가 200까지 올라 힙이 바닥났다(README 결과 2).
+  # 기본 실행에서는 빼고, 재현하려면 --profile per-request 로 띄운다.
+  app-gradient2:
+    <<: *app
+    profiles: [per-request]
+    environment: { JAVA_TOOL_OPTIONS: -Xmx160m, LAB_LIMITER: gradient2, LAB_APP: gradient2 }
+    ports: ["${G2_PORT:-28283}:8080"]
+
+  app-gradient2-windowed:
+    <<: *app
+    environment: { JAVA_TOOL_OPTIONS: -Xmx160m, LAB_LIMITER: gradient2-windowed, LAB_APP: gradient2-windowed }
+    ports: ["${G2W_PORT:-28285}:8080"]
+
+  app-vegas:
+    <<: *app
+    environment: { JAVA_TOOL_OPTIONS: -Xmx160m, LAB_LIMITER: vegas, LAB_APP: vegas }
+    ports: ["${VEGAS_PORT:-28284}:8080"]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_PORT:-28290}:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["${GRAFANA_PORT:-28200}:3000"]
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "--summary-trend-stats=avg,p(50),p(90),p(99),max", "/scripts/load.js"]
+    environment:
+      DURATION: ${DURATION:-13m}
+      RATE: ${RATE:-200}
+      TARGETS: ${TARGETS:-app-fixed,app-gradient2-windowed,app-vegas}
+    volumes:
+      - ./k6:/scripts:ro
+      - ./out:/out

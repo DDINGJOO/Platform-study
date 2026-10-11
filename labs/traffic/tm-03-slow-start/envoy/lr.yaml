@@ -1,0 +1,61 @@
+# 실습-3 Envoy 설정: LEAST_REQUEST (P2C), slow start 없음
+# 백엔드 네 대(app-1~4). app-4 는 부하 도중에 새로 뜬다. 활성 요청이 적은 쪽으로.
+admin:
+  address: { socket_address: { address: 0.0.0.0, port_value: 9901 } }
+static_resources:
+  listeners:
+  - name: ingress
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress
+          # 요청 한 건마다 한 줄: 시작 시각, 처리한 인스턴스(앱이 준 X-Instance 헤더), 상태 코드, 걸린 ms, 업스트림 주소
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                text_format_source:
+                  inline_string: "%START_TIME(%s.%3f)% %RESP(X-INSTANCE)% %RESPONSE_CODE% %DURATION% %UPSTREAM_HOST% %RESPONSE_FLAGS%\n"
+          route_config:
+            virtual_hosts:
+            - name: backend
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/work" }
+                route: { cluster: backend, timeout: 10s }
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: backend
+    type: STRICT_DNS
+    dns_refresh_rate: 1s            # 새 컨테이너의 DNS 이름이 잡히면 1초 안에 호스트로 추가
+    connect_timeout: 1s
+    load_balancing_policy:
+      policies:
+      - typed_extension_config:
+          name: envoy.load_balancing_policies.least_request
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.load_balancing_policies.least_request.v3.LeastRequest
+    # 액티브 헬스 체크: 스프링이 /actuator/health 에 200 을 줘야 트래픽을 받는다.
+    # slow start 창도 이 체크를 처음 통과한 시각부터 센다
+    health_checks:
+    - timeout: 1s
+      interval: 1s
+      no_traffic_interval: 1s     # 트래픽이 없는 클러스터는 기본 60초마다만 검사한다. 실습에서는 1초로
+      unhealthy_threshold: 2
+      healthy_threshold: 1
+      http_health_check: { path: /actuator/health }
+    load_assignment:
+      cluster_name: backend
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: app-1, port_value: 8080 } } }
+        - endpoint: { address: { socket_address: { address: app-2, port_value: 8080 } } }
+        - endpoint: { address: { socket_address: { address: app-3, port_value: 8080 } } }
+        - endpoint: { address: { socket_address: { address: app-4, port_value: 8080 } } }

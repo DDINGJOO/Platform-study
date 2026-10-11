@@ -1,0 +1,284 @@
+<!-- lead: concurrency-limits의 Gradient2와 Vegas를 고정 한계 100과 같은 과부하에 걸어 봤어요. 창 없는 Gradient2는 한계를 200까지 올리다 힙이 바닥났고, 1초 창 Gradient2는 minLimit 20에 붙어 처리량 절반만 썼어요. -->
+<!-- tags: concurrency-limits, Gradient2, 적응형 동시성 제한, load shedding, Little's Law -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 실습-7</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  2편. 빨리 실패하는 서버는 한가해 보인다<br>
+  3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다<br>
+  4편. 요청을 한 번 더 보내면 빨라진다<br>
+  5편. 재시도는 공짜가 아니다<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  7편. 임계값을 정하지 않는 동시성 제한<br>
+  실습-1. 느린 서버 한 대를 라운드로빈과 P2C가 다르게 피한다<br>
+  실습-2. 빨리 실패하는 서버가 트래픽을 빨아들이고 outlier detection이 빼낸다<br>
+  실습-3. 갓 뜬 인스턴스에 slow start를 걸면 무엇이 달라지나<br>
+  실습-4. Envoy 헤지 요청으로 꼬리 지연을 깎는다<br>
+  실습-5. 세 겹 재시도가 부하를 몇 배로 늘리는지 센다<br>
+  실습-6. 같은 장애에 비율 제한, 벌크헤드, 서킷 브레이커를 걸어 본다<br>
+  <b>실습-7. 동시성 한계를 스스로 찾는 리미터를 돌려 본다</b> &larr; 지금 이 글
+</div>
+
+<p>7편은 동시성 한계를 사람이 정하지 말고 레이턴시를 보고 스스로 찾게 하자는 이야기였습니다. 넷플릭스 concurrency-limits는 TCP 혼잡 제어에서 이 발상을 빌려 왔고, Gradient2는 최소 RTT 대신 긴 창의 평균을 기준으로 삼는다고 했어요. 설명만 들으면 하위 서비스가 느려질 때 한계가 알아서 줄고, 회복하면 다시 늘어날 것 같습니다.</p>
+
+<p>이번 글은 그걸 직접 돌려 봤어요. 같은 앱 앞에 고정 한계 100과 적응형 리미터 셋을 걸고, 하위 지연을 50ms에서 500ms로 늘려 2.5배 과부하를 만들었습니다. 결과는 예상과 꽤 달랐어요. <b>Gradient2를 그냥 걸었더니 한계가 30초 만에 200까지 올라가 앱이 힙 부족으로 멈췄고</b>, 1초 창으로 감싼 Gradient2는 반대로 <b>과부하 앞쪽 3분 20초 동안 한계를 20에 묶어 처리할 수 있는 양의 절반만 받았습니다.</b> 화면과 숫자는 전부 직접 돌린 결과예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 하위가 느려지면 적응형 한계는 얼마나 빨리, 어디까지 줄어드나?<br>
+  &bull; 고정 한계 100과 비교해 처리량과 지연은 어떻게 다른가?<br>
+  &bull; Gradient2의 "긴 창"은 실제로 얼마나 긴가?<br>
+  &bull; 하위가 회복되면 한계는 어떻게 되나?
+</div>
+
+<h2>1. 실습 환경: 하위 자원 40칸과 그 앞의 리미터</h2>
+
+<p>리미터를 시험하려면 레이턴시가 동시성에 따라 늘어나는 서버가 필요해요. 그래서 앱 안에 "하위 자원 40칸"을 만들었습니다. 요청은 40칸 중 하나를 잡고 하위 지연만큼 쓴 뒤 돌려줘요. 칸이 다 차 있으면 차례를 기다립니다. DB 커넥션 풀 40개짜리 서비스를 단순하게 만든 셈이에요. 처리 상한은 40을 지연으로 나눈 값이라, 하위가 50ms일 때 초당 800건, 500ms일 때 초당 80건입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrT71" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrT72" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M20 120 C 48 118, 78 121, 98 119 C 100 140, 99 170, 98 194 C 76 196, 48 193, 21 195 C 19 170, 20 140, 20 120 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="59" y="152" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">k6</text>
+  <text x="59" y="176" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">대마다 초당 200</text>
+  <path d="M102 156 C 122 156, 140 157, 160 156" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrT71)"/>
+
+  <path d="M168 40 C 250 37, 340 41, 420 39 C 423 120, 422 210, 421 282 C 340 285, 250 281, 169 283 C 166 210, 167 120, 168 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="294" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">같은 앱 여러 대 (/work)</text>
+  <path d="M186 84 C 240 82, 330 85, 404 83 C 405 100, 405 116, 404 130 C 330 132, 240 129, 187 131 C 185 116, 186 100, 186 84 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
+  <text x="295" y="104" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">서블릿 필터: 한계 넘으면 바로 429</text>
+  <text x="295" y="123" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#c07f18">fixed100 · G2 · G2(1초 창) · vegas</text>
+  <path d="M295 134 C 296 146, 294 156, 295 166" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#arrT71)"/>
+  <path d="M186 172 C 240 170, 330 173, 404 171 C 405 190, 405 212, 404 228 C 330 230, 240 227, 187 229 C 185 212, 186 190, 186 172 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+  <text x="295" y="194" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">하위 자원 40칸 (공정 세마포어)</text>
+  <text x="295" y="216" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#2e6b41">칸 하나를 delayMs 동안 쥔다</text>
+  <text x="295" y="262" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">처리 상한 = 40 / delayMs</text>
+
+  <path d="M430 104 C 470 100, 500 98, 530 96" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="8 8" marker-end="url(#arrT72)"/>
+  <text x="600" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">429 거절</text>
+
+  <path d="M462 160 C 520 158, 610 161, 680 159 C 682 190, 681 230, 680 262 C 610 264, 520 261, 463 263 C 461 230, 462 190, 462 160 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="571" y="186" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">하위 지연</text>
+  <text x="571" y="210" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">0~3분    50ms → 800/s</text>
+  <text x="571" y="229" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">3~10분  500ms →  80/s</text>
+  <text x="571" y="248" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">10~13분  50ms → 800/s</text>
+  <path d="M458 210 C 440 208, 425 205, 410 202" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="1 7"/>
+
+  <text x="350" y="314" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">3~10분 동안 들어오는 양(200)이 처리 상한(80)의 2.5배다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 앱 안의 하위 자원 40칸이 처리량의 상한을 정하고, 리미터는 그 앞에 선다</div>
+
+<p>k6는 앱마다 초당 200건을 13분 동안 보냅니다. 3분에 하위 지연을 500ms로 올리고, 10분에 50ms로 되돌려요. 과부하 구간의 이상적인 동시성은 리틀의 법칙(L = λW)으로 80 × 0.5 = 40, 곧 자원 칸 수입니다. 한계가 40 근처에 있으면 줄을 거의 세우지 않고 상한만큼 처리할 수 있어요.</p>
+
+<p>앱 앞에 둔 리미터는 넷플릭스 concurrency-limits 0.5.4의 서블릿 필터예요. 한계를 넘는 요청은 기다리지 않고 429로 돌려보냅니다. 앱마다 바꾼 건 한계를 정하는 알고리즘뿐이고, 알고리즘 설정은 전부 라이브러리 기본값이에요.</p>
+
+<div class="obsv-code">Limit limit = switch (kind) {
+    case "fixed"              -&gt; FixedLimit.of(100);                      // 사람이 정한 숫자
+    case "gradient2"          -&gt; Gradient2Limit.newBuilder().build();     // 요청마다 한계를 고친다
+    case "gradient2-windowed" -&gt; WindowedLimit.newBuilder()               // 1초 창의 평균으로 고친다
+                                     .build(Gradient2Limit.newBuilder().build());
+    case "vegas"              -&gt; VegasLimit.newBuilder().build();         // 알고리즘을 안 주면 쓰이는 기본값
+};
+Limiter&lt;HttpServletRequest&gt; limiter = SimpleLimiter.newBuilder().limit(limit).build();
+new ConcurrencyLimitServletFilter(limiter);   // 한계를 넘으면 429</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: WindowedLimit</div>
+  요청이 끝날 때마다 알고리즘에 RTT를 넘기지 않고, 일정 시간(기본 1초) 동안 모은 표본을 평균 내서 한 번에 넘기는 감싸개입니다. 창 하나에 표본이 10개 이상 모여야 넘겨요. 저장소 README의 gRPC 서버 예시가 Gradient2를 이렇게 감싸서 씁니다.
+</div>
+
+<div class="obsv-code">Spring Boot                 4.1.1 (Java 21, Tomcat 11.0.24)
+concurrency-limits          0.5.4 (core, servlet-jakarta)
+Prometheus / Grafana / k6   3.15.0 / 13.2.3 / 2.3.0
+앱 컨테이너                 -Xmx160m, 메모리 상한 448MiB (5절의 앞선 실행은 384MiB)</div>
+
+<p>concurrency-limits의 상태도 확인했어요. 마지막 릴리스는 0.5.4(2025년 12월 8일)이고, 그 전 릴리스는 0.5.3(2024년 11월)입니다. 메인 브랜치의 마지막 커밋은 2026년 1월 12일이고, 그 뒤 외부에서 열린 PR 여러 건이 병합되지 않은 채 남아 있어요. 저장소 메타데이터는 <code>osslifecycle=active</code>지만 버전은 아직 0.x이고 릴리스는 1년에 한 번꼴입니다. 지표도 넷플릭스의 Spectator 연동만 있어서, Micrometer로 내보내는 어댑터는 직접 만들었어요.</p>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/traffic/tm-07-adaptive">GitHub 저장소의 labs/traffic/tm-07-adaptive</a>에 있습니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/traffic/tm-07-adaptive
+docker compose up -d --build
+./scripts/phases.sh            # k6 13분 + 3분, 10분에 하위 지연 바꾸기
+python3 scripts/summarize.py   # 구간별 숫자를 Prometheus 에서 뽑는다
+# 지연은 앱마다 따로 바꾼다: fixed 28282, vegas 28284, gradient2-windowed 28285
+# curl -X POST 'localhost:28285/admin/delay?ms=500'</div>
+
+
+<h2>2. 여유 있을 때는 모두 같다</h2>
+
+<p>하위가 50ms인 처음 3분은 세 앱의 처리량과 지연이 숫자까지 같았어요. 초당 200건을 모두 성공시켰고 p99는 56ms, 처리 중인 요청(인플라이트, in-flight)은 평균 10개였습니다. 리틀의 법칙으로 계산한 200 × 0.053 = 10.6과 맞아요.</p>
+
+<div class="obsv-code">하위 50ms (14:48:35~14:51:05)
+                      200/s    p99    limit 평균(최소~최대)   in-flight
+fixed                 200.0    56ms     100 (100~100)          10.0
+gradient2-windowed    200.0    56ms      26 (24~28)            10.2
+vegas                 200.0    56ms      39 (32~63)            10.1</div>
+
+<p>적응형 한계는 20에서 출발해 대부분의 시간 동안 멈춰 있었고, 인플라이트가 잠깐 튈 때만 조금씩 올랐어요. Vegas는 과부하 직전 계단식으로 44, 63까지 올랐습니다(그림 2). 거의 움직이지 않은 이유는 7편에서 본 "app limited" 조건이에요. 인플라이트가 한계의 절반보다 작으면 두 알고리즘 모두 한계를 고치지 않습니다. 1초 창 Gradient2에는 창 안에서 가장 컸던 인플라이트가 넘어가니, 평균 10이라도 순간 값이 한계의 절반을 넘는 창에서는 한계가 조금 오를 수 있어요. 요청이 적은데 한계만 떠오르는 걸 막는 장치가 그대로 동작했습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: app limited</div>
+  들어오는 요청이 적어서 서버가 한계까지 차지 않는 상태입니다. 이때 잰 RTT로는 한계를 넓혀도 되는지 알 수 없어서, Gradient2와 Vegas는 인플라이트가 한계의 절반보다 작으면 한계를 그대로 둬요.
+</div>
+
+<h2>3. 과부하가 오자 셋이 갈라졌다</h2>
+
+<p>3분 시점에 하위를 500ms로 늘렸습니다. 과부하 7분 중 앞 30초를 뺀 6분 반의 평균이에요.</p>
+
+<div class="obsv-code">하위 500ms (14:51:35~14:58:05, 처리 상한 초당 80)
+                      200/s   429/s     p50     p99   limit 평균(최소~최대)  in-flight  자원 대기
+fixed                  79.9   120.1   1173ms  1427ms    100 (100~100)        98.4     58.3
+gradient2-windowed     56.5   143.3    514ms   866ms     32 (20~55)          31.3      3.0
+vegas                  63.6   136.5    593ms  1297ms     46 (9~111)          43.5     11.8</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-07/limit.png" alt="세 앱의 동시성 한계 그래프. fixed는 100으로 평평하고, gradient2-windowed는 과부하 시작 후 20에 머물다 14시 55분부터 55까지 오르고, vegas는 10에서 110 사이를 계속 오간다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 같은 과부하에 Gradient2(노랑)는 20에 붙었다 천천히 오르고, Vegas(파랑)는 쉬지 않고 오갔다</div>
+
+<p><b>고정 100</b>은 처리 상한인 초당 80건을 정확히 채웠어요. 대신 한계 100 중 40은 자원을 쓰고 나머지 58개 남짓은 자원 앞에서 줄을 섰습니다. 그 줄이 그대로 지연이 되어 p50이 1.2초였어요. 하위가 500ms인데 응답은 두 배 넘게 걸린 셈입니다. 7편이 말한 "한계가 실제 용량보다 높으면 서버 안에 줄이 생기고 그 줄이 레이턴시가 된다"는 경우예요.</p>
+
+<p><b>1초 창 Gradient2</b>는 반대쪽으로 틀렸습니다. 과부하가 시작되자 한계를 20까지 내렸고, 3분 20초(14:51:20~14:54:40) 동안 거기서 움직이지 않았어요. 자원 40칸 중 20칸만 쓰니 성공은 초당 40건, 처리할 수 있는 양의 절반이었습니다. 대신 줄이 없어서 p50은 하위 지연과 거의 같은 514ms였어요. 20이라는 숫자는 알고리즘이 찾은 값이 아니라 <code>Gradient2Limit</code>의 기본 <code>minLimit</code>입니다. 한계를 더 내리고 싶었는데 바닥에 막힌 거예요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-07/success.png" alt="세 앱의 초당 성공 건수 그래프. 과부하 구간에 fixed는 80, vegas는 60대, gradient2-windowed는 40에 머물다 14시 56분쯤 80으로 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 1초 창 Gradient2는 과부하 5분쯤 뒤에야 처리 상한을 채웠다</div>
+
+<p><b>Vegas</b>는 한계가 9에서 111 사이를 계속 오갔어요. 평균 인플라이트는 43.5로 이상값 40에 가장 가까웠지만, 한계가 자원 칸 수 아래로 떨어지는 순간마다 처리량을 잃어서 성공은 초당 63.6건이었습니다. 위로 튈 때는 줄이 생겨 구간 p99가 1.3초였어요. 소스를 보면 Vegas는 표본이 일정 수(한계 × 30 × 0.5~1 사이 무작위) 쌓일 때마다 지금 RTT를 새 최소 RTT로 다시 잡습니다. 그 순간마다 줄의 추정이 바뀌어서 한계가 크게 움직여요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-07/p99.png" alt="세 앱의 성공 응답 p99 그래프. 과부하 구간에 fixed는 1.4초, vegas는 1~1.4초를 오가고, gradient2-windowed는 0.54초에서 시작해 0.87초까지 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 지연은 1초 창 Gradient2가 가장 낮았지만, 한계가 오르면서 같이 올라갔다</div>
+
+<p>정리하면 <span class="obsv-mark">처리량은 고정 100이, 지연은 1초 창 Gradient2가 가장 좋았고, 둘 다를 가진 리미터는 없었어요.</span> 이 실습의 고정 100은 처리 상한을 이미 아는 사람이 고른 값이 아니라 "넉넉하게" 잡은 값이라는 점도 같이 봐야 합니다. 한계를 40으로 정했다면 고정 한계가 둘 다 이겼겠지만, 그건 하위가 500ms가 될 줄 미리 알았을 때의 이야기예요.</p>
+
+<h2>4. 긴 창은 시간이 아니라 표본 600개다</h2>
+
+<p>1초 창 Gradient2의 한계는 왜 3분 넘게 20에 붙어 있다가 올랐을까요? 리미터가 기준으로 쓰는 RTT를 같이 그려 봤습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-07/rtt.png" alt="리미터 기준 RTT 그래프. gradient2-windowed의 최근 표본은 과부하 시작과 함께 500ms로 뛰고, 긴 창 평균은 51ms에서 7분 동안 천천히 420ms까지 오른다. vegas의 최소 RTT는 500ms 근처에서 가끔 위로 튄다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 최근 표본(노랑)은 바로 500ms가 됐지만 긴 창 평균(초록)은 7분 동안 따라 올라갔다</div>
+
+<p>최근 표본은 지연을 넣자마자 501ms가 됐어요. 긴 창 평균은 51ms에서 출발해 20초마다 20ms 남짓씩 올라갔습니다. Gradient2는 1.5 × 긴 창 평균 ÷ 최근 표본을 기울기로 쓰니, 긴 창 평균이 낮은 동안은 기울기가 바닥값 0.5에 머물러 한계가 계속 깎여요. 긴 창 평균이 278ms까지 올라온 14:54:40 무렵(기울기 약 0.83)부터 한계가 바닥을 벗어났고, 14:56:20에 성공이 초당 80건에 닿았습니다. 과부하가 끝날 때 긴 창 평균은 423ms, 한계는 55였고, 회복 직후 56이 된 뒤 멈췄어요(6절).</p>
+
+<div class="obsv-code">// Gradient2Limit (0.5.4) 요약
+longRtt  = new ExpAvgMeasurement(longWindow = 600, warmup = 10)   // 계수 2 / (600 + 1)
+gradient = max(0.5, min(1.0, 1.5 × longRtt / shortRtt))
+newLimit = 0.8 × limit + 0.2 × (limit × gradient + 4)              // smoothing 0.2, queueSize 4
+newLimit = max(minLimit = 20, min(maxConcurrency = 200, newLimit))</div>
+
+<p><code>longWindow</code> 600은 시간이 아니라 표본 수예요. 1초 창으로 감싸면 1초에 표본이 하나라 600개는 10분어치예요. 지수 이동 평균의 계수가 2/601이라 시간 상수로 치면 약 300표본, 곧 5분쯤이고, 7분 동안 긴 창 평균이 천천히 따라 올라간 게 그 결과입니다. 7편이 말한 "평균은 부하가 오래 이어지면 같이 올라가 느려진 상태를 정상으로 받아들인다"가 이 그래프예요. 한계가 오를수록 자원 대기가 다시 생겨 p99도 540ms에서 870ms로 올랐습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 지수 이동 평균 (exponential moving average)</div>
+  새 값이 들어올 때마다 "기존 평균 × (1 − a) + 새 값 × a"로 고치는 평균입니다. 오래된 값의 영향이 지수적으로 줄어들어요. a = 2 / (N + 1)로 정하면 대략 최근 N개 표본의 평균과 비슷하게 움직입니다. N은 표본 개수라서, 표본이 빨리 들어오면 같은 N도 짧은 시간이 돼요.
+</div>
+
+
+<h2>5. 창 없이 걸면 한계가 200까지 올라간다</h2>
+
+<p>처음에는 <code>Gradient2Limit</code>을 <code>WindowedLimit</code> 없이 바로 걸어 봤어요. 요청마다 한계를 고치니 지연에 더 빨리 반응할 거라고 예상했어요. 이 조합은 앞의 실행보다 먼저 돌린 두 번째 실행(메모리 상한 384MiB, 과부하 4분)의 결과예요. 그 실행의 그래프는 남기지 못해서 Prometheus에서 뽑은 값을 옮깁니다.</p>
+
+<div class="obsv-code">창 없는 Gradient2, 하위 500ms 로 바꾼 시각 14:07:21
+시각       07:12  07:18  07:24  07:30  07:36  07:42  07:48
+limit         36     36     20     45     81    162    200   ← maxConcurrency 기본값
+
+과부하 구간 평균 (스크레이프가 성공한 30% 시점만의 평균. 나머지는 힙이 바닥나 지표 포트도 응답하지 못함)
+  200/s 24.5   p50 2376ms   p99 2847ms   in-flight 200   자원 대기 160
+
+14:09:56  java.lang.OutOfMemoryError: Java heap space   (http-nio-8080-Acceptor 등)
+k6: 5초 무응답 76,526건, 하위를 50ms 로 되돌린 뒤에도 응답 없음</div>
+
+<p>한계는 한 번 20으로 내려갔다가 27초 만에 최대값 200에 닿았어요. 리미터가 없는 것과 같아진 거예요. 200개가 자원 앞에 줄을 서니 지연이 2초를 넘었고, 2분 반 뒤에는 힙 <code>OutOfMemoryError</code>가 났습니다. 줄 선 요청과 쌓인 연결이 힙을 채운 것으로 보지만 힙 덤프로 확인하지는 않았어요(<code>-Xmx160m</code>로 작게 잡은 힙이에요). 요청을 받는 Acceptor 스레드가 이 오류로 죽어서, 하위가 회복된 뒤에도 앱은 응답하지 못했어요. JVM 프로세스는 살아 있었고 컨테이너도 OOM으로 종료되지 않아서(<code>OOMKilled false</code>), 상태만 보면 정상으로 보였어요.</p>
+
+<p>이 조합은 기본 실행에서 빼고 프로필로만 띄우게 해 뒀어요. 다시 보려면 이렇게 돌립니다.</p>
+
+<div class="obsv-code">docker compose --profile per-request up -d --build
+PORTS="28282 28283 28285 28284" TARGETS=app-fixed,app-gradient2,app-gradient2-windowed,app-vegas ./scripts/phases.sh
+APPS=fixed,gradient2,gradient2-windowed,vegas python3 scripts/summarize.py</div>
+
+<p>원인은 4절의 그 600이에요. 창 없이 걸면 요청 하나가 표본 하나입니다. 초당 80~200건이 끝나는 상황에서 표본 600개는 몇 초 분량이에요. 긴 창 평균이 최근 표본을 몇 초 만에 따라잡으니 1.5 × 긴 창 평균 ÷ 최근 표본이 금방 1을 넘고, 기울기는 1에 붙습니다. 그러면 식에 남는 건 <code>+ queueSize</code>뿐이라 한계는 계속 자라요. <span class="obsv-mark">"긴 창"이 얼마나 긴지는 표본이 얼마나 자주 들어오느냐가 정합니다.</span> 7편은 Gradient2가 긴 창 평균을 쓴다고만 했는데, 이 실습에서는 그 길이가 감싸는 방식에 따라 몇 초에서 10분까지 달라졌어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 기본값 두 개가 결과를 정했다</div>
+  &bull; Gradient2의 <code>minLimit</code> 기본 20: 1초 창 Gradient2는 과부하 동안 이 바닥에 붙어 있었어요. 자원이 40칸이니 처리량이 절반이 됐습니다. 자원이 20칸보다 작은 서비스라면 반대로 이 바닥이 너무 높아서 줄을 막지 못해요<br>
+  &bull; Gradient2의 <code>maxConcurrency</code> 기본 200: 창 없는 Gradient2가 닿은 천장입니다. Vegas는 바닥이 1, 천장이 1000이라 이 실습에서 9까지 내려갔어요. Tomcat 요청 처리 스레드 기본값과 같은 200이라, 이 천장에 닿으면 리미터가 없는 것과 차이가 없어요<br>
+  &bull; 바닥과 천장은 사람이 정하는 숫자입니다. 적응형 리미터도 그 범위 안에서만 적응해요
+</div>
+
+<h2>6. 회복은 빨랐고, 한계는 그 자리에 멈췄다</h2>
+
+<p>10분 시점에 하위를 50ms로 되돌리자 세 앱 모두 다음 집계 구간부터 초당 200건, p99 56ms로 돌아왔어요. 1초 창 Gradient2의 긴 창 평균도 빨리 내려왔습니다. 긴 창 평균이 최근 표본의 두 배를 넘으면 평균을 매번 5%씩 깎는 보정이 소스에 있어서, 423ms이던 값이 40초 만에 99ms가 됐어요.</p>
+
+<div class="obsv-code">하위 50ms 회복 (14:58:35~15:01:05)
+                      200/s    p99    limit        in-flight
+fixed                 200.0    56ms   100          10.0
+gradient2-windowed    200.0    56ms    56 (고정)   10.3
+vegas                 200.0    56ms    61 (고정)   10.2</div>
+
+<p>적응형 한계는 56과 61에서 멈췄어요. 인플라이트 10이 한계의 절반보다 작아서 두 알고리즘 모두 한계를 고치지 않습니다. 회복 뒤의 한계는 마지막 과부하가 남긴 값이에요. 다음 과부하가 오면 이 값에서 출발합니다.</p>
+
+<h2>7. 지표를 붙이며 만난 것들</h2>
+
+<p>라이브러리 지표를 Micrometer로 옮기면서 세 가지를 만났어요.</p>
+
+<p><b>첫째, 한계 게이지가 NaN이 됐습니다.</b> 라이브러리는 <code>registry.gauge("limit", this::getLimit)</code>라는 식으로 메서드 참조를 넘기는데, Micrometer 게이지는 기본으로 대상을 약한 참조로 잡아요. 람다가 GC로 사라지자 값이 NaN이 됐습니다. 어댑터에서 <code>strongReference(true)</code>로 잡아 해결했어요. 이 게이지에는 리미터 이름 태그도 없어서, 한 앱에 리미터가 둘이면 같은 이름으로 겹칩니다. 이름 태그를 붙이자는 PR(#235)이 열려 있어요.</p>
+
+<p><b>둘째, 거절된 요청은 <code>uri="UNKNOWN"</code>으로 기록됩니다.</b> 필터가 스프링 MVC의 디스패처 서블릿보다 앞에서 429를 돌려주니 경로 템플릿이 정해지지 않아요. <code>http_server_requests_seconds_count{uri="/work"}</code>로 거절을 세면 0이 나옵니다. 라이브러리의 <code>call</code> 카운터(<code>status="rejected"</code>)와는 일치했어요.</p>
+
+<p><b>셋째, <code>min_rtt</code>라는 지표가 최소값이 아닙니다.</b> Gradient2는 이 이름으로 긴 창 평균을 기록하고, 방금 들어온 표본은 <code>min_window_rtt</code>로 기록해요. Vegas의 <code>min_rtt</code>는 최소 RTT(<code>rtt_noload</code>)지만, 3절에서 본 대로 주기적으로 지금 RTT로 다시 잡기 때문에 엄밀한 최소값은 아니에요. 그림 5의 범례에 "실제로는 긴 창 평균"이라고 적은 이유예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 약한 참조 (weak reference)</div>
+  가비지 컬렉터가 대상을 치우는 걸 막지 않는 참조입니다. Micrometer는 게이지가 앱 객체의 수명을 늘리지 않도록 기본으로 약한 참조를 써요. 그래서 다른 곳에서 붙잡고 있지 않은 람다를 게이지 대상으로 주면, GC 뒤에 값이 NaN이 됩니다.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 적응형 리미터를 넣기 전에</div>
+  &bull; Gradient2는 <code>WindowedLimit</code>으로 감싸서 써요. 감싸지 않으면 "긴 창"이 트래픽에 따라 몇 초로 줄어요<br>
+  &bull; 한계의 바닥과 천장은 서비스의 자원(커넥션 풀, 스레드)에 맞춰 직접 정해요. Gradient2의 기본값 20과 200은 이 실습에서 각각 처리량 절반과 리미터 무력화로 이어졌어요<br>
+  &bull; 지표 엔드포인트는 앱 포트와 떼어 두고, 한계와 함께 인플라이트, 거절 수, 자원 대기를 같이 봐요. 한계만 보면 20에 붙은 게 정상인지 바닥에 막힌 건지 구분이 안 돼요<br>
+  &bull; 경고는 한계 값이 아니라 거절 비율에 걸어요. 이 실습의 거절은 고정이든 적응형이든 과부하 동안 초당 120~143건으로 비슷했어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>하위 지연이 10배가 된 과부하에서, 고정 한계 100은 처리량을 다 채우는 대신 지연이 두 배가 됐고, 1초 창 Gradient2는 지연을 하위 수준으로 지키는 대신 과부하 앞쪽 3분 20초 동안 처리량을 절반만 썼다.</b> Vegas는 그 사이를 쉬지 않고 오갔고, 창 없이 건 Gradient2는 한계를 200까지 올리다 힙이 바닥나 멈췄다.<br><br>
+  차이를 만든 건 알고리즘의 이름보다 기준 RTT가 얼마나 빨리 따라오느냐와 기본값 두 개였다. 긴 창은 표본 600개라서 감싸는 방식이 그 길이를 정했고, Gradient2의 기본값 minLimit 20과 maxConcurrency 200이 적응의 바닥과 천장이 됐다. 임계값을 정하지 않는 리미터에도 사람이 정할 숫자는 남는다.
+</div>
+
+</div>

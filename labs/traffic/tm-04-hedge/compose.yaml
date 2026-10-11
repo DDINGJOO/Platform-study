@@ -1,0 +1,63 @@
+# 트래픽 관리 실습-4: Envoy 헤지 요청으로 꼬리 지연을 깎는다.
+# 백엔드 세 대(같은 이미지) 앞에 Envoy 하나. 관측은 Envoy 통계와 앱 Micrometer 지표를 Prometheus 로 긁어 Grafana 로 본다.
+x-backend: &backend
+  build: ./app
+  image: obs-lab/tm-04-hedge:dev
+  mem_limit: 384m
+  environment: &backend-env
+    JAVA_TOOL_OPTIONS: -Xmx192m
+    BASE_MS: ${BASE_MS:-5}            # 모든 요청이 기본으로 자는 시간
+    JITTER_MS: ${JITTER_MS:-5}        # 여기에 [0, JITTER_MS) 를 더한다
+    SLOW_RATIO: ${SLOW_RATIO:-0.02}   # 이 비율의 요청은
+    SLOW_MS: ${SLOW_MS:-300}          # 이만큼 더 잔다 (가끔 느린 백엔드)
+    FAIL_RATE: ${FAIL_RATE:-0}        # 이 비율의 요청은 503
+    LOG_ARRIVALS: ${LOG_ARRIVALS:-false}
+    TOMCAT_THREADS: ${TOMCAT_THREADS:-200}
+
+services:
+  backend-1:
+    <<: *backend
+    environment: { <<: *backend-env, SERVICE_NAME: backend-1 }
+  backend-2:
+    <<: *backend
+    environment: { <<: *backend-env, SERVICE_NAME: backend-2 }
+  backend-3:
+    <<: *backend
+    environment: { <<: *backend-env, SERVICE_NAME: backend-3 }
+
+  envoy:
+    image: envoyproxy/envoy:v1.39.3
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--concurrency", "2"]
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "${ENVOY_PORT:-27000}:10000"
+      - "${ENVOY_ADMIN_PORT:-27001}:9901"
+    depends_on: [backend-1, backend-2, backend-3]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_PORT:-27090}:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["${GRAFANA_PORT:-27030}:3000"]
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "--quiet", "/scripts/load.js"]
+    volumes:
+      - ./k6:/scripts:ro
+      - ./out:/out

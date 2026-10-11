@@ -1,0 +1,319 @@
+<!-- lead: 서비스 세 층이 각자 재시도를 2번씩 하면 맨 아래는 정말 27배를 받는지 Envoy 통계로 셌어요. 순차로는 정확히 27배였지만 동시에 보내면 기본 재시도 상한 3이 배율을 정했고, 재시도 예산은 그 기본값과 같거나 더 느슨했어요. -->
+<!-- tags: Envoy, 재시도 증폭, retry_budget, 재시도 백오프, 서킷 브레이커 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 실습-5</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  2편. 빨리 실패하는 서버는 한가해 보인다<br>
+  3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다<br>
+  4편. 요청을 한 번 더 보내면 빨라진다<br>
+  5편. 재시도는 공짜가 아니다<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  7편. 임계값을 정하지 않는 동시성 제한<br>
+  실습-1. 느린 서버 한 대를 라운드로빈과 P2C가 다르게 피한다<br>
+  실습-2. 빨리 실패하는 서버가 트래픽을 빨아들이고 outlier detection이 빼낸다<br>
+  실습-3. 갓 뜬 인스턴스에 slow start를 걸면 무엇이 달라지나<br>
+  실습-4. Envoy 헤지 요청으로 꼬리 지연을 깎는다<br>
+  <b>실습-5. 세 겹 재시도가 부하를 몇 배로 늘리는지 센다</b> &larr; 지금 이 글<br>
+  실습-6. 같은 장애에 비율 제한, 벌크헤드, 서킷 브레이커를 걸어 본다<br>
+  실습-7. 동시성 한계를 스스로 찾는 리미터를 돌려 본다
+</div>
+
+<p>서비스 셋이 한 줄로 이어져 있고, 맨 아래 서비스가 모든 요청에 503을 돌려주기 시작했어요. 세 층 모두 "실패하면 두 번 더 해 보자"는 재시도 설정을 갖고 있습니다. 5편에서 계산한 대로라면 사용자 요청 하나에 맨 아래는 3 × 3 × 3 = 27번 불려야 해요.</p>
+
+<p>이번 글은 그 27을 <b>Envoy 통계로 직접 셉니다</b>. 결론부터 말하면 27은 한 번에 하나씩 보낼 때, 그리고 Envoy의 재시도 상한을 풀었을 때만 정확히 나왔어요. 초당 100건을 보내자 3.3배가 됐는데, 그건 우리가 건 브레이크 덕분이 아니라 Envoy가 원래 갖고 있던 기본값 덕분이었습니다. 초당 100건에서는 재시도 예산을 걸어도 배율이 기본값과 같았고요. 왜 그런지를 따라갑니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 층마다 재시도 2번이면 맨 아래는 정말 27배를 받나?<br>
+  &bull; Envoy는 재시도 사이에 얼마나 기다리나? 문서와 실제가 같나?<br>
+  &bull; 요청이 동시에 몰리면 배율은 어떻게 달라지고, 무엇이 그걸 막나?<br>
+  &bull; 재시도 예산(<code>retry_budget</code>)은 기본값보다 얼마나 더 막아 주나?
+</div>
+
+<h2>1. 실습 환경: 세 층, Envoy 하나, 리스너 셋</h2>
+
+<p>스프링 부트 앱 하나를 세 번 띄웠어요. <code>svc-a</code>는 <code>svc-b</code>를, <code>svc-b</code>는 <code>svc-c</code>를 부르고, 받은 상태 코드를 그대로 위로 돌려줍니다. <code>svc-c</code>는 5ms 자고 무조건 503을 내요. 서비스 사이의 호출은 전부 Envoy를 거치고, Envoy가 재시도를 합니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 사이드카 (sidecar)</div>
+  서비스 옆에 붙어 그 서비스의 송수신을 대신 처리하는 프록시예요. 서비스는 사이드카 주소로 요청을 보내고, 재시도와 타임아웃은 사이드카 설정이 정합니다. 서비스 메시에서는 서비스마다 Envoy를 하나씩 붙여요.
+</div>
+
+<p>원래는 서비스마다 Envoy를 하나씩 붙여야 하지만, 이 실습은 Envoy 하나에 리스너 셋(포트 10000, 10001, 10002)과 클러스터 셋을 두어 세 사이드카를 대신했어요. 재시도 횟수도, 재시도 상한도 클러스터마다 따로 세기 때문에 셈은 같습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrR1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M14 70 C 40 68, 64 71, 80 69 C 82 86, 81 100, 80 114 C 62 116, 38 113, 15 115 C 13 100, 14 86, 14 70 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="47" y="98" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">k6</text>
+  <path d="M84 92 C 94 91, 102 93, 110 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrR1)"/>
+  <path d="M116 66 C 150 64, 180 67, 200 65 C 202 84, 201 102, 200 118 C 180 120, 148 117, 117 119 C 115 102, 116 84, 116 66 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="158" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">:10000</text>
+  <text x="158" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5">edge 재시도</text>
+  <path d="M204 92 C 212 91, 218 93, 226 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrR1)"/>
+  <path d="M232 70 C 256 68, 276 71, 292 69 C 294 86, 293 100, 292 114 C 274 116, 254 113, 233 115 C 231 100, 232 86, 232 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="262" y="98" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">svc-a</text>
+  <path d="M296 92 C 304 91, 310 93, 318 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrR1)"/>
+  <path d="M324 66 C 356 64, 384 67, 404 65 C 406 84, 405 102, 404 118 C 384 120, 354 117, 325 119 C 323 102, 324 84, 324 66 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="364" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">:10001</text>
+  <text x="364" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5">a_out 재시도</text>
+  <path d="M408 92 C 416 91, 422 93, 430 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrR1)"/>
+  <path d="M436 70 C 460 68, 480 71, 496 69 C 498 86, 497 100, 496 114 C 478 116, 458 113, 437 115 C 435 100, 436 86, 436 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="466" y="98" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">svc-b</text>
+  <path d="M500 92 C 508 91, 514 93, 522 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrR1)"/>
+  <path d="M528 66 C 560 64, 588 67, 608 65 C 610 84, 609 102, 608 118 C 588 120, 558 117, 529 119 C 527 102, 528 84, 528 66 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="568" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">:10002</text>
+  <text x="568" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5">b_out 재시도</text>
+  <path d="M612 92 C 620 91, 626 93, 632 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrR1)"/>
+  <path d="M636 70 C 652 68, 668 71, 688 69 C 690 86, 689 100, 688 114 C 668 116, 652 113, 637 115 C 635 100, 636 86, 636 70 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="662" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">svc-c</text>
+  <text x="662" y="108" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">503</text>
+  <path d="M116 40 C 300 37, 450 42, 608 39" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="362" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">파란 상자 셋은 실제로는 Envoy 프로세스 하나(리스너 셋, 클러스터 셋)</text>
+  <text x="262" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">× 3</text>
+  <text x="466" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">× 9</text>
+  <text x="662" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">× 27</text>
+  <path d="M60 186 C 250 183, 450 188, 660 185" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="350" y="218" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">층마다 retry_on: 5xx, num_retries: 2 (시도 3번)</text>
+  <text x="350" y="244" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">모드: retry / retry-nocb / budget / edge-only</text>
+  <text x="350" y="280" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 사용자 요청 하나에 svc-c 는 최대 3 × 3 × 3 번</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 재시도는 층을 지날 때마다 곱해진다</div>
+
+<p>재시도 설정은 Envoy 설정 파일을 바꿔 가며 네 가지로 돌렸어요.</p>
+
+<div class="obsv-code">retry        세 층 모두 retry_on: 5xx, num_retries: 2. 서킷 브레이커는 기본값
+retry-nocb   위와 같고 클러스터의 동시 재시도 상한 max_retries 를 10000 으로
+budget       위와 같고 retry_budget(budget_percent 20%, min_retry_concurrency 3)
+edge-only    맨 위(edge -> svc-a) 한 층만 재시도 2번</div>
+
+<div class="obsv-code">Envoy 1.39.3, Spring Boot 4.1.1 (Java 21), Prometheus 3.15.0, Grafana 13.2.3, k6 2.3.0
+실행 환경: Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/traffic/tm-05-retry">GitHub 저장소의 labs/traffic/tm-05-retry</a>에 있어요. <code>run.sh</code>가 모드에 맞춰 Envoy를 다시 띄우고, 측정 직전에 Envoy 카운터를 0으로 돌린 뒤(<code>POST /reset_counters</code>), 부하가 끝나면 층별로 보낸 요청 수를 셉니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/traffic/tm-05-retry
+docker compose up -d --build
+./run.sh retry seq-retry VUS=1 ITERATIONS=200      # 한 번에 하나씩 200건
+# Grafana: http://localhost:27130 → 대시보드 「실습-5 재시도 증폭」</div>
+
+<h2>2. 한 번에 하나씩 보내면 정확히 27배</h2>
+
+<p>k6 사용자 한 명이 요청 200개를 차례로 보냈어요. 앞 요청의 응답을 받아야 다음 요청을 보냅니다.</p>
+
+<div class="obsv-code">seq-retry: reqs=200 failed=100.0% p50=728 p99=858 max=868 (ms)
+사용자 요청(edge 가 받은 것) 200
+구간                  보낸 요청      배율     재시도  overflow     횟수 소진
+edge -> svc-a         600    3.00     400         0       200
+svc-a -> svc-b       1800    9.00    1200         0       600
+svc-b -> svc-c       5400   27.00    3600         0      1800</div>
+
+<p>3, 9, 27이 한 건의 오차도 없이 나왔어요. <code>횟수 소진</code>(<code>upstream_rq_retry_limit_exceeded</code>)은 재시도 2번을 다 쓰고도 실패한 요청 수입니다. 사용자 요청 200개가 전부 실패했으니, <code>svc-b</code>가 받은 1,800건이 각각 재시도 2번을 다 쓰고 실패해서 맨 아래에서 1,800번 소진이 일어났어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 재시도 증폭 (retry amplification)</div>
+  층마다 따로 재시도하면 아래층이 받는 요청 수가 층을 지날 때마다 곱해지는 현상이에요. 시도 k번을 n층에서 하면 맨 아래는 최대 k<sup>n</sup>배를 받습니다.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-05/amplification-log.png" alt="로그 눈금 그래프. 사용자 요청 초당 약 1.4건, svc-a 약 4건, svc-b 약 12건, svc-c 약 37건이 네 줄로 나란히 평평하게 이어진다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 로그 눈금에서 네 선의 간격이 같다. 층마다 똑같이 세 배다</div>
+
+<p>앱의 Micrometer 카운터로 그린 그래프예요. 서비스가 실제로 받은 요청을 세는 쪽입니다. 초당 1.4건이던 사용자 요청이 맨 아래에서는 37건이 됐어요. 사용자 응답은 p50이 728ms였는데, 실패를 돌려주기까지 재시도 사이 대기가 쌓였기 때문이에요. 맨 아래가 5ms 만에 실패하는데도 위에서는 0.7초를 기다렸습니다.</p>
+
+<h2>3. 재시도 사이 대기: 문서의 공식과 실제가 다르다</h2>
+
+<p>0.7초가 어디서 왔는지 보려고 <code>svc-c</code>에 요청이 도착한 시각을 로그로 남겼어요. 같은 요청의 재시도는 <code>x-request-id</code>가 같아서 시도 간격을 잴 수 있습니다. 간격에는 <code>svc-c</code>의 처리 시간 약 5ms가 들어 있어요. 이 측정은 2절과 같은 조건(<code>retry</code> 모드, 순차 200건)으로 따로 돌린 실행이고, 그 실행의 p50은 732ms였어요.</p>
+
+<div class="obsv-code"># retry 모드로 한 번 돌린 뒤(모드가 바뀌면 run.sh 가 svc-c 를 기본값으로 다시 띄운다)
+LOG_ARRIVALS=true docker compose up -d --no-deps svc-c
+./run.sh retry seq-gap VUS=1 ITERATIONS=200
+docker compose logs --since 5m svc-c | python3 backoff.py
+
+1번째 시도 -> 2번째 시도 (1800건): 최소 5.6ms, 중앙값 19.8ms, 최대 39.8ms
+   10ms 구간: 0~10:210 10~20:712 20~30:707 30~40:171
+2번째 시도 -> 3번째 시도 (1800건): 최소 6.0ms, 중앙값 32.0ms, 최대 64.6ms
+   10ms 구간: 0~10:98 10~20:369 20~30:362 30~40:356 40~50:330 50~60:276 60~70:9</div>
+
+<p>처음 이 명령을 돌렸을 때는 1,808건이 나왔어요. 실행 직전에 손으로 보낸 워밍업 요청 20개의 마지막 묶음 8개(와 시도 하나만 찍힌 1개)가 <code>--since</code> 창에 섞인 거예요. 위 숫자는 로그에서 그 앞부분 25줄을 빼고 다시 센 값입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 백오프와 지터 (backoff, jitter)</div>
+  백오프는 재시도 전에 기다리는 시간이고, 실패가 거듭될수록 늘립니다. 지터는 그 시간에 섞는 무작위 값이에요. 0부터 상한까지에서 고르게 고르는 방식을 Full Jitter라고 부르고, Envoy가 이 방식입니다.
+</div>
+
+<p>5편은 Envoy 문서를 따라 "N번째 재시도는 [0, (2<sup>N</sup> − 1) × 25ms) 중 무작위"라고 적었어요. 이 공식이면 두 번째 재시도는 0~75ms를 기다립니다. 그런데 측정한 두 번째 간격은 64.6ms가 최대였고, 60ms를 넘은 건 1,800건 중 9건뿐이었어요. 첫 번째 간격(5.6~39.8ms)을 보면 대기 위에 처리와 왕복이 6~15ms쯤 얹혀 있으니, 두 번째 간격의 최대 64.6ms는 대기 0~50ms와 맞고 0~75ms와는 맞지 않아요.</p>
+
+<p>Envoy 1.39.3 소스를 열어 보면 이유가 보여요. <code>JitteredExponentialBackOffStrategy</code>는 이번 상한으로 무작위 값을 고른 뒤, 다음 상한을 두 배로 늘립니다.</p>
+
+<div class="obsv-code">// source/common/common/backoff_strategy.cc (v1.39.3)
+uint64_t JitteredExponentialBackOffStrategy::nextBackOffMs() {
+  const uint64_t backoff = next_interval_;      // 처음엔 base(25ms)
+  next_interval_ = (next_interval_ &lt; doubling_limit_) ? (next_interval_ * 2u) : max_interval_;
+  return (random_.random() % backoff);          // [0, backoff)
+}
+
+첫 번째 재시도  [0, 25ms)     문서: [0, 25ms)
+두 번째 재시도  [0, 50ms)     문서: [0, 75ms)
+세 번째 재시도  [0, 100ms)    문서: [0, 175ms)
+네 번째 재시도  [0, 200ms)    문서: [0, 250ms)  ← 상한(base 의 10배 = 250ms)에 걸림
+다섯 번째부터   [0, 250ms)    문서: [0, 250ms)
+# doubling_limit_ = max_interval_ / 2 = 125. 200 은 125 를 넘으니 다음은 두 배가 아니라 250 으로 묶인다</div>
+
+<p><span class="obsv-mark">N번째 재시도의 대기는 [0, min(25 × 2<sup>N−1</sup>, 250))ms이고, 문서 공식보다 짧습니다.</span> 측정에서도 두 간격 분포의 폭 차이(약 34ms와 약 59ms)가 25ms 정도라서, 문서 공식의 50ms 차이보다 소스 쪽과 맞아요. 0.7초의 대부분은 이 대기가 층마다 곱해진 결과입니다. 맨 아래 시도 한 묶음은 처리 5ms × 3 + 대기 평균 12.5ms + 25ms로 약 50ms예요. 위층은 그 묶음을 세 번 기다리고 자기 대기도 더하니, 한 층 올라갈 때마다 대략 세 배가 됩니다. 어림하면 약 60ms → 약 220ms → 약 720ms로, 측정한 p50 728ms와 맞아요.</p>
+
+<h2>4. 동시에 보내면 기본 상한이 27배를 깎는다</h2>
+
+<p>이번엔 사용자 요청을 초당 100건씩 60초 동안 일정하게 보냈어요. 응답이 늦든 빠르든 보내는 속도가 같은 방식입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 열린 부하와 닫힌 부하 (open, closed workload)</div>
+  열린 부하는 응답과 상관없이 정해진 속도로 요청이 들어오는 모델이에요(k6의 constant-arrival-rate). 닫힌 부하는 사용자 수가 정해져 있고 각자 응답을 받아야 다음 요청을 보내는 모델이에요(constant-vus). 서비스가 느려지면 닫힌 부하는 요청을 덜 보내고, 열린 부하는 그대로 보냅니다.
+</div>
+
+<div class="obsv-code">./run.sh retry open-retry RATE=100 DURATION=60s
+./run.sh retry-nocb open-retry-nocb RATE=100 DURATION=60s
+./run.sh budget open-budget RATE=100 DURATION=60s
+./run.sh edge-only open-edge-only RATE=100 DURATION=60s
+
+초당 100건 60초 (사용자 요청 6001)   svc-a   svc-b   svc-c     p50
+retry       (기본값)                  1.48    2.18    3.30     63ms
+retry-nocb  (max_retries 10000)       3.00    9.00   27.00    682ms
+budget      (retry_budget 20%)        1.47    2.18    3.30     63ms
+edge-only   (맨 위만 재시도)          1.85    1.85    1.85     16ms</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-05/open-model-rates.png" alt="로그 눈금 그래프. 네 구간 모두 사용자 요청은 초당 100건이다. retry와 budget 구간에서 svc-c는 300건 남짓, retry-nocb 구간에서는 2,700건 가까이로 올라가고, edge-only 구간에서는 네 선이 180건 근처에 모인다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 같은 초당 100건에서 svc-c가 받은 양(구간 순서: retry → budget → retry-nocb → edge-only). 상한을 푼 세 번째 구간만 27배다</div>
+
+<p>재시도 설정은 그대로인데 기본값(<code>retry</code>)에서는 맨 아래가 27배가 아니라 3.3배를 받았어요. 상한을 10,000으로 푼 <code>retry-nocb</code>에서만 27배가 그대로 나왔습니다. 차이를 만든 건 클러스터 서킷 브레이커의 <code>max_retries</code>예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 동시 재시도 상한 (max_retries)과 overflow</div>
+  Envoy 클러스터마다 "지금 진행 중인 재시도"가 몇 개까지 될 수 있는지 정한 값이에요. 문서상 기본값은 3입니다. 상한에 걸린 재시도는 보내지 않고 <code>upstream_rq_retry_overflow</code>로 셉니다. 요청 하나의 재시도 횟수(<code>num_retries</code>)와는 다른 숫자예요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-05/overflow.png" alt="초당 overflow 그래프. retry와 budget 구간에서 svc_c 클러스터가 초당 약 160건, svc_b가 약 113건, svc_a가 약 76건이고, retry-nocb 구간은 0, edge-only 구간은 svc_a만 약 57건이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 기본값 3이 초당 수백 번씩 재시도를 막고 있었다</div>
+
+<p>재시도가 언제 "진행 중"으로 세어지는지가 핵심이에요. 소스를 보면 Envoy는 재시도를 하기로 정한 순간 카운터를 하나 올리고, 그 재시도의 결과가 나와 다음 판단을 할 때 내립니다. 백오프 대기 시간이 통째로 들어가요. <code>svc-c</code>는 5ms 만에 실패하는데 재시도는 평균 10~25ms를 기다리니, 초당 수백 번 재시도가 일어나면 진행 중인 재시도는 금세 3을 넘습니다. 그 뒤로 나오는 재시도는 전부 overflow로 빠지고, 사용자는 빠르게 실패를 받아요. p50이 682ms에서 63ms로 줄어든 것도 이 때문입니다.</p>
+
+<p><code>edge-only</code>도 같은 이유로 3배가 아니라 1.85배였어요. 5편이 권한 "한 곳에서만 재시도"를 지켜도 그 한 곳의 상한이 다시 깎았습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 기본값 3은 브레이크이자 숨은 변수다</div>
+  &bull; 상한을 모르면 장애 때 숫자를 잘못 읽어요. 이번처럼 재시도 설정이 세 겹이어도 맨 아래 부하는 3.3배였고, 이 값은 지연과 요청량에 따라 바뀝니다<br>
+  &bull; 평소에도 걸릴 수 있어요. 요청이 많은 클러스터에서 일시 장애가 동시에 몇 개만 겹쳐도 재시도가 3개를 넘어 막히고, 사용자는 재시도 없이 실패를 받습니다<br>
+  &bull; <code>upstream_rq_retry_overflow</code>가 0이 아니면 재시도 설정이 그대로 동작하지 않고 있다는 뜻이에요. 대시보드에 같이 둡니다
+</div>
+
+<h2>5. 재시도 예산은 기본값보다 느슨할 수 있다</h2>
+
+<p>표에서 가장 의외였던 줄은 <code>budget</code>이에요. 5편은 "계층마다 받은 요청의 20%까지만 재시도하면 세 층을 곱해도 약 1.73배"라는 단순 모델을 들고, Envoy 예산은 동시 요청 수 기준이라 배수가 달라진다고 덧붙였어요. 실제로는 기본값과 소수점 둘째 자리까지 같은 3.30배가 나왔습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 재시도 예산 (retry_budget)</div>
+  Envoy 클러스터 서킷 브레이커에 넣는 설정이에요. 동시 재시도 상한을 고정값 대신 "진행 중·대기 중 요청 수 × budget_percent"로 계산하고, 그 값이 min_retry_concurrency보다 작으면 min_retry_concurrency를 씁니다. 예산을 설정하면 <code>max_retries</code> 대신 이 값이 적용돼요.
+</div>
+
+<p>소스(<code>resource_manager_impl.h</code>)의 계산은 이 한 줄입니다.</p>
+
+<div class="obsv-code">return std::max&lt;uint64_t&gt;(budget_percent / 100.0 * requests_for_budget, min_retry_concurrency);
+//                        20%  ×  (진행 중 + 대기 중 요청)            기본 3</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrR2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M80 250 C 250 249, 450 251, 640 250" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrR2)"/>
+  <path d="M80 250 C 79 190, 81 110, 80 40" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrR2)"/>
+  <text x="600" y="276" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">진행 중인 요청 수</text>
+  <text x="90" y="32" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">허용되는 동시 재시도</text>
+  <text x="66" y="215" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">3</text>
+  <text x="218" y="268" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">15</text>
+  <path d="M80 212 C 250 211, 450 213, 620 212" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-dasharray="8 6"/>
+  <text x="560" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5">기본 max_retries = 3</text>
+  <path d="M82 209 C 140 208, 190 210, 218 209 C 300 180, 420 140, 620 76" fill="none" stroke="#e5a33c" stroke-width="3" stroke-linecap="round"/>
+  <text x="520" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">retry_budget: max(20% × 요청, 3)</text>
+  <path d="M218 206 C 219 230, 217 240, 218 250" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 5"/>
+  <path d="M86 120 C 120 118, 170 121, 206 119 C 208 140, 207 160, 206 176 C 170 178, 120 175, 87 177 C 85 160, 86 140, 86 120 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+  <text x="146" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">초당 100건 실험:</text>
+  <text x="146" y="164" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">두 선이 같은 구간</text>
+  <path d="M440 150 C 470 148, 520 151, 550 149 C 552 166, 551 182, 550 196 C 520 198, 470 195, 441 197 C 439 182, 440 166, 440 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <text x="495" y="170" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">요청이 많으면</text>
+  <text x="495" y="190" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">예산이 더 허용</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 진행 중인 요청이 15개를 넘기 전까지 20% 예산은 기본값 3과 같다</div>
+
+<p>진행 중인 요청이 15개보다 적으면 20%는 3보다 작아서 바닥값 3이 쓰여요. 기본 <code>max_retries</code>와 같은 숫자입니다. 초당 100건 실험을 어림해 보면(진행 중인 요청 수 ≈ 초당 요청 수 × 걸리는 시간), <code>svc_c</code> 클러스터(Envoy 클러스터 이름은 밑줄)는 초당 330건 × 약 6ms로 2개 안팎, 가장 오래 걸리는 <code>svc_a</code> 클러스터도 초당 148건 × 약 60ms로 10개 안팎이에요. 15개에 못 미치니 두 줄이 같았습니다.</p>
+
+<p>진행 중인 요청을 늘려 봤어요. k6 사용자 100명이 쉬지 않고 요청을 보내는 닫힌 부하로 60초씩 돌렸습니다.</p>
+
+<div class="obsv-code">./run.sh retry long-retry VUS=100 DURATION=60s
+./run.sh budget long-budget VUS=100 DURATION=60s
+./run.sh retry-nocb long-retry-nocb VUS=100 DURATION=60s
+
+사용자 100명 60초     사용자 요청    svc-c 가 받은 요청   배율    p50
+retry  (기본값)          271,736          283,866        1.04    19ms
+budget (20%)             210,337          285,598        1.36    18ms
+retry-nocb                 8,731          235,737       27.00   683ms</div>
+
+<p>이번에는 예산 쪽 배율이 1.36으로 기본값(1.04)보다 <b>높았어요</b>. 진행 중인 요청이 많아지자 20%가 3을 넘었기 때문입니다. 고정값 3은 트래픽이 커질수록 상대적으로 빡빡해지고, 예산은 트래픽에 비례해 늘어나요. <span class="obsv-mark">예산은 재시도를 더 막는 장치라기보다 상한을 트래픽 크기에 맞추는 장치입니다.</span> 기본값에서 예산으로 바꾸면 큰 클러스터에서는 재시도가 오히려 늘 수 있어요.</p>
+
+<p>이 표에는 다른 함정도 하나 있어요. 배율 열은 27배와 1.04배로 크게 다른데, <code>svc-c</code>가 받은 요청의 총량은 23만 건과 28만 건으로 비슷합니다. 닫힌 부하에서는 실패가 빨리 돌아오면 사용자가 바로 다음 요청을 보내서, 재시도로 줄어든 몫을 새 요청이 채웠어요. 클라이언트가 실패하자마자 다시 보내는 구조라면 서버 쪽 재시도 상한만으로는 아래층 부하가 줄지 않습니다. 배율과 총량을 같이 봐야 해요.</p>
+
+<h2>6. 실습에서 가져갈 것</h2>
+
+<p>재시도 증폭은 공식 그대로 일어났어요. 한 번에 하나씩 보내면 27배가 한 건의 오차 없이 나왔습니다. 다만 Envoy를 쓰면 그 곱셈 위에 클러스터마다 동시 재시도 상한이 하나 더 있고, 기본값 3이 실제 배율을 정해요. 재시도 예산은 이 상한을 요청량에 비례하게 바꾸는 설정이라, 작은 클러스터에서는 기본값과 같고 큰 클러스터에서는 더 느슨합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 재시도는 한 층에서만 켜고, 나머지 층은 <code>num_retries: 0</code>으로 명시해요. 메시 기본값이나 라이브러리 기본값이 어딘가에서 켜져 있지 않은지 확인해요<br>
+  &bull; 클러스터마다 <code>upstream_rq_retry</code>, <code>upstream_rq_retry_overflow</code>, <code>upstream_rq_retry_limit_exceeded</code>를 같이 봐요. overflow가 꾸준히 나오면 재시도 설정이 문서대로 동작하지 않는 상태예요<br>
+  &bull; <code>retry_budget</code>을 켤 때는 클러스터의 평소 동시 요청 수를 먼저 봐요. 15개 미만이면 기본값과 같고, 수백 개면 기본값보다 훨씬 많은 재시도를 허용해요<br>
+  &bull; 재시도 대기 시간은 문서 공식이 아니라 실제 구현으로 계산해요. Envoy 1.39는 N번째 재시도를 [0, min(25 × 2<sup>N−1</sup>, 250))ms에서 골라요(기본 base 25ms 기준)<br>
+  &bull; 부하 시험은 열린 부하로도 돌려 봐요. 닫힌 부하에서는 실패가 빨라질수록 요청이 늘어서 재시도 효과가 가려져요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>세 층에서 재시도를 2번씩 하면 맨 아래는 정확히 27배를 받았고, 사용자 응답은 재시도 대기가 곱해져 0.7초가 걸렸다.</b> Envoy의 재시도 대기는 문서 공식보다 짧은 [0, min(25 × 2<sup>N−1</sup>, 250))ms였다.<br><br>
+  같은 설정에 초당 100건을 보내자 배율은 3.3배로 내려왔는데, 그걸 만든 건 클러스터 기본 동시 재시도 상한 3이었다. 20% 재시도 예산은 진행 중인 요청이 15개를 넘기 전까지 그 기본값과 같았고, 요청이 많아지자 오히려 더 많이 허용했다. 재시도의 실제 양은 설정한 횟수가 아니라 그 위에 걸린 상한이 정한다.
+</div>
+
+</div>

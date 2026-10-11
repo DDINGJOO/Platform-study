@@ -29,7 +29,14 @@
   4편. 요청을 한 번 더 보내면 빨라진다<br>
   <b>5편. 재시도는 공짜가 아니다</b> &larr; 지금 이 글<br>
   6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
-  7편. 임계값을 정하지 않는 동시성 제한
+  7편. 임계값을 정하지 않는 동시성 제한<br>
+  실습-1. 느린 서버 한 대를 라운드로빈과 P2C가 다르게 피한다<br>
+  실습-2. 빨리 실패하는 서버가 트래픽을 빨아들이고 outlier detection이 빼낸다<br>
+  실습-3. 갓 뜬 인스턴스에 slow start를 걸면 무엇이 달라지나<br>
+  실습-4. Envoy 헤지 요청으로 꼬리 지연을 깎는다<br>
+  실습-5. 세 겹 재시도가 부하를 몇 배로 늘리는지 센다<br>
+  실습-6. 같은 장애에 비율 제한, 벌크헤드, 서킷 브레이커를 걸어 본다<br>
+  실습-7. 동시성 한계를 스스로 찾는 리미터를 돌려 본다
 </div>
 
 <p>오후 2시, 재고 서비스의 DB가 30초쯤 느려집니다. 흔한 일이에요. 인덱스 통계가 갱신됐거나 무거운 배치가 잠깐 겹쳤겠죠. 평소라면 30초 뒤에 저절로 풀립니다. 그런데 이날은 풀리지 않습니다. DB에 들어오는 쿼리 수가 평소의 몇십 배로 뛰어 있고, 느려진 원인이 사라진 뒤에도 그 숫자가 내려오지 않아요.</p>
@@ -180,8 +187,10 @@ Decorrelated:    sleep = min(cap, random(base, 이전 sleep &times; 3))</div>
 
 <p>같은 "지터"라도 도구마다 섞는 방식이 꽤 다릅니다.</p>
 
-<div class="obsv-code">Envoy 라우터      : Full Jitter. N번째 재시도는 [0, (2^N - 1) &times; 25ms) 중 무작위
+<div class="obsv-code">Envoy 라우터      : Full Jitter. N번째 재시도는 [0, min(25ms &times; 2^(N-1), 250ms)) 중 무작위
+                    곧 25, 50, 100, 200ms, 그다음부터 250ms
                     기본 base 25ms, 상한은 base의 10배(250ms)
+                    공식 문서의 [0, (2^N - 1) &times; 25ms)와 달리 소스는 매번 상한을 두 배로 늘린다
 gRPC (gRFC A6)    : min(initialBackoff &times; multiplier^(n-1), maxBackoff) &times; random(0.8, 1.2)
                     계산값의 &plusmn;20%
 Resilience4j      : ofExponentialRandomBackoff, 계산값의 &plusmn;randomizationFactor

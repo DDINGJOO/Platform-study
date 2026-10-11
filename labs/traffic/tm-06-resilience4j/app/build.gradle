@@ -1,0 +1,25 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+repositories { mavenCentral() }
+
+// Resilience4j 는 스프링 부트 스타터 없이 코어 모듈만 쓴다(README "왜 스타터를 안 쓰나").
+// 설정은 자바 코드에서 만들고, 지표는 resilience4j-micrometer 로 직접 등록한다.
+def r4j = '2.4.0'
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-restclient'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation "io.github.resilience4j:resilience4j-ratelimiter:${r4j}"
+    implementation "io.github.resilience4j:resilience4j-bulkhead:${r4j}"
+    implementation "io.github.resilience4j:resilience4j-circuitbreaker:${r4j}"
+    implementation "io.github.resilience4j:resilience4j-micrometer:${r4j}"
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+}

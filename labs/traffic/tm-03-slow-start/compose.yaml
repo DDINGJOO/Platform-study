@@ -1,0 +1,63 @@
+# 트래픽 관리 실습-3: 갓 뜬 인스턴스에 slow start를 걸면 무엇이 달라지나.
+# 같은 백엔드 네 대 앞에 Envoy. app-1~3 이 부하를 받는 도중 app-4 를 새로 띄운다(run.sh).
+# 요청마다 CPU 일(LAB_CPU_ROUNDS)을 하게 해서 JIT 가 데워지기 전과 후의 차이가 드러나게 했다. CPU 는 0.5개로 묶는다.
+x-app: &app
+  image: obs-lab/traffic-common-envoy:dev
+  build: ../common-envoy/app
+  mem_limit: 320m
+  cpus: 0.5
+  environment: &app-env
+    JAVA_TOOL_OPTIONS: -Xmx160m
+    LAB_DELAY_MS: 0
+    LAB_CPU_ROUNDS: 100         # 데워진 뒤 요청 하나에 CPU 수 ms
+
+services:
+  app-1:
+    <<: *app
+    environment: { <<: *app-env, LAB_INSTANCE: app-1 }
+  app-2:
+    <<: *app
+    environment: { <<: *app-env, LAB_INSTANCE: app-2 }
+  app-3:
+    <<: *app
+    environment: { <<: *app-env, LAB_INSTANCE: app-3 }
+  app-4:
+    <<: *app
+    environment: { <<: *app-env, LAB_INSTANCE: app-4 }   # 부하 도중에 새로 뜨는 인스턴스
+
+  envoy:
+    image: envoyproxy/envoy:v1.39.3
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--concurrency", "2", "--log-level", "warn"]
+    volumes:
+      - ./envoy/${ENVOY_CONFIG:-rr}.yaml:/etc/envoy/envoy.yaml:ro
+    ports: ["${ENVOY_PORT:-26080}:10000", "${ENVOY_ADMIN_PORT:-26901}:9901"]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_PORT:-26090}:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ../common-envoy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana:/var/lib/grafana/dashboards:ro
+    ports: ["${GRAFANA_PORT:-26000}:3000"]
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "/scripts/load.js"]
+    environment:
+      RATE: ${RATE:-150}
+      DURATION: ${DURATION:-150s}
+      ENVOYS: envoy:10000
+    volumes:
+      - ../common-envoy/k6:/scripts:ro

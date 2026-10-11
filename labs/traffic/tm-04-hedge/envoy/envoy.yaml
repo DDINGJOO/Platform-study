@@ -1,0 +1,121 @@
+# 실습-4: 같은 백엔드 세 대를 라우트(경로 앞부분)마다 다른 클러스터 이름으로 묶는다.
+# 클러스터 이름이 다르면 Envoy 통계가 따로 쌓여서, 정책별 요청 수를 한 화면에서 비교할 수 있다.
+#   /plain           재시도도 헤지도 없음
+#   /hedge           per_try_timeout 25ms + hedge_on_per_try_timeout (원본을 살려 둔 채 사본)
+#   /retry           per_try_timeout 25ms, 헤지 없음 (원본을 끊고 다시 보냄)
+#   /hedge-getonly   /hedge 에 retriable_request_headers(:method GET) 를 더함  ← ROADMAP 숙제
+#   /retry-getonly   /retry 에 retriable_request_headers(:method GET) 를 더함  ← 대조군
+#   /hedge-nocb      /hedge 와 같되 클러스터의 동시 재시도 상한(max_retries, 기본 3)을 10000 으로 푼다
+admin:
+  address: { socket_address: { address: 0.0.0.0, port_value: 9901 } }
+
+stats_config:
+  # 기본 버킷(0.5, 1, 5, 10, 25, 50, 100, 250, 500ms...)은 25~50ms 구간이 한 칸이라 헤지 효과가 뭉개진다.
+  histogram_bucket_settings:
+  - match: { contains: "rq_time" }
+    buckets: [1, 2, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 100, 150, 200, 250, 300, 350, 400, 500, 1000, 2000]
+
+static_resources:
+  listeners:
+  - name: ingress
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          route_config:
+            virtual_hosts:
+            - name: lab
+              domains: ["*"]
+              include_request_attempt_count: true   # 백엔드가 x-envoy-attempt-count 로 몇 번째 시도인지 본다
+              routes:
+              - match: { prefix: "/plain" }
+                route:
+                  cluster: backend_plain
+                  prefix_rewrite: "/work"
+                  timeout: 2s
+              - match: { prefix: "/hedge-nocb" }
+                route:
+                  cluster: backend_hedge_nocb
+                  prefix_rewrite: "/work"
+                  timeout: 2s
+                  retry_policy:
+                    retry_on: "5xx"
+                    num_retries: 1
+                    per_try_timeout: 0.025s
+                  hedge_policy: { hedge_on_per_try_timeout: true }
+              - match: { prefix: "/hedge-getonly" }
+                route:
+                  cluster: backend_hedge_getonly
+                  prefix_rewrite: "/work"
+                  timeout: 2s
+                  retry_policy:
+                    retry_on: "5xx"
+                    num_retries: 1
+                    per_try_timeout: 0.025s
+                    retriable_request_headers:
+                    - name: ":method"
+                      string_match: { exact: "GET" }
+                  hedge_policy: { hedge_on_per_try_timeout: true }
+              - match: { prefix: "/retry-getonly" }
+                route:
+                  cluster: backend_retry_getonly
+                  prefix_rewrite: "/work"
+                  timeout: 2s
+                  retry_policy:
+                    retry_on: "5xx"
+                    num_retries: 1
+                    per_try_timeout: 0.025s
+                    retriable_request_headers:
+                    - name: ":method"
+                      string_match: { exact: "GET" }
+              - match: { prefix: "/hedge" }
+                route:
+                  cluster: backend_hedge
+                  prefix_rewrite: "/work"
+                  timeout: 2s
+                  retry_policy:
+                    retry_on: "5xx"
+                    num_retries: 1
+                    per_try_timeout: 0.025s
+                  hedge_policy: { hedge_on_per_try_timeout: true }
+              - match: { prefix: "/retry" }
+                route:
+                  cluster: backend_retry
+                  prefix_rewrite: "/work"
+                  timeout: 2s
+                  retry_policy:
+                    retry_on: "5xx"
+                    num_retries: 1
+                    per_try_timeout: 0.025s
+
+  clusters:
+  - name: backend_plain
+    connect_timeout: 1s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment: &backends
+      cluster_name: backend
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: backend-1, port_value: 8080 } } }
+        - endpoint: { address: { socket_address: { address: backend-2, port_value: 8080 } } }
+        - endpoint: { address: { socket_address: { address: backend-3, port_value: 8080 } } }
+  - { name: backend_hedge,         connect_timeout: 1s, type: STRICT_DNS, lb_policy: ROUND_ROBIN, load_assignment: *backends }
+  - { name: backend_retry,         connect_timeout: 1s, type: STRICT_DNS, lb_policy: ROUND_ROBIN, load_assignment: *backends }
+  - { name: backend_hedge_getonly, connect_timeout: 1s, type: STRICT_DNS, lb_policy: ROUND_ROBIN, load_assignment: *backends }
+  - { name: backend_retry_getonly, connect_timeout: 1s, type: STRICT_DNS, lb_policy: ROUND_ROBIN, load_assignment: *backends }
+  - name: backend_hedge_nocb
+    connect_timeout: 1s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment: *backends
+    circuit_breakers:
+      thresholds:
+      - max_retries: 10000

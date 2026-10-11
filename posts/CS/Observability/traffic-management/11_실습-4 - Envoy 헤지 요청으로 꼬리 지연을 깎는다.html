@@ -1,0 +1,373 @@
+<!-- lead: Envoy hedge_policy 를 켜자 2%가 300ms 느린 백엔드의 P99가 308ms에서 47ms로 줄고 추가 요청은 1.89%였어요. 바쁜 백엔드에서는 오히려 무너졌고, retriable_request_headers 는 헤지 사본을 막지 않았어요. -->
+<!-- tags: Envoy, 헤지 요청, hedge_policy, per_try_timeout, retriable_request_headers -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚦 트래픽 관리, 실습-4</div>
+  1편. 로드 밸런서 셋이 각자 가장 한가한 서버를 고르면<br>
+  2편. 빨리 실패하는 서버는 한가해 보인다<br>
+  3편. 갓 뜬 인스턴스에게는 보호관찰이 필요하다<br>
+  4편. 요청을 한 번 더 보내면 빨라진다<br>
+  5편. 재시도는 공짜가 아니다<br>
+  6편. 비율 제한, 벌크헤드, 서킷 브레이커는 서로 다른 것을 센다<br>
+  7편. 임계값을 정하지 않는 동시성 제한<br>
+  실습-1. 느린 서버 한 대를 라운드로빈과 P2C가 다르게 피한다<br>
+  실습-2. 빨리 실패하는 서버가 트래픽을 빨아들이고 outlier detection이 빼낸다<br>
+  실습-3. 갓 뜬 인스턴스에 slow start를 걸면 무엇이 달라지나<br>
+  <b>실습-4. Envoy 헤지 요청으로 꼬리 지연을 깎는다</b> &larr; 지금 이 글<br>
+  실습-5. 세 겹 재시도가 부하를 몇 배로 늘리는지 센다<br>
+  실습-6. 같은 장애에 비율 제한, 벌크헤드, 서킷 브레이커를 걸어 본다<br>
+  실습-7. 동시성 한계를 스스로 찾는 리미터를 돌려 본다
+</div>
+
+<p>백엔드 세 대에 초당 200건을 보내고 있습니다. 중앙값은 8ms인데 P99는 308ms예요. 백엔드 로그를 보면 이유는 단순합니다. 요청 50개 중 1개꼴로 300ms를 더 기다리는 요청이 섞여 있어요. 어느 서버가 고장 난 게 아니라 셋 다 가끔 그럽니다.</p>
+
+<p>4편에서 이런 꼬리에는 헤지 요청이 듣는다고 했어요. 잠깐 기다려도 답이 없으면 같은 요청을 다른 복제본에 하나 더 보내는 방식입니다. 이번 글은 그걸 <b>Envoy 설정 몇 줄로 실제로 켜 보고</b>, 꼬리가 얼마나 줄고 요청이 얼마나 늘어나는지를 숫자로 셉니다. 그리고 4편이 숙제로 남긴 질문 하나에 답합니다. "GET에만 재시도하라"고 적은 재시도 조건이 헤지 사본도 막아 주는가?</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 헤지를 켜면 P99와 P99.9는 얼마나 줄고, 백엔드는 요청을 몇 % 더 받나?<br>
+  &bull; 원본을 끊고 다시 보내는 재시도와 원본을 살려 두는 헤지는 결과가 어떻게 다른가?<br>
+  &bull; 백엔드가 이미 한계에 가까우면 헤지는 무엇을 하나?<br>
+  &bull; <code>retriable_request_headers</code>로 GET만 허용하면 POST는 헤지되지 않나?
+</div>
+
+<h2>1. 실습 환경: 백엔드 세 대, Envoy 하나, 경로 여섯 개</h2>
+
+<p>백엔드는 작은 스프링 부트 앱입니다. 요청마다 5~10ms를 자고, 2% 확률로 300ms를 더 자요. 같은 이미지를 세 번 띄우고 앞에 Envoy를 하나 둡니다. 정책을 비교하려고 Envoy에 경로 여섯 개를 만들었는데, 경로마다 같은 백엔드 세 대를 <b>다른 클러스터 이름</b>으로 묶었어요. Envoy는 통계를 클러스터 이름별로 쌓기 때문에, 이렇게 하면 정책별 요청 수가 따로 나옵니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrH1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="arrH1b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M24 120 C 60 118, 92 121, 112 119 C 114 136, 113 152, 112 168 C 90 170, 58 167, 25 169 C 23 152, 24 136, 24 120 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="68" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">k6</text>
+  <text x="68" y="160" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">초당 200건</text>
+  <path d="M116 144 C 136 143, 150 145, 166 144" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH1)"/>
+  <path d="M174 22 C 260 19, 340 23, 414 21 C 416 110, 415 190, 414 268 C 340 271, 258 267, 175 269 C 173 190, 174 106, 174 22 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="294" y="48" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">Envoy 1.39.3</text>
+  <text x="190" y="80" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34">/plain        재시도 없음</text>
+  <text x="190" y="104" font-family="Menlo, monospace" font-size="11.5" fill="#2e6b41">/hedge        25ms 뒤 사본</text>
+  <text x="190" y="128" font-family="Menlo, monospace" font-size="11.5" fill="#c07f18">/retry        25ms 뒤 끊고 다시</text>
+  <text x="190" y="152" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f">/hedge-nocb   사본 + 상한 해제</text>
+  <text x="190" y="176" font-family="Menlo, monospace" font-size="11.5" fill="#4a7fb5">/hedge-getonly  GET만 재시도</text>
+  <text x="190" y="200" font-family="Menlo, monospace" font-size="11.5" fill="#4a7fb5">/retry-getonly  GET만 재시도</text>
+  <text x="294" y="236" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">경로마다 클러스터 이름이 달라</text>
+  <text x="294" y="256" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">통계가 따로 쌓인다</text>
+  <path d="M418 110 C 450 90, 470 72, 494 66" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH1)"/>
+  <path d="M418 144 C 450 143, 470 145, 494 144" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH1)"/>
+  <path d="M418 178 C 450 198, 470 214, 494 222" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH1)"/>
+  <path d="M502 44 C 560 42, 620 45, 676 43 C 678 62, 677 76, 676 90 C 620 92, 560 89, 503 91 C 501 76, 502 62, 502 44 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="589" y="65" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">backend-1</text>
+  <text x="589" y="83" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">2%는 +300ms</text>
+  <path d="M502 122 C 560 120, 620 123, 676 121 C 678 140, 677 154, 676 168 C 620 170, 560 167, 503 169 C 501 154, 502 140, 502 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="589" y="143" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">backend-2</text>
+  <text x="589" y="161" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">2%는 +300ms</text>
+  <path d="M502 200 C 560 198, 620 201, 676 199 C 678 218, 677 232, 676 246 C 620 248, 560 245, 503 247 C 501 232, 502 218, 502 200 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="589" y="221" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">backend-3</text>
+  <text x="589" y="239" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">2%는 +300ms</text>
+  <path d="M40 300 C 250 297, 450 302, 662 299" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
+  <path d="M294 274 C 293 290, 295 304, 294 318" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrH1b)"/>
+  <path d="M589 252 C 586 280, 566 302, 528 322" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#arrH1b)"/>
+  <text x="294" y="344" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">📊 Prometheus가 Envoy 통계와 앱 Micrometer 지표를 긁고 Grafana로 본다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 백엔드는 하나, 정책은 경로마다 다르게</div>
+
+<p>핵심 설정은 <code>/hedge</code> 라우트 하나예요. 4편에 실었던 설정과 같은 모양입니다.</p>
+
+<div class="obsv-code">- match: { prefix: "/hedge" }
+  route:
+    cluster: backend_hedge
+    prefix_rewrite: "/work"
+    timeout: 2s                      # 요청 전체의 상한
+    retry_policy:
+      retry_on: "5xx"
+      num_retries: 1                 # 사본은 재시도 횟수 안에서 나간다
+      per_try_timeout: 0.025s        # 25ms 안에 답이 없으면
+    hedge_policy:
+      hedge_on_per_try_timeout: true # 원본을 끊지 않고 사본을 하나 더</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 시도별 타임아웃 (per_try_timeout)</div>
+  재시도를 포함한 요청 하나 안에서, 업스트림에 보낸 시도 한 번마다 거는 시간 제한이에요. 전체 상한(<code>timeout</code>)과 따로 돕니다. 헤지가 없으면 이 시간이 지난 시도는 끊기고 재시도가 나가요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 클러스터 (Envoy cluster)</div>
+  Envoy가 요청을 보낼 업스트림 서버 묶음입니다. 로드 밸런싱, 연결 풀, 재시도 상한 같은 서킷 브레이커 값이 클러스터마다 따로 있고, <code>cluster.&lt;이름&gt;.upstream_rq_total</code> 같은 통계도 클러스터 이름으로 쌓여요.
+</div>
+
+<p>쓴 버전은 아래와 같아요. Envoy는 실습 시점의 최신 안정판입니다.</p>
+
+<div class="obsv-code">Envoy                 1.39.3  (2026-10-06 릴리스)
+Spring Boot           4.1.1   (Java 21, Micrometer Prometheus)
+Prometheus            3.15.0
+Grafana               13.2.3
+k6                    2.3.0
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/traffic/tm-04-hedge">GitHub 저장소의 labs/traffic/tm-04-hedge</a>에 있어요. 앱은 이미지 안에서 빌드하니 Docker만 있으면 됩니다. 2절의 숫자는 아래 명령으로 나와요. 3절부터의 측정 명령은 각 절에 붙였어요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/traffic/tm-04-hedge
+docker compose up -d --build
+./run-main.sh        # 워밍업 30초 뒤 /plain, /hedge, /retry 를 초당 200건씩 2분
+# Grafana: http://localhost:27030 → 대시보드 「실습-4 헤지 요청」</div>
+
+<h2>2. 헤지를 켜자 P99가 308ms에서 47ms로</h2>
+
+<p>k6로 경로마다 초당 200건을 2분씩, 약 2만 4천 건을 보냈어요. 백엔드 설정은 세 실행 모두 같습니다.</p>
+
+<div class="obsv-code">                 요청     p50     p90      p99    p99.9     max   (ms)
+/plain          24000     8.3    10.3    308.2    310.3   313.1
+/hedge          24000     8.3    10.4     47.1     58.6   310.2
+/retry          24001     8.4    10.4     47.6     58.4    75.3   ← 504 응답 10건</div>
+
+<p>헤지를 켜자 중앙값은 그대로인데 P99가 308ms에서 47ms로, P99.9가 310ms에서 59ms로 내려왔어요. 늦은 요청은 25ms를 기다린 뒤 다른 시도의 응답을 받았습니다. 사본이 끝나는 데 걸리는 시간은 25ms(시도별 타임아웃) + 백오프 + 사본 처리 5~10ms라서 꼬리가 50ms 근처에 모입니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-04/hedge-latency.png" alt="Envoy 리스너 기준 지연 그래프. /plain 구간에서 p99와 p99.9가 280~340ms였다가 /hedge 구간이 시작되는 04:47에 50ms 안팎으로 떨어지고 /retry 구간까지 그대로 유지된다. p50은 내내 10ms 아래다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 04:47에 /hedge로 바꾸자 꼬리만 떨어졌다. 중앙값은 움직이지 않았다</div>
+
+<p>그래프의 P99는 280ms 안팎으로, k6의 308ms보다 낮게 보여요. Envoy 히스토그램은 구간별 건수만 갖고 있어서 Prometheus가 250~300ms 칸 안을 선형으로 보간한 값이라서 그래요. Envoy 기본 버킷은 25ms 다음이 50ms라 헤지 효과가 한 칸에 뭉개지므로, 이 실습은 <code>stats_config.histogram_bucket_settings</code>로 5ms 간격 버킷을 따로 넣었습니다. 정확한 숫자는 k6 표로 읽고, 그래프는 모양을 봅니다.</p>
+
+<p>대가는 얼마였을까요? Envoy 통계를 그대로 옮기면 이렇습니다.</p>
+
+<div class="obsv-code">cluster.backend_hedge.upstream_rq_total: 24453     # 사용자 요청 24000 + 사본 453
+cluster.backend_hedge.upstream_rq_retry: 453           # 사본 = 재시도로 센다 (1.89%)
+cluster.backend_hedge.upstream_rq_retry_success: 448
+cluster.backend_hedge.upstream_rq_retry_limit_exceeded: 5
+cluster.backend_hedge.upstream_rq_per_try_timeout: 0   # ← 헤지일 때는 안 오른다</div>
+
+<p>사본은 453개, 요청의 1.89%였어요. 2%가 느리게 만들어 둔 백엔드라 거의 그만큼만 더 보낸 셈입니다. 4편이 소개한 논문의 BigTable 벤치마크(2% 추가 요청으로 P99.9 1,800ms → 74ms)와 같은 비율이에요. <code>retry_limit_exceeded</code> 5건은 원본과 사본이 둘 다 느렸던 요청입니다. 재시도 1회를 이미 썼으니 더 보내지 못했고, 이 다섯 건이 max 310ms를 만들었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 헤지 횟수는 per_try_timeout 카운터에 안 잡힌다</div>
+  헤지를 켜면 시도별 타임아웃이 터져도 <code>upstream_rq_per_try_timeout</code>이 0에 머물러요. 라우터 소스를 보면 헤지 경로(<code>onSoftPerTryTimeout</code>)는 이 카운터를 올리는 코드를 건너뜁니다. 헤지가 몇 번 나갔는지는 <code>upstream_rq_retry</code>로 세야 하고, 이 값에는 진짜 재시도(5xx)도 섞여 있어요. 둘을 나눠 보려면 5xx 응답 수를 따로 봐야 합니다.
+</div>
+
+<h2>3. 원본을 끊는 재시도와 살려 두는 헤지</h2>
+
+<p>표의 세 번째 줄 <code>/retry</code>는 같은 재시도 정책에서 헤지만 끈 경로예요. 25ms가 지나면 원본을 끊고 다시 보냅니다. P99와 P99.9는 헤지와 거의 같아요. 다른 건 두 군데입니다.</p>
+
+<p><b>첫째, 실패가 생겼습니다.</b> 원본과 재시도가 둘 다 느린 요청 10건은 504로 끝났어요. 재시도도 25ms를 넘겨 끊겼고 더 보낼 횟수가 없었으니까요. 헤지였다면 이 요청들은 살아 있던 원본이 310ms 만에 200으로 돌아왔을 거예요. 재시도의 max가 75ms로 작은 건 꼬리를 잘라서가 아니라 <span class="obsv-mark">느린 요청을 실패로 바꿔서</span>예요. P99만 보면 이 차이가 안 보입니다.</p>
+
+<p><b>둘째, 사본이 출발하는 시각에 무작위 대기가 섞여 있어요.</b> 백엔드가 받은 요청의 <code>x-request-id</code>(Envoy가 붙이고 재시도에도 그대로 실어 보내는 ID)와 도착 시각을 로그로 남겨 원본과 사본의 간격을 쟀습니다(<code>/hedge</code> 초당 100건 60초, 사본 130건).</p>
+
+<div class="obsv-code">LOG_ARRIVALS=true docker compose up -d backend-1 backend-2 backend-3
+docker compose --profile load run --rm -e TARGET=/hedge -e RATE=100 -e DURATION=60s -e NAME=hedge-gap load
+docker compose logs --since 2m backend-1 backend-2 backend-3 | python3 gap.py</div>
+
+<div class="obsv-code">원본 도착 -> 사본 도착 간격(ms): 최소 24.7, 중앙값 40.0, 최대 55.0
+  25ms(per_try_timeout)를 뺀 대기: -5~0: 1건, 0~5: 20, 5~10: 16, 10~15: 28, 15~20: 31, 20~25: 24, 25~30: 10
+사본이 원본과 같은 백엔드로 간 경우: 47건 / 130건</div>
+
+<p>시도별 타임아웃 25ms 뒤에 0~25ms 사이 무작위 대기가 붙었어요. Envoy 소스의 백오프 계산(<code>random() % 25</code>, 기본 base 25ms)과 맞습니다. 25~30ms 칸의 10건은 타이머와 백엔드 쪽 처리 시간이 몇 ms 얹힌 것으로, -5~0ms 칸의 1건(-0.3ms)은 타이머 오차로 0에 살짝 못 미친 것으로 보여요. 그리고 사본 세 개 중 하나는 원본과 <b>같은 백엔드</b>로 갔습니다. 이 실습은 느림이 요청마다 무작위라 상관없었지만, GC처럼 서버 한 대 전체가 느려지는 경우라면 사본도 같이 늦어요. Envoy 문서는 이럴 때 쓰는 <code>envoy.retry_host_predicates.previous_hosts</code>를 "이미 시도한 호스트를 거부한다"고 설명합니다. 이번 실습에서는 켜 보지 않았어요.</p>
+
+<h3>진 쪽은 끊기지만, 서버는 끝까지 일한다</h3>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-04/hedge-extra-and-reset.png" alt="초당 사본·재시도 수와 응답 전에 끊은 백엔드 연결 수 그래프. /hedge 구간과 /retry 구간 모두 두 선이 초당 3~4.5건으로 거의 겹친다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 사본 하나가 나갈 때마다 백엔드 연결이 하나씩 끊겼다</div>
+
+<p>두 선이 겹쳐요. 헤지에서는 이긴 응답이 오면 진 쪽 요청을, 재시도에서는 25ms가 지난 원본을 Envoy가 끊습니다. 업스트림이 HTTP/1.1이라 요청 하나를 끊으려면 연결을 닫는 수밖에 없어서 <code>upstream_cx_destroy_local_with_active_rq</code>(요청이 진행 중인 연결을 Envoy가 닫은 횟수)가 끊은 요청 수와 같이 올랐어요. 헤지에서는 사본 수(453)와, 재시도에서는 시도별 타임아웃 수(500, 다시 보낸 490건 + 재시도까지 끊긴 10건)와 같았습니다. 끊은 만큼 새 연결을 맺는 비용이 따라붙어요.</p>
+
+<p>끊긴 요청을 백엔드는 어떻게 기록했을까요? 백엔드 세 대의 <code>http_server_requests</code> 합계는 78,945건이었고 전부 상태 200이었어요. Envoy가 업스트림으로 보낸 요청 합계(<code>/plain</code> 30,001(워밍업 6,001건 포함) + <code>/hedge</code> 24,453 + <code>/retry</code> 24,491)와 한 건도 다르지 않습니다. 연결이 닫힌 요청도 서버에서는 300ms를 다 자고 200으로 끝났다는 뜻이에요. 취소는 Envoy가 응답을 기다리지 않게 할 뿐 서버의 일을 줄이지 않습니다. 4편이 tied request를 따로 소개한 이유가 여기 있어요. tied request는 서버끼리 "누가 먼저 실행을 시작했나"를 알려 큐에 남은 쪽을 실행 전에 버리기 때문에, 이 낭비를 줄일 수 있어요.</p>
+
+<div class="obsv-code">curl -s localhost:27001/stats | grep -E 'cluster\.backend_(plain|hedge|retry)\.upstream_(rq_total|rq_retry|cx_destroy_local_with_active_rq):'
+curl -s localhost:27090/api/v1/query --data-urlencode \
+  'query=sum by (status) (http_server_requests_seconds_count{uri="/work"})'     # 백엔드 세 대 합계</div>
+
+<h2>4. 백엔드가 바쁠 때 헤지는 불을 키운다</h2>
+
+<p>지금까지는 백엔드에 여유가 넉넉했어요. 이번에는 백엔드마다 톰캣 요청 스레드를 4개로 줄이고(세 대 합쳐 동시에 12건) 초당 600건을 보냈습니다. 느린 2%가 스레드를 300ms씩 붙잡으니 큐가 생기고, 큐에서 기다린 요청은 25ms를 넘기기 쉬워요.</p>
+
+<div class="obsv-code">TOMCAT_THREADS=4 docker compose up -d backend-1 backend-2 backend-3
+docker compose restart envoy
+for p in plain hedge hedge-nocb; do
+  docker compose --profile load run --rm -e TARGET=/$p -e RATE=600 -e DURATION=60s -e NAME=t4-$p-600 load
+done</div>
+
+<div class="obsv-code">                       보낸 요청          p50      p90      p99    p99.9   (ms)  사본
+/plain                 35957            9.1     66.9    309.2    409.6           0
+/hedge   (다시 잼)     35930           10.1    144.7    328.2    496.2        3967 (overflow 7665)
+/hedge-nocb            26222 (9778건 못 보냄) 876.0  1274.4   1565.1   1688.4       25085</div>
+
+<p><code>/hedge</code> 줄만 다른 실행이에요. 처음 실행 때 Envoy 카운터를 남기지 못해서, 같은 조건(스레드 4개, 30초 워밍업 뒤 카운터를 <code>POST /reset_counters</code>로 0으로 돌리고 초당 600건 60초)으로 다시 재고 그 실행의 k6 결과와 카운터를 함께 옮겼어요. 아래 그림 4와 5는 처음 실행의 화면입니다.</p>
+
+<p>헤지를 켜자 오히려 나빠졌어요. P90은 67ms에서 145ms로 두 배가 넘었고 P99.9도 410ms에서 496ms로 늘었습니다. 큐 때문에 느린 요청은 다른 백엔드에 보내도 그 백엔드의 큐에 또 섭니다. 4편이 말한 대로 헤지가 통하는 전제는 "느린 건 일부 서버의 일시적 사정"인데, 여기서는 셋 다 바빴어요.</p>
+
+<p>그런데 숫자를 보면 사본이 생각보다 적어요. 3,967개면 요청의 11%입니다. 나머지는 Envoy가 막았어요. <code>upstream_rq_retry_overflow</code> 7,665건은 "재시도를 하려 했지만 상한에 걸려 못 했다"는 카운터입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 재시도 상한 (circuit_breakers.max_retries)</div>
+  Envoy 클러스터가 동시에 진행할 수 있는 재시도 수의 상한입니다. 기본값은 3이에요. 헤지 사본도 재시도로 세기 때문에, 이미 사본 3개가 진행 중이면 네 번째 사본은 나가지 않고 overflow로 셉니다.
+</div>
+
+<p>이 상한을 10,000으로 푼 <code>/hedge-nocb</code>에서 무슨 일이 생기는지가 세 번째 줄이에요. 사본이 요청의 96%(25,085개)까지 나갔고, 중앙값이 876ms가 됐습니다. 사본이 큐를 늘리고, 늘어난 큐가 25ms를 넘기는 요청을 늘리고, 그게 다시 사본을 늘렸어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-04/overload-requests.png" alt="초당 요청 그래프. /plain 구간에서는 사용자 요청과 백엔드가 받은 요청이 600으로 겹치고, /hedge 구간에서는 백엔드가 660 정도로 조금 높으며, /hedge-nocb 구간에서는 사용자 요청이 430 근처로 떨어지는데 백엔드가 받은 요청은 850 근처까지 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 상한을 풀자 사용자 요청은 줄었는데 백엔드가 받는 요청은 두 배가 됐다</div>
+
+<p>그림 4의 마지막 구간에서 사용자 요청 선이 600이 아니라 430 근처인 건 k6 때문이에요. 이 실행은 초당 600건을 일정하게 보내는 방식(constant-arrival-rate)인데, 응답이 늦어지자 동시에 띄울 수 있는 가상 사용자 400명이 모두 응답을 기다리는 상태가 돼서 9,778건을 아예 못 보냈습니다. 실제 서비스라면 그만큼이 클라이언트 쪽 타임아웃이나 대기열로 나타났을 거예요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-04/overload-latency.png" alt="같은 세 구간의 지연 그래프. /plain은 p99 300ms 안팎, /hedge는 p99 400ms·p99.9 860ms까지 오르고, /hedge-nocb 구간에서는 p50이 800ms를 넘고 p99와 p99.9가 2초에 붙는다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 여유 있을 때 꼬리를 깎던 헤지가 바쁠 때는 꼬리를 늘렸고, 상한까지 풀자 중앙값이 876ms가 됐다</div>
+
+<p>그림 5의 마지막 구간 P99가 2초에 붙어 있는 건 버킷 보간 탓이에요(1~2초가 한 칸). k6가 잰 P99는 1,565ms였습니다. 정리하면 기본값 <code>max_retries: 3</code>이 이번 실습에서 가장 중요한 안전장치였어요. 4편이 "클러스터의 재시도 상한에 걸리면 사본은 나가지 않는다"고 적은 그 상한입니다. 다만 3이라는 숫자는 트래픽 규모와 상관없는 고정값이라, 초당 수천 건인 서비스에서는 평소 헤지도 막을 수 있어요. 그 숫자를 요청량에 비례하게 바꾸는 것이 실습-5에서 볼 <code>retry_budget</code>입니다.</p>
+
+<h2>5. 숙제: retriable_request_headers는 헤지를 막지 않는다</h2>
+
+<p>4편에서 헤지를 GET에만 걸려고 GET만 매칭하는 라우트를 따로 만들었어요. 재시도 정책에는 <code>retriable_request_headers</code>라는 필드가 있어서 "이 헤더가 맞는 요청만 재시도한다"고 적을 수 있는데, 소스를 읽어서는 헤지 경로가 이 조건을 보는지 분명하지 않았거든요. 4편은 소스에서 "헤지 사본은 <code>retry_on</code> 조건을 보지 않는다"까지는 읽었지만, <code>retriable_request_headers</code>가 바로 그 <code>retry_on</code>을 지우는 방식으로 동작한다는 연결은 확인하지 않은 채 남겨 뒀어요. 이번에 직접 돌려서 확인했습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: retriable_request_headers</div>
+  Envoy 재시도 정책의 필드예요. 문서 설명은 "재시도를 시도하려면 요청에 있어야 하는 HTTP 헤더"입니다. <code>:method</code>가 GET인 요청만 적어 두면 POST는 재시도하지 않아요.
+</div>
+
+<p><code>/hedge-getonly</code>는 <code>/hedge</code>에 이 필드를 더한 경로이고, <code>/retry-getonly</code>는 헤지 없는 대조군이에요. 백엔드를 전부 25ms보다 느리게(100ms 이상) 띄우고 경우마다 20건씩 보냈습니다. 백엔드는 요청 헤더가 도착한 순간(필터)과 컨트롤러에 들어온 순간을 따로 기록해요.</p>
+
+<div class="obsv-code">SLOW_RATIO=1 SLOW_MS=100 LOG_ARRIVALS=true docker compose up -d backend-1 backend-2 backend-3
+docker compose restart envoy
+python3 homework.py 20</div>
+
+<p>출력을 경우마다 두세 줄로 줄여 옮기면 이렇습니다(원본은 실습 디렉터리의 <code>homework.py</code>가 그대로 찍어요).</p>
+
+<div class="obsv-code">GET  /hedge-getonly  본문 없음  응답 200 x20   중앙값 113ms
+     Envoy: total 40, retry 20     헤더 도착 40건    컨트롤러 도착 40건
+POST /hedge-getonly  본문 없음  응답 200 x20   중앙값 111ms
+     Envoy: total 40, retry 20     헤더 도착 40건    컨트롤러 도착 40건   ← POST 도 사본이 나갔다
+POST /hedge-getonly  본문 7바이트  응답 200 x20   중앙값 112ms
+     Envoy: total 40, retry 20     헤더 도착 40건 (사본도 Content-Length: 7)
+                                   컨트롤러 도착 20건 (원본만, 본문 7바이트)  ← 사본엔 본문이 없었다
+GET  /retry-getonly  본문 없음  응답 504 x20   중앙값 66ms
+     Envoy: total 40, retry 20, per_try_timeout 40
+POST /retry-getonly  본문 없음  응답 504 x20   중앙값 27ms
+     Envoy: total 20, retry 0,  per_try_timeout 20                        ← 재시도는 막혔다</div>
+
+<p>결과는 분명해요. <span class="obsv-mark">GET만 허용한 재시도 정책 아래에서도 POST 사본이 나갔습니다.</span> 일반 재시도는 POST에서 정확히 막혔고요. 본문이 있는 POST는 더 이상했어요. 사본은 <code>Content-Length: 7</code> 헤더만 달고 본문 없이 도착했고, 컨트롤러에 들어오지 못한 채 기다리다가 원본 응답이 오자 끊겼습니다.</p>
+
+<p>이유는 Envoy 1.39.3 소스에 있어요. 요청 헤더가 조건에 안 맞으면 <code>RetryStateImpl</code> 생성자는 재시도 조건 비트를 0으로 만듭니다. 재시도 상태 객체 자체는 그대로 만들어지고 남은 재시도 횟수도 그대로예요.</p>
+
+<div class="obsv-code">// source/common/router/retry_state_impl.cc (v1.39.3)
+if (!retriable_request_headers.empty()) {
+  bool request_header_match = Http::HeaderUtility::matchAnyHeader(request_headers, retriable_request_headers);
+  if (!request_header_match) {
+    retry_on_ = 0;                       // 재시도 "조건"만 지운다
+  }
+}
+
+RetryStatus RetryStateImpl::shouldHedgeRetryPerTryTimeout(DoRetryCallback callback) {
+  // A hedged retry on per try timeout is always retried if there are retries left. ...
+  return shouldRetry(RetryState::RetryDecision::RetryWithBackoff, callback);   // retry_on_ 을 안 본다
+}</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arrH2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M230 14 C 300 12, 400 15, 470 13 C 472 30, 471 44, 470 58 C 400 60, 300 57, 231 59 C 229 44, 230 30, 230 14 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="350" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">POST, 25ms 동안 응답 없음</text>
+  <text x="350" y="52" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">헤더 불일치라 retry_on_ = 0</text>
+  <path d="M300 62 C 250 80, 200 92, 168 104" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH2)"/>
+  <path d="M400 62 C 450 80, 500 92, 532 104" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH2)"/>
+  <text x="120" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">헤지 꺼짐</text>
+  <text x="590" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">헤지 켜짐</text>
+  <path d="M40 112 C 120 110, 220 113, 300 111 C 302 140, 301 168, 300 196 C 220 198, 120 195, 41 197 C 39 168, 40 140, 40 112 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="170" y="134" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">원본을 끊고 shouldRetryReset()</text>
+  <text x="170" y="156" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">retry_on_ &amp; 5xx ?</text>
+  <text x="170" y="184" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">0이니 재시도 안 함 → 504</text>
+  <path d="M400 112 C 480 110, 580 113, 660 111 C 662 140, 661 168, 660 196 C 580 198, 480 195, 401 197 C 399 168, 400 140, 400 112 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="530" y="134" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">원본은 살려 두고</text>
+  <text x="530" y="156" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">shouldHedgeRetryPerTryTimeout()</text>
+  <text x="530" y="184" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">retry_on_ 확인 없이 사본 발사</text>
+  <path d="M530 202 C 529 216, 531 228, 530 240" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arrH2)"/>
+  <path d="M400 248 C 480 246, 580 249, 660 247 C 662 266, 661 284, 660 300 C 580 302, 480 299, 401 301 C 399 284, 400 266, 400 248 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="530" y="268" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">본문 버퍼링은 retry_on_ != 0 (또는 redirect)일 때만</text>
+  <text x="530" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">사본에는 헤더만 간다</text>
+  <text x="170" y="250" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">남은 횟수, max_retries 상한은</text>
+  <text x="170" y="272" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">두 길 모두 shouldRetry()에서 본다</text>
+  <text x="350" y="322" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 헤더 조건은 "왜 재시도하나"만 지우고, 헤지는 그걸 묻지 않는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. 같은 시도별 타임아웃이 헤지 여부에 따라 다른 함수로 간다</div>
+
+<p>일반 재시도는 시도를 끊은 뒤 <code>shouldRetryReset()</code>으로 가고, 거기서 <code>retry_on_</code>에 5xx 같은 조건이 있는지 봅니다. 0이니 재시도하지 않아요. 헤지는 <code>shouldHedgeRetryPerTryTimeout()</code>으로 가는데, 소스 주석대로 "남은 재시도가 있으면 항상" 사본을 보냅니다. 남은 횟수와 <code>max_retries</code> 상한만 보고 재시도 조건은 묻지 않아요. 본문이 빠진 이유도 같은 비트에서 나옵니다. 라우터는 재시도가 켜져 있을 때(<code>retry_state_-&gt;enabled()</code>, 곧 <code>retry_on_ != 0</code>)나 internal redirect가 켜져 있을 때만 요청 본문을 버퍼에 담아 둡니다(<code>router.cc</code>). 이 라우트는 둘 다 아니었으니 사본에 다시 실을 본문이 없었어요.</p>
+
+<p>하나 더 확인된 것이 있어요. 헤지된 요청에서 원본이 503으로 실패하면 어떻게 되는지 백엔드를 전부 100ms 뒤 실패하게 바꿔서 봤습니다.</p>
+
+<div class="obsv-code">FAIL_RATE=1 SLOW_RATIO=1 SLOW_MS=100 LOG_ARRIVALS=true docker compose up -d backend-1 backend-2 backend-3
+docker compose restart envoy
+python3 homework.py 20
+
+GET  /hedge-getonly  body=없음  응답={503: 20}  지연 중앙값=156ms 최대=168ms
+     Envoy 증가분: {'total': 40, 'per_try_timeout': 0, 'retry': 20, 'retry_limit_exceeded': 40, ...}
+POST /hedge-getonly  body=없음  응답={503: 20}  지연 중앙값=116ms 최대=121ms
+     Envoy 증가분: {'total': 40, 'per_try_timeout': 0, 'retry': 20, 'retry_limit_exceeded': 20, ...}</div>
+
+<p>GET은 원본의 503을 버리고 사본의 503을 기다려 156ms에 돌려줬고, POST는 원본의 503을 116ms에 바로 돌려줬어요. 두 경우 모두 사본은 나갔습니다. 문서가 말하는 "사본이 나간 뒤 오류 응답은 버린다"에서 오류 응답은 <b>재시도 조건에 맞는 응답</b>이라서, 조건이 0인 POST에서는 버릴 오류가 없었던 거예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 헤지를 메서드로 거르려면 라우트를 나눈다</div>
+  &bull; <code>retriable_request_headers</code>는 일반 재시도만 거르고 헤지 사본은 거르지 않아요. 본문 없는 POST(예: 결제 승인 확정)는 그대로 두 번 실행됩니다<br>
+  &bull; 본문 있는 POST의 사본은 본문 없이 나가요. 이번 백엔드는 본문을 기다리다 끊겼지만, 본문을 읽지 않는 핸들러라면 본문 없는 요청이 실행될 수 있어요<br>
+  &bull; 4편의 설정처럼 GET만 매칭하는 라우트를 따로 만들고 그 라우트에만 <code>hedge_policy</code>를 붙이는 쪽이 안전합니다. 라우터는 요청 헤더 <code>x-envoy-hedge-on-per-try-timeout</code> 값으로도 헤지를 켜고 끕니다(<code>router.cc</code>). 바깥에서 들어오는 <code>x-envoy-*</code> 헤더를 믿을지도 정해 두세요
+</div>
+
+<p>4편에서 "헤지 경로가 그 조건을 확인하는지 분명하지 않아서 라우트를 나누는 쪽을 택했다"고 쓴 판단은 결과적으로 맞았어요. 확인하지 않습니다.</p>
+
+<h2>6. 실습에서 가져갈 것</h2>
+
+<p>헤지 사본을 실제로 세 보니 4편의 숫자가 거의 그대로 나왔어요. 2%가 느린 백엔드에서 1.89%를 더 보내 P99를 6분의 1로 줄였습니다. 반대로 바쁜 백엔드에서는 같은 설정이 P90을 두 배로 만들었고, 기본 재시도 상한 3이 없었다면 전체가 무너졌어요. 숫자 하나로 정한 25ms 기준은 백엔드 상태를 모르기 때문입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 헤지는 GET만 매칭하는 라우트에 따로 붙여요. <code>retriable_request_headers</code>로는 사본을 못 막아요<br>
+  &bull; <code>per_try_timeout</code>은 평소 P95 근처로 잡고, 백엔드가 느려지면 사본 비율이 어떻게 되는지 미리 계산해 둬요<br>
+  &bull; 클러스터 <code>max_retries</code>(또는 <code>retry_budget</code>)를 끄지 마세요. 이번 실습에서 무너짐을 막은 건 이 상한이었어요<br>
+  &bull; 헤지 비율은 <code>upstream_rq_retry</code> ÷ <code>upstream_rq_total</code>로, 막힌 사본은 <code>upstream_rq_retry_overflow</code>로 지켜봐요. <code>upstream_rq_per_try_timeout</code>은 헤지일 때 0이에요<br>
+  &bull; 서버 한 대 전체가 느려지는 경우를 대비하려면 <code>previous_hosts</code> 술어로 사본을 다른 호스트로 보내는 설정을 검토해요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>Envoy의 헤지 설정 몇 줄로 P99가 308ms에서 47ms로 줄었고, 대가는 1.89%의 추가 요청이었다.</b> 원본을 끊는 재시도는 같은 P99를 내면서 느린 요청 10건을 504로 바꿨고, 끊긴 요청도 서버에서는 끝까지 처리됐다.<br><br>
+  같은 설정이 바쁜 백엔드에서는 사본으로 큐를 늘려 P90을 두 배로 만들었고, 기본 재시도 상한을 풀자 중앙값이 876ms가 됐다. 그리고 <code>retriable_request_headers</code>는 일반 재시도만 막고 헤지 사본은 막지 않았다. 헤지는 남는 용량이 있을 때만 꼬리를 깎고, 어느 요청에 걸지는 라우트로 정해야 한다.
+</div>
+
+</div>
