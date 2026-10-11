@@ -1,0 +1,64 @@
+# 1) 임계값 분석: 카나리 파드의 에러율이 2%를 넘으면 실패
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata: {name: error-threshold, namespace: ds02}
+spec:
+  args:
+  - name: hash
+  metrics:
+  - name: canary-error-ratio
+    interval: 30s
+    failureLimit: 1            # 두 번째 실패에서 분석 실패
+    successCondition: result[0] < 0.02
+    provider:
+      prometheus:
+        address: http://prometheus.ds02:9090
+        query: |
+          (sum(rate(demo_requests_total{hash="{{args.hash}}",code="500"}[1m])) or vector(0))
+          / sum(rate(demo_requests_total{hash="{{args.hash}}"}[1m]))
+---
+# 2) 통계 판정: judge 서버가 Kayenta 방식으로 점수를 낸다. 95점 미만이면 실패
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata: {name: mw-judge, namespace: ds02}
+spec:
+  args:
+  - name: control
+  - name: experiment
+  - name: label
+    value: judge
+  metrics:
+  - name: mann-whitney
+    initialDelay: 2m
+    interval: 2m
+    count: 5
+    failureLimit: 0
+    consecutiveErrorLimit: 30  # 판정 서버에 잠깐 못 닿는 것은 실패로 보지 않는다(기본 4)
+    successCondition: result.score >= 95
+    failureCondition: result.score < 95
+    provider:
+      web:
+        url: "http://judge.ds02/judge?control={{args.control}}&experiment={{args.experiment}}&window=600&step=10&label={{args.label}}"
+        timeoutSeconds: 30
+---
+# 3) 같은 판정을 기록만 한다(항상 성공). 비교 대상만 바꿔서 나란히 보려고 쓴다
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata: {name: mw-observe, namespace: ds02}
+spec:
+  args:
+  - name: control
+  - name: experiment
+  - name: label
+    value: observe
+  metrics:
+  - name: mann-whitney
+    initialDelay: 2m
+    interval: 2m
+    count: 5
+    consecutiveErrorLimit: 30
+    successCondition: result.score >= 0
+    provider:
+      web:
+        url: "http://judge.ds02/judge?control={{args.control}}&experiment={{args.experiment}}&window=600&step=10&label={{args.label}}"
+        timeoutSeconds: 30

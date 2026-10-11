@@ -1,0 +1,305 @@
+<!-- lead: kind 클러스터에 Argo CD와 Gitea를 띄우고 kubectl로 만든 드리프트를 selfHeal이 되돌리는 시간을 쟀어요. 0.3초에서 시작해 반복할수록 300초까지 늘어나는 백오프, 3분을 넘긴 Git 폴링, 웹훅, prune, sync wave, 잘못된 커밋의 롤백을 실제 결과로 정리했어요. -->
+<!-- tags: Argo CD selfHeal, 드리프트, Gitea 웹훅, sync wave, git revert -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚀 배포 안전성, 실습-3</div>
+  1편. 같은 앱도 플랫폼마다 다른 모양으로 포장된다<br>
+  2편. 한 번에 하나만 살아남는 배포<br>
+  3편. 카나리는 누구와 비교하느냐가 전부다<br>
+  4편. 깃옵스는 배포를 밀지 않고 당긴다<br>
+  실습-1. 하이랜더와 블루그린을 Argo Rollouts로 돌려 본다<br>
+  실습-2. 카나리를 통계로 판정해 자동으로 되돌린다<br>
+  <b>실습-3. 클러스터를 손으로 고치면 깃옵스가 되돌린다</b> &larr; 지금 이 글
+</div>
+
+<p>4편에서 깃옵스 에이전트는 클러스터를 계속 지켜보다가 Git과 달라지면 되돌린다고 했어요. 문서에는 Git 폴링이 "최대 3분", selfHeal 재시도는 "기본 5초"라고 적혀 있고, 소스는 조금 다른 말을 했습니다. 그래서 직접 재 봤어요. 손으로 <code>kubectl scale</code>을 치면 몇 초 만에 돌아오는지, 같은 짓을 여러 번 하면 어떻게 되는지, Git에 푸시한 변경은 정말 3분 안에 오는지요.</p>
+
+<p>결론부터 말하면 둘 다 문서의 숫자와 달랐습니다. 손으로 바꾼 replicas는 0.3초 만에 돌아왔지만 같은 커밋에서 여섯 번째로 바꿨을 때는 299초가 걸렸고, 웹훅 없이 푸시한 변경은 네 번 중 세 번이 3분을 넘겼어요. 숫자와 화면은 전부 이번에 돌린 결과입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 손으로 바꾼 값은 몇 초 만에 돌아오고, 반복하면 왜 느려지나?<br>
+  &bull; 손으로 한 일 중 Argo CD가 드리프트로 보지 않는 것은 무엇인가?<br>
+  &bull; 웹훅 없이 푸시한 커밋은 언제 반영되나? 웹훅을 걸면?<br>
+  &bull; Git에서 지운 리소스, sync wave의 순서는 실제로 어떻게 움직이나?<br>
+  &bull; 잘못된 커밋은 어떻게 보이고, 어떻게 되돌리나?
+</div>
+
+<h2>1. 실습 환경: kind, Gitea, Argo CD</h2>
+
+<p>kind 클러스터 하나 안에 Git 서버와 Argo CD를 같이 띄웠어요. 외부 Git 호스팅을 쓰지 않으니 웹훅까지 노트북 안에서 끝납니다. Argo CD는 Gitea의 <code>lab/demo</code> 저장소에서 <code>apps/web</code> 디렉터리(Deployment, Service, ConfigMap)를 읽어 <code>demo</code> 네임스페이스에 맞춰요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: kind (Kubernetes IN Docker)</div>
+  도커 컨테이너 하나를 쿠버네티스 노드로 써서 노트북에 클러스터를 띄우는 도구입니다. 노드 이미지의 태그가 곧 쿠버네티스 버전이고, <code>kind delete cluster</code> 한 줄로 흔적 없이 지울 수 있어요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 356" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs><marker id="l3a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="l3b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="l3c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="l3d" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="l3e" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M20 30 C 79 30, 139 29, 200 32 C 202 70, 200 109, 201 150 C 139 149, 79 149, 19 151 C 19 109, 22 70, 20 30 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="110" y="62" font-size="23" fill="#3d3a34" text-anchor="middle">내 맥 💻</text>
+    <text x="110" y="92" font-size="17" fill="#8a8272" text-anchor="middle" font-family="Menlo, monospace">git push</text>
+    <text x="110" y="114" font-size="15" fill="#8a8272" text-anchor="middle" font-family="Menlo, monospace">kubectl scale/edit</text>
+    <text x="110" y="136" font-size="17" fill="#8a8272" text-anchor="middle">lab.py 로 측정</text>
+    <path d="M240 14 C 387 13, 533 14, 684 13 C 685 123, 684 232, 684 344 C 533 344, 387 344, 238 344 C 240 232, 240 123, 240 14 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.6" stroke-linejoin="round" stroke-dasharray="8 6"/>
+    <text x="462" y="40" font-size="21" fill="#2e6b41" text-anchor="middle">kind 클러스터 ds-03 (k8s 1.36)</text>
+    <path d="M262 58 C 318 60, 374 58, 432 59 C 433 88, 431 119, 430 150 C 374 150, 318 148, 262 152 C 263 119, 260 88, 262 58 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="347" y="90" font-size="22" fill="#4a7fb5" text-anchor="middle">Gitea 📜</text>
+    <text x="347" y="116" font-size="17" fill="#8a8272" text-anchor="middle">lab/demo 저장소</text>
+    <text x="347" y="138" font-size="14" fill="#8a8272" text-anchor="middle" font-family="Menlo, monospace">localhost:26030</text>
+    <path d="M490 58 C 548 60, 606 59, 666 59 C 665 100, 665 142, 667 186 C 606 187, 548 184, 489 188 C 488 142, 491 100, 490 58 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="578" y="88" font-size="21" fill="#3d3a34" text-anchor="middle">Argo CD 3.5.4</text>
+    <text x="578" y="114" font-size="16" fill="#8a8272" text-anchor="middle" font-family="Menlo, monospace">repo-server</text>
+    <text x="578" y="136" font-size="16" fill="#8a8272" text-anchor="middle" font-family="Menlo, monospace">app-controller</text>
+    <text x="578" y="160" font-size="14" fill="#8a8272" text-anchor="middle" font-family="Menlo, monospace">UI localhost:26080</text>
+    <path d="M262 232 C 395 234, 529 231, 666 233 C 668 262, 665 293, 667 324 C 529 323, 395 323, 261 325 C 261 293, 263 262, 262 232 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+    <text x="464" y="262" font-size="21" fill="#c07f18" text-anchor="middle">demo 네임스페이스</text>
+    <text x="464" y="290" font-size="16" fill="#8a8272" text-anchor="middle">Deployment web · Service web · ConfigMap web-config</text>
+    <text x="464" y="312" font-size="16" fill="#8a8272" text-anchor="middle">(Git 의 apps/web 과 같아야 한다)</text>
+    <path d="M204 70 C 224 80, 236 88, 258 92" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#l3a)"/>
+    <path d="M436 96 C 450 97, 473 97, 486 96" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#l3b)"/>
+    <text x="462" y="82" font-size="16" fill="#4a7fb5" text-anchor="middle">당김</text>
+    <path d="M486 120 C 467 123, 456 119, 436 120" fill="none" stroke="#e5a33c" stroke-width="2.0" stroke-linecap="round" stroke-dasharray="1 6" marker-end="url(#l3c)"/>
+    <text x="462" y="140" font-size="16" fill="#c07f18" text-anchor="middle">웹훅</text>
+    <path d="M578 190 C 570 202, 566 212, 560 228" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#l3d)"/>
+    <text x="612" y="214" font-size="16" fill="#2e6b41" text-anchor="middle">적용·워치</text>
+    <path d="M204 130 C 225 172, 242 214, 258 260" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#l3e)"/>
+    <text x="196" y="218" font-size="18" fill="#b3502f" text-anchor="end">손으로 고침 ✋</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. Git도, Argo CD도, 앱도 한 클러스터 안에 있다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Application (Argo CD)</div>
+  Argo CD가 "어느 저장소의 어느 경로를 어느 클러스터의 어느 네임스페이스에 맞출지"를 적어 두는 쿠버네티스 리소스입니다. 동기화 정책(자동 동기화, selfHeal, prune)도 여기에 적어요.
+</div>
+
+<div class="obsv-code">kind                0.33.0
+노드 이미지         kindest/node:v1.36.4   (Argo CD 3.5 검증 대상이 k8s 1.33~1.36)
+Argo CD             v3.5.4                 (install.yaml, server-side apply)
+Gitea               28.1.0-rootless
+앱                  traefik/whoami:v1.12.0
+실행 환경           Docker Desktop(메모리 8GB), Apple M5 Pro, kind 클러스터 3~4개가 동시에 떠 있었다</div>
+
+<p>kind 0.33의 기본 노드 이미지는 1.37인데, Argo CD 3.5 문서의 검증 대상 표가 1.36까지라 1.36으로 내렸어요. Application의 동기화 정책은 <code>automated</code>에 <code>selfHeal: true</code>, <code>prune: false</code>로 시작합니다. 실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/ds-03-gitops">GitHub 저장소의 labs/devops/ds-03-gitops</a>에 있어요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/devops/ds-03-gitops
+./scripts/up.sh                          # 클러스터, Gitea, Argo CD, 저장소 시드, Application
+python3 scripts/lab.py selfheal-off      # 2절
+python3 scripts/lab.py drift-scale 6 1   # 2절. 6회, 복구 후 1초 쉬고 다시
+python3 scripts/lab.py drift-misc        # 3절
+python3 scripts/lab.py git-change 4      # 4절, 웹훅 없이
+python3 scripts/lab.py webhook on
+python3 scripts/lab.py git-change 4      # 4절, 웹훅 켬
+python3 scripts/lab.py prune             # 5절
+python3 scripts/lab.py waves             # 5절
+python3 scripts/lab.py bad-commit        # 6절
+kind delete cluster --name ds-03</div>
+
+<p>필요한 도구는 Docker, kind, kubectl, python3, git, argocd CLI예요. 결과는 <code>out/</code>에 실험 이름으로 저장됩니다. 글의 2절 표는 <code>out/drift-scale-clean.txt</code>인데, 같은 실험의 다른 실행과 구분하려고 손으로 이름을 바꾼 파일이에요. 직접 돌리면 <code>out/drift-scale-gap1.txt</code>에 저장돼요.</p>
+
+<p>측정은 <code>scripts/lab.py</code>가 합니다. 클러스터 상태와 Application 상태를 0.2초 간격으로 읽어서 "바꾼 순간부터 몇 초 뒤에 돌아왔나"를 기록해요. 이 간격 때문에 0.3초는 사실상 "다음에 읽었을 때 이미 돌아와 있었다"는 뜻입니다.</p>
+
+<h2>2. 손으로 바꾼 replicas는 0.3초 만에 돌아온다</h2>
+
+<p>먼저 selfHeal이 꺼져 있으면 어떻게 되는지 봤어요. <code>kubectl scale deploy web --replicas=5</code>(Git에는 3)을 치자 Application은 0.3초 만에 OutOfSync가 됐고, 60초 뒤에도 replicas는 5 그대로였습니다. Argo CD는 차이를 보고만 있었어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/delivery-safety/images/lab-03/diff-replicas.png" alt="Argo CD의 Diff 화면. 왼쪽 실제 상태는 replicas 5, 오른쪽 Git의 상태는 replicas 3으로 한 줄만 다르다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. selfHeal을 끄면 Argo CD는 이 한 줄의 차이를 보여 주기만 한다</div>
+
+<p>selfHeal을 다시 켜자 0.3초 만에 3으로 돌아왔습니다. 이때는 Deployment에 새 변화가 없었어요. <code>kubectl scale</code>은 60초 전에 끝났으니까요. 곧바로 돌아온 건 selfHeal을 켜는 Application 스펙 변경이 그 자리에서 Git 비교를 요청하기 때문입니다(소스의 <code>automatedSyncEnabled</code>, 5절에서 prune과 비교해요). 워치가 일하는 모습은 아래 반복 실험에서 보여요.</p>
+
+<p>그다음은 같은 짓을 반복하기예요. replicas를 5로 바꾸고, Git 값(이번 실행에서는 2)으로 돌아오면 1초 쉬고 다시 바꾸기를 여섯 번 했습니다. 새 커밋으로 동기화가 한 번 일어난 직후에 시작했어요. 1회차의 0.3초는 selfHeal이 켜진 채 replicas만 바뀐 경우라, Deployment가 바뀐 이벤트를 워치로 받아 바로 다시 비교한 결과예요. 폴링 주기(120초)를 기다리지 않았습니다.</p>
+
+<div class="obsv-code">회차  sync시작(초)  replicas복구(초)  직전sync끝부터(초)  autoHealAttemptsCount(되돌린 뒤)
+  1        0             0.3               30                  2
+  2        5             4.8                1                  3
+  3       17            16.8                1                  4
+  4       53            52.8                1                  5
+  5      160           160.6                2                  6
+  6      299           298.9                1                  7</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 356" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs></defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <text x="24" y="30" font-size="20" fill="#3d3a34">같은 커밋에서 replicas 를 연달아 바꿨을 때, 되돌아오기까지 걸린 시간</text>
+    <path d="M130 46 C 130 129, 131 214, 130 300" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+    <text x="118" y="82" font-size="19" fill="#3d3a34" text-anchor="end">1회차</text>
+    <path d="M132 70 C 134 71, 136 68, 138 69 C 138 76, 136 82, 139 88 C 136 86, 134 87, 133 89 C 132 82, 134 76, 132 70 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="148" y="85" font-size="18" fill="#2e6b41">0.3초  (2초 대기분이 이미 지남)</text>
+    <text x="118" y="120" font-size="19" fill="#3d3a34" text-anchor="end">2회차</text>
+    <path d="M132 104 C 135 103, 137 105, 140 102 C 139 113, 139 121, 141 130 C 137 129, 135 130, 130 129 C 133 121, 132 113, 132 104 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="1.4" stroke-linejoin="round" stroke-dasharray="5 4"/>
+    <path d="M132 108 C 134 108, 136 106, 138 109 C 137 114, 139 120, 136 126 C 136 125, 134 126, 133 128 C 132 120, 131 114, 132 108 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="148.2" y="123" font-size="18" fill="#b3502f">4.8초</text>
+    <text x="118" y="158" font-size="19" fill="#3d3a34" text-anchor="end">3회차</text>
+    <path d="M132 142 C 140 142, 147 142, 155 144 C 157 151, 155 159, 157 168 C 147 170, 140 169, 130 170 C 131 159, 133 151, 132 142 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="1.4" stroke-linejoin="round" stroke-dasharray="5 4"/>
+    <path d="M132 146 C 139 146, 146 147, 154 146 C 154 152, 153 158, 155 164 C 146 163, 139 162, 131 164 C 133 158, 132 152, 132 146 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="163.8" y="161" font-size="18" fill="#b3502f">16.8초</text>
+    <text x="118" y="196" font-size="19" fill="#3d3a34" text-anchor="end">4회차</text>
+    <path d="M132 180 C 155 180, 178 180, 202 181 C 203 189, 202 197, 202 206 C 178 206, 155 207, 134 207 C 133 197, 133 189, 132 180 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="1.4" stroke-linejoin="round" stroke-dasharray="5 4"/>
+    <path d="M132 184 C 155 186, 177 185, 201 182 C 200 190, 200 196, 202 202 C 177 202, 155 202, 133 202 C 133 196, 130 190, 132 184 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="210.6" y="199" font-size="18" fill="#b3502f">52.8초</text>
+    <text x="118" y="234" font-size="19" fill="#3d3a34" text-anchor="end">5회차</text>
+    <path d="M132 218 C 201 218, 271 217, 343 220 C 344 227, 344 235, 344 244 C 271 242, 201 245, 130 244 C 132 235, 131 227, 132 218 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="1.4" stroke-linejoin="round" stroke-dasharray="5 4"/>
+    <path d="M132 222 C 201 222, 270 222, 341 224 C 342 228, 342 234, 339 240 C 270 240, 201 240, 132 239 C 132 234, 132 228, 132 222 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="350.8" y="237" font-size="18" fill="#b3502f">160.6초</text>
+    <text x="118" y="272" font-size="19" fill="#3d3a34" text-anchor="end">6회차</text>
+    <path d="M132 256 C 261 257, 389 257, 522 256 C 522 265, 523 273, 520 282 C 389 281, 261 282, 131 283 C 131 273, 133 265, 132 256 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="1.4" stroke-linejoin="round" stroke-dasharray="5 4"/>
+    <path d="M132 260 C 260 261, 388 261, 521 262 C 519 266, 519 272, 520 278 C 388 279, 260 279, 134 280 C 132 272, 132 266, 132 260 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linejoin="round"/>
+    <text x="530.6" y="275" font-size="18" fill="#b3502f">298.9초  (상한)</text>
+    <text x="134" y="318" font-size="17" fill="#8a8272">점선 상자: 소스의 백오프 값 2, 6, 18, 54, 162초, 그다음은 상한 300초</text>
+    <text x="134" y="340" font-size="17" fill="#8a8272">실측은 이 값에서 직전 동기화 뒤 흐른 1~2초를 뺀 만큼이었다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 같은 커밋에서 손을 댈수록 되돌리는 간격이 세 배씩 벌어진다</div>
+
+<p>2회차부터 기다리는 시간이 4.8초, 16.8초, 52.8초, 160.6초, 298.9초로 늘었어요. 4편에서 소스로 본 지수 백오프(시작 2초, 배수 3, 상한 300초)에서 직전 동기화 뒤 흐른 1~2초를 뺀 값과 맞습니다. 부하가 높던 다른 실행의 컨트롤러 로그에도 <code>Skipping auto-sync: already attempted sync to [...] (retrying in 2m39.66s)</code> 같은 줄이 남았어요(<code>out/controller-log-notes.txt</code>). 자동 동기화 문서에 적힌 "기본 5초"는 이 버전의 동작이 아니었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: autoHealAttemptsCount</div>
+  Application의 <code>status.operationState.operation.sync</code> 안에 있는 값으로, 같은 Git 리비전에서 selfHeal을 몇 번 했는지 셉니다. 백오프 대기 시간은 이 횟수로 정해져요.
+</div>
+
+<p>예상하지 못한 건 이 횟수가 시간이 지나도 줄어들지 않는다는 점이었어요. 1회차 시작 때 이미 1이었는데, 컨트롤러 로그를 보면 새 커밋의 동기화가 끝난 같은 초에 같은 리비전으로 동기화가 한 번 더 시작됐어요. 그 동기화가 selfHeal로 세어진 것으로 보입니다(<code>out/controller-log-notes.txt</code>). 앞선 시험으로 횟수가 4까지 쌓인 상태에서 같은 실험을 돌렸을 때는(부하가 높던 실행) 두 번째 회차의 되돌림이 181초 뒤에야 시작됐어요(<code>out/drift-scale-accumulated.txt</code>). 소스를 보면 횟수는 시간이 아니라 <span class="obsv-mark">새 동기화 작업이 시작될 때</span> 0으로 돌아가요. 새 커밋의 자동 동기화, 사람이 누른 수동 동기화, Application의 source 스펙 변경이 그런 경우입니다. 다만 이 앱의 경로를 건드리지 않은 커밋은 새 동기화를 만들지 않을 수 있어요. 장애 중에 같은 리소스를 여러 번 손보면 몇 번째부터는 Argo CD가 5분 가까이 지나서야 되돌린다는 뜻이고, 반대로 그 5분 동안은 손으로 바꾼 값이 살아 있다는 뜻이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 클러스터가 바쁘면 숫자가 크게 흔들린다</div>
+  이 실습을 하는 동안 다른 kind 클러스터들이 같은 Docker Desktop VM에서 돌았고, VM의 load average가 160을 넘은 구간이 있었어요(노드 컨테이너의 <code>/proc/loadavg</code>, <code>out/controller-log-notes.txt</code>). 그때 같은 실험을 돌리자 OutOfSync를 알아채는 데 길게는 44초, 동기화 한 번이 길게는 96초 걸렸습니다(<code>out/drift-scale-under-load.txt</code>, <code>out/drift-scale-accumulated.txt</code>). 되돌림이 공식보다 일찍 시작된 적은 없었지만 늦게는 40초까지 더 걸렸어요. 횟수 7에서 공식대로라면 297초 뒤에 시작해야 할 동기화가 337초 뒤에 시작된 식입니다. 위 표는 부하가 내려간 뒤(load average 약 7~15) 다시 돌린 결과예요.
+</div>
+
+<h2>3. 드리프트로 보지 않는 손질도 있다</h2>
+
+<p>replicas 말고 다른 손질도 해 봤어요(<code>lab.py drift-misc</code>). ConfigMap 수정과 Deployment 삭제 사이에는 60초를 쉬어 백오프가 끼지 않게 했습니다.</p>
+
+<div class="obsv-code">손질                                      결과
+Deployment 에 라벨 owner=me 추가           15초 뒤에도 Synced, 라벨 그대로 남음
+ConfigMap web-config 의 값 수정            0.3초 뒤 Git 값으로 복구
+Deployment web 삭제                        0.3초 뒤 새 uid 로 다시 생성
+같은 네임스페이스에 ConfigMap 손으로 생성   15초 뒤에도 Synced, 그대로 남음</div>
+
+<p>라벨은 Git의 매니페스트에 없는 필드라서 비교 대상이 아니에요. Argo CD의 기본 비교 방식은 Git의 원하는 상태와 <code>last-applied-configuration</code>에 적힌 필드만 보니, 그 바깥에 붙은 라벨은 드리프트가 아닙니다. 손으로 만든 ConfigMap도 Argo CD의 추적 어노테이션이 없으니 이 Application의 것이 아니에요. 4편에서 문서로 본 내용이 그대로 나왔습니다. <b>selfHeal은 "클러스터를 Git과 똑같이 만든다"가 아니라 "Git에 적힌 것을 Git대로 되돌린다"</b>예요.</p>
+
+<h2>4. 웹훅 없이 푸시하면 3분을 넘긴다</h2>
+
+<p>이번엔 반대 방향입니다. Git에서 replicas를 바꿔 커밋하고 푸시한 뒤, Application이 새 리비전을 인식하고 클러스터에 반영할 때까지를 쟀어요. 한 회차가 끝나면 5초 쉬고 다음 커밋을 푸시했습니다.</p>
+
+<div class="obsv-code">웹훅 없음 (폴링만)
+회차  새 리비전 인식(초)  replicas 반영(초)
+  1        86.5              121.3
+  2       216.6              219.1
+  3       224.6              227.2
+  4       239.6              241.9
+
+웹훅 켬 (1회차는 푸시 전부터 클러스터 값이 같아서 뺐다)
+회차  새 리비전 인식(초)  replicas 반영(초)
+  2         1.1                4.5
+  3         1.1                4.0
+  4         0.7                3.4</div>
+
+<p>"최대 3분"이라면 넘을 수 없는 숫자가 세 번 나왔어요. 컨트롤러 로그에서 주기 새로고침(<code>comparison expired, requesting refresh</code>)이 찍힌 간격을 31분 동안 세어 보니 122초에서 300초까지였습니다. 원인은 4편에서 소스로 짚은 두 가지예요.</p>
+
+<p>첫째, 주기 새로고침은 120초마다 돌지만 <b>마지막 비교 시각이 120초를 넘은 앱만</b> Git과 다시 비교해요. 이 실험처럼 직전 회차의 동기화가 막 끝났다면 첫 차례는 건너뛰고 다음 차례에 비교합니다. 둘째, repo-server가 <code>main</code>을 커밋 해시로 바꾼 결과를 3분 동안 캐시해요. 웹훅을 잘못 설정한 채 돌린 회차에서 이게 그대로 보였습니다. 푸시 8초 전에 주기 새로고침이 한 번 있었고, 그때 캐시된 옛 해시가 푸시 152초 뒤의 새로고침에서도 쓰여 그냥 지나갔어요. 396초 뒤의 새로고침에서야 새 커밋을 인식했습니다(<code>out/poll-refresh-intervals.txt</code>, <code>out/controller-log-notes.txt</code>).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 리비전 캐시 (revision cache)</div>
+  repo-server가 "브랜치 main은 지금 커밋 abc123이다" 같은 해석 결과를 잠시 저장해 두는 캐시입니다. 기본 만료가 3분이라, 그 안에 푸시된 커밋은 주기 새로고침에 보이지 않을 수 있어요. 사람이 누른 새로고침과 웹훅은 이 캐시를 건너뜁니다.
+</div>
+
+<p>웹훅을 켜자 1초 안팎에 새 리비전을 인식하고 4초 안팎에 반영했어요. 그런데 처음 켰을 때는 웹훅이 오는데도 아무 일이 없었습니다. argocd-server 로그에 이런 줄만 남았어요.</p>
+
+<div class="obsv-code">Received push event repo: http://localhost:26030/lab/demo, revision: main, touchedHead: true</div>
+
+<p>Argo CD는 웹훅에 실린 저장소 주소를 Application의 <code>repoURL</code>과 비교해서 새로고침할 앱을 고릅니다. Gitea는 이 주소를 자기 <code>ROOT_URL</code> 설정으로 만드는데, 저는 브라우저로 열 주소(<code>localhost:26030</code>)를 넣었고 Application은 클러스터 안 주소(<code>gitea.gitea.svc:3000</code>)를 쓰고 있었어요. 주소가 다르니 맞는 앱이 없었고, 오류 없이 조용히 지나갔습니다. <code>ROOT_URL</code>을 클러스터 안 주소로 바꾸자 바로 동작했어요. 웹훅이 깨져도 폴링이 몇 분 늦게 받쳐 주기 때문에 이런 설정 오류는 "배포가 좀 느리네"로만 보일 수 있습니다.</p>
+
+<h2>5. prune과 sync wave</h2>
+
+<p>Git에서 <code>service.yaml</code>을 지우고 푸시했어요(웹훅 켬, <code>prune: false</code>). Argo CD는 0.3초 만에 새 커밋을 인식했고 Service를 <code>requiresPruning: true</code>, OutOfSync로 표시했지만 지우지 않았습니다. 컨트롤러 로그에는 <code>need to prune extra resources only but automated prune is disabled</code>가 남았어요. 지울 것만 남은 커밋이라 동기화 자체를 시작하지 않은 거예요.</p>
+
+<p><code>kubectl patch</code>로 <code>prune: true</code>를 켜자 Service는 <b>124.6초 뒤에</b> 지워졌어요. 바로 지워질 줄 알았는데요. 소스를 보니 Application 스펙이 바뀔 때 컨트롤러가 곧바로 Git 비교를 요청하는 건 자동 동기화나 selfHeal이 새로 켜질 때뿐이었습니다(<code>automatedSyncEnabled</code>). prune만 바꾸면 다음 주기 새로고침까지 기다려요. 급하면 UI나 CLI에서 새로고침을 누르면 됩니다.</p>
+
+<p>sync wave는 별도 Application(<code>waves</code>)으로 봤어요. 5초 걸리는 PreSync 훅 Job, wave -1 ConfigMap, wave 0 Deployment, wave 1 Service를 한 파일에 넣고, Application을 만든 순간부터 각 리소스가 처음 보인 시각을 기록했습니다.</p>
+
+<div class="obsv-code">  0.3초  Job db-migrate (PreSync 훅) 생성
+  8.1초  Job 성공 확인, ConfigMap (wave -1) 생성
+ 10.2초  Deployment (wave 0) 생성
+ 10.5초  Deployment Ready
+ 12.3초  Service (wave 1) 생성</div>
+
+<p>PreSync 훅이 끝나야 본 동기화가 시작됐고, ConfigMap에서 Deployment까지 2.1초, Deployment에서 Service까지도 2.1초였어요. "Ready 뒤 1.8초"로 읽으면 기본 2초보다 짧아 보이는데, 소스를 보면 이유가 있습니다. 2초 대기(<code>delayBetweenSyncWaves</code>)는 Healthy가 된 뒤가 아니라 <b>웨이브를 적용한 직후</b>에 들어가요. 컨트롤러는 그 2초를 쉰 다음에 앞 웨이브가 Healthy인지 보고, 그렇다면 다음 웨이브를 적용합니다. 이번 Deployment는 대기 중에 Ready가 돼서 2초가 끝나자마자 Service로 넘어갔어요. 게다가 Ready 시각은 0.2초 간격으로 읽은 값이라 실제보다 늦게 찍혔을 수 있습니다. 기동이 2초보다 느린 앱이라면 Service는 Healthy 판정이 날 때까지 더 늦게 생겨요.</p>
+
+<h2>6. 잘못된 커밋은 Synced인 채로 Degraded가 된다</h2>
+
+<p>마지막으로 존재하지 않는 이미지 태그(<code>traefik/whoami:v9.9.9</code>)를 커밋하고 푸시했어요. 실습용으로 Deployment의 <code>progressDeadlineSeconds</code>를 60초로 줄여 둔 상태였습니다(기본 600초).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: progressDeadlineSeconds</div>
+  Deployment의 롤아웃이 진척 없이 이 시간을 넘기면 쿠버네티스가 <code>Progressing</code> 조건을 실패(<code>ProgressDeadlineExceeded</code>)로 바꾸는 기한입니다. Argo CD는 이 조건을 보고 Deployment의 헬스를 Degraded로 판정해요. 롤아웃을 멈추거나 되돌리지는 않습니다.
+</div>
+
+<div class="obsv-code">   0.0s  sync=Synced    health=Healthy      rev=b7977e9
+   0.6s  sync=OutOfSync health=Healthy      rev=8ce76ff  op=Running
+   2.8s  sync=Synced    health=Progressing  rev=8ce76ff  op=Succeeded
+  62.8s  sync=Synced    health=Degraded     rev=8ce76ff  op=Succeeded
+
+준비된 파드/전체: 3/4
+  web-6b6dfbf64d-xq82z   traefik/whoami:v9.9.9    false   ErrImagePull
+  web-6cbcb964cc-...     traefik/whoami:v1.12.0   true    (3개)</div>
+
+<p>매니페스트 적용은 성공했으니 동기화는 2.8초 만에 Succeeded, 상태는 Synced였어요. 헬스만 Progressing이었다가 롤아웃 기한 60초를 넘기자 Degraded가 됐습니다. 그동안 기존 파드 세 개는 Ready 상태로 남아 있었어요(이번 실습은 트래픽을 보내지 않았습니다). replicas 3에 기본 롤링 업데이트(<code>maxUnavailable</code> 25%를 내림하면 0, <code>maxSurge</code> 25%를 올림하면 1)라서 새 파드 하나만 먼저 띄우고, 그게 Ready가 되기 전에는 옛 파드를 내리지 않기 때문이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/delivery-safety/images/lab-03/degraded-synced.png" alt="Argo CD 화면 윗부분. 앱 헬스는 Degraded인데 동기화 상태는 Synced, 마지막 동기화는 Sync OK로 표시된다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 같은 실험을 한 번 더 돌려 찍은 화면. Synced와 Sync OK 옆에 Degraded가 함께 있다</div>
+
+<p>여기서 Argo CD의 롤백 명령을 써 봤어요.</p>
+
+<div class="obsv-code">$ argocd app rollback web --core      # kubeconfig 의 현재 네임스페이스를 argocd 로 둔 상태
+rpc error: code = FailedPrecondition desc = rollback cannot be initiated when auto-sync is enabled</div>
+
+<p>자동 동기화가 켜진 앱은 롤백할 수 없다는 문서 그대로예요. 대신 <code>git revert HEAD</code>로 되돌리기 커밋을 만들어 푸시하자 2.7초 만에 Synced, Healthy로 돌아왔습니다. 클러스터를 새로 띄워 다시 해 봤을 때도 Degraded까지 63.2초, 되돌리기 2.8초로 거의 같았어요(<code>out/validate-fresh-cluster.txt</code>). Git 이력에는 잘못된 커밋과 그걸 되돌린 커밋이 둘 다 남아요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 장애 중 손으로 고칠 리소스가 있다면 그 Application의 selfHeal을 잠시 끄거나 같은 변경을 바로 Git에 커밋해요. 둘 다 아니면 첫 번째 손질은 0.3초 만에 사라집니다<br>
+  &bull; 반대로 같은 리소스를 여러 번 고치면 되돌림이 최대 300초까지 늦어져요. "selfHeal이 있으니 금방 원래대로 돌아오겠지"를 기대하지 않는 게 좋아요<br>
+  &bull; 웹훅을 건 뒤에는 argocd-server 로그의 <code>Received push event repo:</code> 주소가 Application의 <code>repoURL</code>과 같은지 한 번 확인해요<br>
+  &bull; 배포 알림은 Synced가 아니라 헬스로 겁니다. 이번 잘못된 커밋은 2.8초 만에 Synced였어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>Argo CD는 손으로 바꾼 replicas를 0.3초 만에 되돌렸지만, 같은 커밋에서 반복해 바꾸면 되돌리는 간격이 4.8초, 16.8초, 52.8초를 거쳐 299초까지 늘었어요.</b> 소스의 지수 백오프(2초, 배수 3, 상한 300초) 그대로였고, 횟수는 시간이 아니라 새 동기화 작업(새 커밋, 수동 동기화, source 변경)이 시작될 때만 0으로 돌아갑니다. Git에 없는 라벨과 손으로 만든 리소스는 드리프트로 보지 않았어요.<br><br>
+  웹훅 없이 푸시한 커밋은 네 번 중 세 번이 216~240초 뒤에야 새 리비전으로 인식돼 "최대 3분"을 넘겼고, 웹훅을 켜자 4초 안팎이었어요. 잘못된 이미지 태그는 Synced인 채로 Degraded가 됐고, 롤백은 <code>git revert</code> 한 번으로 2.7초 만에 끝났습니다. 깃옵스가 되돌리는 속도는 "즉시"가 아니라 백오프와 캐시와 주기가 정해요.
+</div>
+
+</div>

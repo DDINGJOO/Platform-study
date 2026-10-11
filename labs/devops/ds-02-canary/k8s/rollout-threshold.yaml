@@ -1,0 +1,40 @@
+# 시나리오 1: 카나리 20%(5개 중 1개) 에서 에러율 임계값을 본다. 넘으면 자동 중단
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: {name: demo, namespace: ds02}
+spec:
+  replicas: 5
+  revisionHistoryLimit: 3
+  selector: {matchLabels: {app: demo}}
+  template:
+    metadata: {labels: {app: demo}}
+    spec:
+      containers:
+      - name: app
+        image: obs-lab/ds-02-canary:dev
+        imagePullPolicy: Never
+        ports: [{containerPort: 8080}]
+        env:
+        - {name: VERSION, value: v1}
+        - {name: WARMUP_MS, value: "30"}
+        - {name: WARMUP_TAU_S, value: "120"}
+        readinessProbe:
+          httpGet: {path: /healthz, port: 8080}
+          periodSeconds: 5
+          timeoutSeconds: 3
+        resources:
+          requests: {cpu: 20m, memory: 24Mi}
+          limits: {memory: 64Mi}
+  strategy:
+    canary:
+      analysis:
+        templates: [{templateName: error-threshold}]
+        startingStep: 1
+        args:
+        - name: hash
+          valueFrom: {podTemplateHashValue: Latest}
+      steps:
+      - setWeight: 20
+      - pause: {duration: 5m}
+      - setWeight: 50
+      - pause: {duration: 2m}

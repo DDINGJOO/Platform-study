@@ -1,0 +1,48 @@
+# 하이랜더 흉내. 새 버전이 준비되면 바로 넘기고, 옛 ReplicaSet 을 곧바로 내린다.
+# scaleDownDelaySeconds: 0 으로는 옛 ReplicaSet 이 줄지 않았다(rollout-highlander-delay0.yaml, 실습 글 4절).
+# 지연을 기다리며 살려 둘 옛 ReplicaSet 수를 0 으로 제한해서 곧바로 줄인다
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: web
+  namespace: lab
+spec:
+  replicas: 4
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: web
+  strategy:
+    blueGreen:
+      activeService: web            # 운영 트래픽. 승격 순간 셀렉터가 새 ReplicaSet 해시로 바뀐다
+      previewService: web-preview   # 승격 전 새 버전만 보는 입구 (호스트 24081)
+      autoPromotionEnabled: true
+      scaleDownDelayRevisionLimit: 0
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: obs-lab/ds-01-bluegreen:dev
+          imagePullPolicy: Never
+          env:
+            - name: VERSION
+              value: v1
+            - name: STARTUP_DELAY
+              value: 10s
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 1
+            failureThreshold: 1
+          resources:
+            requests:
+              cpu: 20m
+              memory: 16Mi
+            limits:
+              memory: 64Mi

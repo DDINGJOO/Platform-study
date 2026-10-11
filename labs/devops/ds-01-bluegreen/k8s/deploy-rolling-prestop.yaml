@@ -1,0 +1,49 @@
+# 롤링 업데이트 + preStop 5초
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: lab
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: web
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: obs-lab/ds-01-bluegreen:dev
+          imagePullPolicy: Never
+          env:
+            - name: VERSION
+              value: v1
+            - name: STARTUP_DELAY
+              value: 10s
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 1
+            failureThreshold: 1
+          lifecycle:
+            preStop:
+              # 엔드포인트에서 빠지는 동안 몇 초 더 요청을 받는다
+              sleep:
+                seconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 16Mi
+            limits:
+              memory: 64Mi

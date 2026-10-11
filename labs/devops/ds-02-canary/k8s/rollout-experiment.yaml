@@ -1,0 +1,52 @@
+# 시나리오 2, 3: 운영본과 같은 버전의 대조군(baseline)과 카나리를 같이 띄워 통계로 비교한다
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: {name: demo, namespace: ds02}
+spec:
+  replicas: 5
+  revisionHistoryLimit: 3
+  selector: {matchLabels: {app: demo}}
+  template:
+    metadata: {labels: {app: demo}}
+    spec:
+      containers:
+      - name: app
+        image: obs-lab/ds-02-canary:dev
+        imagePullPolicy: Never
+        ports: [{containerPort: 8080}]
+        env:
+        - {name: VERSION, value: v1}
+        - {name: WARMUP_MS, value: "30"}
+        - {name: WARMUP_TAU_S, value: "120"}
+        readinessProbe:
+          httpGet: {path: /healthz, port: 8080}
+          periodSeconds: 5
+          timeoutSeconds: 3
+        resources:
+          requests: {cpu: 20m, memory: 24Mi}
+          limits: {memory: 64Mi}
+  strategy:
+    canary:
+      steps:
+      - experiment:
+          duration: 10m
+          templates:
+          - {name: baseline, specRef: stable, replicas: 1}
+          - {name: canary, specRef: canary, replicas: 1}
+          analyses:
+          # 판정: 같이 띄운 대조군과 비교. 실패하면 롤아웃 중단
+          - name: vs-baseline
+            templateName: mw-judge
+            args:
+            - {name: control, value: "{{templates.baseline.podTemplateHash}}"}
+            - {name: experiment, value: "{{templates.canary.podTemplateHash}}"}
+            - {name: label, value: vs-baseline}
+          # 기록만: 오래 떠 있던 운영본 전체와 비교
+          - name: vs-production
+            templateName: mw-observe
+            args:
+            - {name: control, valueFrom: {podTemplateHashValue: Stable}}
+            - {name: experiment, value: "{{templates.canary.podTemplateHash}}"}
+            - {name: label, value: vs-production}
+      - setWeight: 20
+      - pause: {duration: 1m}

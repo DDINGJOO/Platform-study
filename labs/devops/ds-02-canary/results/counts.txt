@@ -1,0 +1,34 @@
+# 글에 쓴 숫자 중 판정 로그(raw)에 남지 않는 것. 실행 중에 Prometheus(포트 25090)에 직접 물어 본 값을
+# 그대로 옮겼다. 클러스터를 지운 뒤라 다시 물을 수는 없다. 시각은 쓰지 않고 어느 구간인지로 적는다.
+
+## 시나리오 1 (에러율 임계값, v2-bad)
+query: max by (code)(max_over_time(demo_requests_total{version="v2-bad"}[10m]))   # 중단 직후
+  code 200 : 375
+  code 500 : 36          -> 카나리 요청 411건 중 500 36건 (카나리 파드의 마지막 스크레이프 기준)
+
+## 시나리오 2b (v3-slow) 세 번째 판정 시점, Experiment 파드의 스크레이프
+query: count_over_time(up{pod=~".*-3-0-(baseline|canary).*"}[8m])     -> 각 172
+query: sum_over_time(up{pod=~".*-3-0-(baseline|canary).*"}[8m])       -> 각 172
+  8분 x 2초 스크레이프 = 240번이어야 하는데 172번만 기록됐다
+
+## 시나리오 3 (저트래픽) 각 10분 구간 끝에서
+query: sum by (code)(increase(demo_requests_total{hash="<해시>"}[10m]))
+  초당 50건 : 대조군 200=4288          카나리 200=4255 500=37  -> 4,292 / 37 (0.86%)
+  초당 10건 : 대조군 200=845           카나리 200=853  500=16  -> 869 / 16 (1.8%)
+  초당  2건 : 대조군 200=183           카나리 200=166  500=0   -> 166 / 0
+
+## 시나리오 3, 초당 50건 구간의 에러율 점 (judge.py 의 error_ratio 쿼리와 같은 식을 query_range 로)
+  step 10초 (rate 창 10초) : 카나리 점 61개 중 0 인 점 비율 0.639 (39개), 최댓값 0.0508
+                             mann_whitney_u_test -> 하한 0.0, 상한 5.04e-05, 추정치 6.75e-05 -> Pass
+  step 60초 (rate 창 60초) : 카나리 점 11개 중 0 인 점 비율 0.0
+                             mann_whitney_u_test -> 하한 0.00504, 상한 0.0119, 추정치 0.0094 -> High
+  점별 값은 저장하지 않았다. 순위 검정 통계량(z)은 0 39개와 양수 22개(1/70, 2/70)로 다시 만든 표본으로
+  judge/mannwhitney.py 의 wilcoxon_diff(0, 0, x, y) 를 계산한 값이다: z = 5.13
+  짝 차이: 61 x 61 = 3,721개 중 0 인 것 39 x 61 = 2,379개 (64%)
+
+## 이식 판정기, 근 찾기를 이분법으로 짰던 첫 판의 test_port.py 결과
+  FAIL Mann-Whitney Confidence Interval & Estimate: Problem Case
+  FAIL Mann-Whitney Confidence Interval & Estimate: Tie out with R Version
+  FAIL Mann-Whitney Confidence Interval & Estimate: Tie out with R Version (Large)
+  FAIL Mann-Whitney Classifier Test: High Metric (Large Input)
+  (BrentSolver.java 를 그대로 옮긴 뒤 22건 모두 OK. port-vs-kayenta-tests.txt)

@@ -1,0 +1,28 @@
+# 실습 중에 컨트롤러·서버 로그와 노드에서 직접 읽은 값을 옮겨 적은 것 (벽시계 시각 대신 상대 시각)
+#   kubectl -n argocd logs statefulset/argocd-application-controller | grep '"application":"web"'
+#   kubectl -n argocd logs deploy/argocd-server | grep 'push event'
+#   docker exec ds-03-control-plane cat /proc/loadavg
+
+## 1. selfHeal 백오프 로그 (drift-scale-under-load.txt 를 만든 실행, 4~6회차 무렵)
++0s     Skipping auto-sync: already attempted sync to [52ba8c5...] with timeout 0s (retrying in 5.608040203s)
++104s   Skipping auto-sync: already attempted sync to [52ba8c5...] with timeout 0s (retrying in 19.707385321s)
++170s   Skipping auto-sync: already attempted sync to [52ba8c5...] with timeout 0s (retrying in 2m39.66363975s)
+
+## 2. 새 커밋 동기화 직후 같은 리비전으로 한 번 더 동기화 (autoHealAttemptsCount 가 1 로 시작한 이유로 본 것)
++0s     Initiated automated sync to '5232b2e...'
++3s     Sync operation to 5232b2e... succeeded
++3s     Initiated automated sync to '5232b2e...'      <- 같은 리비전, 곧바로 한 번 더
+(git-change 직후 확인: autoHealAttemptsCount=1, sync=Synced)
+
+## 3. 웹훅이 repoURL 불일치로 무시되던 회차 (poll-refresh-intervals.txt 의 마지막 부분)
+-8s     Refreshing app status (comparison expired, requesting refresh ...), level (2)   <- 이때 main 을 해석해 캐시
+ 0s     argocd-server: Received push event repo: http://localhost:26030/lab/demo ...    <- 푸시(웹훅 도착)
++152s   Refreshing app status (comparison expired ...), level (2)                        <- 새 커밋 못 봄
++396s   Refreshing app status (comparison expired ...), level (2)                        <- 새 리비전 인식
++437s   Initiated automated sync to 'fd33a52...'
+
+## 4. Docker Desktop VM 의 load average (ds-03 노드 컨테이너 안 /proc/loadavg, 1분 평균)
+drift-scale-accumulated.txt 실행 중      164.97, 161.77, 95.83
+웹훅이 무시되던 git-change 실행 중       184.32
+drift-scale-under-load.txt 끝난 직후     15.39
+drift-scale-clean.txt 직전 / 직후        11.68 / 6.92

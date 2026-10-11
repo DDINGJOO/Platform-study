@@ -1,0 +1,37 @@
+# 초당 RATE 건을 일정하게 보낸다(open model). 매 요청 새 연결이라 kube-proxy 가 요청마다 파드를 고른다
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: load, namespace: ds02}
+data:
+  load.js: |
+    import http from 'k6/http';
+    export const options = {
+      noConnectionReuse: true,
+      discardResponseBodies: true,
+      scenarios: { steady: {
+        executor: 'constant-arrival-rate',
+        rate: Number(__ENV.RATE || 50), timeUnit: '1s',
+        duration: __ENV.DURATION || '3h',
+        preAllocatedVUs: 50, maxVUs: 200 } },
+    };
+    export default function () { http.get('http://demo.ds02/work'); }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: load, namespace: ds02}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: k6
+        image: grafana/k6:2.3.0
+        args: [run, --quiet, /scripts/load.js]
+        env:
+        - {name: RATE, value: "50"}
+        resources:
+          requests: {cpu: 100m, memory: 64Mi}
+          limits: {memory: 256Mi}
+        volumeMounts: [{name: s, mountPath: /scripts}]
+      volumes: [{name: s, configMap: {name: load}}]

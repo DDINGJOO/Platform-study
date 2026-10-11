@@ -1,0 +1,46 @@
+# 블루그린. 사람이 promote 해야 넘어가고, 넘어간 뒤 옛 ReplicaSet 을 60초 살려 둔다
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: web
+  namespace: lab
+spec:
+  replicas: 4
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: web
+  strategy:
+    blueGreen:
+      activeService: web            # 운영 트래픽. 승격 순간 셀렉터가 새 ReplicaSet 해시로 바뀐다
+      previewService: web-preview   # 승격 전 새 버전만 보는 입구 (호스트 24081)
+      autoPromotionEnabled: false
+      scaleDownDelaySeconds: 60
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: obs-lab/ds-01-bluegreen:dev
+          imagePullPolicy: Never
+          env:
+            - name: VERSION
+              value: v1
+            - name: STARTUP_DELAY
+              value: 10s
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 1
+            failureThreshold: 1
+          resources:
+            requests:
+              cpu: 20m
+              memory: 16Mi
+            limits:
+              memory: 64Mi

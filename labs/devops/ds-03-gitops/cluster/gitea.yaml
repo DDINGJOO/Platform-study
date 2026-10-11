@@ -1,0 +1,58 @@
+# 실습용 git 서버. 데이터는 emptyDir 라 파드가 죽으면 저장소도 사라진다.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitea
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: gitea
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: gitea}
+  template:
+    metadata:
+      labels: {app: gitea}
+    spec:
+      containers:
+        - name: gitea
+          image: gitea/gitea:28.1.0-rootless
+          ports:
+            - containerPort: 3000
+          env:
+            - {name: GITEA__security__INSTALL_LOCK, value: "true"}
+            - {name: GITEA__database__DB_TYPE, value: sqlite3}
+            # 웹훅 페이로드의 저장소 주소가 이 값으로 만들어진다. Argo CD 는 그 주소를 Application 의 repoURL 과
+            # 비교하므로, 클러스터 안 주소(repoURL 과 같은 것)로 둬야 웹훅이 맞는 앱을 찾는다.
+            - {name: GITEA__server__ROOT_URL, value: "http://gitea.gitea.svc:3000/"}
+            - {name: GITEA__server__DISABLE_SSH, value: "true"}
+            - {name: GITEA__service__DISABLE_REGISTRATION, value: "true"}
+            # 기본값(external)은 사설 IP 로 가는 웹훅을 막는다. 클러스터 안 argocd-server 는 사설 IP 라 private 를 허용한다.
+            # 28.x 에서는 [webhook] 이 아니라 [security] 아래 키이고, "*" 는 거부된다.
+            - {name: GITEA__security__ALLOWED_HOST_LIST, value: "private"}
+            - {name: GITEA__repository__DEFAULT_BRANCH, value: main}
+          resources:
+            requests: {memory: 128Mi}
+            limits: {memory: 384Mi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/gitea}
+            - {name: conf, mountPath: /etc/gitea}
+      volumes:
+        - {name: data, emptyDir: {}}
+        - {name: conf, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea
+  namespace: gitea
+spec:
+  type: NodePort
+  selector: {app: gitea}
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30030

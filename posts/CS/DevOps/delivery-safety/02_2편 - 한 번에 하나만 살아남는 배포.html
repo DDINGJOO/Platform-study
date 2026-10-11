@@ -1,0 +1,320 @@
+<!-- lead: 롤백이 몇 초 걸릴지는 배포하기 전에 고른 전략이 정해요. delete+none, 하이랜더, 블루/그린, 쿠버네티스 롤링 업데이트를 두 버전이 함께 사는 시간, 롤백 방식, 남겨 두는 자원으로 비교했어요. -->
+<!-- tags: 블루그린 배포, 하이랜더, 롤링 업데이트, maxSurge, 롤백 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚀 배포 안전성, 2편</div>
+  1편. 같은 앱도 플랫폼마다 다른 모양으로 포장된다<br>
+  <b>2편. 한 번에 하나만 살아남는 배포</b> &larr; 지금 이 글<br>
+  3편. 카나리는 누구와 비교하느냐가 전부다<br>
+  4편. 깃옵스는 배포를 밀지 않고 당긴다<br>
+  실습-1. 하이랜더와 블루그린을 Argo Rollouts로 돌려 본다<br>
+  실습-2. 카나리를 통계로 판정해 자동으로 되돌린다<br>
+  실습-3. 클러스터를 손으로 고치면 깃옵스가 되돌린다
+</div>
+
+<p>오후 다섯 시 반, 새 버전이 운영에 나갔습니다. 10분쯤 지나 결제 실패율 그래프가 평소의 세 배로 올라가요. 원인은 아직 모르지만 할 일은 분명합니다. 일단 되돌려야 해요. 누군가 "롤백 눌렀어요"라고 말하고, 모두 그래프를 봅니다.</p>
+
+<p>그래프가 내려오는 데 걸리는 시간은 그 순간에 정해지지 않아요. <b>배포하기 전에 고른 전략이 이미 정해 놓았습니다.</b> 옛 버전 인스턴스가 아직 떠 있다면 트래픽만 돌리면 되니 몇 초면 끝나요. 이미 지워졌다면 옛 버전을 처음부터 다시 띄워야 하니 기동 시간만큼 기다려야 합니다. 그 사이 실패는 계속 쌓여요.</p>
+
+<p>1편에서 배포 단위가 버전 하나짜리 묶음, 곧 서버 그룹이라는 것을 봤어요. 이번 편은 그 묶음을 갈아 끼우는 방법들입니다. 옛 묶음을 언제 내리느냐가 전략마다 다르고, 그 선택이 다운타임, 두 버전이 함께 사는 시간, 롤백 속도, 비용을 한꺼번에 정해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 다운타임을 받아들이는 배포는 언제 오히려 맞는 선택인가?<br>
+  &bull; 하이랜더는 왜 "하나만 살아남는다"가 아니라 "대체로 하나만 살아남는다"인가?<br>
+  &bull; 블루/그린의 롤백은 왜 빠르고, 그 대가는 무엇인가?<br>
+  &bull; 로드 밸런서를 돌려도 따라오지 않는 것은 무엇인가?<br>
+  &bull; 쿠버네티스 Deployment의 롤링 업데이트는 이 중 어디에 속하는가?
+</div>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 지우고 나서 띄운다: delete + none</h2>
+
+<p>가장 단순한 방법부터 볼게요. 옛 버전을 전부 내린 다음 새 버전을 띄웁니다. Spinnaker로 하면 옛 서버 그룹을 지우는(delete) 단계 뒤에 기존 버전을 건드리지 않는 None 전략으로 배포하는 모양이라, 이 글에서는 delete + none이라고 부를게요. Spinnaker 공식 전략 이름에 이 용어가 따로 있지는 않아요. 쿠버네티스 Deployment에서는 <code>strategy.type: Recreate</code>가 같은 모양이에요.</p>
+
+<p>당연히 다운타임이 생깁니다. 옛 인스턴스가 종료를 마친 순간부터 새 인스턴스가 요청을 받을 준비가 될 때까지, 요청을 받을 인스턴스가 하나도 없어요. 다운타임 길이는 대략 <b>종료 시간 + 기동 시간</b>입니다. 실습-1에서 기동에 10초가 걸리는 앱으로 재 보니 배포 명령부터 새 버전의 첫 응답까지 12초 안팎(11.9초, 12.9초)이 비었어요.</p>
+
+<p>그 빈 시간에 클라이언트가 무엇을 겪는지도 생각보다 나빴어요. 받을 파드가 없는 Service라면 연결이 즉시 거부될 것 같지만, 실습에서는 실패의 대부분이 클라이언트 타임아웃(2초)이었습니다. kube-proxy는 거부 규칙을 넣었는데, 리눅스 커널이 거부를 알리는 ICMP 메시지를 대상마다 초당 한 번 정도로 제한하기 때문이에요(<code>net.ipv4.icmp_ratelimit</code>). 요청이 많은 클라이언트일수록 빠른 거부 대신 긴 타임아웃을 보게 됩니다.</p>
+
+<p>그런데 이 방식에만 있는 장점이 있어요. <span class="obsv-mark">두 버전이 동시에 요청을 받는 순간이 없습니다.</span> 그래서 새 버전의 API가 옛 버전과 호환될 필요가 없고, 이 서비스를 호출하는 쪽도 배포 순서를 맞출 필요가 없어요. 데이터 형식을 한 번에 바꿔야 하는 마이그레이션, 같은 자원을 두 프로세스가 동시에 잡으면 안 되는 작업(단일 소비자여야 하는 배치, 라이선스가 한 대로 묶인 소프트웨어)에서는 이 성질이 다운타임보다 중요할 수 있습니다.</p>
+
+<p>쿠버네티스 문서도 Recreate의 보장 범위를 정확히 적어 둡니다. Recreate는 <b>업그레이드할 때만</b> 옛 파드 종료를 새 파드 생성보다 먼저 하도록 보장해요. 누군가 파드를 손으로 지우면 ReplicaSet이 곧바로 대체 파드를 만들기 때문에, 옛 파드가 아직 Terminating 상태여도 새 파드가 뜰 수 있습니다. "동시에 최대 하나"를 반드시 지켜야 한다면 StatefulSet을 고려하라고 안내해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 다운타임 (downtime)</div>
+  서비스가 요청을 처리하지 못하는 시간입니다. 배포에서는 요청을 받을 준비가 된 인스턴스가 하나도 없는 구간을 말해요. 응답이 느려지는 것과 구분해서, 연결이 거부되거나 오류가 나는 구간만 셉니다.
+</div>
+
+<p>하나 짚어 둘 것은, VM에 접속해 jar를 바꾸고 재시작하는 방식도 겉보기에는 delete + none이지만 불변 배포는 아니라는 점이에요. 서버를 제자리에서 고쳤기 때문에 1편에서 말한 "지금 도는 묶음은 어떤 버전인가"라는 질문에 답이 흐려집니다. 이 글에서 다루는 전략은 모두 새 서버 그룹을 만드는 쪽을 전제로 해요.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 하이랜더: 새것이 준비되면 옛것은 모두 지운다</h2>
+
+<p>하이랜더라는 이름은 "오직 하나만 살아남는다"는 대사로 유명한 영화에서 왔어요. Spinnaker 문서의 정의는 이렇습니다. 새 버전을 기존 버전들 옆에 배포하고, 클라이언트 트래픽을 새 버전으로 보낸 다음, <b>클러스터의 기존 버전을 비활성화하고 파괴</b>한다(Spinnaker 문서, Rollout Strategies). 배포가 끝나면 클러스터에는 서버 그룹이 하나만 남아요.</p>
+
+<p>delete + none과 달리 다운타임이 없습니다. 새 서버 그룹이 정상이 된 다음에 옛것을 지우니까요. 대신 새 그룹을 로드 밸런서에 붙인 순간부터 옛 그룹이 빠질 때까지 <b>짧게나마 두 버전이 함께 요청을 받아요.</b> 그래서 정확히는 "대체로 하나만 살아남는다"이고, 그 짧은 겹침 동안에는 두 버전의 API가 호환돼야 합니다.</p>
+
+<p>하이랜더가 인기 있는 이유는 단순함이에요. 클러스터에 서버 그룹이 하나뿐이니 "지금 무엇이 떠 있나"를 따질 일이 없고, 옛 버전이 남아서 큐를 소비하거나 캐시를 덮어쓰는 간섭도 생기지 않습니다. 비용도 배포하는 동안 잠깐 두 배가 될 뿐이에요.</p>
+
+<p>약점은 롤백입니다. 옛 서버 그룹이 이미 없으니 롤백은 <b>옛 버전으로 새 배포를 한 번 더 하는 일</b>이에요. 서버 그룹 순번도 새로 붙습니다. 롤백에 걸리는 시간은 옛 이미지로 인스턴스를 띄우고 준비시키는 시간과 같아요. 기동에 몇 분 걸리는 앱이라면 그 몇 분 동안 문제 있는 버전이 계속 트래픽을 받습니다.</p>
+
+<p>쿠버네티스에서 하이랜더를 이름 그대로 제공하는 건 Spinnaker의 쿠버네티스 제공자예요. 문서에 따르면 Deploy (Manifest) 단계의 Rollout Strategy Options에서 Highlander를 고를 수 있고, 이 기능은 ReplicaSet에만 적용됩니다. Argo Rollouts에는 하이랜더라는 전략이 따로 없어서, 블루/그린에서 자동 승격을 켜고 옛 ReplicaSet을 곧바로 줄이게 설정하면 비슷한 모양이 돼요. 실습-1이 이 방법으로 하이랜더를 흉내 냈는데, "곧바로 줄이게"를 표현하는 설정이 생각과 달라서 한 번 헤맸습니다. 그 이야기는 아래 3장의 주의 상자에 적었어요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 블루/그린: 옛것을 꺼 두기만 한다</h2>
+
+<p>블루/그린은 하이랜더에서 마지막 단계 하나를 바꿉니다. 옛 서버 그룹을 <b>지우지 않고 비활성화만</b> 해요. Spinnaker 문서의 표현으로는, 새 버전을 배포하고 트래픽을 보낸 다음 기존 버전을 비활성화합니다. 정리가 필요하면 뒤에 파괴 단계를 따로 붙이고, 롤백은 활성화(Enable) 단계나 클러스터 화면의 즉석 활성화로 한다고 적어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 비활성화 (disable)</div>
+  서버 그룹의 인스턴스를 그대로 둔 채 로드 밸런서에서만 떼어 내는 것입니다. 쿠버네티스에서는 Service의 셀렉터가 그 파드를 더는 고르지 않게 레이블을 바꾸는 방식으로 해요. 인스턴스는 살아 있으니 다시 붙이면 바로 트래픽을 받습니다.
+</div>
+
+<p>Martin Fowler는 2010년 글에서 블루/그린을 "가능한 한 똑같은 운영 환경 두 벌"을 두는 방식으로 설명하고, 장점으로 빠른 롤백을 꼽았어요. 문제가 생기면 라우터를 다시 블루 쪽으로 돌리면 된다는 거예요. 이름의 색은 의미가 없습니다. Netflix와 Spinnaker는 같은 것을 레드/블랙이라고 불렀어요. Spinnaker 1.30에서 쿠버네티스 롤아웃 전략의 이름이 Red/Black에서 Blue/Green으로 바뀌었고, Red/Black은 폐기 예정(deprecated)으로 남았습니다. 실제로는 활성 그룹 하나에 비활성 그룹 여러 개, 1:N 관계가 될 수 있습니다. 배포를 거듭할 때마다 비활성 그룹이 하나씩 쌓이니까요.</p>
+
+<p>블루/그린의 롤백이 빠른 이유는 하나예요. <b>되돌아갈 옛 인스턴스가 이미 떠 있고, 준비도 끝나 있기 때문입니다.</b> 그 대가는 비용이에요. 운영 인스턴스 말고도 롤백에 대비한 옛 버전 인스턴스를 계속 띄워 둬야 합니다. 그래서 실제로는 비활성 그룹을 얼마나 크게, 얼마나 오래 남길지를 조절해요. 그림 1이 그 선택지를 한 줄에 늘어놓은 거예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="p2a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M40 200 C 200 198, 470 202, 662 199" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" marker-start="url(#p2a1)" marker-end="url(#p2a1)"/>
+  <text x="40" y="232" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">💰 자원 비용 적음</text>
+  <text x="660" y="232" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">⏱️ 롤백 빠름</text>
+  <!-- 4 points -->
+  <path d="M30 70 C 70 68, 110 71, 148 69 C 150 100, 149 140, 150 170 C 110 172, 70 169, 31 171 C 28 140, 29 100, 30 70 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="90" y="96" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">하이랜더</text>
+  <text x="90" y="122" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">옛 그룹 삭제</text>
+  <text x="90" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">롤백 = 재배포</text>
+  <path d="M190 70 C 230 68, 270 71, 308 69 C 310 100, 309 140, 310 170 C 270 172, 230 169, 191 171 C 188 140, 189 100, 190 70 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="250" y="96" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">블루/그린</text>
+  <text x="250" y="122" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">비활성, 인스턴스 0</text>
+  <text x="250" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">롤백 = 기동 시간</text>
+  <path d="M350 70 C 390 68, 430 71, 468 69 C 470 100, 469 140, 470 170 C 430 172, 390 169, 351 171 C 348 140, 349 100, 350 70 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="410" y="96" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">블루/그린</text>
+  <text x="410" y="122" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">비활성, 일부만</text>
+  <text x="410" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">일부 즉시 + 증설</text>
+  <path d="M510 70 C 550 68, 600 71, 650 69 C 652 100, 651 140, 652 170 C 600 172, 550 169, 511 171 C 508 140, 509 100, 510 70 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+  <text x="580" y="96" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">블루/그린</text>
+  <text x="580" y="122" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">비활성, 전체 유지</text>
+  <text x="580" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">롤백 = 전환만</text>
+  <text x="350" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">옛 서버 그룹을 얼마나 남겨 둘까</text>
+  <text x="350" y="282" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 롤백 속도는 남겨 둔 인스턴스 수가 정한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 하이랜더와 블루/그린은 한 축의 양 끝이다</div>
+
+<p>비활성 그룹의 인스턴스를 0으로 줄여 두면 그룹 정의는 남지만 롤백 속도는 하이랜더와 비슷해져요. 인스턴스를 새로 띄워야 하니까요. 일부만 남기면 롤백 직후에는 남은 인스턴스만으로 트래픽을 받아야 하니 그 수가 감당할 수 있는 양인지 따져야 하고요. 어느 지점이 맞는지는 조직 전체가 한 번에 정할 일이 아니라 <b>서비스마다</b> 정할 일입니다. 인스턴스 수백 대짜리 서비스의 비활성 그룹을 전부 띄워 두는 값과 세 대짜리 서비스의 값은 다르고, 기동에 10분 걸리는 앱과 3초 걸리는 앱의 롤백 시간도 달라요.</p>
+
+<p>쿠버네티스에서 블루/그린을 자주 하는 도구인 Argo Rollouts는 이 축을 설정 몇 개로 노출합니다(Argo Rollouts 문서, BlueGreen).</p>
+
+<div class="obsv-code">strategy:
+  blueGreen:
+    activeService: web            # 운영 트래픽. 승격 순간 셀렉터의 해시가 새 ReplicaSet 으로 바뀐다
+    previewService: web-preview   # 승격 전 새 버전만 보는 입구
+    autoPromotionEnabled: false   # 기본 true. false 면 사람이 promote 할 때까지 멈춘다
+    scaleDownDelaySeconds: 30     # 기본 30. 전환 뒤 옛 ReplicaSet 을 줄이기 전 기다리는 시간
+    previewReplicaCount: 1        # 생략하면 승격 전에도 새 ReplicaSet 을 100% 띄운다</div>
+
+<h3>전환은 새 연결에만 일어난다</h3>
+
+<p>"트래픽을 돌린다"는 말에는 단서가 하나 붙어요. 쿠버네티스 Service의 라우팅 규칙은 <b>새 연결</b>이 어느 파드로 갈지를 정합니다. 셀렉터를 바꿔도 이미 맺어진 TCP 연결은 원래 파드로 계속 가요. HTTP 클라이언트 대부분은 연결을 재사용(keep-alive)하니, 이런 클라이언트는 옛 파드가 살아 있는 동안 옛 버전과 계속 이야기합니다.</p>
+
+<p>실습-1에서 이것을 쟀어요. 연결을 재사용하는 부하 생성기는 블루/그린 승격 뒤에도 옛 ReplicaSet이 줄어들 때까지 60초 동안 응답 전부를 옛 버전에서 받았고, 반대로 롤백한 실행에서는 실행이 끝날 때(롤백 승격 뒤 약 59초)까지 4,001건 전부를 문제 버전에서 받았어요. 요청마다 새 연결을 여는 쪽은 승격과 롤백 모두 1초 남짓에 넘어갔습니다. 그러니 블루/그린의 빠른 롤백은 <span class="obsv-mark">새 연결에 대해서는 즉시, 기존 연결에 대해서는 옛 파드가 내려갈 때</span> 일어나요. 모든 사용자에게 바로 적용하려면 앱이나 클라이언트가 연결 수명을 제한해야 합니다.</p>
+
+<p>Argo Rollouts의 롤백 문서에는 블루/그린에서만 생기는 예외가 하나 적혀 있어요. 보통 옛 버전으로 되돌리는 것도 새 변경으로 취급해 정해진 단계를 처음부터 밟는데, <b>되돌아갈 ReplicaSet이 아직 <code>scaleDownDelay</code> 안이라 떠 있으면</b> 그 과정을 건너뛴다는 거예요. 블루/그린의 빠른 롤백은 옛 인스턴스가 떠 있는 동안에만 성립한다는 걸 설정으로 그대로 보여 줍니다. 실습-1에서 이 창이 닫힌 뒤에 되돌려 보니 기동 시간만큼(12.5초) 걸렸고, 자동 승격을 꺼 둔 Rollout은 되돌리는 중에도 <b>다시 승격 대기로 멈췄어요.</b> 롤백인데도 새 배포와 같은 단계를 밟은 거예요. 창 안에서는 1.2초였습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 하이랜더도 옛것을 "즉시" 지우면 안 된다</div>
+  쿠버네티스에서 Service의 셀렉터를 바꿔도 모든 노드의 라우팅 규칙이 동시에 바뀌지는 않아요. Argo Rollouts 문서는 셀렉터를 바꾼 뒤 노드들이 iptables를 갱신하기까지 전파 지연이 있고, 그동안 트래픽이 옛 파드로 갈 수 있어서 <code>scaleDownDelaySeconds</code>로 옛 파드를 잠시 살려 둔다고 설명해요. 옛 서버 그룹을 지우는 하이랜더도 전환과 삭제 사이에 이 여유는 둬야 합니다. 실습-1에서 옛 ReplicaSet을 전환과 동시에 내리자, 노드가 하나뿐인 클러스터에서도 전환 순간 1초 동안 보낸 요청 37건이 실패했어요.<br><br>
+그리고 Argo Rollouts에서 "즉시"를 <code>scaleDownDelaySeconds: 0</code>으로 표현하면 안 돼요. 1.10.0에서도 이 값은 옛 ReplicaSet을 줄이지 않고 계속 남겨 둡니다(이슈 #1992, 2022년부터 열려 있음). 바로 줄이려면 <code>scaleDownDelayRevisionLimit: 0</code>을 써야 했어요.
+</div>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 로드 밸런서를 돌려도 따라오지 않는 것들</h2>
+
+<p>블루/그린의 그림은 "로드 밸런서가 가리키는 쪽만 일한다"는 전제 위에 있어요. 순수한 HTTP 서비스라면 그 전제가 대체로 맞습니다. 그렇지 않은 경우가 세 가지 있어요.</p>
+
+<h3>큐를 소비하는 서비스</h3>
+
+<p>Kafka 토픽이나 RabbitMQ 큐에서 메시지를 꺼내 처리하는 서비스를 떠올려 볼게요. 이 서비스의 입력은 로드 밸런서를 지나지 않습니다. 인스턴스가 직접 브로커에 붙어서 메시지를 당겨 와요. 그러니 로드 밸런서에서 옛 그룹을 떼어 내도 <span class="obsv-mark">비활성 그룹은 계속 메시지를 소비합니다.</span> 문제를 일으킨 새 버전에서 옛 버전으로 롤백했는데, 그동안 옛 버전은 꺼진 줄 알았던 상태로 메시지를 처리하고 있었던 셈이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="p2a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M30 60 C 90 58, 150 61, 196 59 C 198 80, 197 100, 198 118 C 150 120, 90 117, 31 119 C 28 100, 29 80, 30 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="114" y="86" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">⚖️ 로드 밸런서</text>
+  <text x="114" y="108" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">HTTP 요청</text>
+  <path d="M30 170 C 90 168, 150 171, 196 169 C 198 190, 197 210, 198 228 C 150 230, 90 227, 31 229 C 28 210, 29 190, 30 170 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="114" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">📨 Kafka 토픽</text>
+  <text x="114" y="218" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">소비자가 당겨 간다</text>
+  <path d="M450 50 C 520 48, 590 51, 664 49 C 666 74, 665 96, 666 118 C 590 120, 520 117, 451 119 C 448 96, 449 74, 450 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
+  <text x="557" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">v2 (활성)</text>
+  <text x="557" y="104" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">HTTP도, 메시지도 받는다</text>
+  <path d="M450 160 C 520 158, 590 161, 664 159 C 666 184, 665 206, 666 228 C 590 230, 520 227, 451 229 C 448 206, 449 184, 450 160 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-dasharray="8 8"/>
+  <text x="557" y="190" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">v1 (비활성?)</text>
+  <text x="557" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">HTTP는 끊겼지만 메시지는 계속</text>
+  <path d="M200 86 C 300 80, 380 78, 444 82" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2a2)"/>
+  <path d="M200 106 C 300 130, 380 150, 444 172" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round" stroke-dasharray="1 7"/>
+  <text x="300" y="122" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">셀렉터에서 뺐다</text>
+  <path d="M200 192 C 300 170, 380 130, 444 104" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2a2)"/>
+  <path d="M200 206 C 300 206, 380 200, 444 196" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" marker-end="url(#p2a2)"/>
+  <text x="350" y="266" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 비활성은 로드 밸런서 기준이다. 큐는 그 기준을 모른다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 로드 밸런서에서 뺀 그룹도 큐는 계속 소비한다</div>
+
+<p>해결하려면 앱이 "나는 지금 비활성이다"라는 신호를 받아 스스로 소비를 멈춰야 해요. Netflix 계열에서는 서비스 디스커버리인 Eureka가 그 신호를 줍니다. Eureka REST API는 인스턴스를 서비스에서 빼는 호출(<code>PUT .../status?value=OUT_OF_SERVICE</code>)과 다시 넣는 호출(<code>DELETE .../status</code>)을 제공하고, 앱은 Eureka 클라이언트의 상태 변경 이벤트를 받아 큐 연결을 끊거나 다시 잇습니다. Consul 같은 다른 저장소도 쓸 수 있는데, 조건은 둘이에요. 앱이 이벤트를 거의 실시간으로 받을 수 있어야 하고, 자기가 어느 서버 그룹에 속하는지 코드에서 알 수 있어야 해요.</p>
+
+<p>gRPC 양방향 스트림이나 RSocket처럼 연결을 오래 유지하는 서비스도 같은 문제를 겪습니다. 로드 밸런서는 새 연결을 어디로 보낼지만 정하니, 이미 맺어진 연결은 비활성 그룹에 그대로 붙어 있어요. 비활성화된 그룹은 들어오고 나가는 지속 연결을 스스로 닫아야 합니다. 이 일을 감당하기 어렵다면 큐 소비 서비스는 비활성 그룹을 인스턴스 0으로 두는 쪽, 곧 그림 1의 왼쪽으로 가는 게 현실적이에요.</p>
+
+<h3>세션</h3>
+
+<p>로그인 세션을 인스턴스 메모리에 두는 앱은 전환하는 순간 세션을 잃어요. 블루에 붙어 있던 사용자가 그린으로 넘어가면 다시 로그인해야 합니다. 롤백할 때도 같은 일이 반대 방향으로 일어나요. 세션은 Redis 같은 외부 저장소로 옮기거나 토큰에 담아, 어느 버전의 인스턴스가 받든 같은 결과가 나오게 해 둬야 합니다. 1편에서 말한 무상태 조건이 여기서 다시 나와요.</p>
+
+<h3>데이터베이스 스키마</h3>
+
+<p>가장 까다로운 건 데이터예요. 블루와 그린은 보통 같은 데이터베이스를 씁니다. 새 버전이 컬럼 이름을 바꾸는 마이그레이션을 함께 돌렸다면, 옛 버전은 그 순간부터 쿼리가 깨져요. 블루/그린의 빠른 롤백이 아무 의미가 없어집니다. 그리고 새 버전이 몇 분 동안 새 형식으로 쓴 데이터는 롤백해도 그대로 남아요. <b>코드를 되돌리는 것은 데이터를 되돌리는 것이 아닙니다.</b></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 확장과 축소 (expand and contract)</div>
+  하위 호환되지 않는 변경을 세 단계로 나눠 하는 방법입니다. 먼저 옛것과 새것을 모두 지원하도록 넓히고(확장), 사용하는 쪽을 새것으로 옮기고(이전), 아무도 옛것을 쓰지 않게 되면 옛것을 지워요(축소). Danilo Sato가 2014년 martinfowler.com에 parallel change라는 이름으로 정리했습니다.
+</div>
+
+<p>Fowler의 블루/그린 글도 스키마 변경을 앱 배포와 떼어 내라고 권해요. 먼저 옛 버전과 새 버전을 모두 지원하는 스키마 변경을 적용해 확인하고, 그다음 새 앱을 배포하고, 업그레이드가 자리 잡은 뒤에 옛 지원을 걷어 내라는 거예요. 컬럼 이름을 바꾸고 싶다면 새 컬럼 추가, 두 컬럼에 같이 쓰기, 읽기를 새 컬럼으로 옮기기, 옛 컬럼 삭제를 각각 다른 배포로 나눕니다. 번거롭지만 이렇게 해야 어느 시점에 롤백해도 옛 버전이 데이터베이스를 읽을 수 있어요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 쿠버네티스 롤링 업데이트는 어디에 있나</h2>
+
+<p>쿠버네티스 Deployment의 기본 전략은 RollingUpdate예요. 새 ReplicaSet을 조금씩 늘리면서 옛 ReplicaSet을 조금씩 줄입니다. 한 번에 얼마나 움직일지는 두 값이 정해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: maxSurge와 maxUnavailable</div>
+  롤링 업데이트 중에 원하는 파드 수보다 <b>더 띄울 수 있는</b> 파드 수(maxSurge)와, 원하는 수보다 <b>모자라도 되는</b> 파드 수(maxUnavailable)입니다. 둘 다 기본값은 25%이고, 백분율을 개수로 바꿀 때 maxSurge는 올림, maxUnavailable은 내림해요. 둘이 동시에 0일 수는 없습니다.
+</div>
+
+<p>파드가 4개면 maxSurge 25%는 올림해서 1개, maxUnavailable 25%는 내림해서 1개예요. 그러니 최대 5개까지 띄우고, 준비된 파드가 3개 아래로 내려가지 않게 하면서 바꿔 나갑니다. 파드가 3개라면 maxSurge는 1개(0.75 올림), maxUnavailable은 0개(0.75 내림)가 돼서 하나를 더 띄운 뒤에야 하나를 내릴 수 있어요.</p>
+
+<p>이 방식을 지금까지의 축에 놓아 볼게요. 그림 3은 네 전략에서 옛 버전과 새 버전이 시간에 따라 어떻게 바뀌는지를 그린 것입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="p2a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M150 340 C 300 338, 480 341, 670 339" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2a3)"/>
+  <text x="660" y="362" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">시간</text>
+  <path d="M250 30 C 251 120, 249 230, 250 335" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7"/>
+  <text x="250" y="24" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">배포 시작</text>
+  <!-- row1 recreate -->
+  <text x="20" y="72" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">delete+none</text>
+  <path d="M150 58 C 190 57, 230 59, 262 58 C 263 66, 262 74, 262 80 C 230 81, 190 79, 151 80 C 149 72, 150 66, 150 58 Z" fill="#cfe0f1" stroke="#4a7fb5" stroke-width="1.8"/>
+  <path d="M262 69 C 290 68, 312 70, 340 69" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-dasharray="8 8"/>
+  <text x="300" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">다운타임</text>
+  <path d="M340 58 C 450 57, 560 59, 660 58 C 661 66, 660 74, 660 80 C 560 81, 450 79, 341 80 C 339 72, 340 66, 340 58 Z" fill="#d6ecd9" stroke="#5a9e6f" stroke-width="1.8"/>
+  <!-- row2 rolling -->
+  <text x="20" y="142" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">롤링 업데이트</text>
+  <path d="M150 122 C 200 121, 240 123, 250 122 C 300 128, 360 140, 420 150 L 420 150 C 330 151, 240 150, 151 151 C 149 140, 150 130, 150 122 Z" fill="#cfe0f1" stroke="#4a7fb5" stroke-width="1.8"/>
+  <path d="M250 150 C 300 140, 360 128, 420 122 C 500 121, 580 123, 660 122 C 661 132, 660 142, 660 151 C 520 152, 380 150, 250 151 Z" fill="#d6ecd9" stroke="#5a9e6f" stroke-width="1.8"/>
+  <text x="335" y="172" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18">두 버전이 섞이는 구간이 길다</text>
+  <!-- row3 highlander -->
+  <text x="20" y="222" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">하이랜더</text>
+  <path d="M150 202 C 250 201, 330 203, 372 202 C 373 210, 372 218, 372 224 C 330 225, 250 223, 151 224 C 149 216, 150 210, 150 202 Z" fill="#cfe0f1" stroke="#4a7fb5" stroke-width="1.8"/>
+  <path d="M250 228 C 300 227, 340 229, 350 228 C 351 234, 350 240, 350 246 C 340 247, 300 245, 251 246 C 249 240, 250 234, 250 228 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="1.6" stroke-dasharray="4 4"/>
+  <text x="300" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">기동 중</text>
+  <path d="M350 202 C 450 201, 560 203, 660 202 C 661 210, 660 218, 660 224 C 560 225, 450 223, 351 224 C 349 216, 350 210, 350 202 Z" fill="#d6ecd9" stroke="#5a9e6f" stroke-width="1.8"/>
+  <text x="520" y="252" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">옛 그룹은 삭제됨</text>
+  <!-- row4 bluegreen -->
+  <text x="20" y="302" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">블루/그린</text>
+  <path d="M150 282 C 250 281, 330 283, 352 282 C 353 290, 352 298, 352 304 C 330 305, 250 303, 151 304 C 149 296, 150 290, 150 282 Z" fill="#cfe0f1" stroke="#4a7fb5" stroke-width="1.8"/>
+  <path d="M352 284 C 450 283, 560 285, 660 284 C 661 292, 660 298, 660 302 C 560 303, 450 301, 353 302 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-dasharray="4 4"/>
+  <text x="510" y="298" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5">v1 비활성, 떠 있음</text>
+  <path d="M250 308 C 300 307, 340 309, 350 308 C 351 314, 350 320, 350 326 C 340 327, 300 325, 251 326 C 249 320, 250 314, 250 308 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="1.6" stroke-dasharray="4 4"/>
+  <path d="M350 308 C 450 307, 560 309, 660 308 C 661 316, 660 322, 660 326 C 560 327, 450 325, 351 326 C 349 320, 350 314, 350 308 Z" fill="#d6ecd9" stroke="#5a9e6f" stroke-width="1.8"/>
+  <!-- legend -->
+  <path d="M460 20 C 475 19, 488 21, 500 20 C 501 26, 500 30, 500 34 C 488 35, 475 33, 461 34 Z" fill="#cfe0f1" stroke="#4a7fb5" stroke-width="1.6"/>
+  <text x="508" y="33" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">v1 받는 중</text>
+  <path d="M580 20 C 595 19, 608 21, 620 20 C 621 26, 620 30, 620 34 C 608 35, 595 33, 581 34 Z" fill="#d6ecd9" stroke="#5a9e6f" stroke-width="1.6"/>
+  <text x="628" y="33" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">v2</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 전략의 차이는 옛 버전 띠가 어떻게 끝나느냐에 있다</div>
+
+<p>롤링 업데이트는 하이랜더와 블루/그린 어느 쪽과도 다릅니다. 두 버전이 함께 요청을 받는 시간이 하이랜더보다 훨씬 길어요. 파드 전체를 몇 번에 나눠 갈아 끼우는 동안 내내 섞여 있으니까요. 그동안 같은 사용자의 연속된 요청이 v1과 v2를 오갈 수 있어서 API 호환성 요구는 오히려 더 강합니다. 대신 추가 자원은 maxSurge만큼만 들어요.</p>
+
+<p>그럼 롤링 업데이트의 롤백은 어떨까요? 옛 ReplicaSet은 지워지지 않고 0개로 남아 있다가(기본 10개까지 보관), <code>kubectl rollout undo</code>를 하면 옛 파드 템플릿으로 <b>다시 롤링 업데이트</b>를 합니다. 옛 ReplicaSet에 파드가 없으니 옛 버전 파드를 새로 띄워야 하고, 그것도 maxSurge와 maxUnavailable이 허락하는 만큼씩만 나아가요. 비활성 그룹을 인스턴스 0으로 둔 블루/그린과 비슷한 위치이고, 단계적으로 바꾸는 만큼 그보다 더 걸릴 수 있습니다. 실습-1에서 요청마다 새 연결을 여는 같은 조건으로 재 보니, 롤링 업데이트의 되돌리기는 명령 뒤 11.0초에 옛 버전의 첫 응답이 나와 옛 그룹이 0개인 블루/그린(12.5초)과 비슷했어요. 둘 다 기동 시간을 기다렸기 때문이에요. 차이는 그다음이었습니다. 블루/그린은 그 순간 전부 넘어갔지만, 롤링은 새 버전 응답이 사라지기까지 22초 안팎이 걸렸어요. 옛 그룹이 떠 있는 블루/그린은 1.2초였습니다. 연결을 재사용하고 preStop 5초를 둔 롤링 실행에서는 첫 응답이 16.3초로 더 늦었는데, 조건이 달라서 블루/그린 값과 직접 비교하지는 않았어요.</p>
+
+<p>그래서 "Deployment를 <code>kubectl apply</code>로 갱신하면 기본적으로 블루/그린이다"라는 설명은 맞지 않아요. 옛 ReplicaSet이 남아 있어 그쪽으로 되돌아갈 수 있다는 점은 블루/그린과 닮았지만, 남아 있는 건 파드 0개짜리 정의일 뿐이고 전환도 한 번에 일어나지 않습니다. 쿠버네티스 문서가 부르는 이름 그대로 롤링 업데이트라고 보는 게 정확해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: EndpointSlice</div>
+  Service 뒤에 있는 파드들의 IP와 상태(ready, serving, terminating)를 담은 쿠버네티스 객체입니다. 각 노드의 kube-proxy가 이 목록을 보고 라우팅 규칙을 고쳐요. 그래서 파드 상태가 바뀐 뒤 규칙에 반영되기까지 짧은 지연이 생깁니다.
+</div>
+
+<p>롤링 업데이트에는 두 버전이 섞이는 것 말고도 위험이 하나 더 있어요. 옛 파드를 하나씩 내릴 때마다 그 파드로 향하던 요청이 실패할 수 있는 짧은 틈이 생깁니다. 파드 수가 많을수록 그 틈을 여러 번 지나가요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 파드는 엔드포인트에서 빠지는 것과 동시에 종료 신호를 받는다</div>
+  쿠버네티스 문서의 파드 종료 절차를 보면, kubelet이 종료를 시작하는 것과 <b>같은 시점에</b> 컨트롤 플레인이 그 파드를 EndpointSlice에서 빼는 작업을 해요. 둘 사이에 순서가 없으니 노드의 라우팅 규칙이 갱신되기 전에 앱이 먼저 연결을 닫으면, 그 짧은 틈에 들어온 요청은 거부됩니다. 롤링 업데이트든 하이랜더든 옛 파드를 내리는 전략은 모두 이 틈을 거쳐요. 흔한 대응은 <code>preStop</code> 훅으로 몇 초 기다린 뒤 종료하는 것이고, 그만큼 <code>terminationGracePeriodSeconds</code>(기본 30초) 안에 여유가 있어야 합니다. 실습-1에서는 파드 4개짜리 롤링 업데이트 세 번에서 실패가 20건, 12건, 9건 나왔고, <code>preStop</code> 5초를 넣은 두 번은 모두 0건이었어요.
+</div>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 무엇을 고를까</h2>
+
+<p>지금까지를 표로 모으면 이렇습니다. 숫자는 파드 4개 기준이고, 롤백 시간은 앱 기동 시간에 비례하는지 아닌지만 적었어요.</p>
+
+<div class="obsv-code">                 두 버전 공존      다운타임   롤백 방식                     추가 자원
+delete + none    없음              있음       옛 버전 재배포 (기동 시간)      없음
+롤링 업데이트    배포 내내         없음       역방향 롤링 (기동 시간 x 단계)  maxSurge 만큼 (1개)
+하이랜더         전환 순간만       없음       옛 버전 재배포 (기동 시간)      배포 중 잠깐 2배
+블루/그린        전환 순간만       없음       트래픽 전환 (기동 시간과 무관)  비활성 그룹을 둔 만큼</div>
+
+<p>어떤 전략이 "좋다"기보다 서비스의 성질이 전략을 고릅니다. 판단할 때 던질 질문은 네 가지예요. 두 버전이 동시에 떠도 되는가(API와 스키마 호환), 롤백이 몇 초 안에 끝나야 하는가, 앱 기동이 얼마나 오래 걸리는가, 옛 버전 인스턴스를 남겨 둘 자원이 있는가. 첫 질문에 아니라고 답하면 delete + none 말고는 선택지가 없고, 둘째와 셋째 질문이 무거울수록 블루/그린 쪽으로 기울어요.</p>
+
+<p>블루/그린에 익숙해지는 건 다음 단계의 준비이기도 합니다. 3편에서 볼 카나리 분석은 새 버전과 옛 버전을 동시에 띄워 두고 비교하는 방식이라, 두 서버 그룹을 함께 다루는 데 익숙해야 쓸 수 있어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 기동이 느린 서비스일수록 롤백 창을 길게 잡아요. Argo Rollouts라면 <code>scaleDownDelaySeconds</code>를 "문제를 발견하는 데 걸리는 시간"보다 길게 두는 식이에요. 기본값 30초는 iptables 전파를 기다리는 값이지 롤백 창으로 정한 값이 아니에요. 다만 이 값이 길수록 keep-alive 연결이 옛 버전에 머무는 시간도 길어져요<br>
+  &bull; 큐 소비 서비스는 블루/그린을 쓰기 전에 비활성 그룹이 소비를 멈추는지부터 확인해요. 확인이 안 되면 비활성 그룹을 0으로 두는 게 안전해요<br>
+  &bull; 스키마 변경은 앱 배포와 다른 배포로 나눠요. "이 배포를 지금 롤백해도 옛 버전이 데이터베이스를 읽을 수 있나"를 배포 체크리스트에 넣어 두면 좋아요<br>
+  &bull; 롤링 업데이트를 쓴다면 <code>revisionHistoryLimit</code>를 0으로 두지 마세요. 옛 ReplicaSet이 없으면 <code>rollout undo</code> 자체가 안 돼요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>배포 전략의 차이는 옛 서버 그룹을 언제 내리느냐에 있어요.</b> delete + none은 먼저 내려서 다운타임을 받아들이는 대신 두 버전이 섞이지 않고, 하이랜더는 새것이 준비되면 옛것을 지워서 단순하지만 롤백이 재배포가 되고, 블루/그린은 옛것을 꺼 두기만 해서 롤백이 트래픽 전환으로 끝나지만 그만큼 자원을 써요. 쿠버네티스의 롤링 업데이트는 두 버전이 배포 내내 섞이고, 롤백은 옛 버전을 다시 띄우는 역방향 롤링이에요.<br><br>
+  블루/그린의 빠른 롤백도 로드 밸런서가 새로 정하는 연결에만 해당해요. 이미 맺어진 연결은 옛 파드가 내려갈 때 옮겨 가요. 큐 소비, 지속 연결, 세션, 데이터베이스 스키마는 따로 챙겨야 해요. 롤백이 몇 초 걸릴지는 장애가 난 뒤가 아니라 배포 전략을 고를 때 이미 정해져요.
+</div>
+
+</div>

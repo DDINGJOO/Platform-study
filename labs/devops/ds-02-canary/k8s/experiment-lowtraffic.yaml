@@ -1,0 +1,45 @@
+# 시나리오 3: 나쁜 버전(지연 +10ms, 에러 1%)과 대조군을 하나씩 띄워 두고, 부하만 바꿔 가며 판정을 다시 본다.
+# duration 이 없으니 지울 때까지 떠 있다. 분석은 붙이지 않고 judge 를 직접 부른다
+apiVersion: argoproj.io/v1alpha1
+kind: Experiment
+metadata: {name: lowtraffic, namespace: ds02}
+spec:
+  templates:
+  - name: baseline
+    replicas: 1
+    selector: {matchLabels: {app: demo, role: lt-baseline}}
+    template:
+      metadata: {labels: {app: demo, role: lt-baseline}}
+      spec:
+        containers:
+        - name: app
+          image: obs-lab/ds-02-canary:dev
+          imagePullPolicy: Never
+          ports: [{containerPort: 8080}]
+          env:
+          - {name: VERSION, value: v2}
+          - {name: WARMUP_MS, value: "30"}
+          - {name: WARMUP_TAU_S, value: "120"}
+          resources:
+            requests: {cpu: 20m, memory: 24Mi}
+            limits: {memory: 64Mi}
+  - name: canary
+    replicas: 1
+    selector: {matchLabels: {app: demo, role: lt-canary}}
+    template:
+      metadata: {labels: {app: demo, role: lt-canary}}
+      spec:
+        containers:
+        - name: app
+          image: obs-lab/ds-02-canary:dev
+          imagePullPolicy: Never
+          ports: [{containerPort: 8080}]
+          env:
+          - {name: VERSION, value: v3-bad}
+          - {name: EXTRA_MS, value: "10"}
+          - {name: ERROR_RATE, value: "0.01"}
+          - {name: WARMUP_MS, value: "30"}
+          - {name: WARMUP_TAU_S, value: "120"}
+          resources:
+            requests: {cpu: 20m, memory: 24Mi}
+            limits: {memory: 64Mi}

@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 2
+  progressDeadlineSeconds: 60   # 기본 600초. 실습에서 Degraded 를 빨리 보려고 줄였다
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.12.0
+          args: ["--port", "8080"]
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef: {name: web-config}
+          readinessProbe:
+            httpGet: {path: /health, port: 8080}
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 32Mi}

@@ -1,0 +1,20 @@
+# 컨트롤러 로그의 "Refreshing app status (comparison expired ...), level (2)" 가 찍힌 간격 (web 앱, 약 31분 동안 10번)
+# 시각은 첫 번째 줄을 0 으로 둔 상대값(초). 앞쪽 세 간격은 drift-scale 실행과 겹친다.
+#   kubectl -n argocd logs statefulset/argocd-application-controller | grep 'comparison expired'
+경과(초)   직전과의 간격(초)
+     0
+   122        122
+   301        179
+   601        300
+   843        242
+  1092        249
+  1304        212
+  1464        160
+  1708        244
+  1848        140
+
+# 웹훅이 repoURL 불일치로 무시되던 실행(git-change, 웹훅 켰다고 생각한 2회차):
+#   푸시                         0초
+#   만료 새로고침 (1464)          약 152초  -> 새 커밋을 못 봄 (repo-server 의 리비전 캐시, 기본 3분)
+#   만료 새로고침 (1708)          약 396초  -> 여기서 새 리비전 인식, 이어서 동기화 시작
+#   이 회차는 lab.py 의 대기 상한(400초)을 넘겨 "시간 초과" 로 기록됐다
