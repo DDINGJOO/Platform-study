@@ -1,0 +1,288 @@
+<!-- lead: SLF4J info 호출 9곳을 grep, OpenRewrite FindMethods, JaCoCo 커버리지로 세자 결과가 모두 달랐어요. grep의 과다 검출과 누락, matchOverrides, 타입이 없을 때의 0건, 부하 중 실행되지 않은 경로를 실측했어요. -->
+<!-- tags: OpenRewrite, FindMethods, JaCoCo, grep, 정적 분석 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧬 소스 코드 관찰, 실습-4</div>
+  1편. 지금 운영에 무엇이 떠 있는지는 Git이 아니라 플랫폼에 묻는다<br>
+  2편. SNAPSHOT과 latest는 버전이 아니라 포인터다<br>
+  3편. 빌드 파일에 적은 버전과 jar에 들어간 버전은 다르다<br>
+  4편. grep은 글자를 찾고, 타입이 붙은 구문 트리는 호출을 찾는다<br>
+  실습-1. 같은 좌표가 다른 바이너리를 가리키는 순간을 만든다<br>
+  실습-2. 서비스 열 개에서 취약한 라이브러리를 쓰는 곳을 SBOM으로 찾는다<br>
+  실습-3. Maven과 Gradle이 같은 의존성 그래프를 다르게 푼다<br>
+  <b>실습-4. grep, OpenRewrite, 커버리지가 센 호출 수가 다르다</b> &larr; 지금 이 글
+</div>
+
+<p><a href="#co-04">4편</a>에서 호출처를 찾는 방법 셋을 비교했어요. grep은 글자를 세서 엉뚱한 것까지 세고 줄바꿈한 호출은 놓치고, 타입이 붙은 구문 트리는 호출을 찾지만 실행될 수 없는 코드까지 세고, 런타임 관찰은 관찰하는 동안 지나간 경로만 본다고요. 이번에는 정답을 아는 작은 코드에 세 방법을 모두 돌려서 각각 몇 개를 맞히고 몇 개를 틀리는지 셌습니다.</p>
+
+<p>대상은 SLF4J의 <code>Logger.info</code> 호출 9곳이에요. grep은 9줄을 찾았는데 그중 4줄이 엉뚱한 것이었고 진짜 호출 4곳을 놓쳤어요. OpenRewrite의 FindMethods는 기본값으로 8곳을 찾고 1곳을 놓쳤고, 옵션 하나를 켜자 9곳을 모두 찾았습니다. 부하를 60초 건 동안 실제로 실행된 호출처는 6곳이었어요. 그리고 로깅 라이브러리를 클래스패스에서 빼자 FindMethods는 오류 없이 0곳을 돌려줬습니다. 숫자는 전부 이번에 돌린 결과예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 같은 대상 메서드를 grep, FindMethods, 커버리지가 각각 몇 곳으로 세나? 과다 검출과 누락은 어디서 나오나?<br>
+  &bull; FindMethods의 <code>matchOverrides</code>는 무엇을 바꾸나?<br>
+  &bull; 타입 정보가 없으면 FindMethods는 어떻게 되나?<br>
+  &bull; 부하 중에 실행되지 않은 호출처는 왜 실행되지 않았나?<br>
+  &bull; <code>rewrite:dryRun</code>은 얼마나 걸리나?
+</div>
+
+<h2>1. 실습 환경: 정답표를 심어 둔 작은 서버</h2>
+
+<p>JDK에 들어 있는 <code>HttpServer</code>로 경로 다섯 개(<code>/orders</code>, <code>/payments</code>, <code>/search</code>, <code>/items</code>, <code>/admin/legacy</code>)를 가진 서버를 만들었어요. 로깅은 SLF4J 2.0.20과 Logback 1.6.5이고, 부하 중 로그가 디스크를 채우지 않게 Logback 출력은 NOP 어펜더로 버립니다. 호출 자체는 일어나요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr81" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M250 30 C 310 28, 390 31, 450 29 C 452 60, 451 90, 450 112 C 390 114, 310 111, 252 113 C 249 90, 250 60, 250 30 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+  <text x="350" y="58" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">📄 app/src (같은 소스)</text>
+  <text x="350" y="84" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">#S1..#S9 대상 호출</text>
+  <text x="350" y="102" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">#G1..#G4 비슷한 글자</text>
+  <path d="M260 116 C 200 135, 140 150, 110 170" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr81)"/>
+  <path d="M350 116 C 351 135, 350 150, 350 168" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr81)"/>
+  <path d="M440 116 C 500 135, 560 150, 590 170" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr81)"/>
+  <path d="M24 176 C 80 174, 150 177, 200 175 C 202 205, 201 235, 200 258 C 150 260, 80 257, 26 259 C 23 235, 24 205, 24 176 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="112" y="204" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">① grep</text>
+  <text x="112" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">정규식 한 줄</text>
+  <path d="M252 176 C 300 174, 400 177, 450 175 C 452 205, 451 235, 450 258 C 400 260, 300 257, 254 259 C 251 235, 252 205, 252 176 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="351" y="204" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">② FindMethods</text>
+  <text x="351" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">Maven + rewrite:dryRun</text>
+  <path d="M500 176 C 550 174, 630 177, 676 175 C 678 205, 677 235, 676 258 C 630 260, 550 257, 502 259 C 499 235, 500 205, 500 176 Z" fill="#eaf4ec" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="588" y="204" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">③ JaCoCo + k6</text>
+  <text x="588" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">60초 부하 중 실행된 줄</text>
+  <text x="350" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 셋의 결과를 같은 정답표(score.py)에 맞춰 센다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 하나의 소스, 세 가지 세는 방법, 하나의 정답표</div>
+
+<p>정답표는 소스에 꼬리 주석으로 심었어요. <code>#S</code>는 세어야 할 대상 호출, <code>#G</code>는 글자만 비슷한 것입니다.</p>
+
+<div class="obsv-code">S1  OrderHandler       log.info(...)                         평범한 호출
+S2  OrderHandler       log 줄바꿈 .info(...)                  두 줄에 걸친 호출
+S3  OrderHandler       if (LEGACY_FORMAT) { log.info(...) }  죽은 분기 (static final false)
+S4  OrderHandler       catch (...) { log.info(...) }         예외 경로 (음수 id 일 때만)
+S5  PaymentHandler     log.info(...)                         변수 타입이 Logback 의 Logger
+S6  PaymentHandler     LoggerFactory.getLogger(..).info(..)  변수 없이 바로
+S7  LegacyAdminHandler log.info(...)                         부하가 부르지 않는 /admin/legacy
+S8  SearchHandler      names.forEach(log::info)              메서드 참조
+S9  OrderHandler       auditTrail.info(...)                  변수 이름이 다름
+
+G1  OrderHandler       // log.info(...)                      주석
+G2  PaymentHandler     logger.info(...)                      java.util.logging.Logger
+G3  SearchHandler      "call log.info(...) ..."              문자열
+G4  SearchHandler      logger.info(...)                      사내 AuditLogger 의 info</div>
+
+<div class="obsv-code">Maven                 3.10.0 (maven:3.10.0-eclipse-temurin-21-noble)
+rewrite-maven-plugin  6.46.1
+JaCoCo                0.8.15 (agent runtime, cli nodeps)
+k6                    2.3.0, 10 VU, 60초
+JDK                   Temurin 21
+실행 환경             Docker Desktop(메모리 8GB), Apple M5 Pro, 다른 실습 컨테이너가 같이 떠 있었다</div>
+
+<p>rewrite-maven-plugin을 6.46.1로 고른 데는 이유가 있어요. 최신 판은 6.50.0인데, Maven Central에 있는 마지막 판은 2026-08-12의 6.46.1이었어요. 그 뒤 판은 인증이 필요한 Code Genome Project 저장소로만 배포됩니다(Moderne 문서 "Latest versions of every OpenRewrite module"). 인증 없이 따라 할 수 있게 Central의 판을 썼어요.</p>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/co-04-openrewrite">GitHub 저장소의 labs/devops/co-04-openrewrite</a>에 있어요. 호스트 포트는 앱 31180 하나만 씁니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/devops/co-04-openrewrite
+./scripts/lab.sh build        # 컴파일, 의존성과 JaCoCo 복사
+./scripts/lab.sh grep         # 2절
+./scripts/lab.sh rewrite 4    # 3절, 6절. 기본값과 matchOverrides 를 4번씩
+./scripts/lab.sh notypes      # 4절
+./scripts/lab.sh runtime      # 5절. JaCoCo 붙인 앱에 k6 60초
+./scripts/lab.sh score        # 정답표와 맞추기
+./scripts/lab.sh down</div>
+
+<h2>2. grep: 9줄을 찾았고, 그중 5줄만 맞았다</h2>
+
+<p>4편에서 예로 든 정규식을 그대로 썼어요.</p>
+
+<div class="obsv-code">$ grep -rnE '\b(log|logger|LOG)\.info\(' src/main/java
+lab/co4/OrderHandler.java:12:        log.info("order received {}", id);              // #S1
+lab/co4/OrderHandler.java:13:        // log.info("old debug line {}", id);           #G1 주석
+lab/co4/OrderHandler.java:19:            log.info("legacy format {}", id);           // #S3
+lab/co4/OrderHandler.java:24:            log.info("order rejected {}", id, e);       // #S4
+lab/co4/SearchHandler.java:10:    static final String HELP = "call log.info(...) ...";   // #G3 문자열
+lab/co4/SearchHandler.java:14:        logger.info("search " + q);                     // #G4 AuditLogger
+lab/co4/PaymentHandler.java:13:        log.info("payment {}", id);                     // #S5
+lab/co4/PaymentHandler.java:14:        logger.info("jul payment " + id);               // #G2 JUL
+lab/co4/LegacyAdminHandler.java:10:        log.info("legacy admin page opened");       // #S7
+grep 매치 9 줄
+(lab.sh 가 경로 앞부분 src/main/java/ 를 잘라 냈고, 여기서는 꼬리 주석과 G3 문자열도 줄였어요)</div>
+
+<p>9줄 중 대상 호출은 5곳(S1, S3, S4, S5, S7)이었어요. 나머지 4줄은 주석, 문자열, JUL Logger, 사내 AuditLogger였습니다. 그리고 대상 호출 4곳을 놓쳤어요. 줄바꿈한 S2, 변수 없이 부른 S6, 메서드 참조 S8, 변수 이름이 <code>auditTrail</code>인 S9입니다. 찾은 개수(9)가 정답 개수(9)와 같아서, 숫자만 보면 맞은 것처럼 보인다는 점이 오히려 위험했어요. <span class="obsv-mark">과다 검출 4와 누락 4가 서로 지워져 총계가 우연히 맞았을 뿐</span>입니다.</p>
+
+<h2>3. FindMethods: 기본값은 8곳, matchOverrides를 켜면 9곳</h2>
+
+<p>다음은 OpenRewrite예요. 빌드 파일에 레시피를 적지 않고 명령줄에서 돌렸습니다.</p>
+
+<div class="obsv-code">mvn -B rewrite:dryRun \
+  -Drewrite.activeRecipes=org.openrewrite.java.search.FindMethods \
+  -Drewrite.options='methodPattern=org.slf4j.Logger info(..),matchOverrides=false' \
+  -Drewrite.exportDatatables=true</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 데이터 테이블 (data table)</div>
+  OpenRewrite 레시피가 코드를 고치는 것과 별도로 모아 내는 표입니다. <code>exportDatatables</code>를 켜면 실행할 때마다 CSV로 떨어져요. FindMethods는 <code>MethodCalls</code> 표에 찾은 호출마다 한 줄을 남깁니다.
+</div>
+
+<p>패치 파일에는 찾은 곳마다 <code>/*~~&gt;*/</code> 표시가 붙었어요. 패치 파일은 기본 위치로 안내된 <code>target/site/rewrite/rewrite.patch</code>(rewrite-maven-plugin 참조 문서)가 아니라 <code>target/rewrite/rewrite.patch</code>에 생겼어요(6.46.1, 실행 로그의 "Patch file available" 줄로 확인). 처음에는 스크립트가 엉뚱한 곳을 봐서 "패치 없음"으로 나왔습니다.</p>
+
+<div class="obsv-code">-        log
++        /*~~&gt;*/log
+             .info("order total {}", total);                         // #S2 줄바꿈
+-        auditTrail.info("audit order {}", id);                      // #S9 변수 이름이 다름
++        /*~~&gt;*/auditTrail.info("audit order {}", id);                      // #S9 변수 이름이 다름
+-        names.forEach(log::info);                                   // #S8 메서드 참조
++        names.forEach(log::/*~~&gt;*/info);                                   // #S8 메서드 참조
+-        LoggerFactory.getLogger(PaymentHandler.class).info("inline {}", id);   // #S6 변수 없이 바로
++        /*~~&gt;*/LoggerFactory.getLogger(PaymentHandler.class).info("inline {}", id);   // #S6 변수 없이 바로</div>
+
+<p>grep이 놓친 넷이 모두 잡혔고, grep이 잘못 센 넷은 하나도 잡히지 않았어요. 주석과 문자열은 호출 노드가 아니고, JUL Logger와 AuditLogger의 <code>info</code>는 수신자 타입이 달라서요. 그런데 기본값에서는 S5 하나가 빠졌습니다. S5는 변수를 Logback의 구현 클래스 타입으로 선언한 호출이에요.</p>
+
+<div class="obsv-code">private final ch.qos.logback.classic.Logger log =
+    (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PaymentHandler.class);
+...
+log.info("payment {}", id);      // #S5 기본값의 FindMethods 가 놓침</div>
+
+<p>Logback의 <code>Logger</code>는 SLF4J의 <code>Logger</code> 인터페이스를 구현하면서 <code>info</code>를 재정의합니다. 그래서 이 호출의 메서드 타입은 <code>ch.qos.logback.classic.Logger</code>에 선언된 <code>info</code>예요. 기본값은 패턴에 적은 타입의 메서드만 맞추니(OpenRewrite Method Patterns) 걸리지 않았습니다. <code>matchOverrides=true</code>로 다시 돌리자 S5가 잡혀 9곳 모두를 찾았고, <code>MethodCalls</code> 표의 <code>className</code> 칸에 그 차이가 그대로 나왔어요.</p>
+
+<div class="obsv-code">sourceFile,method,className,methodName,argumentTypes
+.../OrderHandler.java,"log.info(""order received {}"", id)",org.slf4j.Logger,info,"String, java.lang.String"
+.../PaymentHandler.java,"log.info(""payment {}"", id)",ch.qos.logback.classic.Logger,info,"String, java.lang.String"
+.../SearchHandler.java,log::info,org.slf4j.Logger,info,
+(9행)</div>
+
+<p>표에서 재미있는 점이 하나 더 있었어요. S9와 S6 두 행의 <code>method</code> 칸이 바로 윗줄 끝의 주석으로 시작했습니다. S9는 <code>"// #S2 줄바꿈\nauditTrail.info(...)"</code>, S6는 <code>"// #G2 JUL Logger.info\nLoggerFactory.getLogger(...).info(...)"</code>였어요. LST는 주석과 공백을 다음 노드의 앞부분(prefix)으로 붙여 보존하는데, 호출 텍스트를 출력할 때 그 앞부분까지 같이 찍힌 것으로 보여요. 서식을 잃지 않는 트리라는 성질이 결과 표에서 보인 셈입니다. 이 표를 다른 시스템에 넣을 때는 앞쪽 주석을 잘라 내야 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 인터페이스(SLF4J <code>Logger</code>, JDBC <code>Connection</code>, 사내 API의 인터페이스)를 패턴에 적을 때는 <code>matchOverrides=true</code>를 기본으로 켜요. 구현 타입으로 선언한 변수 하나 때문에 조용히 빠집니다.<br>
+  &bull; 결과는 패치보다 <code>MethodCalls</code> CSV로 모아요. 수신자 타입(<code>className</code>) 칸으로 "인터페이스로 부른 곳"과 "구현 타입으로 부른 곳"을 나눠 볼 수 있습니다.
+</div>
+
+<h2>4. 타입이 없으면 FindMethods는 조용히 0을 돌려준다</h2>
+
+<p>4편에서 클래스패스가 빠져 타입이 비면 매처가 판정하지 못한다고 했어요. 확인하려고 <code>-Dnotypes</code>를 주면 SLF4J와 Logback이 의존성에서 빠지게 해 두고 돌렸습니다. 이 상태에서는 컴파일이 안 되니 라이프사이클을 포크하지 않는 <code>rewrite:dryRunNoFork</code>를 썼어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 라이프사이클 포크 (rewrite:dryRun vs dryRunNoFork)</div>
+  <code>rewrite:dryRun</code>은 실행 전에 Maven 빌드를 <code>process-test-classes</code> 단계까지 따로 한 번 돌린(포크) 뒤 소스를 읽습니다(플러그인 소스의 <code>@Execute</code>). 테스트 코드 컴파일까지 끝난다는 뜻이에요. <code>dryRunNoFork</code>는 그 단계를 건너뛰고 지금 있는 의존성 정보만으로 소스를 읽어요. CI에서 이미 컴파일했다면 NoFork 쪽이 빠릅니다.
+</div>
+
+<div class="obsv-code">$ mvn -B -Dnotypes rewrite:dryRunNoFork \
+    -Drewrite.activeRecipes=org.openrewrite.java.search.FindMethods \
+    -Drewrite.options='methodPattern=org.slf4j.Logger info(..),matchOverrides=true' \
+    -Drewrite.exportDatatables=true
+ELAPSED_MS 3458 rc=0
+[INFO] Total time:  2.840 s
+
+RecipeRunStats.csv
+recipe,sourceFiles,sourceFilesChanged,...
+org.openrewrite.java.search.FindMethods,8,0,...</div>
+
+<p>종료 코드 0, 스크립트가 걸러 남긴 WARNING과 ERROR 줄 없음, 패치 없음, <code>MethodCalls</code> 표 없음. 파일 8개를 보고 "바뀐 파일 0"이라고만 했어요. 소스는 그대로인데 <code>org.slf4j.Logger</code>라는 타입을 모르니 9곳 모두 "아니다"가 된 거예요. CI에서 이 결과만 모았다면 "이 저장소에는 해당 호출이 없다"로 읽혔을 겁니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 0건은 "없다"와 "못 봤다"를 구분하지 않는다</div>
+  &bull; 저장소 수백 개를 일괄 검색하면 빌드가 덜 된 저장소, 사설 저장소 인증이 빠진 저장소가 반드시 섞여요. 이런 곳은 타입이 비어 0건이 나옵니다.<br>
+  &bull; 검색 결과와 함께 "그 저장소가 컴파일됐나"(또는 타입이 빠진 노드가 있나)를 같이 기록해요. OpenRewrite에는 타입이 빠진 곳을 표시하는 진단 레시피(<code>org.openrewrite.java.search.FindMissingTypes</code>)가 따로 있으니 같은 실행에 묶어 돌리면 됩니다.
+</div>
+
+<h2>5. 60초 부하 중 실행된 호출처는 6곳이었다</h2>
+
+<p>마지막은 런타임 쪽이에요. JaCoCo 에이전트를 <code>output=tcpserver</code>로 붙여 앱을 띄우고, k6로 10 VU, 60초 동안 <code>/orders</code>, <code>/payments</code>, <code>/search</code>, <code>/items</code>를 무작위로 불렀습니다. <code>/admin/legacy</code>와 음수 id는 보내지 않았어요. 평소 트래픽에 없는 경로라는 설정입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: VU (k6 virtual user)</div>
+  k6가 부하를 만드는 단위입니다. VU 하나가 스크립트의 함수를 끝나자마자 다시 돌리기를 반복해요. 10 VU는 요청을 동시에 최대 10개까지 보내는 사용자 열 명이라는 뜻입니다.
+</div>
+
+<div class="obsv-code">http_reqs......................: 14593  243.052496/s
+http_req_failed................: 0.00%  0 out of 14593
+
+$ java -jar org.jacoco.cli-nodeps.jar dump --address app --port 6300 --destfile target/jacoco.exec
+$ java -jar org.jacoco.cli-nodeps.jar report target/jacoco.exec --classfiles target/classes \
+      --sourcefiles src/main/java --xml target/jacoco.xml</div>
+
+<p>XML 리포트의 줄 단위 기록(<code>ci</code>가 실행된 명령 수)을 정답표의 줄과 맞췄어요.</p>
+
+<div class="obsv-code">site  JaCoCo       설명
+S1    실행됨       평범한 호출
+S2    실행됨       줄바꿈
+S3    코드 없음    죽은 분기
+S4    실행 안 됨   예외 경로
+S5    실행됨       Logback 타입으로 부름
+S6    실행됨       변수 없이 바로
+S7    실행 안 됨   아무도 부르지 않는 경로
+S8    실행됨       메서드 참조
+S9    실행됨       변수 이름이 다름
+
+G2    실행됨       JUL Logger.info
+G4    실행됨       사내 AuditLogger.info</div>
+
+<p>대상 9곳 중 6곳이 실행됐어요. 실행되지 않은 셋은 이유가 모두 달랐습니다. S7은 아무도 부르지 않는 URI라서, S4는 예외가 나야 지나가는 경로라서 0이었어요. 이 둘은 코드가 존재하고 언젠가 실행될 수 있습니다. S3는 아예 "코드 없음"이었어요. <code>LEGACY_FORMAT</code>이 <code>static final boolean</code> 상수 <code>false</code>라 javac가 <code>if</code> 블록을 바이트코드로 만들지 않았고, JaCoCo에는 그 줄이 존재하지도 않았습니다. 정적 분석(FindMethods, grep)은 이 줄을 셌으니 4편에서 말한 "과장 보고"의 가장 분명한 예가 나온 셈이에요.</p>
+
+<p>예상하지 못했던 건 G2와 G4였어요. JUL Logger와 AuditLogger의 <code>info</code> 줄도 "실행됨"으로 나왔습니다. 당연한 결과인데 의미는 커요. 커버리지는 <span class="obsv-mark">어느 줄이 실행됐는지는 알지만 그 줄에서 어느 타입의 어느 메서드가 불렸는지는 모릅니다</span>. 그래서 위 표의 "실행됨 6곳"도 사실 FindMethods가 준 호출처 목록과 겹쳐서 얻은 숫자예요. 커버리지만으로 "SLF4J info가 실행된 곳"을 뽑으려 했다면 grep으로 후보를 뽑는 것과 같은 과다 검출이 섞였을 겁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: tcpserver 모드 (JaCoCo agent)</div>
+  JaCoCo 에이전트가 실행 기록을 프로세스가 끝날 때 파일로 쓰는 대신, 지정한 포트에서 기다리다가 요청이 오면 넘겨주는 방식입니다. 앱을 멈추지 않고 <code>jacococli dump</code>로 지금까지의 기록을 꺼낼 수 있어서 부하가 끝난 직후의 상태를 볼 수 있어요.
+</div>
+
+<h2>6. 세 방법을 한 표에 놓으면</h2>
+
+<div class="obsv-code">                              찾은 곳   정탐   과다 검출   누락
+grep                              9       5         4         4
+FindMethods (기본값)              8       8         0         1   (S5)
+FindMethods (matchOverrides)      9       9         0         0
+FindMethods (타입 없음)           0       0         0         9
+JaCoCo 60초 부하 (FindMethods 9곳과 겹쳐 봄)
+                                  6       6         0         3   (S3, S4, S7)
+  (대상 아닌 G2, G4 줄도 실행됨. 커버리지만으로는 구분 못 함)</div>
+
+<p>4편의 그림을 숫자로 채우면 이렇게 됩니다. grep은 가장 바깥 집합이라 엉뚱한 것을 포함하고, 동시에 모양이 다른 호출을 놓쳐요. 타입이 붙은 트리는 정확하지만 조건이 둘 있었어요. 인터페이스 패턴이면 <code>matchOverrides</code>를 켜야 하고, 타입을 붙일 클래스패스가 있어야 합니다. 런타임 관찰은 가장 안쪽 집합이에요. 정적 목록과 겹쳤을 때는 과다 검출이 없지만, 커버리지 혼자서는 G2와 G4를 구분하지 못해요. 그리고 이번 60초 동안에는 9곳 중 3곳이 보이지 않았어요. 그중 둘(S4, S7)은 실행될 수 있는 코드였습니다.</p>
+
+<p>시간도 쟀어요. 의존성 캐시가 찬 뒤 <code>rewrite:dryRun</code>을 기본값과 <code>matchOverrides</code>로 네 번씩 돌렸습니다.</p>
+
+<div class="obsv-code">                       컨테이너 안 mvn 전체(ms)      Maven "Total time"(초)
+기본값 4회             5103, 5124, 5025, 4582        4.40, 4.41, 4.34, 4.01
+matchOverrides 4회     5004, 5096, 4571, 4700        4.33, 4.40, 3.99, 4.11
+(이 8회 전에 플러그인을 처음 내려받은 실행은 18554ms였어요. 그 실행은 경로 설정을 고치기 전이라 로그를 지웠고, 범위에서도 뺐어요)
+
+RecipeRunStats.csv (마지막 실행)
+FindMethods: sourceFiles 8, sourceFilesChanged 4, editTotalTimeNs 14,431,334 (약 14ms)</div>
+
+<p>한 번에 4~5초였고, 그중 레시피 자체가 돈 시간은 약 14ms였어요. 레시피 밖의 시간(Maven 기동, 포크한 컴파일, 소스 파싱과 타입 부여)이 대부분이었어요. 그중 파싱과 타입 부여가 얼마인지는 따로 재지 않았어요. 저장소가 수백 개면 검색 비용의 대부분은 레시피가 아니라 저장소마다 빌드 환경을 갖추고 트리를 만드는 데 들어갑니다. 측정하는 동안 같은 Docker Desktop에서 다른 실습이 돌았고 호스트 load average가 약 8~10이었으니, 절대값보다 비율로 읽어 주세요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>SLF4J info 호출 9곳을 grep은 9줄로 셌지만 과다 검출 4와 누락 4가 서로 지워진 숫자였어요. FindMethods는 기본값으로 8곳, matchOverrides를 켜면 9곳을 과다 검출 없이 찾았고, 타입이 없으면 오류 없이 0곳을 돌려줬어요.</b><br><br>
+  60초 부하 중 실행된 곳은 6곳이었고, 빠진 셋은 javac가 지운 죽은 분기, 예외 경로, 아무도 부르지 않는 URI였어요. 커버리지는 줄이 실행됐는지만 알아서 수신자 타입은 정적 분석에 기대야 했습니다. dryRun 한 번은 4~5초였지만 레시피 자체는 14ms였어요. <b>호출처를 세는 숫자는 방법마다 다르고, 맞는 답은 정적 결과와 런타임 결과를 겹쳐 본 사이에 있습니다.</b>
+</div>
+
+</div>

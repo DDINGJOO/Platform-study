@@ -1,0 +1,101 @@
+=== gradle m1
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- lab.co3:a:1.0
+|    \--- lab.co3:c:1.0 -> 2.0
+\--- lab.co3:b:1.0
+     \--- lab.co3:d:1.0
+          \--- lab.co3:c:2.0
+
+RESULT m1 c=2.0
+RESULT m1 a FAIL NoSuchMethodError: 'java.lang.String lab.c.Codec.legacy(java.lang.String)'
+RESULT m1 b OK fast:d
+=== gradle m2
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- lab.co3:b:1.0
+|    \--- lab.co3:d:1.0
+|         \--- lab.co3:c:2.0
+\--- lab.co3:a:1.0
+     \--- lab.co3:c:1.0 -> 2.0
+
+RESULT m2 c=2.0
+RESULT m2 b OK fast:d
+RESULT m2 a FAIL NoSuchMethodError: 'java.lang.String lab.c.Codec.legacy(java.lang.String)'
+=== gradle m3
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- lab.co3:x:1.0
+|    \--- lab.co3:c:2.0
+\--- lab.co3:y:1.0
+     \--- lab.co3:c:1.0 -> 2.0
+
+RESULT m3 c=2.0
+RESULT m3 x OK c2:x
+RESULT m3 y OK c2:y
+=== gradle m4
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- lab.co3:y:1.0
+|    \--- lab.co3:c:1.0 -> 2.0
+\--- lab.co3:x:1.0
+     \--- lab.co3:c:2.0
+
+RESULT m4 c=2.0
+RESULT m4 y OK c2:y
+RESULT m4 x OK c2:x
+=== gradle m5
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- lab.co3:a:1.0
+|    \--- lab.co3:c:1.0 -> 2.0
++--- lab.co3:b:1.0
+|    \--- lab.co3:d:1.0
+|         \--- lab.co3:c:2.0
+\--- lab.co3:c:2.0
+
+RESULT m5 c=2.0
+RESULT m5 a FAIL NoSuchMethodError: 'java.lang.String lab.c.Codec.legacy(java.lang.String)'
+RESULT m5 b OK fast:d
+=== gradle an
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- lab.co3:b:1.0
+|    \--- lab.co3:d:1.0
+|         \--- lab.co3:c:2.0
++--- lab.co3:e:1.0
++--- lab.co3:drv:1.0
+\--- lab.co3:konst:1.0
+
+RESULT an c=2.0 c2:an
+RESULT an b fast:d
+RESULT an drv drv-loaded
+RESULT an konst konst
+=== gradle an-decl
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- lab.co3:b:1.0
+|    \--- lab.co3:d:1.0
+|         \--- lab.co3:c:2.0
+\--- lab.co3:c:2.0
+
+RESULT an-decl c=2.0 c2:an-decl
+RESULT an-decl b fast:d
+=== gradle dependencyInsight m1 c
+lab.co3:c:2.0
+  Variant runtime:
+    | Attribute Name                 | Provided     | Requested    |
+    |--------------------------------|--------------|--------------|
+    | org.gradle.status              | release      |              |
+    | org.gradle.category            | library      | library      |
+    | org.gradle.libraryelements     | jar          | jar          |
+    | org.gradle.usage               | java-runtime | java-runtime |
+    | org.gradle.dependency.bundling |              | external     |
+    | org.gradle.jvm.environment     |              | standard-jvm |
+    | org.gradle.jvm.version         |              | 21           |
+   Selection reasons:
+      - By conflict resolution: between versions 2.0 and 1.0
+
+lab.co3:c:2.0
+\--- lab.co3:d:1.0
+     \--- lab.co3:b:1.0
+          \--- runtimeClasspath
+
+lab.co3:c:1.0 -> 2.0
+\--- lab.co3:a:1.0
+     \--- runtimeClasspath
+
+A web-based, searchable dependency report is available by adding the --scan option.

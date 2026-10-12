@@ -1,0 +1,140 @@
+# SNAPSHOT 을 두 번 게시하고, 캐시 상태가 다른 소비자가 무엇을 받는지 본다
+# gradle-a, gradle-b, maven-a, maven-b 는 각자 캐시를 가진 '개발자 PC'다. gradle-ci 는 게시만 한다
+
+## 1. 첫 게시 (content=build-1)
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean publish -Paid=lib -Pver=1.0.0-SNAPSHOT -Pcontent=build-1    # 3.7s, exit 0
+  GET /snapshots/lab/lib/1.0.0-SNAPSHOT/maven-metadata.xml -> 200
+    <?xml version="1.0" encoding="UTF-8"?>
+    <metadata modelVersion="1.1.0">
+      <groupId>lab</groupId>
+      <artifactId>lib</artifactId>
+      <versioning>
+        <lastUpdated>20261012064614</lastUpdated>
+        <snapshot>
+          <timestamp>20261012.064614</timestamp>
+          <buildNumber>1</buildNumber>
+        </snapshot>
+        <snapshotVersions>
+          <snapshotVersion>
+            <extension>module</extension>
+            <value>1.0.0-20261012.064614-1</value>
+            <updated>20261012064614</updated>
+          </snapshotVersion>
+          <snapshotVersion>
+            <extension>pom</extension>
+            <value>1.0.0-20261012.064614-1</value>
+            <updated>20261012064614</updated>
+          </snapshotVersion>
+          <snapshotVersion>
+            <extension>jar</extension>
+            <value>1.0.0-20261012.064614-1</value>
+            <updated>20261012064614</updated>
+          </snapshotVersion>
+        </snapshotVersions>
+      </versioning>
+      <version>1.0.0-SNAPSHOT</version>
+    </metadata>
+  첫 게시의 실제 파일 버전: 1.0.0-20261012.064614-1
+
+## 2. 첫 게시 직후 소비자 두 대가 받는다
+  gradle-a:
+$ docker compose run --rm -T gradle-a gradle -q --console=plain -p /work/consumer-gradle resolved '-Pdeps=lab:lib:1.0.0-SNAPSHOT'     # 3.3s, exit 0
+    RESOLVED lab:lib:1.0.0-SNAPSHOT:20261012.064614-1 file=lib-1.0.0-SNAPSHOT.jar sha256=7a5a47c1f272c614
+  maven-a:
+$ docker compose run --rm -T maven-a sh -c mvn -B -f /work/consumer-maven/pom.xml dependency:list -Ddep.aid=lib '-Ddep.ver=1.0.0-SNAPSHOT' -DoutputAbsoluteArtifactFilename=true  > /tmp/out.txt 2>&1; grep -E '^.INFO.    lab:|ERROR.*lab' /tmp/out.txt | head -3 | sed 's/^.INFO. *//'; for f in $(grep -o '/root/.m2/[^ ]*[.]jar' /tmp/out.txt); do echo sha256=$(sha256sum $f | cut -c1-16); done    # 5.6s, exit 0
+    lab:lib:jar:1.0.0-SNAPSHOT:compile:/root/.m2/repository/lab/lib/1.0.0-SNAPSHOT/lib-1.0.0-SNAPSHOT.jar -- module lib (auto)
+    sha256=7a5a47c1f272c614
+     Volume co-01-coordinates_m2-a Creating 
+     Volume co-01-coordinates_m2-a Created 
+     Container co-01-coordinates-maven-a-run-d4b52410ad99 Creating 
+     Container co-01-coordinates-maven-a-run-d4b52410ad99 Created 
+
+## 3. 같은 좌표로 다시 게시 (content=build-2)
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean publish -Paid=lib -Pver=1.0.0-SNAPSHOT -Pcontent=build-2    # 3.4s, exit 0
+  GET /snapshots/lab/lib/1.0.0-SNAPSHOT/maven-metadata.xml -> 200
+    <?xml version="1.0" encoding="UTF-8"?>
+    <metadata modelVersion="1.1.0">
+      <groupId>lab</groupId>
+      <artifactId>lib</artifactId>
+      <versioning>
+        <lastUpdated>20261012064627</lastUpdated>
+        <snapshot>
+          <timestamp>20261012.064627</timestamp>
+          <buildNumber>2</buildNumber>
+        </snapshot>
+        <snapshotVersions>
+          <snapshotVersion>
+            <extension>jar</extension>
+            <value>1.0.0-20261012.064627-2</value>
+            <updated>20261012064627</updated>
+          </snapshotVersion>
+          <snapshotVersion>
+            <extension>pom</extension>
+            <value>1.0.0-20261012.064627-2</value>
+            <updated>20261012064627</updated>
+          </snapshotVersion>
+          <snapshotVersion>
+            <extension>module</extension>
+            <value>1.0.0-20261012.064627-2</value>
+            <updated>20261012064627</updated>
+          </snapshotVersion>
+        </snapshotVersions>
+      </versioning>
+      <version>1.0.0-SNAPSHOT</version>
+    </metadata>
+  저장소의 파일 목록: lib-1.0.0-20261012.064627-2.jar, lib-1.0.0-20261012.064627-2.jar.md5, lib-1.0.0-20261012.064627-2.jar.sha1, lib-1.0.0-20261012.064627-2.jar.sha256, lib-1.0.0-20261012.064627-2.jar.sha512, lib-1.0.0-20261012.064627-2.module, lib-1.0.0-20261012.064627-2.module.md5, lib-1.0.0-20261012.064627-2.module.sha1, lib-1.0.0-20261012.064627-2.module.sha256, lib-1.0.0-20261012.064627-2.module.sha512, lib-1.0.0-20261012.064627-2.pom, lib-1.0.0-20261012.064627-2.pom.md5, lib-1.0.0-20261012.064627-2.pom.sha1, lib-1.0.0-20261012.064627-2.pom.sha256, lib-1.0.0-20261012.064627-2.pom.sha512, maven-metadata.xml, maven-metadata.xml.md5, maven-metadata.xml.sha1, maven-metadata.xml.sha256, maven-metadata.xml.sha512
+
+## 4. 두 번째 게시 뒤 다섯 소비자가 같은 좌표를 받는다
+  gradle-a (캐시 있음, 옵션 없음):
+$ docker compose run --rm -T gradle-a gradle -q --console=plain -p /work/consumer-gradle resolved '-Pdeps=lab:lib:1.0.0-SNAPSHOT'     # 2.6s, exit 0
+    RESOLVED lab:lib:1.0.0-SNAPSHOT:20261012.064614-1 file=lib-1.0.0-SNAPSHOT.jar sha256=7a5a47c1f272c614
+  gradle-b (캐시 없음):
+$ docker compose run --rm -T gradle-b gradle -q --console=plain -p /work/consumer-gradle resolved '-Pdeps=lab:lib:1.0.0-SNAPSHOT'     # 3.0s, exit 0
+    RESOLVED lab:lib:1.0.0-SNAPSHOT:20261012.064627-2 file=lib-1.0.0-SNAPSHOT.jar sha256=b30c4627ae3955c0
+  gradle-a --refresh-dependencies:
+$ docker compose run --rm -T gradle-a gradle -q --console=plain -p /work/consumer-gradle resolved '-Pdeps=lab:lib:1.0.0-SNAPSHOT' --refresh-dependencies    # 3.1s, exit 0
+    RESOLVED lab:lib:1.0.0-SNAPSHOT:20261012.064627-2 file=lib-1.0.0-SNAPSHOT.jar sha256=b30c4627ae3955c0
+  maven-a (로컬 저장소 있음, 옵션 없음):
+$ docker compose run --rm -T maven-a sh -c mvn -B -f /work/consumer-maven/pom.xml dependency:list -Ddep.aid=lib '-Ddep.ver=1.0.0-SNAPSHOT' -DoutputAbsoluteArtifactFilename=true  > /tmp/out.txt 2>&1; grep -E '^.INFO.    lab:|ERROR.*lab' /tmp/out.txt | head -3 | sed 's/^.INFO. *//'; for f in $(grep -o '/root/.m2/[^ ]*[.]jar' /tmp/out.txt); do echo sha256=$(sha256sum $f | cut -c1-16); done    # 2.5s, exit 0
+    lab:lib:jar:1.0.0-SNAPSHOT:compile:/root/.m2/repository/lab/lib/1.0.0-SNAPSHOT/lib-1.0.0-SNAPSHOT.jar -- module lib (auto)
+    sha256=7a5a47c1f272c614
+     Container co-01-coordinates-maven-a-run-649500446faa Creating 
+     Container co-01-coordinates-maven-a-run-649500446faa Created 
+  maven-b (로컬 저장소 없음):
+$ docker compose run --rm -T maven-b sh -c mvn -B -f /work/consumer-maven/pom.xml dependency:list -Ddep.aid=lib '-Ddep.ver=1.0.0-SNAPSHOT' -DoutputAbsoluteArtifactFilename=true  > /tmp/out.txt 2>&1; grep -E '^.INFO.    lab:|ERROR.*lab' /tmp/out.txt | head -3 | sed 's/^.INFO. *//'; for f in $(grep -o '/root/.m2/[^ ]*[.]jar' /tmp/out.txt); do echo sha256=$(sha256sum $f | cut -c1-16); done    # 5.6s, exit 0
+    lab:lib:jar:1.0.0-SNAPSHOT:compile:/root/.m2/repository/lab/lib/1.0.0-SNAPSHOT/lib-1.0.0-SNAPSHOT.jar -- module lib (auto)
+    sha256=b30c4627ae3955c0
+     Volume co-01-coordinates_m2-b Creating 
+     Volume co-01-coordinates_m2-b Created 
+     Container co-01-coordinates-maven-b-run-426106d79d7f Creating 
+     Container co-01-coordinates-maven-b-run-426106d79d7f Created 
+  maven-a -U:
+$ docker compose run --rm -T maven-a sh -c mvn -B -f /work/consumer-maven/pom.xml dependency:list -Ddep.aid=lib '-Ddep.ver=1.0.0-SNAPSHOT' -DoutputAbsoluteArtifactFilename=true -U > /tmp/out.txt 2>&1; grep -E '^.INFO.    lab:|ERROR.*lab' /tmp/out.txt | head -3 | sed 's/^.INFO. *//'; for f in $(grep -o '/root/.m2/[^ ]*[.]jar' /tmp/out.txt); do echo sha256=$(sha256sum $f | cut -c1-16); done    # 3.0s, exit 0
+    lab:lib:jar:1.0.0-SNAPSHOT:compile:/root/.m2/repository/lab/lib/1.0.0-SNAPSHOT/lib-1.0.0-SNAPSHOT.jar -- module lib (auto)
+    sha256=b30c4627ae3955c0
+     Container co-01-coordinates-maven-a-run-e86d68dde1c5 Creating 
+     Container co-01-coordinates-maven-a-run-e86d68dde1c5 Created 
+  gradle-ci, 첫 게시의 시각이 붙은 버전 1.0.0-20261012.064614-1 를 직접 적으면:
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/consumer-gradle resolved '-Pdeps=lab:lib:1.0.0-20261012.064614-1' --refresh-dependencies    # 3.1s, exit 1
+    * Try:
+    > Run with --stacktrace option to get the stack trace.
+    > Run with --info or --debug option to get more log output.
+    > Run with --scan to get full insights from a Build Scan (powered by Develocity).
+    > Get more help at https://help.gradle.org.
+    BUILD FAILED in 2s
+  GET lib-1.0.0-20261012.064614-1.jar -> 404
+
+## 5. 스냅숏 저장소의 preserveSnapshots 를 켜고 같은 일을 반복 (artifact lib-p)
+  preserveSnapshots=True -> 200
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean publish -Paid=lib-p -Pver=1.0.0-SNAPSHOT -Pcontent=build-1    # 3.3s, exit 0
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean publish -Paid=lib-p -Pver=1.0.0-SNAPSHOT -Pcontent=build-2    # 3.3s, exit 0
+  저장소의 jar: lib-p-1.0.0-20261012.064654-1.jar, lib-p-1.0.0-20261012.064657-2.jar
+  1.0.0-20261012.064654-1 를 직접 적으면:
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/consumer-gradle resolved '-Pdeps=lab:lib-p:1.0.0-20261012.064654-1' --refresh-dependencies    # 2.7s, exit 0
+    RESOLVED lab:lib-p:1.0.0-SNAPSHOT:20261012.064654-1 file=lib-p-1.0.0-20261012.064654-1.jar sha256=7a5a47c1f272c614
+  1.0.0-SNAPSHOT 으로 적으면:
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/consumer-gradle resolved '-Pdeps=lab:lib-p:1.0.0-SNAPSHOT' --refresh-dependencies    # 2.7s, exit 0
+    RESOLVED lab:lib-p:1.0.0-SNAPSHOT:20261012.064657-2 file=lib-p-1.0.0-SNAPSHOT.jar sha256=b30c4627ae3955c0
+  preserveSnapshots=False -> 200
+
+(총 51초)

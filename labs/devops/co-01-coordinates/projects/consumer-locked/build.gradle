@@ -1,0 +1,26 @@
+// 동적 버전 두 개를 쓰는 소비자. -Plock 을 주면 의존성 잠금을 켠다.
+// 잠금 파일은 gradle.lockfile (./gradlew dependencies --write-locks 로 쓴다).
+plugins { id 'java' }
+
+repositories {
+    maven { url = uri('http://reposilite:8080/releases'); allowInsecureProtocol = true }
+}
+
+if (project.hasProperty('lock')) {
+    dependencyLocking { lockAllConfigurations() }
+}
+
+dependencies {
+    implementation 'lab:dyn:2.10.+'
+    implementation 'lab:util:latest.release'
+}
+
+tasks.register('resolved') {
+    def rc = configurations.runtimeClasspath
+    doLast {
+        rc.files   // 해소에 실패하면 여기서 빌드가 실패한다
+        rc.incoming.resolutionResult.allComponents.findAll { it.id instanceof ModuleComponentIdentifier }.each {
+            println "RESOLVED ${it.id.displayName}"
+        }
+    }
+}

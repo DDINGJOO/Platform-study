@@ -1,0 +1,23 @@
+# 릴리스 버전 1.0.0 을 게시하고, 같은 좌표에 다른 내용을 다시 게시한다
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean publish -Paid=lib -Pver=1.0.0 -Pcontent=release-1    # 2.9s, exit 0
+  GET releases/lab/lib/1.0.0/lib-1.0.0.jar -> 200, sha256=a2cb82ca89fff625
+
+## Gradle 로 재게시 (content=release-2)
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean publish -Paid=lib -Pver=1.0.0 -Pcontent=release-2    # 3.0s, exit 1
+    FAILURE: Build failed with an exception.
+    Execution failed for task ':publishMavenPublicationToLabRepository' (registered by plugin 'org.gradle.maven-publish').
+    > Failed to publish publication 'maven' to repository 'lab'
+    > Could not PUT 'http://reposilite:8080/releases/lab/lib/1.0.0/lib-1.0.0.jar'.
+    > Received status code 409 from server: Conflict
+    BUILD FAILED in 2s
+
+## curl 과 같은 방식으로 직접 PUT (같은 경로, 다른 바이트)
+  PUT releases/lab/lib/1.0.0/lib-1.0.0.jar -> 409 {"status":409,"message":"Redeployment is not allowed"}
+  GET releases/lab/lib/1.0.0/lib-1.0.0.jar -> 200, sha256=a2cb82ca89fff625 (처음 것과 같나: True)
+
+## 메타데이터 파일도 막히나
+  PUT releases/lab/lib/maven-metadata.xml -> 200 
+  GET /releases/lab/lib/maven-metadata.xml -> 200
+    <metadata/>
+
+(총 6초)

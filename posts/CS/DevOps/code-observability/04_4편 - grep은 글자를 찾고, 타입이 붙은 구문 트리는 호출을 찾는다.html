@@ -1,0 +1,284 @@
+<!-- lead: 메서드 호출처를 grep으로 찾으면 주석과 이름만 같은 메서드가 섞이고 줄바꿈한 호출은 빠져요. 타입이 붙은 구문 트리(LST)와 OpenRewrite FindMethods, 정적 분석의 과장과 런타임 관찰의 축소를 정리했어요. -->
+<!-- tags: OpenRewrite, LST, FindMethods, 정적 분석, JaCoCo -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧬 소스 코드 관찰, 4편</div>
+  1편. 지금 운영에 무엇이 떠 있는지는 Git이 아니라 플랫폼에 묻는다<br>
+  2편. SNAPSHOT과 latest는 버전이 아니라 포인터다<br>
+  3편. 빌드 파일에 적은 버전과 jar에 들어간 버전은 다르다<br>
+  <b>4편. grep은 글자를 찾고, 타입이 붙은 구문 트리는 호출을 찾는다</b> &larr; 지금 이 글<br>
+  실습-1. 같은 좌표가 다른 바이너리를 가리키는 순간을 만든다<br>
+  실습-2. 서비스 열 개에서 취약한 라이브러리를 쓰는 곳을 SBOM으로 찾는다<br>
+  실습-3. Maven과 Gradle이 같은 의존성 그래프를 다르게 푼다<br>
+  실습-4. grep, OpenRewrite, 커버리지가 센 호출 수가 다르다
+</div>
+
+<p>사내 공통 라이브러리를 맡은 팀이 메서드 하나의 시그니처를 바꾸려고 합니다. 오래된 설계라 인자 순서가 헷갈리고, 반환 타입도 바꾸고 싶어요. 먼저 영향 범위를 봐야 하니 코드 검색 창에 메서드 이름을 넣습니다. 저장소 서른 곳에서 백 몇십 줄이 나와요. 어떤 줄은 주석이고, 어떤 줄은 이름만 같은 다른 클래스의 메서드이고, 어떤 줄은 이미 아무도 부르지 않는 코드 안에 있습니다. 반대로 검색에 걸리지 않은 호출도 있을 거예요. 변수 이름이 달랐거나, 호출이 두 줄에 걸쳐 있었거나요.</p>
+
+<p>3편까지는 운영 중인 서비스에 어떤 <b>라이브러리 버전</b>이 들어 있는지를 물었습니다. 이번 편은 한 단계 더 내려가서 <b>어떤 코드가 어떤 메서드를 부르는지</b>를 묻습니다. 취약점 공지가 "이 라이브러리를 쓰는 곳"이 아니라 "이 메서드를 이런 인자로 부르는 곳"을 가리킬 때, 사내 API를 바꿀 때 실제로 영향받는 팀을 찾을 때 필요한 질문이에요.</p>
+
+<p>이번 편에서 볼 질문은 이렇습니다. grep은 무엇을 세고 무엇을 놓치나? 같은 <code>logger.info("Hi")</code>가 왜 서로 다른 호출일 수 있나? 타입이 붙은 구문 트리는 무엇이고 어떻게 만드나? OpenRewrite로 호출처를 어떻게 찾나? 정적 분석과 런타임 관찰은 각각 어느 쪽으로 틀리나?</p>
+
+<h2>1. grep은 글자를 세고, 호출은 글자가 아니다</h2>
+
+<p>로그 라이브러리를 바꾸는 작업을 예로 들어 볼게요. SLF4J의 <code>Logger.info</code>를 부르는 곳을 모두 찾고 싶습니다. 가장 빠른 방법은 이런 검색이에요.</p>
+
+<div class="obsv-code">$ grep -rnE '\b(log|logger|LOG)\.info\(' src/main/java</div>
+
+<p>이 검색이 돌려주는 건 "이 글자 모양이 있는 줄"입니다. 호출이 아닌 것도 들어오고, 호출인 것도 빠져요.</p>
+
+<div class="obsv-code">// 들어오지만 대상이 아닌 것 (과다 검출)
+// logger.info("old way")                       주석
+String help = "use log.info(...) instead";     문자열
+java.util.logging.Logger log = ...; log.info(msg);    이름만 같은 JUL Logger
+AuditLogger logger = ...; logger.info(event);          사내 클래스의 info
+
+// 대상인데 빠지는 것 (누락)
+LoggerFactory.getLogger(Foo.class).info("x");  변수 없이 바로 호출
+this.auditTrail.info("x");                     변수 이름이 다름
+log
+    .info("x");                                줄바꿈
+names.forEach(log::info);                      메서드 참조</div>
+
+<p>정규식을 더 정교하게 다듬으면 몇 가지는 잡을 수 있어요. 주석과 문자열을 빼는 정규식, 줄바꿈을 넘는 정규식도 만들 수 있습니다. 그런데 남는 문제가 하나 있어요. <code>log.info(msg)</code>라는 글자만으로는 <code>log</code>가 SLF4J Logger인지 JUL Logger인지 사내 클래스인지 알 수 없습니다. 그걸 알려면 <code>log</code>가 어디서 선언됐고 그 타입이 무엇인지, 그 타입의 <code>info</code>가 어느 클래스에 정의돼 있는지를 따라가야 해요. 컴파일러가 하는 일입니다.</p>
+
+<p>정규식을 계속 다듬는 길은 끝이 나지 않아요. 변수 이름 목록에 <code>auditTrail</code>을 더하면 다른 저장소에서는 <code>LOGGER</code>와 <code>logger_</code>가 나옵니다. 필드 이름을 알아내려고 선언문을 찾는 정규식을 하나 더 만들면, 그건 이미 파서의 일을 흉내 내기 시작한 거예요. 게다가 grep은 결과마다 "이 줄이 맞는지"를 사람이 다시 읽어야 해서, 저장소가 열 개일 때 쓸 만하던 방법이 수백 개가 되면 사람의 시간으로 비용이 넘어갑니다. 그래서 규모가 커지면 질문을 바꿔야 해요. "이 글자가 어디 있나"가 아니라 "이 타입의 이 메서드를 부르는 노드가 어디 있나"로요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 수신자 타입 (receiver type)</div>
+  메서드 호출 <code>a.b()</code>에서 <code>a</code>의 타입입니다. 같은 이름의 메서드라도 수신자 타입이 다르면 다른 메서드예요. "SLF4J의 info를 부르는 곳"은 수신자 타입이 <code>org.slf4j.Logger</code>(또는 그 하위 타입)인 <code>info</code> 호출을 뜻합니다.
+</div>
+
+<h2>2. 구문 트리에 타입을 붙이면 호출이 보인다</h2>
+
+<p>소스 코드를 파서에 넣으면 <b>구문 트리</b>가 나옵니다. 클래스 선언 아래에 메서드 선언이, 그 아래에 문장과 식이, 식 안에 메서드 호출 노드가 달린 트리예요. 트리 위에서는 주석과 문자열이 호출 노드와 섞이지 않고, 줄바꿈이나 들여쓰기도 상관없습니다. 1장의 과다 검출 중 주석과 문자열, 누락 중 줄바꿈은 이 단계에서 해결돼요. 변수 없는 호출과 다른 변수 이름은 노드로는 잡히지만, 그게 대상 메서드인지는 수신자 타입을 알아야 판정할 수 있어요. 타입 없이 모든 <code>info</code> 노드를 세면 JUL 같은 과다 검출이 다시 들어옵니다.</p>
+
+<p>수신자 타입 문제는 트리만으로는 풀리지 않아요. 호출 노드에 "이 호출은 <code>org.slf4j.Logger</code>에 선언된 <code>info(String)</code>이다"라는 정보가 붙어 있어야 합니다. 이걸 <b>타입 속성</b>이라고 해요. 타입을 붙이려면 변수 선언을 따라가고, import를 해석하고, 클래스패스에 있는 라이브러리의 클래스 파일까지 읽어야 합니다. 결국 의존성을 해소하고, 소스를 파싱하고, 타입을 계산하는 일이라 바이트코드를 만들기 직전까지의 컴파일과 거의 같은 작업이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: LST (Lossless Semantic Tree)</div>
+  OpenRewrite가 쓰는 코드 트리입니다. 성질이 두 가지예요(OpenRewrite LST 문서). 노드마다 타입 정보가 붙어 있고(타입이 현재 파일이나 프로젝트 밖에 정의돼 있어도), 공백과 서식을 잃지 않아 트리를 다시 출력하면 원래 소스가 그대로 나옵니다. 그래서 검색뿐 아니라 고친 결과를 원래 서식대로 되돌려 쓰는 데도 써요.
+</div>
+
+<p>타입 속성이 필요한 대표적인 예가 바로 <code>logger.info("Hi");</code>예요. 타입 정보 없이는 이 logger가 SLF4J인지 Logback인지 알 수 없고, 그러면 패턴을 정확히 맞출 수 없어요(같은 문서의 예). 타입이 붙은 트리에서는 이 질문이 노드의 속성 하나를 읽는 일이 됩니다.</p>
+
+<p>대가는 비용입니다. 타입을 붙이려면 그 프로젝트를 빌드할 수 있어야 해요. 의존성이 내려받아지고, 빌드 도구가 클래스패스를 계산해 줘야 합니다. 그래서 OpenRewrite는 Maven과 Gradle 플러그인으로 빌드 안에서 돌고, 빌드 도구가 준 클래스패스로 타입을 붙여요. 로컬에서 돌릴 때는 프로젝트의 LST가 메모리에 다 들어가야 한다는 제약도 있어요. LST를 미리 만들어 저장해 두고 쪼개서 쓰는 방식도 있어요(Moderne 플랫폼). 이 비용을 어디서 줄일 수 있는지는 4장에서 봅니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr41" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="175" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">grep이 보는 것</text>
+  <path d="M30 50 C 120 48, 230 51, 320 49 C 322 70, 321 90, 320 108 C 230 110, 120 107, 32 109 C 29 90, 30 70, 30 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="175" y="85" text-anchor="middle" font-family="Menlo, monospace" font-size="15" fill="#3d3a34">log.info(msg);</text>
+  <text x="175" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">글자 열. "log"가 무엇인지 모른다</text>
+  <path d="M325 80 C 350 79, 365 81, 385 80" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr41)"/>
+  <text x="530" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">타입이 붙은 트리가 보는 것</text>
+  <path d="M440 48 C 480 46, 540 49, 600 47 C 602 60, 601 70, 600 80 C 540 82, 480 79, 442 81 C 439 70, 440 60, 440 48 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="520" y="70" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">메서드 호출 info</text>
+  <path d="M480 82 C 460 100, 440 115, 420 128" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M560 82 C 580 100, 600 115, 620 128" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M370 130 C 400 128, 440 131, 470 129 C 472 142, 471 152, 470 162 C 440 164, 400 161, 372 163 C 369 152, 370 141, 370 130 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="420" y="151" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">수신자 log</text>
+  <path d="M570 130 C 600 128, 640 131, 670 129 C 672 142, 671 152, 670 162 C 640 164, 600 161, 572 163 C 569 152, 570 141, 570 130 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="620" y="151" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">인자 msg</text>
+  <path d="M360 182 C 420 180, 560 183, 680 181 C 682 205, 681 225, 680 245 C 560 247, 420 244, 362 246 C 359 225, 360 205, 360 182 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="520" y="205" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">type: org.slf4j.Logger</text>
+  <text x="520" y="225" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">method: Logger#info(String)</text>
+  <text x="520" y="241" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">클래스패스에서 읽어 붙인 정보</text>
+  <path d="M420 164 C 425 170, 428 175, 430 180" fill="none" stroke="#e5a33c" stroke-width="1.8" stroke-dasharray="4 4"/>
+  <text x="350" y="285" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 질문이 "이 글자가 있나"에서 "이 메서드를 부르나"로 바뀐다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 한 줄을 grep은 글자로, LST는 타입이 붙은 호출 노드로 본다</div>
+
+<h2>3. OpenRewrite로 호출처를 찾는다</h2>
+
+<p>OpenRewrite는 대규모 코드 변경을 자동화하려고 만든 도구지만, 바꾸기 전에 찾는 기능이 먼저 있습니다. 찾기와 바꾸기 모두 <b>레시피</b> 단위로 돌아요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 레시피와 방문자 (recipe, visitor)</div>
+  레시피는 OpenRewrite에서 "무엇을 찾거나 바꿀지"를 담은 단위입니다. 실제 일은 레시피가 돌려주는 방문자가 해요. 방문자는 LST를 위에서부터 훑으며 메서드 호출, 클래스 선언 같은 노드마다 정해진 메서드(<code>visitMethodInvocation</code> 등)를 호출받고, 그 자리에서 노드를 표시하거나 고칩니다.
+</div>
+
+<p>메서드 호출처를 찾는 레시피는 이미 있어요. <code>org.openrewrite.java.search.FindMethods</code>이고, 옵션은 메서드 패턴 하나(<code>methodPattern</code>)와 하위 타입의 재정의까지 맞출지(<code>matchOverrides</code>)입니다. 패턴은 "수신자 타입 메서드이름(인자 타입)" 모양이에요.</p>
+
+<div class="obsv-code">org.slf4j.Logger info(..)          SLF4J Logger 의 info, 인자 개수 무관
+org.slf4j.Logger info(String)      인자가 String 하나인 것만
+java.lang.String substring(int)    오버로드 하나만
+*..Files createTempDir()           어느 패키지든 Files 라는 클래스의 createTempDir
+org.example.AbClient &lt;constructor&gt;(..)   생성자 호출</div>
+
+<p>여기서 <code>*</code>는 정확히 하나, <code>..</code>는 0개 이상을 뜻해요(OpenRewrite Method Patterns 문서). 패턴은 타입 이름 기준이라 대소문자와 패키지까지 맞아야 합니다. 그리고 기본값에서는 <b>패턴에 적은 타입에 선언된 메서드만</b> 맞아요. 인터페이스나 상위 클래스를 적고 그 구현체에 대한 호출까지 잡으려면 <code>matchOverrides</code>를 켜야 해요(같은 문서). 예를 들어 변수를 SLF4J 인터페이스가 아니라 Logback의 구현 클래스 타입으로 선언해 두었다면, 그 변수로 부른 <code>info</code>는 <code>org.slf4j.Logger info(..)</code>에 기본값으로는 걸리지 않을 수 있어요. <a href="#co-08">실습-4</a>에서 이 경우를 일부러 넣어 둡니다.</p>
+
+<p>Maven 프로젝트라면 빌드 파일을 고치지 않고 명령줄에서 바로 돌릴 수 있습니다.</p>
+
+<div class="obsv-code">mvn org.openrewrite.maven:rewrite-maven-plugin:6.46.1:dryRun \
+  -Drewrite.activeRecipes=org.openrewrite.java.search.FindMethods \
+  -Drewrite.options=methodPattern='org.slf4j.Logger info(..)' \
+  -Drewrite.exportDatatables=true</div>
+
+<p>버전을 6.46.1로 적은 데는 이유가 있어요. OpenRewrite 모듈은 2026년 들어 배포처를 Maven Central에서 Code Genome Project라는 별도 저장소로 옮기고 있고, 그 저장소는 내려받을 때마다 인증을 요구합니다(Moderne 문서 "Latest versions of every OpenRewrite module"). 최신 플러그인은 6.50.0(같은 문서)인데, 2026-10-12에 Maven Central에서 받을 수 있는 마지막 판은 2026-08-12에 올라온 6.46.1이었어요. 인증 없이 따라 하려면 이 판을 씁니다.</p>
+
+<p><code>dryRun</code>은 소스를 고치지 않고, 바뀔 내용을 패치 파일로만 남기는 목표(goal)예요. 검색 레시피는 코드를 바꾸지 않는 대신 찾은 노드에 표시를 달기 때문에, 패치 파일에는 찾은 호출마다 표시 주석이 붙은 줄이 나옵니다. <code>exportDatatables</code>를 켜면 레시피가 모은 표도 CSV로 떨어져요. FindMethods의 표는 <code>MethodCalls</code>이고 소스 파일, 호출 텍스트, 클래스 이름, 메서드 이름, 인자 타입 칸을 가집니다. 서비스 수백 개에서 돌린 결과를 모으는 건 결국 이 CSV를 모으는 일이에요. <code>failOnDryRunResults</code>를 켜면 찾은 게 있을 때 빌드를 실패시킬 수도 있어서, "이 메서드를 새로 부르는 코드는 들이지 않는다"는 CI 검사로도 씁니다.</p>
+
+<p>실제로 나오는 모양을 보면 이해가 빠릅니다. 아래는 <a href="#co-08">실습-4</a>의 예제 코드에 이 명령을 돌렸을 때 패치 파일에 나온 줄 일부예요(꼬리 주석은 지웠어요). 찾은 호출 앞에 <code>/*~~&gt;*/</code> 표시가 붙고, 메서드 참조에는 메서드 이름 앞에 붙습니다. 두 줄에 걸친 호출도 한 번으로 잡혀요.</p>
+
+<div class="obsv-code">-        log.info("order received {}", id);
++        /*~~&gt;*/log.info("order received {}", id);
+-        log
++        /*~~&gt;*/log
+             .info("order total {}", total);
+-        names.forEach(log::info);
++        names.forEach(log::/*~~&gt;*/info);</div>
+
+<p><code>matchOverrides</code>를 켜고 돌린 실행의 <code>MethodCalls</code> 표에는 호출마다 한 줄씩, 수신자 타입이 <code>className</code> 칸에 들어갑니다. grep 결과에는 없는 정보예요. 이 칸이 있어서 "SLF4J 인터페이스로 부른 곳"과 "Logback 구현 타입으로 부른 곳"을 나눠 셀 수 있습니다.</p>
+
+<div class="obsv-code">sourceFile,method,className,methodName,argumentTypes
+.../OrderHandler.java,"log.info(""order received {}"", id)",org.slf4j.Logger,info,"String, java.lang.String"
+.../SearchHandler.java,log::info,org.slf4j.Logger,info,
+.../PaymentHandler.java,"log.info(""payment {}"", id)",ch.qos.logback.classic.Logger,info,"String, java.lang.String"</div>
+
+<p>직접 레시피를 짜는 것도 어렵지 않아요. 지금 API로 쓰면 방문자 하나가 이 정도입니다.</p>
+
+<div class="obsv-code">public class FindDangerousParse extends Recipe {
+    private static final MethodMatcher PARSE =
+        new MethodMatcher("com.example.xml.Parser parse(String)", true);
+
+    @Override public String getDisplayName() { return "Find Parser.parse(String)"; }
+    @Override public String getDescription() { return "취약한 parse 호출처를 표시한다."; }
+
+    @Override
+    public TreeVisitor&lt;?, ExecutionContext&gt; getVisitor() {
+        return new JavaIsoVisitor&lt;&gt;() {
+            @Override
+            public J.MethodInvocation visitMethodInvocation(J.MethodInvocation m, ExecutionContext ctx) {
+                J.MethodInvocation mi = super.visitMethodInvocation(m, ctx);
+                return PARSE.matches(mi) ? SearchResult.found(mi) : mi;
+            }
+        };
+    }
+}</div>
+
+<p>예전 자료에서 보이는 <code>cu.findMethodCalls(...)</code>, <code>refactor().fix()</code>, <code>JavaSourceVisitor</code> 같은 API는 초기 버전의 것이고 지금은 없어요. 지금은 <code>Recipe</code>, <code>JavaIsoVisitor</code>, <code>ExecutionContext</code>, <code>SearchResult</code>의 조합이고, AST라는 말 대신 LST라고 부릅니다. 메서드 패턴 문법은 예전과 같아요.</p>
+
+<h2>4. 질문마다 필요한 타입 정보의 양이 다르다</h2>
+
+<p>2장에서 타입을 붙이는 비용이 컴파일에 가깝다고 했어요. 그렇다고 모든 검색이 완전한 타입 정보를 요구하지는 않습니다. 질문에 따라 세 갈래로 나눠 보면 비용을 줄일 곳이 보여요.</p>
+
+<div class="obsv-code">질문                                  필요한 타입 정보          파서에 줄 클래스패스
+들여쓰기, 공백, import 정렬            없음                      없음
+특정 라이브러리의 메서드 호출처         그 라이브러리의 타입만     그 라이브러리 jar 하나
+임의의 질문에 답할 수 있게 저장         전부                      런타임 클래스패스 전체</div>
+
+<p>첫째는 서식만 보는 검색과 변경이에요. 공백을 고치거나 import 순서를 맞추는 데는 노드가 무슨 타입인지 몰라도 됩니다. 둘째가 이번 편의 주된 경우예요. "Guava의 <code>Files.createTempDir()</code>를 부르는 곳"을 찾는다면 파서가 Guava의 타입만 알면 됩니다. 정적 호출이나 그 타입으로 선언한 변수처럼 수신자 타입이 바로 드러나는 경우에는, 프로젝트의 나머지 의존성을 몰라도 그 호출의 수신자 타입이 정확히 붙어요. 수신자가 클래스패스에 없는 다른 라이브러리 메서드의 반환값이라면 타입이 비어서 놓칩니다. 이때 파서에 주는 Guava jar의 버전이 프로젝트가 실제로 쓰는 버전과 꼭 같을 필요도 없어요. 찾으려는 메서드가 두 버전에 같은 시그니처로 있으면 판정 결과는 같습니다. 셋째는 나중에 어떤 질문이 들어올지 모르는 상태에서 트리를 저장해 둘 때예요. 그때는 모든 타입을 붙여 둬야 합니다.</p>
+
+<p>조직 전체를 검색하려면 결국 셋째가 필요해집니다. 검색할 때마다 저장소 수천 개를 빌드하는 대신, 각 저장소의 CI가 빌드하는 김에 타입이 붙은 트리를 만들어 산출물로 남겨 두는 방식이에요. 그러면 검색 한 번의 비용이 저장소마다 빌드하는 일에서 저장된 트리를 읽는 일로 줄어요. 다만 이렇게 남긴 트리도 <b>어느 커밋에서 만든 것인지</b>가 붙어 있어야 운영에 떠 있는 코드와 맞춰 볼 수 있어요. 트리를 main 브랜치 기준으로만 갱신하면, 운영 중인 서비스가 몇 커밋 뒤처져 있을 때 지금 운영에 없는 호출을 찾거나 운영에 있는 호출을 놓칩니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 타입이 비면 매처는 조용히 놓친다</div>
+  &bull; 클래스패스에 어떤 jar가 빠지면 그 jar의 타입을 쓰는 호출에는 타입이 붙지 않아요. 메서드 패턴은 타입으로 판정하니 이런 호출은 "아니다"로 처리되고, 오류도 나지 않습니다.<br>
+  &bull; 그래서 빌드가 깨진 저장소, 코드 생성 단계(어노테이션 프로세서, gRPC 스텁)를 거치지 않은 저장소에서 돌린 검색 결과는 0건이 나와도 믿으면 안 돼요. 검색 결과와 함께 "타입을 다 붙였나"를 같이 기록해 둡니다.
+</div>
+
+<h2>5. 정적 분석은 부풀리고, 런타임 관찰은 줄인다</h2>
+
+<p>타입이 붙은 트리로 찾으면 1장의 grep 문제는 대부분 사라집니다. 그런데 "이 메서드를 부르는 코드가 있다"와 "운영에서 이 메서드가 불린다"는 다른 질문이에요.</p>
+
+<div class="obsv-code">static final boolean LEGACY = false;
+
+void handle(Request r) {
+    if (LEGACY) {
+        log.info("legacy path {}", r);    // 코드에는 있다. 절대 실행되지 않는다
+    }
+    try {
+        process(r);
+    } catch (TimeoutException e) {
+        log.info("timeout {}", r);         // 코드에도 있고 실행될 수도 있다. 드물다
+    }
+}</div>
+
+<p>정적 분석은 첫 번째 호출도 셉니다. 조건이 항상 거짓이라 실제 실행 경로가 없는데도요. 아무도 요청하지 않는 URI에 매핑된 핸들러 안의 호출도 셉니다. 그래서 <span class="obsv-mark">정적 분석은 실행 경로를 부풀려서 보고</span>해요. 반대로 운영 중인 프로세스를 관찰하는 방법(에이전트, 프로파일러, 커버리지)은 관찰하는 동안 실제로 지나간 경로만 봅니다. 두 번째 호출처럼 예외가 나야 지나가는 경로는 관찰 기간에 한 번도 안 지나갈 수 있어요. 그래서 런타임 관찰은 줄여서 보고합니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <path d="M60 60 C 200 50, 520 52, 640 62 C 655 140, 652 210, 640 268 C 500 280, 200 278, 60 268 C 48 200, 50 130, 60 60 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="8 6"/>
+  <text x="80" y="88" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">grep 매치 (글자)</text>
+  <path d="M110 105 C 230 98, 470 100, 590 108 C 600 160, 598 210, 590 250 C 470 258, 230 256, 110 250 C 100 210, 102 160, 110 105 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="130" y="130" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5">정적 호출처 (타입이 붙은 트리)</text>
+  <path d="M170 150 C 260 145, 390 147, 480 152 C 488 180, 487 210, 480 236 C 390 241, 260 239, 170 236 C 162 210, 163 180, 170 150 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="190" y="172" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">실행될 수 있는 호출처</text>
+  <path d="M200 190 C 250 186, 310 188, 350 191 C 355 205, 354 216, 350 226 C 310 229, 250 227, 200 226 C 195 216, 196 203, 200 190 Z" fill="#eaf4ec" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="275" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">관찰 기간에 실행됨</text>
+  <text x="520" y="195" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">죽은 분기,</text>
+  <text x="520" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">안 쓰는 URI</text>
+  <text x="415" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">예외 경로</text>
+  <text x="600" y="90" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">주석, 문자열, 다른 타입의 info</text>
+  <text x="350" y="305" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 바깥 집합으로 셀수록 부풀고, 안쪽 집합으로 셀수록 줄어든다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 세 가지 방법이 세는 집합은 서로 다르고, 정답은 그 사이에 있다</div>
+
+<p>운영 중에 "어디가 실제로 실행되나"를 보는 수단은 여럿입니다. <a href="https://dding-shark.tistory.com/450">「메트릭 수집」 시리즈 5편</a> 3절에서 다룬 연속 프로파일링은 표본 추출 방식이라 <b>자주 도는 곳</b>을 싸게 보여 주지만, 드물게 도는 경로는 표본에 잡히지 않을 수 있어요. 이번 질문은 "한 번이라도 불렸나"라서 다른 도구가 더 맞습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 커버리지 에이전트 (JaCoCo agent)</div>
+  JVM을 띄울 때 <code>-javaagent</code>로 붙이면 클래스가 로드되는 순간 바이트코드에 실행 여부를 기록하는 지점(probe)을 끼워 넣는 도구입니다. 표본을 뽑지 않고 "이 줄이 한 번이라도 실행됐나"를 기록해요. 테스트 커버리지로 많이 쓰지만 운영과 같은 부하를 걸어 둔 프로세스에도 붙일 수 있습니다.
+</div>
+
+<p>둘을 섞어 쓰는 순서는 이렇습니다. 런타임 관찰에서 실행이 확인된 호출처는 <b>지금 실제로 쓰이는 곳</b>이니 먼저 고쳐요. 정적 분석에만 잡히고 런타임에는 안 보인 호출처는 둘 중 하나입니다. 실행될 수 없는 코드(지워도 되는 후보)이거나, 드물게 실행되는 경로(관찰 기간이 짧았던 것)예요. 이 둘은 사람이 코드를 보고 가려야 합니다. 그리고 런타임 관찰은 <b>관찰한 기간과 트래픽</b>에 묶여 있다는 걸 잊으면 안 돼요. 월말 정산, 연 1회 배치, 장애 때만 타는 대체 경로는 하루 관찰로는 0으로 보입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "런타임에 안 보였다"는 "안 쓴다"가 아니다</div>
+  &bull; 커버리지나 에이전트로 본 결과는 관찰 기간의 트래픽이 지나간 경로입니다. 예외 처리, 재시도, 대체 경로처럼 장애 때만 실행되는 코드는 평소에 0으로 보이다가 정작 필요할 때 실행돼요.<br>
+  &bull; 취약점 대응에서는 이 차이가 특히 커요. 공격자는 평소 트래픽이 가지 않는 경로를 일부러 찾아옵니다. 런타임에 안 보였다고 정적 분석이 찾은 호출처를 지우면 안 됩니다.
+</div>
+
+<h2>6. 두 가지 쓰임새: 취약한 메서드, 바꾸려는 API</h2>
+
+<p>이 검색이 실제로 쓰이는 경우는 크게 둘입니다.</p>
+
+<p><b>첫째는 서드파티 라이브러리의 취약점</b>이에요. 공지가 "버전 X.Y.Z의 이 메서드에 신뢰할 수 없는 입력을 넘기면 위험하다"는 형태라면, <a href="#co-03">3편</a>의 SBOM 질의로 그 버전이 들어 있는 서비스를 먼저 좁힙니다. 그다음 그 서비스들의 소스에서 해당 메서드의 호출처를 찾아요. 버전만 같고 그 메서드를 부르지 않는 서비스는 급하지 않고, 부르는 서비스 중에서도 외부 요청이 닿는 경로에 있는 곳이 가장 급합니다. 이 순서를 밟으려면 운영 중인 jar에서 그 jar를 만든 커밋까지 이어져 있어야 해요. 그 연결이 <a href="#co-01">1편</a>과 <a href="#co-02">2편</a>의 이야기입니다. 소스를 받을 커밋을 모르면 지금 운영에 떠 있는 코드가 아니라 main 브랜치의 코드를 검색하게 되고, 그건 다른 코드일 수 있어요.</p>
+
+<p><b>둘째는 사내 공통 라이브러리의 API 변경</b>이에요. 도입부의 경우입니다. 호출처 목록에 저장소와 소유 팀을 붙이면 "이 변경이 어느 팀에 얼마나 영향을 주나"가 나와요. 영향이 작으면 각 팀에 알리고 진행하고, 크면 이전 API를 한동안 남겨 두거나 계획을 다시 세웁니다. OpenRewrite는 여기서 한 걸음 더 갈 수 있어요. 찾는 레시피 대신 바꾸는 레시피(메서드 이름 바꾸기, 인자 순서 바꾸기, 타입 바꾸기 같은 것이 이미 있습니다)를 돌려 저장소마다 변경을 만들고, 이를 풀 리퀘스트로 올리는 자동화(Moderne 같은 플랫폼이나 스크립트)를 붙이면, 영향받는 팀이 직접 고치지 않고 리뷰만 하게 할 수 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 검색 결과를 쌓을 때는 "저장소, 커밋, 파일, 호출 텍스트, 메서드 시그니처"를 한 줄로 남겨요. 커밋이 빠지면 나중에 같은 검색을 다시 했을 때 무엇이 바뀌었는지 비교할 수 없습니다.<br>
+  &bull; 같은 레시피를 CI에서 <code>dryRun</code>과 <code>failOnDryRunResults</code>로 돌리면 "고친 뒤 다시 들어오는" 호출을 막을 수 있어요. 한 번 찾고 끝내는 것보다 이게 오래 갑니다.<br>
+  &bull; 런타임 쪽 근거가 필요하면 짧은 기간이라도 커버리지 에이전트를 스테이징이나 일부 인스턴스에 붙여요. 정적 결과와 겹쳐 보면 "지금 쓰이는 곳"이 먼저 보입니다.
+</div>
+
+<p>정리하면 검색 방법마다 답하는 질문이 다릅니다. grep은 "이 글자가 어디 있나", 타입이 붙은 트리는 "이 메서드를 부르는 코드가 어디 있나", 런타임 관찰은 "관찰하는 동안 어디가 실제로 실행됐나"예요. 실습-4에서는 같은 대상 메서드를 놓고 세 방법이 센 수와 각각의 과다 검출, 누락을 직접 셉니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>grep은 글자를 세기 때문에 주석, 문자열, 이름만 같은 다른 타입의 메서드를 함께 세고, 줄바꿈이나 다른 변수 이름으로 쓴 호출은 놓쳐요.</b><br><br>
+  타입이 붙은 구문 트리(LST)는 수신자 타입까지 알기 때문에 "이 메서드를 부르는 코드"를 찾을 수 있지만, 그러려면 프로젝트를 빌드할 수 있어야 해요. 정적 분석은 실행될 수 없는 코드까지 세서 부풀리고, 런타임 관찰은 관찰 기간에 지나가지 않은 경로를 빼서 줄여요. 그래서 둘을 겹쳐 보고, 그 사이는 사람이 가려야 합니다. <b>호출처를 찾는다는 건 글자가 아니라 타입과 실행 경로를 묻는 일입니다.</b>
+</div>
+
+</div>

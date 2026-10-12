@@ -1,0 +1,47 @@
+// 모든 서비스에 공통으로 붙는 것: 스프링 부트, 액추에이터, SBOM(CycloneDX), git.properties, POM 생성.
+// 버전 관리는 io.spring.dependency-management 대신 Gradle 의 platform() 으로 한다.
+// 그래야 충돌 해소가 Gradle 기본 규칙(높은 버전)대로 돈다.
+import org.springframework.boot.gradle.plugin.SpringBootPlugin
+
+plugins {
+    id 'org.springframework.boot' apply false
+    id 'org.cyclonedx.bom' apply false
+    id 'com.gorylenko.gradle-git-properties' apply false
+}
+
+subprojects {
+    apply plugin: 'java'
+    apply plugin: 'org.springframework.boot'
+    apply plugin: 'org.cyclonedx.bom'
+    apply plugin: 'com.gorylenko.gradle-git-properties'
+    apply plugin: 'maven-publish'
+
+    group = 'lab.inventory'
+    version = '1.0.0'
+
+    java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+    repositories { mavenCentral() }
+
+    sourceSets.main.java.srcDir rootProject.file('common/src/main/java')
+    sourceSets.main.resources.srcDir rootProject.file('common/src/main/resources')
+
+    dependencies {
+        implementation platform(SpringBootPlugin.BOM_COORDINATES)
+        implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    }
+
+    gitProperties {
+        dotGitDirectory = rootProject.layout.projectDirectory.dir('.git')
+    }
+
+    bootJar { archiveFileName = "${project.name}.jar" }
+
+    // "저장소에 게시했다면 이 POM 이 함께 올라갔을 것"을 만든다(실제 게시는 하지 않는다)
+    publishing {
+        publications { maven(MavenPublication) { from components.java } }
+    }
+}
+
+// 운영 쪽 오버레이(s06 이미지에만 쓰인다). 서비스 빌드 파일 밖에 있다.
+repositories { mavenCentral() }
+apply from: 'ops/overlay.gradle'

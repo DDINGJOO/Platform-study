@@ -1,0 +1,259 @@
+<!-- lead: 스프링 부트 서비스 열 개에 옛 logback을 숨기고 Git 빌드 파일, 배포본 POM, /actuator/sbom으로 찾아봤어요. SBOM은 취약한 넷 중 셋을 오탐 없이 찾았고, 빌드 파일과 POM은 하나씩만 맞혔어요. -->
+<!-- tags: CycloneDX, actuator sbom, logback, git.properties, CVE-2024-12798 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧬 소스 코드 관찰, 실습-2</div>
+  1편. 지금 운영에 무엇이 떠 있는지는 Git이 아니라 플랫폼에 묻는다<br>
+  2편. SNAPSHOT과 latest는 버전이 아니라 포인터다<br>
+  3편. 빌드 파일에 적은 버전과 jar에 들어간 버전은 다르다<br>
+  4편. grep은 글자를 찾고, 타입이 붙은 구문 트리는 호출을 찾는다<br>
+  실습-1. 같은 좌표가 다른 바이너리를 가리키는 순간을 만든다<br>
+  <b>실습-2. 서비스 열 개에서 취약한 라이브러리를 쓰는 곳을 SBOM으로 찾는다</b> &larr; 지금 이 글<br>
+  실습-3. Maven과 Gradle이 같은 의존성 그래프를 다르게 푼다<br>
+  실습-4. grep, OpenRewrite, 커버리지가 센 호출 수가 다르다
+</div>
+
+<p><a href="#co-01">1편</a>은 보안 공지 하나로 시작했어요. "logback-core 1.5.13 미만(CVE-2024-12798)을 쓰는 운영 서비스를 찾아 달라." 그리고 답은 Git의 빌드 파일이 아니라 플랫폼에서 출발해 SBOM으로 찾아야 한다고 했습니다. 이번 실습은 그 주장을 숫자로 확인해요.</p>
+
+<p>스프링 부트 서비스 열 개를 띄우고, 그중 몇 개에 실제 운영에서 생길 법한 방식으로 옛 logback을 숨겨 뒀어요. 그다음 같은 질문을 세 가지 방법으로 던지고, 실행 중인 JVM에게 직접 물은 정답과 비교해 정탐, 오탐, 미탐을 셉니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; Git HEAD의 빌드 파일, 배포본의 POM, 실행 중인 SBOM은 각각 몇 개를 맞히고 몇 개를 틀리는가?<br>
+  &bull; 각 방법은 어떤 경우에 틀리는가?<br>
+  &bull; SBOM도 놓치는 경우가 있는가?<br>
+  &bull; 운영 중인 서비스에서 소스 한 줄까지 몇 단계면 가는가?
+</div>
+
+<h2>1. 실습 환경: 모노레포 하나, 서비스 열 개, 커밋 둘</h2>
+
+<p>서비스 열 개는 한 Gradle 빌드 안의 하위 프로젝트예요. 코드는 모두 같고 빌드 파일만 다릅니다. 모든 서비스에 액추에이터, CycloneDX 플러그인(SBOM), git.properties 플러그인을 붙였고, 의존성 버전은 스프링 부트 BOM을 Gradle의 <code>platform()</code>으로 받아요. 이 BOM이 정한 logback은 1.5.38입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: BOM (Bill of Materials POM)</div>
+  여러 라이브러리의 버전을 한곳에 모아 둔 POM입니다. 스프링 부트의 <code>spring-boot-dependencies</code>가 대표적이에요. Gradle에서는 <code>implementation platform(...)</code>으로 받으면 버전 없이 적은 의존성에 그 버전이 들어가고, 다른 경로로 들어온 같은 라이브러리와는 높은 쪽이 이깁니다.
+</div>
+
+<div class="obsv-code">Spring Boot                 4.1.1   (Java 21, 이미지 eclipse-temurin:21-jre)
+CycloneDX Gradle plugin     3.0.0   (스프링 부트 문서의 예시 버전)
+gradle-git-properties       4.0.1
+Gradle                      9.8.1   / Maven 3.10.0 (POM 해소용)
+logback (BOM 기본값)          1.5.38
+실행 환경                     Docker Desktop 29.5.3, Apple M5 Pro</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 문서 예시 버전 그대로는 빌드가 깨졌다</div>
+  스프링 부트 문서의 git 정보 예시는 <code>com.gorylenko.gradle-git-properties</code> 2.4.1을 적어요. Gradle 9.8.1에서는 <code>generateGitProperties</code> 태스크가 <code>No signature of method: java.io.FilterOutputStream.write()</code>로 실패했습니다. 플러그인 포털의 최신판 4.0.1로 올리니 통과했어요.
+</div>
+
+<p>작업용 Git 저장소는 실행할 때 저장소 밖(<code>/tmp/co-02-work</code>)에 새로 만들어요. 커밋을 두 개 만들고, s04만 첫 커밋으로 빌드한 이미지를 띄웁니다. 나머지 아홉은 두 번째 커밋 이미지예요. 컨테이너는 <code>lab.co02=1</code> 레이블을 달고 <code>docker run</code>으로 하나씩 띄웠어요. 이 레이블이 1편에서 말한 "플랫폼에 묻기"의 입구입니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/devops/co-02-sbom-inventory
+python3 scripts/lab.py prepare     # 작업 저장소, 커밋 둘, jar·POM·이미지 빌드 (첫 실행은 의존성 내려받기로 몇 분)
+python3 scripts/lab.py deploy      # 서비스 열 개를 30101~30110 포트로
+python3 scripts/lab.py query       # 질의 세 가지와 정답 비교 → results/query.txt
+python3 scripts/lab.py trace s04   # 운영본에서 소스 한 줄까지 → results/trace.txt
+python3 scripts/lab.py down</div>
+
+<p>코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/co-02-sbom-inventory">GitHub 저장소의 labs/devops/co-02-sbom-inventory</a>에 있어요.</p>
+
+<h2>2. 옛 logback을 숨긴 다섯 가지 방법</h2>
+
+<p>다섯(s02, s03, s04, s06, s07)에는 옛 logback을 숨기는 장치를, s05, s08, s09에는 판정을 헷갈리게 하는 변형을 넣었어요.</p>
+
+<div class="obsv-code">서비스  빌드 파일에 한 일                                              의도
+s01    webmvc 만                                                     기본형
+s02    resolutionStrategy.force 로 logback 1.5.12 고정                  해소 규칙으로 내림
+s03    'ch.qos.logback:logback-core:1.5.12' 직접 선언                    옛 선언이 남아 있음
+s04    커밋1 에 s02 와 같은 force, 커밋2 에서 삭제. 운영에는 커밋1           Git 과 운영의 차이
+s05    Log4j2 로 교체, spring-boot-starter-logging 제외                  logback 없음
+s06    빌드는 s01 과 같음. 배포 이미지에서 옛 logback 을 loader.path 로      빌드 뒤에 바뀜
+s07    버전 카탈로그에 logback = { strictly = "1.5.12" }                  버전이 빌드 파일 밖에
+s08    'ch.qos.logback:logback-core:1.5.+'                             동적 버전
+s09    'ch.qos.logback:logback-classic' (버전 없음)                      BOM 이 정함
+s10    webflux                                                       기본형</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: loader.path</div>
+  스프링 부트 실행 jar를 <code>PropertiesLauncher</code>로 띄울 때, jar 바깥의 디렉터리나 jar를 클래스패스에 더하는 설정입니다. 운영 쪽에서 앱을 다시 빌드하지 않고 jar를 얹을 때 쓰여요. s06은 이걸로 옛 logback 두 개를 얹었습니다.
+</div>
+
+<h2>3. 정답은 실행 중인 JVM에게 묻는다</h2>
+
+<p>비교하려면 정답이 있어야 해요. SBOM도 빌드 파일도 아닌 기준이 필요해서, 서비스마다 엔드포인트를 하나 넣었습니다. JVM이 logback 클래스를 실제로 어느 jar에서 읽었는지 돌려줘요.</p>
+
+<div class="obsv-code">@GetMapping("/lab/logback")   // Class.forName(...).getProtectionDomain().getCodeSource().getLocation()
+
+s02: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.12.jar!/
+s06: core=file:/app/extra/logback-core-1.5.12.jar
+s05: core=none</div>
+
+<p>s02는 실행 jar 안의 1.5.12를, s06은 jar 바깥에 얹은 1.5.12를 읽고 있었어요. 실행 jar 안에는 BOM의 1.5.38도 들어 있지만, <code>loader.path</code>에 적은 쪽이 먼저 읽혔습니다. 이 결과로 정답이 정해졌어요. 취약한 서비스는 s02, s04, s06, s07 넷입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="co6a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">같은 질문, 네 군데에 묻기</text>
+  <path d="M24 50 C 90 48, 150 51, 196 49 C 198 75, 197 100, 196 124 C 150 126, 90 123, 25 125 C 23 100, 24 75, 24 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linejoin="round"/>
+  <text x="110" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">A. Git HEAD</text>
+  <text x="110" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">sNN/build.gradle 읽기</text>
+  <path d="M24 170 C 90 168, 150 171, 196 169 C 198 195, 197 220, 196 244 C 150 246, 90 243, 25 245 C 23 220, 24 195, 24 170 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linejoin="round"/>
+  <text x="110" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">B. 배포본 POM</text>
+  <text x="110" y="226" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">mvn dependency:list</text>
+  <path d="M262 110 C 330 108, 390 111, 438 109 C 440 140, 439 170, 438 200 C 390 202, 330 199, 263 201 C 261 170, 262 140, 262 110 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="350" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">☸️ 플랫폼</text>
+  <text x="350" y="168" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">docker ps --filter</text>
+  <text x="350" y="186" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">label=lab.co02=1</text>
+  <path d="M504 50 C 570 48, 630 51, 676 49 C 678 75, 677 100, 676 124 C 630 126, 570 123, 505 125 C 503 100, 504 75, 504 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="590" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">C. 실행 중 SBOM</text>
+  <text x="590" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">/actuator/sbom/application</text>
+  <path d="M504 170 C 570 168, 630 171, 676 169 C 678 195, 677 220, 676 244 C 630 246, 570 243, 505 245 C 503 220, 504 195, 504 170 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="590" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">정답: JVM</text>
+  <text x="590" y="226" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">/lab/logback</text>
+  <path d="M440 140 C 465 120, 480 105, 500 92" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co6a1)"/>
+  <path d="M440 172 C 465 190, 480 200, 500 208" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co6a1)"/>
+  <path d="M198 88 C 220 88, 236 89, 250 90" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 7" stroke-linecap="round"/>
+  <path d="M198 206 C 220 206, 236 204, 250 200" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 7" stroke-linecap="round"/>
+  <text x="225" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">플랫폼을</text>
+  <text x="225" y="168" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">거치지 않음</text>
+  <text x="350" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">A와 B는 소스와 메타데이터를, C와 정답은 떠 있는 프로세스를 본다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 왼쪽 둘은 저장소만 보고, 오른쪽 둘은 플랫폼이 알려 준 프로세스에 묻는다</div>
+
+<p>비교한 질의는 셋이에요. <b>A</b>는 Git HEAD의 각 서비스 <code>build.gradle</code>에서 <code>ch.qos.logback:logback-core:버전</code> 꼴을 찾습니다. 코드 검색과 같은 시선이에요. <b>B</b>는 운영에 떠 있는 커밋으로 만든 POM(게시했다면 함께 올라갔을 POM을 생성만 했어요)을 Maven으로 해소해 logback-core 버전을 봅니다. 저장소의 표준 메타데이터만 읽는 분석 도구의 시선이에요. <b>C</b>는 플랫폼에서 떠 있는 컨테이너 목록을 받고, 각 서비스의 <code>/actuator/sbom/application</code>에서 logback-core를 찾습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: CycloneDX</div>
+  SBOM을 적는 표준 형식 중 하나입니다. 구성 요소마다 이름, 버전, 패키지 URL(purl), 해시를 JSON으로 적어요. 스프링 부트는 Gradle에 CycloneDX 플러그인이 붙어 있으면 그 결과를 실행 jar의 <code>META-INF/sbom/application.cdx.json</code>에 넣고, <code>/actuator/sbom</code>으로 내보냅니다. 이번 SBOM은 규격 1.6, 서비스당 구성 요소 56~79개였어요.
+</div>
+
+<h2>4. 결과: SBOM 정탐 3, 빌드 파일 정탐 1</h2>
+
+<div class="obsv-code">질의: logback-core &lt; 1.5.13 인 서비스
+
+서비스 A. Git HEAD        B. POM     C. SBOM  정답(JVM)
+s01   없음               1.5.38     1.5.38   1.5.38
+s02   1.5.12             1.5.38     1.5.12   1.5.12  ★
+s03   1.5.12             1.5.12     1.5.38   1.5.38
+s04   없음               1.5.38     1.5.12   1.5.12  ★
+s05   없음               없음       없음     없음
+s06   없음               1.5.38     1.5.38   1.5.12  ★
+s07   없음               1.5.12     1.5.12   1.5.12  ★
+s08   1.5.+              해소 실패  1.5.38   1.5.38
+s09   classic, 버전 없음 1.5.38     1.5.38   1.5.38
+s10   없음               1.5.38     1.5.38   1.5.38
+
+A. Git HEAD 빌드 파일   정탐 1  오탐 1  미탐 3  맞게 제외 4  판정 불가 1
+B. 배포본 POM→Maven   정탐 1  오탐 1  미탐 3  맞게 제외 4  판정 불가 1
+C. 실행 중 SBOM        정탐 3  오탐 0  미탐 1  맞게 제외 6  판정 불가 0</div>
+
+<p>★가 정답 기준으로 취약한 넷이에요. <span class="obsv-mark">SBOM은 넷 중 셋을 오탐 없이 찾았고, 빌드 파일과 POM은 각각 하나씩만 맞혔어요.</span> A와 B는 점수가 같지만 맞힌 서비스가 달라요(A는 s02, B는 s07). 틀리는 이유가 다르다는 뜻이에요.</p>
+
+<h2>5. 각 방법이 틀린 자리</h2>
+
+<h3>A. Git HEAD의 빌드 파일</h3>
+
+<p><b>s03 오탐</b>: 빌드 파일에 1.5.12가 적혀 있지만 Gradle은 충돌하면 높은 버전을 고르니 BOM의 1.5.38이 들어갔어요. <b>s04 미탐</b>: HEAD에서는 핀을 지웠지만 운영에는 핀이 있던 커밋이 떠 있었어요. <b>s07 미탐</b>: 버전이 <code>libs.versions.toml</code>에 있어서 빌드 파일에는 <code>libs.logback.core</code>뿐이었어요. <b>s06 미탐</b>: 빌드 파일은 아무 잘못이 없었고, jar는 배포 이미지에서 얹혔어요. <b>s08 판정 불가</b>: <code>1.5.+</code>는 빌드한 날 저장소에 무엇이 있었는지 알아야 버전이 정해집니다. 맞힌 s02는 <code>resolutionStrategy.force</code> 줄에 좌표가 그대로 적혀 있었기 때문이에요.</p>
+
+<h3>B. 배포본 POM을 Maven으로 해소</h3>
+
+<p>B는 운영 커밋 기준이라 s04의 커밋 차이 문제는 없어야 할 것 같지만, s04도 놓쳤어요. 핀이 <code>resolutionStrategy</code>에 있었고, 그 규칙은 POM에 실리지 않기 때문입니다. s02도 같은 이유로 놓쳤어요. <a href="#co-03">3편</a>이 말한 "POM만으로는 실제 해소 결과를 알 수 없다"가 그대로 나온 거예요.</p>
+
+<p>s03 오탐은 반대 방향입니다. Gradle은 BOM의 1.5.38을 골랐지만, 그 POM을 Maven이 풀면 직접 선언한 1.5.12가 가장 가까운 정의라서 이겼어요. Gradle은 빌드 스크립트를, Maven은 그 스크립트가 만든 POM을 풀어서 답이 갈렸어요. 이 차이는 <a href="#co-07">실습-3</a>의 주제예요. s07은 Gradle의 <code>strictly 1.5.12</code>가 POM에 그냥 <code>1.5.12</code>로 적혔고, Maven에서도 직접 선언이 이겨서 우연히 맞았습니다.</p>
+
+<div class="obsv-code">Gradle 이 만든 POM 의 logback-core 버전 표기
+s03: &lt;version&gt;1.5.12&lt;/version&gt;
+s07: &lt;version&gt;1.5.12&lt;/version&gt;      ← 빌드 파일에서는 strictly 였다
+s08: &lt;version&gt;1.5.+&lt;/version&gt;
+
+$ mvn -f s08.pom dependency:list
+[ERROR] Failed to execute goal on project s08: Could not resolve dependencies for project lab.inventory:s08:pom:1.0.0
+[ERROR] dependency: ch.qos.logback:logback-core:jar:1.5.+ (runtime)</div>
+
+<p>s08에서는 예상하지 못한 일이 하나 더 있었어요. Gradle은 동적 버전 <code>1.5.+</code>를 POM에 그대로 적었고, Maven은 이 표기를 읽지 못해 해소 자체가 실패했습니다. 표준 메타데이터를 읽는 도구가 Gradle로 빌드한 서비스를 만나면 이렇게 답을 못 낼 수 있어요. 처음 스크립트는 이 실패를 "logback 없음"으로 셌어요.</p>
+
+<h3>C. 실행 중 SBOM</h3>
+
+<p>C가 놓친 하나는 s06이에요. SBOM은 Gradle이 빌드할 때 해소한 결과라서, 이미지를 만들 때 <code>loader.path</code>로 얹은 jar를 모릅니다. s06의 SBOM은 1.5.38을 말했고 JVM은 얹힌 1.5.12를 쓰고 있었어요. 이미지 파일을 훑는 스캐너라면 볼 수 있겠지만 이번에는 재지 않았어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 옛 logback으로 내린 서비스는 로그 형식이 깨져 있었다</div>
+  &bull; 정답 기준 취약한 넷(s02, s04, s06, s07)은 모두 기동할 때 <code>There is no conversion class registered for composite conversion word [clr]</code> 같은 logback 설정 오류를 남겼고, 기동이 끝날 때까지 <code>PARSER_ERROR</code>가 든 줄이 서비스마다 12줄씩 찍혔어요<br>
+  &bull; 이후 로그 줄은 <code>%PARSER_ERROR[clr] … Started App in 0.838 seconds</code>처럼 형식이 깨진 채로 찍혔어요. 앱은 정상으로 떴고 헬스 체크도 UP이었습니다<br>
+  &bull; 스프링 부트 4.1.1의 기본 로그 설정이 쓰는 변환기를 1.5.12에서 등록하지 못한 것으로 보여요. 버전을 내리는 핀은 취약점만이 아니라 이런 조용한 고장도 같이 데려옵니다
+</div>
+
+<h2>6. 운영본에서 소스 한 줄까지, 네 단계</h2>
+
+<p>s04를 찾은 다음에는 "왜 이 버전인가"를 소스에서 확인해야 해요. <code>trace</code>가 밟은 단계는 이랬습니다.</p>
+
+<div class="obsv-code">1) 플랫폼: docker ps 에서 s04 -&gt; 이미지 co02/s04:9d208f4, 포트 30104
+   이미지 라벨 org.opencontainers.image.revision = 9d208f491193
+2) 앱: GET /actuator/info -&gt; git.commit.id = 9d208f4, branch = main
+3) 저장소: 9d208f4 -&gt; 9d208f491193, HEAD 는 e376913b7390 (같은가: False)
+4) 소스: git show 9d208f4:s04/build.gradle 에서 logback 줄
+         resolutionStrategy.force 'ch.qos.logback:logback-core:1.5.12', 'ch.qos.logback:logback-classic:1.5.12'
+   HEAD 의 같은 파일에서 logback 줄
+     (없음)
+   그 사이 커밋:
+     e376913 c2: s04 drops the logback pin</div>
+
+<p>플랫폼, 앱(또는 이미지 레이블), 저장소, 소스의 네 단계였어요. 이미지 레이블과 <code>/actuator/info</code>가 같은 커밋을 말해서 둘 중 하나만 있어도 됐습니다. 마지막 줄이 이 실습의 요점을 다시 보여 줘요. 고친 커밋은 이미 main에 있고, 운영에는 나가지 않았어요. 이 경우 할 일은 코드 수정이 아니라 재배포입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: git.properties</div>
+  빌드할 때 Git 정보(브랜치, 커밋 ID, 커밋 시각 등)를 적어 jar 안에 넣는 파일입니다. 스프링 부트는 이 파일이 클래스패스에 있으면 <code>/actuator/info</code>의 <code>git</code> 항목으로 보여 줘요. 기본으로는 브랜치, 짧은 커밋 ID, 커밋 시각만 나갑니다.
+</div>
+
+<h2>7. 질의에 걸린 시간</h2>
+
+<div class="obsv-code">                                       3회차    4회차    5회차
+플랫폼 질의 (docker ps, 레이블)             0.04s 안팎
+A. 빌드 파일 정규식 (서비스 열 개)          0.00s    0.00s    0.00s
+B. POM 열 개를 Maven 으로 해소            27.4s    24.8s    23.3s   (Maven 컨테이너 하나에서 차례로)
+C. SBOM 열 개를 HTTP 로                   0.07s    0.04s    0.04s
+정답 (/lab/logback 열 개)                 0.04s    0.03s    0.02s</div>
+
+<p>1회차는 Maven 캐시 볼륨이 빈 상태라 B가 34.3초였어요. 2회차(B 986.9초)는 원인을 확인하지 못해 버렸고, 위 표는 그 뒤 세 번이에요. B가 느린 건 서비스마다 Maven을 새로 띄워 의존성 그래프를 다시 풀기 때문입니다. C는 이미 해소된 결과를 읽기만 하니 열 개에 0.1초 안쪽이었어요. 서비스가 수백 개로 늘면 이 차이가 질의 방식을 가릅니다. 다만 C는 서비스가 떠 있어야 하고 관리 엔드포인트에 닿아야 해요. 1편에서 말한 대로 같은 다이제스트는 한 번만 물으면 되니, 실제로는 서비스 수가 아니라 다이제스트 수만큼 호출합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 취약점 질의의 출발점은 저장소 검색이 아니라 플랫폼의 실행 목록이에요. 이번 실습에서 그 차이가 미탐 셋과 하나로 나왔어요<br>
+  &bull; SBOM은 빌드 때 기록이에요. 배포 단계에서 jar를 얹거나 에이전트를 붙이는 서비스가 있다면, 이미지 단위 스캔이나 런타임 확인을 한 번 더 두세요<br>
+  &bull; POM 기반 분석 도구를 Gradle 서비스에 쓴다면 해소 실패를 "없음"으로 세지 않는지 확인하세요. 동적 버전이 POM에 그대로 실립니다<br>
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>서비스 열 개 중 취약한 넷을 찾는 질의에서 실행 중인 SBOM은 셋을 오탐 없이 찾았고, Git HEAD의 빌드 파일과 배포본 POM은 각각 하나만 맞혔어요.</b> 빌드 파일은 운영과 다른 커밋, 버전 카탈로그, 충돌 해소, 배포 때 얹은 jar 때문에 틀렸고, POM은 해소 규칙이 실리지 않고 Maven이 Gradle의 동적 버전을 읽지 못해서 틀렸어요.<br><br>
+  SBOM도 하나를 놓쳤어요. 배포할 때 얹은 jar는 빌드 때 기록에 없기 때문입니다. 정답은 결국 떠 있는 프로세스가 갖고 있고, 질의는 그 프로세스를 아는 플랫폼에서 시작해야 해요.
+</div>
+
+</div>

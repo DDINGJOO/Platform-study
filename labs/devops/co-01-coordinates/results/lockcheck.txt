@@ -1,0 +1,18 @@
+# scripts/lockcheck.sh 결과 (2026-10-12, 빈 저장소에서 따로 돌린 회차)
+## 잠금 파일
+lab:dyn:2.10.10=runtimeClasspath
+lab:util:1.0.0=runtimeClasspath
+## 1. 목록 파일이 정상일 때
+locked:   RESOLVED lab:dyn:2.10.10 RESOLVED lab:util:1.0.0 
+## 2. lab:dyn 의 목록 파일을 <metadata/> 로 덮어쓴다
+PUT releases/lab/dyn/maven-metadata.xml -> 200
+## 3. 덮어쓴 뒤 (모두 --refresh-dependencies)
+--- 잠금 있음 (빌드 파일은 lab:dyn:2.10.+, 잠금 2.10.10)
+RESOLVED lab:dyn:2.10.10
+RESOLVED lab:util:1.0.0
+--- 잠금 없음 (같은 빌드 파일)
+> Could not resolve all files for configuration ':runtimeClasspath'.
+   > Could not find any matches for lab:dyn:2.10.+ as no versions of lab:dyn are available.
+BUILD FAILED in 2s
+--- 고정 버전 lab:dyn:2.10.10
+RESOLVED lab:dyn:2.10.10 file=dyn-2.10.10.jar sha256=b08285f6bb586ead

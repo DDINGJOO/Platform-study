@@ -1,0 +1,33 @@
+// 소비자 빌드. 의존성 표기를 명령줄로 받아 무엇이 해소됐는지와 jar 의 SHA-256 을 찍는다.
+//   -Pdeps=lab:lib:1.0.0-SNAPSHOT;lab:dyn:2.10.+   (세미콜론으로 여러 개. 범위 표기에 쉼표가 들어가서)
+//   -PnoRc  저장소 설정에서 rc 버전을 거른다(excludeVersionByRegex)
+plugins { id 'java' }
+
+repositories {
+    maven {
+        url = uri('http://reposilite:8080/releases')
+        allowInsecureProtocol = true
+        if (project.hasProperty('noRc')) {
+            content { excludeVersionByRegex('lab', '.*', '.*-rc.*') }
+        }
+    }
+    maven {
+        url = uri('http://reposilite:8080/snapshots')
+        allowInsecureProtocol = true
+    }
+}
+
+dependencies {
+    (findProperty('deps') ?: '').toString().split(';').findAll { it }.each { implementation it }
+}
+
+tasks.register('resolved') {
+    def rc = configurations.runtimeClasspath
+    doLast {
+        rc.incoming.artifacts.artifacts.each { a ->
+            def f = a.file
+            def sha = java.security.MessageDigest.getInstance('SHA-256').digest(f.bytes).encodeHex().toString()
+            println "RESOLVED ${a.id.componentIdentifier.displayName} file=${f.name} sha256=${sha.take(16)}"
+        }
+    }
+}

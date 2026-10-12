@@ -1,0 +1,20 @@
+# 같은 태그로 두 번 푸시한다. 그 사이에 띄운 컨테이너와 그 뒤에 띄운 컨테이너를 비교한다
+$ docker build -q --build-arg CONTENT=v1 -t localhost:30500/lab/app:1.0 projects/image    # 0.3s, exit 0
+$ docker push -q localhost:30500/lab/app:1.0    # 0.7s, exit 0
+  첫 푸시 뒤 레지스트리의 1.0 -> sha256:7ffe34901be2fac5b2eba47054fcc696a6de3fbfb804f64826685ade0dfdab9f
+$ docker run -d --name co01-node-a localhost:30500/lab/app:1.0    # 0.1s, exit 0
+$ docker build -q --build-arg CONTENT=v2 -t localhost:30500/lab/app:1.0 projects/image    # 0.3s, exit 0
+$ docker push -q localhost:30500/lab/app:1.0    # 0.7s, exit 0
+  두 번째 푸시 뒤 레지스트리의 1.0 -> sha256:ed86a2fc023ea6b2ec98029aa49a343aa611e060cc7a7213efabecfa80e6c3f6
+$ docker run -d --name co01-node-b localhost:30500/lab/app:1.0    # 0.1s, exit 0
+  co01-node-a: 요청한 이미지/실제 이미지 ID = localhost:30500/lab/app:1.0 sha256:7ffe34901be2fac5b2eba47054fcc696a6de3fbfb804f64826685ade0dfdab9f, 내용 = v1
+  co01-node-b: 요청한 이미지/실제 이미지 ID = localhost:30500/lab/app:1.0 sha256:ed86a2fc023ea6b2ec98029aa49a343aa611e060cc7a7213efabecfa80e6c3f6, 내용 = v2
+  docker ps:
+    co01-node-b  IMAGE=localhost:30500/lab/app:1.0
+    co01-node-a  IMAGE=7ffe34901be2
+
+## 옛 다이제스트로는 여전히 받을 수 있나
+$ docker pull -q localhost:30500/lab/app@sha256:7ffe34901be2fac5b2eba47054fcc696a6de3fbfb804f64826685ade0dfdab9f    # 1.6s, exit 0
+    localhost:30500/lab/app@sha256:7ffe34901be2fac5b2eba47054fcc696a6de3fbfb804f64826685ade0dfdab9f
+
+(총 5초)

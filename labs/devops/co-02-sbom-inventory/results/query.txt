@@ -1,0 +1,44 @@
+플랫폼 질의(docker ps, 라벨 lab.co02=1): 10개 서비스, 0.04s
+$ docker compose run --rm -T maven sh -c "echo '== s01' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s01.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s01.txt >/tmp/s01.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s01.txt 2>/dev/null || echo none ; echo '== s02' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s02.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s02.txt >/tmp/s02.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s02.txt 2>/dev/null || echo none ; echo '== s03' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s03.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s03.txt >/tmp/s03.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s03.txt 2>/dev/null || echo none ; echo '== s04' ; mvn -B -q -f /work/out/9d208f491193619a3ef9ad04eced7990a2ec6d57/s04.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s04.txt >/tmp/s04.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s04.txt 2>/dev/null || echo none ; echo '== s05' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s05.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s05.txt >/tmp/s05.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s05.txt 2>/dev/null || echo none ; echo '== s06' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s06.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s06.txt >/tmp/s06.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s06.txt 2>/dev/null || echo none ; echo '== s07' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s07.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s07.txt >/tmp/s07.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s07.txt 2>/dev/null || echo none ; echo '== s08' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s08.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s08.txt >/tmp/s08.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s08.txt 2>/dev/null || echo none ; echo '== s09' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s09.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s09.txt >/tmp/s09.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s09.txt 2>/dev/null || echo none ; echo '== s10' ; mvn -B -q -f /work/out/e376913b73901c5aa5a4e5a2ecbe4a16af76ad47/s10.pom dependency:list -DincludeScope=runtime -DoutputFile=/tmp/s10.txt >/tmp/s10.log 2>&1 || echo FAILED ; grep -E 'logback-core' /tmp/s10.txt 2>/dev/null || echo none"    # 23.3s, exit 0
+
+질의: logback-core < 1.5.13 인 서비스
+
+  서비스    A. Git HEAD 빌드 파일        B. POM→Maven   C. SBOM    정답(런타임)     
+  s01    None                     1.5.38         1.5.38     1.5.38      
+  s02    1.5.12                   1.5.38         1.5.12     1.5.12      
+  s03    1.5.12                   1.5.12         1.5.38     1.5.38      
+  s04    None                     1.5.38         1.5.12     1.5.12      
+  s05    None                     None           None       None        
+  s06    None                     1.5.38         1.5.38     1.5.12      
+  s07    None                     1.5.12         1.5.12     1.5.12      
+  s08    1.5.+                    (해소 실패)        1.5.38     1.5.38      
+  s09    (core 없음, classic 버전 없음) 1.5.38         1.5.38     1.5.38      
+  s10    None                     1.5.38         1.5.38     1.5.38      
+
+  A. Git HEAD 빌드 파일            정탐 1  오탐 1  미탐 3  맞게 제외 4  판정 불가 1
+  B. 배포본 POM 을 Maven 으로        정탐 1  오탐 1  미탐 3  맞게 제외 4  판정 불가 1
+  C. 실행 중 SBOM                 정탐 3  오탐 0  미탐 1  맞게 제외 6  판정 불가 0
+
+걸린 시간: A 0.00s, B 23.3s(Maven 컨테이너 기동 포함), C 0.04s, 정답 0.02s
+
+런타임 원자료(logback-core 를 읽은 위치):
+  s01: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.38.jar!/
+       classic=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-classic-1.5.38.jar!/
+  s02: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.12.jar!/
+       classic=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-classic-1.5.12.jar!/
+  s03: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.38.jar!/
+       classic=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-classic-1.5.38.jar!/
+  s04: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.12.jar!/
+       classic=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-classic-1.5.12.jar!/
+  s05: core=none
+       classic=none
+  s06: core=file:/app/extra/logback-core-1.5.12.jar
+       classic=file:/app/extra/logback-classic-1.5.12.jar
+  s07: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.12.jar!/
+       classic=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-classic-1.5.12.jar!/
+  s08: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.38.jar!/
+       classic=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-classic-1.5.38.jar!/
+  s09: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.38.jar!/
+       classic=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-classic-1.5.38.jar!/
+  s10: core=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-core-1.5.38.jar!/
+       classic=jar:nested:/app/app.jar/!BOOT-INF/lib/logback-classic-1.5.38.jar!/

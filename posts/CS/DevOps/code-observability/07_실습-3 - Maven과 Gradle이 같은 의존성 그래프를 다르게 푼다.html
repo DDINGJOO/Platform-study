@@ -1,0 +1,337 @@
+<!-- lead: 같은 의존성 선언을 Maven과 Gradle로 빌드하자 일곱 모듈 중 셋에서 다른 버전이 jar에 들어갔고 둘 다 실행 중에 깨졌어요. 미사용 분석기의 오판, 쓰지 않는 data-rest가 연 경로까지 실측했어요. -->
+<!-- tags: Maven, Gradle, dependency:analyze, Spring Data REST, NoSuchMethodError -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧬 소스 코드 관찰, 실습-3</div>
+  1편. 지금 운영에 무엇이 떠 있는지는 Git이 아니라 플랫폼에 묻는다<br>
+  2편. SNAPSHOT과 latest는 버전이 아니라 포인터다<br>
+  3편. 빌드 파일에 적은 버전과 jar에 들어간 버전은 다르다<br>
+  4편. grep은 글자를 찾고, 타입이 붙은 구문 트리는 호출을 찾는다<br>
+  실습-1. 같은 좌표가 다른 바이너리를 가리키는 순간을 만든다<br>
+  실습-2. 서비스 열 개에서 취약한 라이브러리를 쓰는 곳을 SBOM으로 찾는다<br>
+  <b>실습-3. Maven과 Gradle이 같은 의존성 그래프를 다르게 푼다</b> &larr; 지금 이 글<br>
+  실습-4. grep, OpenRewrite, 커버리지가 센 호출 수가 다르다
+</div>
+
+<p><a href="#co-03">3편</a>에서 빌드 파일은 요청만 적고, jar에 들어가는 버전은 빌드 도구가 해소할 때 정해진다고 했어요. Maven은 가까운 쪽을, Gradle은 높은 쪽을 고른다는 것도 문서로 봤습니다. 이번에는 그 그래프를 직접 만들어 두 도구에 풀게 했어요. 같은 소스, 같은 의존성 선언을 두 도구로 빌드하고, 무엇이 jar에 들어갔는지 보고, 실행까지 시켰습니다.</p>
+
+<p>결과를 먼저 말하면 모듈 일곱 개 중 셋에서 두 도구가 서로 다른 버전을 골랐고, 두 도구 모두 실행 중에 <code>NoSuchMethodError</code>를 냈어요. 컴파일은 전부 통과했습니다. 미사용 의존성 분석기 두 개는 같은 네 건을 보고했는데, 그대로 지우면 안 되는 것이 둘 섞여 있었어요. 하나는 빼자마자 실행이 깨졌고, 다른 하나는 Maven에서 들어가는 버전을 바꿨어요. 쓰지 않는 Spring Data REST starter 하나는 내부용 감사 로그를 HTTP로 지울 수 있게 열어 줬습니다. 숫자는 전부 이번에 돌린 결과예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 같은 그래프에서 두 도구가 고른 버전은 몇 개 모듈에서 달라지나? 선언 순서는 영향을 주나?<br>
+  &bull; 고른 버전으로 실행하면 어디서 깨지나? 컴파일은 그걸 잡나?<br>
+  &bull; <code>dependency:analyze</code>와 dependency-analysis 플러그인은 무엇을 "안 쓴다", "선언 안 했다"고 하나? 맞나?<br>
+  &bull; 1차 의존성 하나를 올리면 몇 개 모듈의 컴파일이 깨지나?<br>
+  &bull; 쓰지 않는 data-rest와 JPA starter는 jar, 기동 시간, 빈, 열린 경로를 얼마나 늘리나?
+</div>
+
+<h2>1. 실습 환경: 파일 저장소 하나, 빌드 도구 둘</h2>
+
+<p>공개 저장소의 실제 라이브러리로는 원하는 모양의 그래프를 만들기 어려워서, 작은 라이브러리를 직접 만들어 파일 기반 Maven 저장소에 올렸어요. 핵심은 <code>c</code>입니다. 1.0에는 <code>legacy()</code>가 있고, 2.0은 그걸 지우고 <code>encodeFast()</code>를 더했어요. <code>a</code>는 c 1.0의 <code>legacy()</code>를, <code>d</code>는 c 2.0의 <code>encodeFast()</code>를 부릅니다. <code>b</code>는 <code>d</code>를 거쳐 c 2.0을 끌고 와요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr71" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M24 40 C 120 37, 220 41, 300 39 C 302 120, 301 200, 300 290 C 220 292, 120 289, 26 291 C 23 200, 24 120, 24 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="162" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">📦 repo/ (file:///work/repo)</text>
+  <text x="44" y="100" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">a 1.0 -&gt; c 1.0</text>
+  <text x="44" y="124" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">b 1.0 -&gt; d 1.0 -&gt; c 2.0</text>
+  <text x="44" y="148" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">b 2.0 (의존성 없음)</text>
+  <text x="44" y="172" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">x 1.0 -&gt; c 2.0</text>
+  <text x="44" y="196" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">y 1.0 -&gt; c 1.0</text>
+  <text x="44" y="220" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">e, drv, konst</text>
+  <text x="162" y="258" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">c 1.0: legacy() / c 2.0: encodeFast()</text>
+  <path d="M304 120 C 340 110, 370 95, 400 88" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr71)"/>
+  <path d="M304 210 C 340 220, 370 232, 400 238" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr71)"/>
+  <path d="M406 50 C 470 48, 560 51, 676 49 C 678 80, 677 110, 676 132 C 560 134, 470 131, 408 133 C 405 110, 406 80, 406 50 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="541" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Maven 3.10.0 컨테이너</text>
+  <text x="541" y="108" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">maven/m1..m5, an, an-decl</text>
+  <path d="M406 196 C 470 194, 560 197, 676 195 C 678 226, 677 256, 676 278 C 560 280, 470 277, 408 279 C 405 256, 406 226, 406 196 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="541" y="226" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Gradle 9.8.1 컨테이너</text>
+  <text x="541" y="254" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">같은 소스(maven/*/src)</text>
+  <path d="M541 136 C 543 150, 542 175, 541 190" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="6 6"/>
+  <text x="556" y="168" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">소스와 선언은 공유</text>
+  <text x="350" y="325" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 다른 것은 해소 규칙 하나뿐</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 저장소도 소스도 같고, 빌드 도구만 다르다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 파일 기반 Maven 저장소</div>
+  저장소 서버 없이 디렉터리 하나를 <code>group/artifact/version/artifact-version.jar</code>와 <code>.pom</code> 배치로 채워 두고 <code>file://</code> URL로 가리키는 방식입니다. Maven과 Gradle 모두 원격 저장소와 같은 방식으로 읽어서, 실습용 그래프를 몇 KB로 만들 수 있어요.
+</div>
+
+<p>소비자 모듈은 일곱 개예요. 각 모듈의 <code>Main</code>은 클래스패스에 올라온 c의 버전을 리플렉션으로 읽고(c를 직접 import하지 않으려고요), 선언한 라이브러리의 <code>run()</code>을 하나씩 불러 성공과 실패를 찍습니다.</p>
+
+<div class="obsv-code">모듈      선언(순서대로)          노리는 것
+m1        a, b                    깊이가 다른 충돌 (c 1.0 은 깊이 2, c 2.0 은 깊이 3)
+m2        b, a                    m1 과 선언 순서만 바꿈
+m3        x, y                    깊이가 같은 충돌 (둘 다 깊이 2), x 가 먼저
+m4        y, x                    m3 과 선언 순서만 바꿈
+m5        a, b, c 2.0             c 를 직접 선언해 버전을 고정
+an        b, e, drv, konst        c 를 import 하지만 선언하지 않음
+an-decl   b, c 2.0                c 를 import 하고 선언도 함</div>
+
+<div class="obsv-code">Maven            3.10.0 (maven:3.10.0-eclipse-temurin-21-noble)
+maven-dependency-plugin 3.11.0
+Gradle           9.8.1 (gradle:9.8.1-jdk21-noble)
+dependency-analysis-gradle-plugin 3.19.2 (com.autonomousapps.build-health)
+Spring Boot      4.1.1
+실행 환경        Docker Desktop(메모리 8GB), Apple M5 Pro, 다른 실습 컨테이너가 같이 떠 있었다</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/co-03-resolution">GitHub 저장소의 labs/devops/co-03-resolution</a>에 있어요. 빌드 캐시는 compose 프로젝트의 볼륨에만 쌓이게 했습니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/devops/co-03-resolution
+./scripts/lab.sh repo          # libs/ 를 컴파일해 repo/ 에 올린다
+./scripts/lab.sh resolve       # 2절, 3절. 해소 트리와 실행 결과
+./scripts/lab.sh analyze       # 4절. dependency:analyze, buildHealth
+./scripts/remove-check.sh      # 4절. 보고된 의존성을 하나씩 빼고 실행 (호스트 JDK)
+./scripts/const-check.sh       # 4절. 상수 쓰는 방식별 상수 풀 확인 (호스트 JDK, 컨테이너로도 가능)
+./scripts/lab.sh bump          # 5절. b 를 2.0 으로 올리고 컴파일
+./scripts/lab.sh boot          # 6절. Spring Boot 변형 넷 측정
+./scripts/lab.sh down</div>
+
+<h2>2. 일곱 개 중 세 개 모듈에서 고른 버전이 달랐다</h2>
+
+<p>먼저 각 모듈의 런타임 클래스패스에 어느 c가 올라왔는지 봤어요.</p>
+
+<div class="obsv-code">모듈      Maven    Gradle
+m1        c 1.0    c 2.0     다름
+m2        c 1.0    c 2.0     다름
+m3        c 2.0    c 2.0
+m4        c 1.0    c 2.0     다름
+m5        c 2.0    c 2.0
+an        c 2.0    c 2.0
+an-decl   c 2.0    c 2.0</div>
+
+<p>Gradle은 일곱 개 모두 c 2.0이었어요. 요청된 버전 중 높은 것을 고르니 경로와 순서는 상관없습니다. Maven은 경로와 순서에 따라 갈렸어요. <code>mvn dependency:tree -Dverbose</code>가 이유까지 보여 줍니다.</p>
+
+<div class="obsv-code">lab.co3.consumer:m1:jar:1.0
++- lab.co3:a:jar:1.0:compile
+|  \- lab.co3:c:jar:1.0:compile
+\- lab.co3:b:jar:1.0:compile
+   \- lab.co3:d:jar:1.0:compile
+      \- (lab.co3:c:jar:2.0:compile - omitted for conflict with 1.0)</div>
+
+<p>m1에서 c 1.0은 a 아래 깊이 2, c 2.0은 b &rarr; d 아래 깊이 3이에요. 가까운 c 1.0이 남고 2.0은 "충돌로 생략"됐습니다. m2는 선언 순서를 바꿨지만 깊이가 그대로라 결과도 같았어요. 순서가 결과를 바꾼 건 깊이가 같은 m3와 m4였습니다.</p>
+
+<div class="obsv-code">lab.co3.consumer:m3:jar:1.0                     lab.co3.consumer:m4:jar:1.0
++- lab.co3:x:jar:1.0:compile                     +- lab.co3:y:jar:1.0:compile
+|  \- lab.co3:c:jar:2.0:compile                  |  \- lab.co3:c:jar:1.0:compile
+\- lab.co3:y:jar:1.0:compile                     \- lab.co3:x:jar:1.0:compile
+   \- (lab.co3:c:jar:1.0:compile                    \- (lab.co3:c:jar:2.0:compile
+       - omitted for conflict with 2.0)                 - omitted for conflict with 1.0)</div>
+
+<p>pom.xml에서 두 줄의 순서만 바꿨는데 jar에 들어가는 c가 바뀌었어요. 문서의 "깊이가 같으면 먼저 선언한 쪽이 이긴다"가 그대로 나왔습니다. 코드 리뷰에서 의존성 선언 두 줄의 순서가 바뀐 diff를 보고 jar 내용이 바뀐다고 알아챌 사람은 많지 않을 거예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: dependencyInsight (Gradle)</div>
+  Gradle에서 라이브러리 하나를 지정해 "어떤 버전이 골라졌고, 누가 어떤 버전을 요청했고, 어떤 규칙으로 정해졌나"를 보여 주는 태스크입니다. Maven의 <code>dependency:tree -Dverbose</code>에 해당하는 질문을 라이브러리 기준으로 뒤집어 묻는 도구예요.
+</div>
+
+<p>Gradle 쪽 이유는 <code>dependencyInsight</code>로 봤어요. 아래 명령은 <code>lab.sh resolve</code>가 Gradle 컨테이너 안에서 실행한 것이에요.</p>
+
+<div class="obsv-code">$ gradle -q :m1:dependencyInsight --dependency lab.co3:c --configuration runtimeClasspath
+lab.co3:c:2.0
+   Selection reasons:
+      - By conflict resolution: between versions 2.0 and 1.0
+
+lab.co3:c:2.0
+\--- lab.co3:d:1.0
+     \--- lab.co3:b:1.0
+          \--- runtimeClasspath
+
+lab.co3:c:1.0 -&gt; 2.0
+\--- lab.co3:a:1.0
+     \--- runtimeClasspath</div>
+
+<p><code>c:1.0 -&gt; 2.0</code>은 a가 1.0을 요청했지만 충돌 해소로 2.0이 들어갔다는 뜻이에요. 같은 출력의 속성 표에는 <code>org.gradle.status = release</code>도 찍혀 있었어요. 3편에서 POM으로 읽은 모듈은 SNAPSHOT이 아니면 release 상태가 된다고 했는데, 이 직접 만든 저장소의 모듈도 그렇게 분류됐습니다.</p>
+
+<h2>3. 컴파일은 모두 통과했고, 실행은 두 도구 모두 깨졌다</h2>
+
+<p>이제 각 모듈의 <code>Main</code>을 실행했어요. 고른 버전에 따라 어느 라이브러리가 깨지는지가 갈립니다.</p>
+
+<div class="obsv-code">모듈   호출   Maven                                           Gradle
+m1     a      OK                                              FAIL NoSuchMethodError: Codec.legacy
+m1     b      FAIL NoSuchMethodError: Codec.encodeFast        OK
+m2     a      OK                                              FAIL NoSuchMethodError: Codec.legacy
+m2     b      FAIL NoSuchMethodError: Codec.encodeFast        OK
+m3     x, y   OK                                              OK
+m4     x, y   OK                                              OK
+m5     a      FAIL NoSuchMethodError: Codec.legacy            FAIL NoSuchMethodError: Codec.legacy
+m5     b      OK                                              OK</div>
+
+<p>Maven과 Gradle이 각각 세 번씩 실패했어요. 그런데 실패한 자리가 달랐습니다. m1과 m2에서 Maven은 b를, Gradle은 a를 깨뜨렸어요. 둘 다 컴파일은 통과했고, 실패는 그 메서드를 실제로 부르는 순간에야 나왔습니다. 컴파일러가 본 건 앱의 소스뿐이고, a와 d는 이미 다른 버전의 c를 보고 컴파일된 jar로 들어왔기 때문이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: NoSuchMethodError</div>
+  컴파일할 때는 있던 메서드가 실행할 때 클래스패스의 클래스에는 없을 때 JVM이 던지는 오류입니다. 소스 코드 오류가 아니라 버전이 어긋났다는 신호라서, 대개 의존성 해소 결과를 의심해야 해요.
+</div>
+
+<p>m5는 c 2.0을 직접 선언해서 두 도구의 결과를 맞췄어요. b는 두 쪽 모두 살아났지만 a는 두 쪽 모두 깨졌습니다. a는 1.0에만 있는 메서드를, d는 2.0에만 있는 메서드를 부르니 <span class="obsv-mark">둘 다 동작하는 c는 존재하지 않습니다</span>. 버전을 고정하는 건 어느 쪽을 깨뜨릴지 사람이 정하는 일이지 충돌을 없애는 일이 아니에요. 이 경우의 해결은 a를 c 2.0과 호환되는 버전으로 올리는 것뿐입니다.</p>
+
+<p>m3와 m4는 고른 버전이 달랐는데도 둘 다 문제없이 돌았어요. x와 y는 두 버전에 모두 있는 <code>encode()</code>만 부르기 때문입니다. 버전이 다르다는 사실만으로 장애가 나지는 않아요. 그래서 이런 차이는 평소에 드러나지 않다가, 어느 날 한쪽 라이브러리가 사라진 메서드를 부르기 시작할 때 나타납니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; Maven이라면 Enforcer 플러그인의 <code>requireUpperBoundDeps</code>를 걸어 두면 m1 같은 경우(가까운 쪽이 더 낮은 버전을 고른 경우)에서 빌드가 멈춰요.<br>
+  &bull; Gradle은 높은 쪽을 고르니 "누군가 낮은 버전을 요구했는데 무시됐다"가 조용히 지나가요. <code>dependencyInsight</code>의 <code>-&gt;</code> 표시를 CI에서 모아 보거나, <code>resolutionStrategy.failOnVersionConflict()</code>를 걸어 버전 충돌 자체를 빌드 실패로 바꿔요. 리치 버전의 <code>strictly</code>는 실패를 만드는 장치가 아니에요. 다른 경로의 요청을 덮어 그 버전으로 고정하고, 받아들일 수 있는 버전이 하나도 없을 때만 해소가 실패합니다.
+</div>
+
+<h2>4. 분석기 둘은 같은 네 건을 보고했고, 그대로 지우면 안 되는 것이 섞여 있었다</h2>
+
+<p>다음은 미사용, 미선언 분석이에요. <code>an</code> 모듈은 일부러 이렇게 짰습니다. c를 import하지만 선언하지 않았고(b &rarr; d &rarr; c로 들어옴), e는 선언만 하고 쓰지 않고, drv는 <code>Class.forName("lab.drv.Driver")</code>로만 읽고, konst는 컴파일 타임 상수 <code>K.NAME</code>만 씁니다. 모듈 일곱 개 전부에 두 도구를 돌렸어요. 아래 명령은 <code>lab.sh analyze</code>가 각 컨테이너 안에서 실행한 것이에요.</p>
+
+<div class="obsv-code">$ mvn -f maven/pom.xml -pl an dependency:analyze
+[WARNING] Used undeclared dependencies found:
+[WARNING]    lab.co3:c:jar:2.0:compile
+[WARNING] Unused declared dependencies found:
+[WARNING]    lab.co3:e:jar:1.0:compile
+[WARNING]    lab.co3:drv:jar:1.0:compile
+
+$ mvn -f maven/pom.xml -pl m5 dependency:analyze
+[WARNING] Unused declared dependencies found:
+[WARNING]    lab.co3:c:jar:2.0:compile
+
+$ gradle buildHealth
+Advice for :an
+Unused dependencies which should be removed:
+  implementation("lab.co3:drv:1.0")
+  implementation("lab.co3:e:1.0")
+These transitive dependencies should be declared directly:
+  implementation("lab.co3:c:2.0")
+
+Advice for :m5
+Unused dependencies which should be removed:
+  implementation("lab.co3:c:2.0")</div>
+
+<p>두 도구의 결론이 정확히 같았어요. 미선언 1건(an의 c), 미사용 3건(an의 e, an의 drv, m5의 c)입니다. 나머지 다섯 모듈은 둘 다 문제없다고 했어요. 그럼 "미사용" 셋은 정말 지워도 될까요? an에서 하나씩 빼고 실행해 봤습니다(<code>scripts/remove-check.sh</code>, 호스트의 JDK 25에서 <code>--release 17</code>로 컴파일).</p>
+
+<div class="obsv-code">--- 뺀 것: e
+RESULT an c=2.0 c2:an
+RESULT an b fast:d
+RESULT an drv drv-loaded
+RESULT an konst konst
+--- 뺀 것: drv
+RESULT an c=2.0 c2:an
+RESULT an b fast:d
+Exception in thread "main" java.lang.ClassNotFoundException: lab.drv.Driver</div>
+
+<p>e는 정말 필요 없었고 drv는 빼자마자 <code>ClassNotFoundException</code>이 났어요. 리플렉션으로만 쓰는 의존성은 바이트코드에 클래스 참조가 남지 않으니 두 분석기 모두 보지 못합니다. m5의 c 2.0은 더 미묘해요. m5의 코드는 c를 직접 부르지 않으니 "안 쓴다"는 판정은 글자 그대로는 맞습니다. 그런데 m5에서 그 한 줄을 지우면 m1과 똑같은 선언(a, b)이 돼요. 직접 지워서 돌리지는 않았지만, m1의 결과대로라면 Maven은 c 1.0을 고르고 깨지는 라이브러리가 a에서 b로 바뀝니다. jar에 들어가는 c가 달라지는 거예요. <span class="obsv-mark">버전을 정하려고 적어 둔 선언을 분석기는 "안 쓰는 선언"으로 봅니다.</span> Gradle에서는 지워도 어차피 2.0이 골라지니 이 조언이 맞고, Maven에서는 틀린 조언이 돼요. 같은 보고가 빌드 도구에 따라 맞기도 틀리기도 합니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 상수 풀 (constant pool)</div>
+  클래스 파일 안에 있는 표로, 그 클래스가 참조하는 다른 클래스, 메서드, 문자열 상수를 모아 둡니다. 바이트코드 명령은 이 표의 번호로 대상을 가리켜요. 바이트코드 수준 분석기는 대개 이 표에 어떤 클래스가 있는지로 "쓴다"를 판단합니다.
+</div>
+
+<p>konst는 두 도구 모두 "쓴다"고 판정했어요. 상수 값은 쓰는 쪽 바이트코드에 복사되니 흔적이 안 남을 수도 있다고 생각했는데, 이 사례에서는 남아 있었습니다. <code>an</code>은 <code>K.NAME</code>을 문자열 연결이라는 표현식 안에서 써요. 같은 소스를 컨테이너의 javac 21로 컴파일하고 <code>javap -v</code>로 열어 봤어요(<code>scripts/const-check.sh</code>, 결과는 <code>results/const-check-jdk21.txt</code>).</p>
+
+<div class="obsv-code">javac 21.0.12.1
+== Main : 상수 풀의 'Class lab/konst/K' 항목 1 개
+   #67 = Class              #68           // lab/konst/K
+   #69 = String             #70           // RESULT an konst konst
+== SwitchUse : 상수 풀의 'Class lab/konst/K' 항목 0 개
+        29: ldc           #13                 // String konst
+== AnnotationUse : 상수 풀의 'Class lab/konst/K' 항목 0 개</div>
+
+<p>값을 읽는 명령은 문자열을 바로 올리는 <code>ldc</code>인데도 <code>Class lab/konst/K</code> 항목이 남았어요. javac가 의존성 추적용으로 일부러 남기는 항목입니다(JDK 8의 JDK-7153958, 필드 초기화식은 JDK 9의 JDK-8073372). 분석기는 이 항목을 보고 "쓴다"로 봤어요. 비교하려고 같은 상수를 switch의 case 라벨에만 쓰는 <code>SwitchUse</code>와 어노테이션 값에만 쓰는 <code>AnnotationUse</code>를 더 컴파일해 봤더니 이 항목이 0개였어요. 그러니 "상수만 쓰는 의존성은 안 쓴다고 나올 수 있다"는 말은 쓰는 방식에 따라 맞기도 틀리기도 합니다. 이 두 클래스로 분석기를 다시 돌리지는 않았어요. 실행할 때는 konst를 빼도 잘 돌았습니다. 값이 이미 복사돼 있으니까요. 컴파일에는 필요하고 실행에는 필요 없는 의존성이라, 이 사례의 "쓴다" 판정은 컴파일 관점에서 맞는 셈이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: Maven의 -q는 분석 결과를 지운다</div>
+  처음에는 <code>mvn -q dependency:analyze</code>로 돌렸다가 m5의 경고가 하나도 안 나와서 "문제없음"으로 읽을 뻔했어요. <code>-q</code>는 오류만 남기고 WARNING을 지우는데, dependency:analyze는 결과를 WARNING으로 찍습니다. 결과를 파일로 모을 때는 <code>-q</code>를 빼고 WARNING 줄을 걸러야 해요. CI에서 쓰려면 <code>-DfailOnWarning=true</code>로 종료 코드에 반영합니다.
+</div>
+
+<h2>5. b를 2.0으로 올리자 미선언 모듈 하나만 컴파일이 깨졌다</h2>
+
+<p>b 2.0은 더 이상 d를 쓰지 않아서 c도 끌고 오지 않아요. 1차 의존성 b의 버전만 올리고(<code>-Db.version=2.0</code>, Gradle은 <code>-PbVersion=2.0</code>) 일곱 모듈을 다시 컴파일했습니다.</p>
+
+<div class="obsv-code">모듈      Maven                       Gradle
+m1..m5    compile OK                  compile OK
+an        compile FAIL                compile FAIL
+an-decl   compile OK                  compile OK
+
+[ERROR] /work/maven/an/src/main/java/lab/co3/Main.java:[4,13] package lab.c does not exist
+[ERROR] /work/maven/an/src/main/java/lab/co3/Main.java:[9,45] cannot find symbol
+[ERROR] /work/maven/an/src/main/java/lab/co3/Main.java:[9,69] cannot find symbol</div>
+
+<p>깨진 건 an 하나였고, 오류는 세 개(import 한 줄, <code>Codec</code>을 쓰는 두 곳)였어요. Maven 기준이에요. Gradle 출력에는 열 번호가 없어서 같은 줄의 오류 둘이 합쳐져 두 개로 셌어요. 4절에서 분석기 둘이 "선언하지 않고 쓴다"고 지적한 바로 그 모듈입니다. c를 직접 선언한 an-decl은 같은 코드인데도 멀쩡했어요. 미선언 보고는 이번 실습에서 한 번도 틀리지 않았습니다. 3편의 "쓰는데 선언 안 했다는 보고는 대체로 바로 고쳐도 안전하다"와 맞는 결과예요.</p>
+
+<p>m1과 m2는 b를 쓰지만 c를 리플렉션으로만 읽어서 컴파일이 통과했어요. 대신 c를 공급하던 경로가 a 하나만 남으니, 그래프대로라면 이 두 모듈의 c는 Gradle에서도 1.0으로 바뀝니다(이번에 실행으로 확인하지는 않았어요). 1차 의존성 하나를 올렸을 때 바뀌는 건 컴파일 결과만이 아니에요.</p>
+
+<h2>6. 쓰지 않는 starter 하나가 내부 감사 로그를 지울 수 있게 열었다</h2>
+
+<p>마지막은 Spring Boot예요. 두 앱을 변형 넷으로 빌드했습니다. <code>plain</code>은 webmvc와 actuator에 <code>/hello</code> 하나뿐이고, <code>plain-unused</code>는 여기에 data-rest, data-jpa, h2를 더했지만 코드는 한 줄도 바꾸지 않았어요. <code>audit</code>은 JPA로 감사 로그(<code>AuditLog</code> 엔티티, <code>AuditLogRepository</code>)를 내부에서만 쓰는 앱이고 공개 API는 <code>POST /orders</code> 하나입니다. <code>audit-rest</code>는 여기에 data-rest만 더했어요. 각각 네 번 띄웠고, 첫 회는 디스크 캐시가 데워지는 회차라 범위에서 뺐습니다.</p>
+
+<div class="obsv-code">변형           jar      lib 수   빈 수   매핑 수   Started(초, 2~4회차)
+plain          22.0MB     42      252       10     1.09 ~ 1.34
+plain-unused   56.4MB     84      409       42     1.99 ~ 2.06
+audit          54.6MB     74      337       10     2.08 ~ 2.13
+audit-rest     56.4MB     84      412       42     2.41 ~ 2.42
+
+빈 수: /actuator/beans, 매핑 수: /actuator/mappings 의 dispatcherServlet 항목
+Started: 기동 로그의 "Started ... in N seconds"
+측정 중 호스트 load average 약 8~10 (다른 실습이 같이 돌았다)</div>
+
+<p>코드에서 쓰지 않는 의존성 셋(starter 둘과 h2)이 jar를 2.6배로 키우고, 라이브러리 42개, 빈 157개, 매핑 32개를 더했어요. 기동은 0.7~0.9초 늘었습니다(2~4회차 범위끼리 비교). data-rest 하나만 놓고 보면(audit &rarr; audit-rest) 라이브러리 10개, 빈 75개, 매핑 32개였어요. 크기는 1.8MB라 무시할 만했습니다. 문제는 매핑이에요.</p>
+
+<div class="obsv-code">audit-rest 에만 있는 매핑 (32개 중 일부)
+{GET [/{repository}], ...}
+{GET [/{repository}/{id}], ...}
+{POST [/{repository}], ...}
+{PUT [/{repository}/{id}], ...}
+{PATCH [/{repository}/{id}], ...}
+{DELETE [/{repository}/{id}], ...}
+{GET [/profile]}  {GET [/ || ], ...}  ...</div>
+
+<p>Repository 이름 자리를 변수로 받는 조회, 생성, 수정, 삭제 경로가 통째로 생겼어요. 실제로 불러 봤습니다.</p>
+
+<div class="obsv-code">요청                       audit     audit-rest
+GET    /                   404       200
+GET    /profile            404       200
+GET    /auditLogs          404       200  (감사 로그 3건이 그대로 나옴)
+DELETE /auditLogs/1        404       204
+GET    /auditLogs          404       200  (2건 남음)</div>
+
+<p>코드 어디에도 <code>/auditLogs</code>라는 경로는 없어요. 개발자가 공개한 API는 <code>POST /orders</code> 하나였는데, 빌드 파일의 한 줄 때문에 인증 없이 감사 로그를 읽고 지울 수 있게 됐습니다. Spring Data REST의 기본 노출 전략(<code>DEFAULT</code>)은 소스 주석 그대로 "public 인터페이스이거나 <code>@RepositoryRestResource</code>를 붙인 것"을 내보내고, 이 앱의 Repository는 흔히 그렇듯 public이었어요. 이 starter를 넣은 사람이 쓸 생각이었는지와 상관없이요. 3편에서 쓰지 않는 의존성은 크기보다 자동 구성이 문제라고 했던 게 이 장면입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 배포 전에 <code>/actuator/mappings</code>를 떠서 이전 배포와 비교해요. 코드 리뷰에 없던 경로가 생겼다면 의존성 변경이 원인일 가능성이 높습니다.<br>
+  &bull; Spring Data REST를 실제로 쓰더라도 노출 전략을 <code>spring.data.rest.detection-strategy=annotated</code>로 바꿔 <code>@RepositoryRestResource</code>를 붙인 것만 열리게 해요. 의도하지 않은 Repository가 열리는 걸 막는 가장 싼 방법입니다.<br>
+  &bull; 미사용 분석기가 starter를 지적하면 지우기 전에 이 표의 네 숫자(jar, 빈, 매핑, 기동)를 지우기 전후로 재 봐요. 효과가 숫자로 보여요.
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>같은 선언으로 Maven과 Gradle이 일곱 모듈 중 셋에서 다른 c를 골랐고, 두 도구 모두 컴파일은 통과한 뒤 실행 중에 세 번씩 NoSuchMethodError를 냈어요. Maven에서는 선언 두 줄의 순서만 바꿔도 jar에 든 c가 바뀌었어요.</b><br><br>
+  미사용 분석기 둘은 같은 네 건을 보고했고, 그중 리플렉션으로만 쓰는 drv는 빼자마자 깨졌고, 버전 고정용 선언은 빼면 Maven에서 깨지는 라이브러리가 a에서 b로 바뀌어요(m1과 같은 선언). 미선언 보고는 b를 올렸을 때 실제로 깨진 유일한 모듈을 정확히 짚었습니다. 그리고 쓰지 않는 data-rest 하나가 매핑 32개를 더해 내부 감사 로그를 HTTP로 지울 수 있게 만들었어요. <b>빌드 파일이 아니라 해소 결과와 열린 경로를 직접 확인해야 하는 이유가 여기 있습니다.</b>
+</div>
+
+</div>

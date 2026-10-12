@@ -1,0 +1,72 @@
+diff --git a/src/main/java/lab/co4/OrderHandler.java b/src/main/java/lab/co4/OrderHandler.java
+index b3572d4..81a518e 100755
+--- a/src/main/java/lab/co4/OrderHandler.java
++++ b/src/main/java/lab/co4/OrderHandler.java
+@@ -9,19 +9,19 @@ org.openrewrite.java.search.FindMethods
+     static final boolean LEGACY_FORMAT = false;
+ 
+     String handle(String id) {
+-        log.info("order received {}", id);                          // #S1 평범한 호출
++        /*~~>*/log.info("order received {}", id);                          // #S1 평범한 호출
+         // log.info("old debug line {}", id);                       #G1 주석
+         long total = Math.abs(id.hashCode()) % 1000;
+-        log
++        /*~~>*/log
+             .info("order total {}", total);                         // #S2 줄바꿈
+-        auditTrail.info("audit order {}", id);                      // #S9 변수 이름이 다름
++        /*~~>*/auditTrail.info("audit order {}", id);                      // #S9 변수 이름이 다름
+         if (LEGACY_FORMAT) {
+-            log.info("legacy format {}", id);                       // #S3 죽은 분기
++            /*~~>*/log.info("legacy format {}", id);                       // #S3 죽은 분기
+         }
+         try {
+             return place(id, total);
+         } catch (IllegalStateException e) {
+-            log.info("order rejected {}", id, e);                   // #S4 예외 경로
++            /*~~>*/log.info("order rejected {}", id, e);                   // #S4 예외 경로
+             return "rejected";
+         }
+     }
+
+diff --git a/src/main/java/lab/co4/SearchHandler.java b/src/main/java/lab/co4/SearchHandler.java
+index a7f2ed0..44543c0 100755
+--- a/src/main/java/lab/co4/SearchHandler.java
++++ b/src/main/java/lab/co4/SearchHandler.java
+@@ -17,7 +17,7 @@ org.openrewrite.java.search.FindMethods
+ 
+     String items(String q) {
+         List<String> names = List.of("item-" + q, "item-" + q + "-2");
+-        names.forEach(log::info);                                   // #S8 메서드 참조
++        names.forEach(log::/*~~>*/info);                                   // #S8 메서드 참조
+         return String.join(",", names);
+     }
+ }
+
+diff --git a/src/main/java/lab/co4/PaymentHandler.java b/src/main/java/lab/co4/PaymentHandler.java
+index 98439e5..7477d27 100755
+--- a/src/main/java/lab/co4/PaymentHandler.java
++++ b/src/main/java/lab/co4/PaymentHandler.java
+@@ -12,7 +12,7 @@ org.openrewrite.java.search.FindMethods
+     String handle(String id) {
+         log.info("payment {}", id);                                 // #S5 Logback 타입으로 부름
+         logger.info("jul payment " + id);                           // #G2 JUL Logger.info
+-        LoggerFactory.getLogger(PaymentHandler.class).info("inline {}", id);   // #S6 변수 없이 바로
++        /*~~>*/LoggerFactory.getLogger(PaymentHandler.class).info("inline {}", id);   // #S6 변수 없이 바로
+         return "paid " + id;
+     }
+ }
+
+diff --git a/src/main/java/lab/co4/LegacyAdminHandler.java b/src/main/java/lab/co4/LegacyAdminHandler.java
+index de6e3f0..a000e66 100755
+--- a/src/main/java/lab/co4/LegacyAdminHandler.java
++++ b/src/main/java/lab/co4/LegacyAdminHandler.java
+@@ -7,7 +7,7 @@ org.openrewrite.java.search.FindMethods
+     private static final Logger log = LoggerFactory.getLogger(LegacyAdminHandler.class);
+ 
+     String handle() {
+-        log.info("legacy admin page opened");                       // #S7 아무도 부르지 않는 경로
++        /*~~>*/log.info("legacy admin page opened");                       // #S7 아무도 부르지 않는 경로
+         return "legacy";
+     }
+ }
+

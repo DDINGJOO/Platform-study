@@ -1,0 +1,329 @@
+<!-- lead: 보안 공지가 오면 코드 검색부터 하지만, main 브랜치의 빌드 파일은 운영 바이너리를 말해 주지 않아요. 파드 imageID와 다이제스트, OCI revision 레이블, /actuator/info와 sbom으로 운영 인벤토리에 묻는 법을 정리했어요. -->
+<!-- tags: 자산 인벤토리, 출처 체인, 이미지 다이제스트, imageID, actuator info -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧬 소스 코드 관찰, 1편</div>
+  <b>1편. 지금 운영에 무엇이 떠 있는지는 Git이 아니라 플랫폼에 묻는다</b> &larr; 지금 이 글<br>
+  2편. SNAPSHOT과 latest는 버전이 아니라 포인터다<br>
+  3편. 빌드 파일에 적은 버전과 jar에 들어간 버전은 다르다<br>
+  4편. grep은 글자를 찾고, 타입이 붙은 구문 트리는 호출을 찾는다<br>
+  실습-1. 같은 좌표가 다른 바이너리를 가리키는 순간을 만든다<br>
+  실습-2. 서비스 열 개에서 취약한 라이브러리를 쓰는 곳을 SBOM으로 찾는다<br>
+  실습-3. Maven과 Gradle이 같은 의존성 그래프를 다르게 푼다<br>
+  실습-4. grep, OpenRewrite, 커버리지가 센 호출 수가 다르다
+</div>
+
+<p>금요일 오후에 보안 공지가 하나 올라옵니다. logback-core 1.5.x 계열의 1.5.13 이전 버전에 취약점(CVE-2024-12798)이 있으니, 해당 버전을 쓰는 운영 서비스를 오늘 안에 목록으로 달라는 내용이에요. 담당자는 사내 Git 서버의 코드 검색 창에 <code>logback-core</code>를 칩니다. 결과가 열댓 개 나와요. 빌드 파일에 버전을 직접 적은 저장소가 몇 개, 버전 없이 적은 저장소가 몇 개, 아예 언급이 없는 저장소가 대부분입니다.</p>
+
+<p>이 결과를 그대로 보고해도 될까요? 검색이 본 것은 각 저장소 main 브랜치의 지금 모습이에요. 운영에 떠 있는 건 몇 주 전 커밋으로 만든 이미지일 수 있습니다. 빌드 파일에 적힌 버전이 jar 안에 들어간 버전과 같다는 보장도 없어요. 언급이 없는 저장소도 스프링 부트를 거쳐 logback을 끌어오고 있을 겁니다. 그리고 검색 결과 어디에도 "그 서비스가 지금 어느 클러스터에서 몇 개 떠 있는지"는 나오지 않아요.</p>
+
+<p>이 시리즈는 <b>운영에 떠 있는 것에서 출발해 그 안의 코드까지 거슬러 올라가는 법</b>을 다룹니다. 이번 편은 "지금 무엇이 떠 있나"를 어디에 물어야 하는지, 2편은 그 답을 버전 하나로 고정하려면 버전이 어떤 성질을 가져야 하는지, 3편은 빌드 파일과 jar 사이에서 의존성 버전이 바뀌는 이유, 4편은 라이브러리 단위를 넘어 메서드 호출 단위까지 찾는 법을 봐요. 실습 네 편은 그 주장을 로컬 저장소와 빌드 도구로 직접 확인합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 운영 인벤토리에는 어떤 질문을 던지게 되는가?<br>
+  &bull; 커밋에서 실행 중인 인스턴스까지 무엇을 기록해 두어야 거꾸로 따라갈 수 있는가?<br>
+  &bull; Git에 적힌 상태와 클러스터에서 실제로 도는 상태는 어디서 갈라지는가?<br>
+  &bull; 쿠버네티스, 레지스트리, 앱 자신에게 각각 무엇을 물으면 되는가?<br>
+  &bull; 매번 실시간으로 물을 것인가, 주기적으로 찍어 둘 것인가?
+</div>
+
+<h2>1. 질문에는 늘 "지금 운영에"가 붙어 있다</h2>
+
+<p>운영을 하다 보면 비슷한 모양의 질문을 반복해서 받습니다. 몇 가지를 적어 보면 이래요.</p>
+
+<div class="obsv-code">&bull; logback-core 1.5.13 미만을 쓰는 서비스 중, 외부 트래픽을 받는 운영 서비스는 어디인가?
+&bull; 그 서비스들의 소유 팀은 누구인가?
+&bull; 어제 머지한 커밋 a1b2c3d 는 지금 어느 환경까지 나가 있는가?
+&bull; 기본 이미지를 석 달 넘게 갈지 않은 운영 워크로드는 몇 개인가?
+&bull; 사내 공통 라이브러리 2.x 의 폐기 예정 메서드를 아직 호출하는 서비스는 몇 개인가?</div>
+
+<p>다섯 질문 모두 대상이 "저장소에 있는 코드"가 아니라 "배포돼서 돌고 있는 것"이에요. 첫 질문은 실행 중인 바이너리 안의 라이브러리 버전을, 둘째는 배포 단위의 소유자를, 셋째는 커밋과 배포의 대응을, 넷째는 이미지의 내력을, 다섯째는 바이너리 안의 메서드 호출을 묻습니다. 그리고 답에는 시각이 붙어요. 지금 운영에 떠 있는 것은 한 시간 뒤에 달라질 수 있습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 자산 인벤토리 (asset inventory)</div>
+  배포된 것을 항목별로 조회할 수 있는 기록입니다. 이 시리즈에서는 "어떤 앱이, 어느 클러스터와 환경에, 어떤 버전의 바이너리로, 몇 개 떠 있는가"에 답하는 목록을 뜻해요. 클라우드와 컨테이너 환경에서는 인스턴스가 수시로 생기고 사라지니 손으로 적은 표로는 따라가지 못합니다.
+</div>
+
+<p>가상 머신에 이름을 붙여 오래 쓰던 시절에는 이 목록을 손으로 관리할 수 있었어요. 머신 이름이 잘 안 바뀌고, 머신마다 도는 앱도 정해져 있었으니까요. 오토스케일링 그룹과 쿠버네티스에서는 인스턴스 이름이 배포할 때마다, 때로는 부하에 따라 몇 분마다 바뀝니다. 목록은 사람이 적는 대상이 아니라 플랫폼에서 읽어 오는 대상이 됐어요.</p>
+
+<h2>2. 커밋에서 인스턴스까지, 고리마다 식별자를 남긴다</h2>
+
+<p>운영 인스턴스에서 소스 코드까지 거꾸로 따라가려면 그 사이의 모든 단계가 이어져 있어야 합니다. 커밋을 빌드하고, 결과물을 저장소에 게시하고, 배포하고, 실행하는 흐름이에요. 이 흐름을 거꾸로 걸을 수 있게 고리마다 식별자를 남긴 것을 출처 체인이라고 부릅니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 출처 체인 (provenance chain)</div>
+  실행 중인 인스턴스에서 출발해 배포, 결과물, 빌드, 커밋까지 한 단계씩 되짚을 수 있게 이어 둔 기록입니다. 고리 하나라도 식별자가 빠지면 그 지점에서 추적이 끊겨요. 공급망 보안 쪽에서는 빌드가 남기는 이런 기록을 provenance라 부르고, SLSA 같은 규격이 형식을 정해 두었습니다.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="co1a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">고리마다 남길 식별자</text>
+  <path d="M22 62 C 60 60, 100 63, 122 61 C 124 85, 123 108, 122 128 C 90 130, 55 127, 23 129 C 21 105, 22 82, 22 62 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="72" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">커밋</text>
+  <text x="72" y="116" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">a1b2c3d</text>
+  <path d="M157 61 C 195 59, 235 62, 257 60 C 259 85, 258 108, 257 129 C 225 131, 190 128, 158 130 C 156 105, 157 82, 157 61 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="207" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">CI 빌드</text>
+  <text x="207" y="116" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">build #812</text>
+  <path d="M292 60 C 330 58, 370 61, 392 59 C 394 85, 393 108, 392 130 C 360 132, 325 129, 293 131 C 291 105, 292 82, 292 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="342" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">결과물 게시</text>
+  <text x="342" y="116" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">sha256:9f…</text>
+  <path d="M427 61 C 465 59, 505 62, 527 60 C 529 85, 528 108, 527 129 C 495 131, 460 128, 428 130 C 426 105, 427 82, 427 61 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="477" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">배포</text>
+  <text x="477" y="116" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5">orders@prod</text>
+  <path d="M562 60 C 600 58, 640 61, 678 59 C 680 85, 679 108, 678 130 C 640 132, 600 129, 563 131 C 561 105, 562 82, 562 60 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="620" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">실행 중 🟢</text>
+  <text x="620" y="116" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">pod ×5</text>
+  <path d="M124 95 C 135 94, 145 96, 154 95" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co1a1)"/>
+  <path d="M259 95 C 270 94, 280 96, 289 95" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co1a1)"/>
+  <path d="M394 95 C 405 94, 415 96, 424 95" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co1a1)"/>
+  <path d="M529 95 C 540 94, 550 96, 559 95" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co1a1)"/>
+  <path d="M620 150 C 500 168, 250 170, 80 152" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="8 7" stroke-linecap="round" marker-end="url(#co1a1)"/>
+  <text x="350" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">질의는 오른쪽에서 왼쪽으로 걷는다</text>
+  <path d="M30 212 C 200 210, 450 213, 670 211" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="34" y="242" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">얕게</text>
+  <text x="110" y="242" font-family="'Gowun Dodum', sans-serif" font-size="14" fill="#3d3a34">불변 버전 + 커밋 해시. "이 인스턴스는 어느 커밋인가"까지</text>
+  <text x="34" y="280" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">중간</text>
+  <text x="110" y="280" font-family="'Gowun Dodum', sans-serif" font-size="14" fill="#3d3a34">+ 빌드 때 해소된 의존성 전체(SBOM). "어느 라이브러리 몇 버전인가"까지</text>
+  <text x="34" y="318" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">깊게</text>
+  <text x="110" y="318" font-family="'Gowun Dodum', sans-serif" font-size="14" fill="#3d3a34">+ 타입이 붙은 구문 트리. "어느 메서드를 호출하는가"까지</text>
+  <text x="560" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">3편 SBOM, 4편 구문 트리</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 기록은 왼쪽에서 오른쪽으로 쌓이고, 질문은 오른쪽에서 출발한다</div>
+
+<p>그림 1의 위쪽 줄이 흐름이고, 상자 아래의 작은 글씨가 각 고리에서 남길 식별자예요. 최소한으로는 두 개가 이어져 있어야 합니다. 배포된 결과물의 <b>바뀌지 않는 버전</b>과 그 결과물을 만든 <b>커밋 해시</b>예요. 이 둘만 있어도 "운영의 이 파드는 어느 커밋으로 만들었나"에 답할 수 있습니다.</p>
+
+<p>그보다 깊이 가려면 빌드가 더 많은 것을 남겨야 해요. 빌드 도구가 의존성을 해소한 결과 전체를 남기면 "어느 라이브러리 몇 버전이 들어 있나"에 답할 수 있고, 소스를 타입 정보가 붙은 구문 트리로 남기면 "어느 메서드를 호출하나"까지 내려갈 수 있습니다. 앞쪽이 3편의 SBOM, 뒤쪽이 4편의 OpenRewrite 이야기예요.</p>
+
+<p>여기서 중요한 건 기록하는 방향과 질의하는 방향이 반대라는 점입니다. 기록은 커밋에서 시작해 빌드, 게시, 배포 순으로 쌓이지만, 질문은 거의 항상 오른쪽 끝, 실행 중인 것에서 출발해요. 그래서 오른쪽 끝의 목록이 정확하지 않으면 왼쪽에 아무리 꼼꼼히 기록해도 소용이 없습니다. 질문의 출발점인 "지금 무엇이 떠 있나"를 어디서 얻느냐가 첫 번째 문제예요.</p>
+
+<h2>3. Git은 의도를 적고, 플랫폼은 실제를 안다</h2>
+
+<p>가장 먼저 떠오르는 출발점은 Git입니다. 특히 깃옵스로 배포한다면 운영 클러스터에 들어갈 매니페스트가 전부 저장소에 있으니, 저장소를 읽으면 운영 상태를 알 수 있을 것 같아요. 깃옵스가 클러스터를 Git에 맞추는 방식은 <a href="https://dding-shark.tistory.com/622">「배포 안전성」 시리즈 4편</a>에서 다뤘으니 여기서는 되풀이하지 않겠습니다. 이 글에서 볼 것은 "Git을 읽어서 운영 인벤토리 질문에 답할 수 있는가"예요.</p>
+
+<p>답하기 어려운 이유가 여럿 있습니다. Git에 적힌 것과 실제로 도는 것이 갈라지는 지점을 하나씩 짚어 볼게요.</p>
+
+<p><b>첫째, 태그는 바뀐다.</b> 매니페스트에 <code>image: orders:1.4</code>라고 적혀 있어도 그 태그가 가리키는 이미지는 레지스트리에서 바뀔 수 있어요. 태그가 다른 이미지로 옮겨지면 옛 코드와 새 코드가 섞인 파드 묶음이 생길 수 있어요(쿠버네티스 문서, Images). 노드에 이미 그 태그의 이미지가 있으면 기본 정책(<code>IfNotPresent</code>)에서는 다시 받지 않으니, 노드마다 다른 이미지로 파드가 뜰 수 있어요. 이 문제는 2편에서 버전의 성질로 다시 다룹니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 이미지 다이제스트 (image digest)</div>
+  이미지 매니페스트 내용의 해시값입니다. <code>sha256:9f86d0…</code> 모양이에요. 내용이 한 바이트라도 다르면 다이제스트가 달라지니, 다이제스트로 가리킨 이미지는 바뀌지 않습니다. 태그는 사람이 붙이는 이름이고 언제든 다른 다이제스트로 옮겨 붙일 수 있어요.
+</div>
+
+<p><b>둘째, 클러스터가 매니페스트를 고친다.</b> API 서버는 저장할 때 빠진 필드에 기본값을 채우고, 변경 어드미션 웹훅은 들어오는 객체를 고쳐서 저장해요. 서비스 메시가 사이드카 컨테이너를 넣는 것, 보안 정책 도구가 이미지 태그를 다이제스트로 바꿔 적는 것이 대표적입니다. 서드파티 어드미션 컨트롤러가 파드를 태그 대신 다이제스트로 돌도록 고치기도 해요(쿠버네티스 문서, Images). 그래서 <code>kubectl get pod -o yaml</code>로 본 파드는 Git에 커밋한 매니페스트와 같은 문서가 아닙니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 변경 어드미션 웹훅 (mutating admission webhook)</div>
+  쿠버네티스 API 서버가 객체를 저장하기 직전에 호출하는 외부 HTTP 서버입니다. 요청받은 객체를 고친 패치를 돌려줄 수 있어서, 사이드카 주입이나 기본 레이블 추가 같은 일을 해요. 고친 결과는 클러스터에만 있고 Git에는 없습니다.
+</div>
+
+<p><b>셋째, 사람과 컨트롤러가 값을 바꾼다.</b> HPA(부하에 따라 파드 수를 바꾸는 오토스케일러)는 레플리카 수를 바꾸고, 장애 대응 중에 누군가 <code>kubectl rollout undo</code>로 이전 버전을 되살릴 수 있어요. 깃옵스 도구는 이런 변화를 상당 부분 감지합니다. 다만 무엇을 감지하는지는 정해져 있어요. <a href="https://dding-shark.tistory.com/625">「배포 안전성」 실습-3</a>에서 Argo CD로 재 보니 Git에 적힌 필드를 손으로 바꾸면 0.3초 만에 되돌렸지만, Git에 없는 레이블을 붙이거나 추적 표시가 없는 리소스를 손으로 만들면 드리프트로 보지 않고 그대로 뒀습니다. 깃옵스 도구는 Git에 적힌 것을 기준으로 클러스터를 봐요.</p>
+
+<p><b>넷째, Git에 아직 배포되지 않은 커밋이 있다.</b> 앱 저장소의 main 브랜치에는 마지막 배포 뒤의 변경이 쌓여 있는 게 보통입니다. 서두의 코드 검색이 틀린 이유가 이거예요. 검색은 main의 빌드 파일을 봤지만, 운영 이미지는 그보다 앞선 커밋으로 만들어졌을 수 있습니다.</p>
+
+<p><b>다섯째, 빌드 파일은 바이너리 내용을 다 말하지 않는다.</b> 이건 플랫폼과 Git 사이가 아니라 소스와 바이너리 사이의 틈이에요. 의존성의 실제 버전은 빌드할 때 해소 규칙과 충돌 처리로 정해집니다. 3편의 주제라서 여기서는 이름만 적어 둘게요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="170" y="32" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#4a7fb5">📄 Git에 커밋한 것</text>
+  <text x="525" y="32" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#2e6b41">☸️ 클러스터에 실제로 있는 것</text>
+  <path d="M30 50 C 120 48, 220 51, 310 49 C 312 140, 311 230, 310 330 C 220 332, 120 329, 31 331 C 29 230, 30 140, 30 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="48" y="84" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">kind: Deployment</text>
+  <text x="48" y="108" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">replicas: 3</text>
+  <text x="48" y="132" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">containers:</text>
+  <text x="62" y="156" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">- name: orders</text>
+  <text x="74" y="180" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">image: orders:1.4</text>
+  <text x="48" y="226" font-family="'Gowun Dodum', sans-serif" font-size="14" fill="#8a8272">(커밋 a1b2c3d 기준)</text>
+  <path d="M370 50 C 470 48, 580 51, 672 49 C 674 140, 673 230, 672 330 C 580 332, 470 329, 371 331 C 369 230, 370 140, 370 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="388" y="84" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">replicas: <tspan fill="#c07f18">5</tspan></text>
+  <text x="560" y="84" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">← HPA</text>
+  <text x="388" y="112" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">pod-1 orders @sha256:<tspan fill="#2e6b41">9f8…</tspan></text>
+  <text x="388" y="134" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">pod-2 orders @sha256:<tspan fill="#2e6b41">9f8…</tspan></text>
+  <text x="388" y="156" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">pod-3 orders @sha256:<tspan fill="#b3502f">41c…</tspan></text>
+  <text x="560" y="178" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">← 옛 태그가 남은 노드</text>
+  <text x="388" y="206" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">+ istio-proxy 사이드카</text>
+  <text x="560" y="228" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">← 변경 웹훅</text>
+  <text x="388" y="254" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">+ imagePullPolicy 등 기본값</text>
+  <text x="388" y="280" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">+ 레이블 owner=…</text>
+  <text x="560" y="302" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">← 손으로 붙임</text>
+  <path d="M316 190 C 330 188, 350 191, 364 189" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 7" stroke-linecap="round"/>
+  <text x="350" y="370" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">"orders 1.4 가 3개" 라는 답은 셋 다 틀렸다: 개수, 내용, 구성</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. Git은 원하는 상태를, 클러스터는 일어난 상태를 갖고 있다</div>
+
+<p>그렇다고 "깃옵스는 실제 상태를 전혀 모른다"고 말하면 과장이에요. Argo CD 같은 도구는 클러스터의 실제 객체(live state)를 읽어 Git의 원하는 상태와 비교하고, 차이와 헬스 상태를 화면과 API로 보여 줍니다. 그러니 정확한 표현은 이렇습니다. <span class="obsv-mark">깃옵스 도구는 Git에 적힌 것과 비교하는 데 필요한 만큼 클러스터를 읽고, 인벤토리 질문은 Git에 적히지 않은 것까지 묻는다.</span> 사이드카가 어떤 버전인지, 각 파드가 실제로 어떤 다이제스트로 떴는지, 깃옵스 밖에서 배포된 워크로드가 무엇인지는 결국 플랫폼에 직접 물어야 해요.</p>
+
+<h2>4. 플랫폼에 묻는다: 쿠버네티스, 레지스트리, 그리고 앱 자신</h2>
+
+<p>"지금 무엇이 떠 있나"를 묻기 좋은 곳은 세 군데입니다. 각자 아는 것이 달라서 보통은 셋을 이어 붙여요.</p>
+
+<h3>쿠버네티스 API: 무엇이 어디에 몇 개, 어떤 다이제스트로</h3>
+
+<p>파드 객체에는 두 가지 이미지 정보가 있어요. <code>spec.containers[].image</code>는 요청한 이미지 이름이고, <code>status.containerStatuses[].imageID</code>는 컨테이너 런타임이 실제로 띄운 이미지의 식별자입니다. 이 값은 런타임이 해석한 결과라서 스펙에 적은 이미지와 다를 수 있어요(쿠버네티스 API 문서, ContainerStatus). 보통 저장소 이름에 <code>@sha256:</code> 다이제스트가 붙은 모양입니다. 인벤토리 질의는 뒤쪽을 기준으로 해야 해요.</p>
+
+<div class="obsv-code">kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.labels.app\.kubernetes\.io/name}{"\t"}{range .status.containerStatuses[*]}{.image}{"\t"}{.imageID}{"\n"}{end}{end}'
+
+shop    orders    registry.example/orders:1.4    registry.example/orders@sha256:9f86d0…
+shop    orders    registry.example/orders:1.4    registry.example/orders@sha256:9f86d0…
+shop    orders    registry.example/orders:1.4    registry.example/orders@sha256:41c3a7…</div>
+
+<p>위 출력은 형식을 보여 주려고 만든 예시예요. 세 번째 줄처럼 같은 태그 아래 다이제스트가 다른 파드가 섞여 있으면, 태그가 중간에 옮겨졌고 그 노드는 옛 이미지를 쓰고 있다는 뜻입니다. 이런 상황은 <a href="#co-05">실습-1</a>에서 레지스트리와 컨테이너 두 개로 직접 만들어 봐요.</p>
+
+<p>앱 이름, 버전, 소유 팀은 레이블로 붙여 둡니다. <code>app.kubernetes.io/name</code>, <code>app.kubernetes.io/instance</code>, <code>app.kubernetes.io/version</code>, <code>app.kubernetes.io/component</code>, <code>app.kubernetes.io/part-of</code>, <code>app.kubernetes.io/managed-by</code>가 쿠버네티스의 권장 레이블이에요(쿠버네티스 문서, Recommended Labels). 소유 팀은 권장 목록에 없으니 조직이 이름을 정해서 붙여야 합니다. 레이블도 서비스 카탈로그도 없으면 서두의 질문 중 "소유 팀은 누구인가"에 답할 길이 없어요.</p>
+
+<h3>레지스트리: 다이제스트에서 커밋으로</h3>
+
+<p>다이제스트를 알았으면 그 이미지를 어느 커밋으로 만들었는지 알아야 합니다. 이 용도의 표준 주석(annotation) 키가 있고(OCI 이미지 규격, annotations), 같은 키를 이미지 레이블로도 쓰는 게 관례예요. <code>org.opencontainers.image.revision</code>은 "패키징한 소프트웨어의 소스 관리 리비전 식별자", <code>org.opencontainers.image.source</code>는 "이미지를 빌드한 소스 코드를 받을 수 있는 URL"입니다. 빌드할 때 이 둘을 이미지 레이블로 넣어 두면, 다이제스트 하나로 레지스트리에서 설정을 읽어 커밋과 저장소를 찾을 수 있어요.</p>
+
+<div class="obsv-code">docker build \
+  --label org.opencontainers.image.revision=$(git rev-parse HEAD) \
+  --label org.opencontainers.image.source=https://git.example/shop/orders \
+  -t registry.example/orders:1.4 .
+
+docker buildx imagetools inspect registry.example/orders@sha256:9f86d0… \
+  --format '{{json .Image.Config.Labels}}'</div>
+
+<p>레이블을 직접 넣지 않아도 단서가 남는 경우가 있어요. Docker의 buildx는 레지스트리로 내보낼 때(docker 드라이버면 containerd 이미지 저장소를 켰을 때) 기본으로 SLSA 형식의 출처 증명(provenance)을 함께 올리는데, <a href="#co-05">실습-1</a>에서 열어 보니 그 안에 빌드한 Git 저장소 주소와 커밋 해시가 들어 있었습니다. 다만 빌드 도구의 기본값에 기대는 것이라, 질의에 쓸 거라면 레이블처럼 명시적으로 넣는 편이 확실해요.</p>
+
+<h3>앱 자신: /actuator/info와 /actuator/sbom</h3>
+
+<p>세 번째 방법은 실행 중인 앱에게 직접 묻는 거예요. 스프링 부트는 클래스패스 루트에 <code>git.properties</code> 파일이 있으면 <code>/actuator/info</code>에서 <code>git.branch</code>, <code>git.commit.id</code>, <code>git.commit.time</code>을 보여 줍니다. 이 파일은 Maven의 <code>git-commit-id-maven-plugin</code>이나 Gradle의 <code>com.gorylenko.gradle-git-properties</code> 플러그인이 빌드할 때 만들어요. 스프링 부트 3.3부터는 <code>/actuator/sbom</code> 엔드포인트도 있습니다. 빌드할 때 CycloneDX 플러그인으로 만든 SBOM을 jar 안에 넣어 두면, 실행 중인 앱이 자기 의존성 목록을 돌려줘요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: SBOM (Software Bill of Materials)</div>
+  결과물 안에 든 구성 요소와 그 버전을 적은 목록입니다. 사람이 쓰는 문서가 아니라 빌드 도구가 해소한 결과를 기계가 읽을 수 있는 형식(CycloneDX, SPDX)으로 남긴 파일이에요. 취약점 공지가 오면 이 목록에서 해당 버전을 찾습니다.
+</div>
+
+<p>SBOM에도 한계가 하나 있어요. 빌드할 때 Gradle이나 Maven이 해소한 결과를 적은 것이라, 빌드 뒤에 이미지에 얹힌 것은 모릅니다. <a href="#co-06">실습-2</a>에서 배포할 때 옛 logback jar를 클래스패스 앞에 얹은 서비스를 하나 만들었더니, 그 서비스의 <code>/actuator/sbom</code>은 빌드 때 들어간 새 버전을 말했고 실제 JVM은 얹힌 옛 jar에서 클래스를 읽고 있었어요. 서비스 열 개 중 취약한 넷을 SBOM은 셋 찾았고, 놓친 하나가 이 경우였습니다.</p>
+
+<p>앱에게 묻는 방법은 플랫폼에 묻는 방법을 대신하지 않아요. 앱은 자기 이야기만 하고, 자기가 몇 개 떠 있는지, 어느 클러스터에 있는지는 모릅니다. 그래서 순서는 이렇게 됩니다. 플랫폼에서 떠 있는 워크로드와 다이제스트 목록을 받고, 각 다이제스트나 인스턴스에 대해 레지스트리나 앱에서 커밋과 의존성을 읽어 붙여요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: sbom과 info를 바깥에 열지 않는다</div>
+  &bull; 스프링 부트는 기본으로 <code>health</code>만 HTTP에 노출해요. <code>info</code>와 <code>sbom</code>을 켜려면 <code>management.endpoints.web.exposure.include</code>에 직접 넣어야 합니다<br>
+  &bull; SBOM은 공격자 입장에서 "이 서버에 든 라이브러리와 버전 목록"이에요. 켤 때는 <code>management.server.port</code>로 관리용 포트를 따로 두고, 그 포트는 클러스터 안에서만 닿게 하세요<br>
+  &bull; <code>info</code>의 git 정보도 기본은 브랜치, 커밋 ID, 커밋 시각 세 개뿐이에요. <code>management.info.git.mode=full</code>로 늘리기 전에 무엇이 나가는지 확인하세요
+</div>
+
+<h2>5. 스피나커가 보여 준 모양: 한 번의 질의로 모든 클라우드를</h2>
+
+<p>이 일을 오래전부터 도구 차원에서 해 온 곳이 Spinnaker예요. Spinnaker는 지원하는 모든 클라우드 제공자에서 배포 인프라를 읽어, 애플리케이션, 클러스터, 서버 그룹, 인스턴스라는 같은 모양으로 보여 줍니다. AWS의 오토스케일링 그룹도, 쿠버네티스의 ReplicaSet도 서버 그룹이라는 한 단어로 묶여요. 이 용어는 <a href="https://dding-shark.tistory.com/619">「배포 안전성」 1편</a>에서 정리했습니다. UI와 모든 API 호출은 API 게이트웨이인 Gate를 거치고, 앱 목록은 Gate의 <code>/applications</code>에서 시작해요.</p>
+
+<p>읽는 방식도 짚어 둘 만합니다. 질문이 올 때마다 클라우드에 묻는 게 아니에요. Clouddriver라는 서비스가 "캐싱 에이전트"를 기본 30초마다 돌려 각 클라우드의 배포 자원을 읽고 색인해 두고, 질의는 그 색인에서 답합니다(Spinnaker 문서, Configure Spinnaker's Usage of Redis). 핵심은 색인의 원천이 "배포하려고 적어 둔 기록"이 아니라 "플랫폼에서 읽은 결과"라는 점이에요.</p>
+
+<p>이 모델 위에서는 인벤토리 질문이 짧은 질의 하나가 됩니다. 아래는 "쿠버네티스에서 도는 앱을 소유한 팀 목록"을 의사코드로 적은 거예요.</p>
+
+<div class="obsv-code">delivery.getApplications()
+    .filter(app -&gt; app.getClusters()
+        .anyMatch(c -&gt; c.getCloudProvider().equals("kubernetes")))
+    .map(app -&gt; app.getOwner())
+    .collect(toSet());
+
+// 서버 그룹마다 결과물(그룹:이름:버전)이 하나씩 붙어 있으면, 한 단계만 더 내려가면 된다
+delivery.getApplications()
+    .flatMap(Application::getClusters)
+    .flatMap(Cluster::getServerGroups)
+    .filter(sg -&gt; sg.getArtifact().getDependencies().stream()
+        .anyMatch(d -&gt; d.is("ch.qos.logback", "logback-core") &amp;&amp; d.versionBelow("1.5.13")));</div>
+
+<p>이 방식의 장점은 배포 이력을 따로 관리하는 중앙 기록이 필요 없다는 거예요. 누가 손으로 롤백하거나 서버 그룹을 직접 띄워도 다음 캐싱 주기에 답에 반영됩니다. 단점도 같은 곳에서 나와요. 색인은 지금 상태만 들고 있어서 지난주 화요일에 무엇이 떠 있었는지는 물을 수 없고, 마지막 캐싱 뒤에 생긴 변화는 다음 주기까지 보이지 않습니다.</p>
+
+<p>Spinnaker를 쓰지 않아도 같은 모양을 만들 수 있어요. 오늘 많이 쓰는 조합으로 바꿔 적으면 이렇습니다.</p>
+
+<div class="obsv-code">질문                                  어디서 답을 얻나
+───────────────────────────────────  ─────────────────────────────────────────────
+무엇이 어디에 몇 개 떠 있나             쿠버네티스 API (클러스터마다), 클라우드 API
+그 인스턴스는 어떤 이미지인가            파드 status.containerStatuses[].imageID
+그 이미지는 어느 커밋인가               이미지 레이블 org.opencontainers.image.revision
+                                      또는 앱의 /actuator/info git.commit.id
+그 안에 어떤 라이브러리가 몇 버전인가     빌드 때 만든 SBOM (이미지 첨부 또는 /actuator/sbom)
+누가 소유하나                          워크로드 레이블, 서비스 카탈로그
+Git과 다른 점은 무엇인가                 깃옵스 도구의 diff (Git에 적힌 필드에 한해)</div>
+
+<p>표의 왼쪽 열은 모두 "지금"을 묻는 질문이에요. 오른쪽 열의 첫 줄, 플랫폼 API가 나머지 줄의 입력을 만듭니다. Git은 맨 아래 줄 한 곳에만 등장해요. Git이 쓸모없다는 뜻이 아닙니다. Git은 "원래 무엇을 의도했나"에 답하는 곳이고, 인벤토리 질문은 대개 "실제로 무엇이 일어났나"를 묻는다는 뜻이에요.</p>
+
+<h2>6. 매번 물을까, 찍어 둘까</h2>
+
+<p>마지막으로 남는 선택은 질의 시점이에요. 두 방식이 있고 둘 다 대가가 있습니다.</p>
+
+<p><b>실시간 질의</b>는 질문이 올 때 모든 클러스터와 앱에 묻고 답을 조합하는 방식이에요. 답은 항상 최신이지만, 플랫폼 API가 느리거나 일부 클러스터에 닿지 않으면 답이 비거나 늦습니다. 앱의 <code>/actuator/sbom</code>을 수백 개 인스턴스에 매번 부르는 것도 부담이에요. 같은 버전의 인스턴스는 같은 SBOM을 돌려주니, 다이제스트 단위로 한 번씩만 물으면 됩니다.</p>
+
+<p><b>주기적 스냅숏</b>은 몇 분이나 몇 시간마다 위 표의 결과를 모아 저장하는 방식이에요. 질의가 빠르고, "지난 장애 시각에 어떤 버전이 떠 있었나"처럼 과거를 물을 수 있습니다. 대신 스냅숏 사이에 생긴 변화는 다음 수집 때까지 보이지 않아요. 보안 공지가 와서 급하게 묻는 질문에는 그 공백이 문제가 될 수 있습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="co1a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M40 150 C 200 149, 450 151, 660 150" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co1a3)"/>
+  <text x="664" y="176" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">시간</text>
+  <text x="40" y="40" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">실시간 질의: 물을 때마다 전부 읽는다</text>
+  <path d="M600 60 C 601 85, 599 110, 600 140" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" marker-end="url(#co1a3)"/>
+  <text x="600" y="76" text-anchor="end" font-family="'Gowun Dodum', sans-serif" font-size="13" fill="#3d3a34">지금 → 최신. 과거는 못 묻는다 </text>
+  <text x="40" y="214" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">주기적 스냅숏: 정해진 때마다 찍어 둔다</text>
+  <path d="M120 160 C 121 168, 119 176, 120 184" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+  <path d="M260 160 C 261 168, 259 176, 260 184" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+  <path d="M400 160 C 401 168, 399 176, 400 184" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+  <path d="M540 160 C 541 168, 539 176, 540 184" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+  <path d="M455 128 C 456 134, 454 140, 455 146" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+  <text x="455" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">🔥 손으로 롤백</text>
+  <path d="M410 196 C 440 204, 480 204, 532 196" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="472" y="240" text-anchor="middle" font-family="'Gowun Dodum', sans-serif" font-size="13" fill="#b3502f">다음 스냅숏 전까지 안 보인다</text>
+  <text x="40" y="276" font-family="'Gowun Dodum', sans-serif" font-size="13" fill="#3d3a34">대신 "지난 장애 시각에 무엇이 떠 있었나"는 스냅숏만 답할 수 있다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 실시간 질의는 과거를 잃고, 스냅숏은 사이의 변화를 잃는다</div>
+
+<p>Spinnaker의 30초 캐시는 둘 사이에 있어요. 주기가 짧은 스냅숏이지만 과거를 남기지 않으니, 과거를 물으려면 그 결과를 따로 쌓아야 합니다. 실무에서는 둘을 같이 쓰는 경우가 많아요. 평소 대시보드와 감사 기록은 스냅숏으로, 보안 공지 같은 급한 질문은 실시간 질의로 답합니다. 어느 쪽이든 입력은 같아요. 플랫폼 API가 돌려준 "지금 떠 있는 것"입니다.</p>
+
+<p>답을 얻은 뒤의 순서도 정해 두면 좋아요. 취약한 버전이 운영과 테스트 환경 양쪽에서 나오면 운영 쪽부터 고칩니다. 테스트 환경은 운영으로 코드를 넘기는 경로라서 다음 차례예요. 인벤토리에 환경 정보(레이블이나 네임스페이스)가 붙어 있어야 이 순서를 목록에서 바로 뽑을 수 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 이미지를 빌드할 때 <code>org.opencontainers.image.revision</code>과 <code>org.opencontainers.image.source</code> 레이블을 넣어 두세요. 다이제스트 하나에서 커밋까지 한 번에 갈 수 있어요<br>
+  &bull; 앱에는 <code>git.properties</code>를 넣고 <code>/actuator/info</code>를 관리 포트에 열어 두세요. 레지스트리에 닿지 않는 환경에서도 앱에게 직접 물을 수 있어요<br>
+  &bull; 워크로드에는 <code>app.kubernetes.io/name</code>, <code>app.kubernetes.io/version</code>과 팀 레이블을 붙이세요. 레이블이 빠진 워크로드 수를 세는 것부터가 인벤토리 점검이에요<br>
+  &bull; 인벤토리 질의는 태그가 아니라 <code>imageID</code>의 다이제스트로 하세요. 같은 태그 아래 다이제스트가 둘 이상이면 그것 자체가 알릴 만한 사건이에요
+</div>
+
+<p>여기까지 오면 서두의 질문에 다시 답할 수 있어요. 코드 검색 대신 클러스터마다 파드의 다이제스트를 모으고, 다이제스트마다 SBOM을 열어 logback-core 버전을 봅니다. 결과에서 운영 네임스페이스를 먼저 골라 소유 팀 레이블로 묶어요. 실습-2에서 서비스 열 개로 이 질의를 돌려 보니, main 브랜치의 빌드 파일로 찾은 답은 취약한 넷 중 하나만 맞히고 하나를 잘못 짚었고, 실행 중인 서비스의 SBOM은 넷 중 셋을 오탐 없이 찾았어요. 빌드 파일이 놓친 셋은 운영에 옛 커밋이 떠 있던 서비스, 버전을 버전 카탈로그에 적어 둔 서비스, 배포할 때 jar를 얹은 서비스였어요. 마지막 하나는 SBOM도 놓쳤습니다.</p>
+
+<p>그런데 이 체인이 성립하려면 고리마다 남긴 식별자가 한 가지 성질을 가져야 해요. 같은 이름이 언제나 같은 바이너리를 가리켜야 합니다. <code>1.4</code>라는 태그나 <code>1.0.0-SNAPSHOT</code>이라는 버전은 이 성질을 보장하지 않아요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>인벤토리 질문은 거의 다 "지금 운영에 떠 있는 것"을 묻고, 그 답은 Git이 아니라 플랫폼이 갖고 있어요.</b> Git에 적힌 매니페스트는 태그 이동, 어드미션 웹훅, HPA와 손 롤백, 배포되지 않은 커밋 때문에 실제와 갈라집니다. 깃옵스 도구도 Git에 적힌 필드만큼만 클러스터를 비교해요.<br><br>
+  그래서 질의는 플랫폼 API에서 시작합니다. 파드의 <code>imageID</code>로 다이제스트를, 이미지 레이블이나 <code>/actuator/info</code>로 커밋을, SBOM으로 라이브러리 버전을 이어 붙여요. 출처 체인은 커밋에서 쌓이지만, 질문은 언제나 실행 중인 쪽 끝에서 출발합니다.
+</div>
+
+</div>

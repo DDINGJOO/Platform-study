@@ -1,0 +1,289 @@
+<!-- lead: 태그로 롤백했는데 증상이 그대로인 이유를 따라가요. SNAPSHOT은 maven-metadata.xml을 거치는 포인터이고 도커 태그는 옮겨 붙어요. 고유성과 불변성, 다이제스트, 재빌드 없는 승격을 정리했어요. -->
+<!-- tags: SNAPSHOT, maven-metadata.xml, 이미지 다이제스트, 재현 가능한 빌드, nebula-release -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧬 소스 코드 관찰, 2편</div>
+  1편. 지금 운영에 무엇이 떠 있는지는 Git이 아니라 플랫폼에 묻는다<br>
+  <b>2편. SNAPSHOT과 latest는 버전이 아니라 포인터다</b> &larr; 지금 이 글<br>
+  3편. 빌드 파일에 적은 버전과 jar에 들어간 버전은 다르다<br>
+  4편. grep은 글자를 찾고, 타입이 붙은 구문 트리는 호출을 찾는다<br>
+  실습-1. 같은 좌표가 다른 바이너리를 가리키는 순간을 만든다<br>
+  실습-2. 서비스 열 개에서 취약한 라이브러리를 쓰는 곳을 SBOM으로 찾는다<br>
+  실습-3. Maven과 Gradle이 같은 의존성 그래프를 다르게 푼다<br>
+  실습-4. grep, OpenRewrite, 커버리지가 센 호출 수가 다르다
+</div>
+
+<p>배포 직후 주문 API의 에러율이 오릅니다. 담당자는 바로 롤백을 결정하고, 매니페스트의 이미지를 직전 버전인 <code>orders:1.4</code>로 되돌려요. 파드가 새로 뜨고 몇 분이 지났는데 에러율이 그대로입니다. 한참 뒤에야 원인이 나와요. 지난주에 누군가 핫픽스를 만들면서 새 태그를 따지 않고 <code>1.4</code>로 다시 푸시했고, 문제의 코드는 그 핫픽스에 이미 들어 있었습니다. 롤백한 곳은 "1.4라는 이름"이었지, 지난주에 운영에서 멀쩡히 돌던 그 이미지가 아니었어요.</p>
+
+<p><a href="#co-01">1편</a>에서 운영 인스턴스에서 커밋까지 거꾸로 따라가는 출처 체인을 봤어요. 그 체인은 고리마다 남긴 이름이 <b>언제 물어도 같은 바이너리를 가리킨다</b>는 전제 위에 서 있습니다. 이번 편은 그 전제를 깨는 이름 두 가지, Maven의 SNAPSHOT 버전과 도커의 가변 태그를 뜯어 봅니다. 그리고 전제를 지키는 방법으로 다이제스트, 재빌드 없는 승격, 버전에 커밋을 넣는 방식을 봐요.</p>
+
+<p><a href="https://dding-shark.tistory.com/619">「배포 안전성」 1편</a>의 마지막 콜아웃에서 "결과물에 커밋 해시를 태그로 붙이고, latest 대신 고정 버전이나 다이제스트를 쓴다"고 결론만 적었습니다. 이 글은 그 결론의 이유를 파는 글이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 버전이 출처 체인의 고리가 되려면 어떤 두 성질을 가져야 하는가?<br>
+  &bull; <code>1.0.0-SNAPSHOT</code>은 저장소에서 실제로 무엇을 가리키는가?<br>
+  &bull; 릴리스 버전을 덮어쓰면 누가 어떤 바이너리를 갖게 되는가?<br>
+  &bull; 태그와 다이제스트는 어떻게 다르고, 운영에서는 무엇으로 적어야 하는가?<br>
+  &bull; 테스트한 바이너리를 운영으로 올릴 때 왜 다시 빌드하면 안 되는가?
+</div>
+
+<h2>1. 버전이 지켜야 할 두 가지: 고유성과 불변성</h2>
+
+<p>버전 번호가 출처 체인의 고리 노릇을 하려면 두 가지가 필요해요.</p>
+
+<p><b>고유성</b>은 소스 코드와 의존성의 조합 하나마다 버전이 하나라는 뜻입니다. 코드가 바뀌거나 의존성 하나가 바뀌면 버전도 바뀌어야 해요. <b>불변성</b>은 저장소에 한 번 올린 버전을 다른 내용으로 덮어쓰지 않는다는 뜻입니다. 둘 중 하나만 깨져도 "운영에 떠 있는 버전 X"에서 바이너리 하나를 특정할 수 없어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 좌표 (coordinates, GAV)</div>
+  Maven 저장소에서 결과물 하나를 가리키는 이름입니다. 그룹(Group), 이름(Artifact), 버전(Version)을 콜론으로 이어 <code>io.micrometer:micrometer-core:1.4.1</code>처럼 써요. 저장소 경로도 이 셋으로 정해져서, 그룹의 점을 슬래시로 바꾼 <code>io/micrometer/micrometer-core/1.4.1/</code> 아래에 jar와 POM이 놓입니다.
+</div>
+
+<p>흔히 쓰는 식별자를 이 두 기준으로 나눠 보면 이렇습니다.</p>
+
+<div class="obsv-code">식별자                         고유성                       불변성
+─────────────────────────────  ───────────────────────────  ──────────────────────────────
+1.4.1 (Maven 릴리스)            빌드하는 쪽 규율에 달림        저장소 설정에 달림(대개 거부)
+1.4.1-SNAPSHOT                  없음. 게시할 때마다 내용이 바뀜  이름 자체가 바뀌라고 만든 것
+orders:1.4 (도커 태그)           빌드하는 쪽 규율에 달림        없음. 레지스트리는 다시 붙여 준다
+orders@sha256:9f86d0…           내용의 해시라서 성립           성립(내용이 다르면 다른 이름)
+커밋 해시 a1b2c3d               소스는 고유. 의존성은 아님      성립</div>
+
+<p>마지막 줄을 눈여겨볼 만해요. 커밋 해시는 소스 코드를 정확히 가리키지만, 그 커밋을 빌드했을 때 들어가는 의존성까지 정하지는 않습니다. 빌드 파일에 동적 버전이 있거나 기본 이미지를 태그로 받으면 같은 커밋을 오늘 빌드한 결과와 다음 달에 빌드한 결과가 달라요. 그래서 커밋 해시는 버전의 재료로는 좋지만, 그 자체로 버전이 되지는 못합니다. 이 차이는 5절의 "다시 빌드하지 말라"로 이어져요.</p>
+
+<h2>2. SNAPSHOT은 메타데이터 파일 하나가 가리키는 곳이다</h2>
+
+<p>Maven 저장소는 보통 릴리스 저장소와 스냅숏 저장소로 나뉩니다. 릴리스 저장소의 <code>1.4.1/</code> 디렉터리에는 <code>micrometer-core-1.4.1.jar</code>가 정확히 그 이름으로 있어요. 그런데 스냅숏 저장소의 <code>1.0.0-SNAPSHOT/</code> 디렉터리를 열면 <code>-SNAPSHOT</code>이라는 이름의 jar가 없습니다. 대신 이런 파일이 있어요.</p>
+
+<div class="obsv-code">lab/lib/1.0.0-SNAPSHOT/                (두 번째 게시 뒤)
+  maven-metadata.xml
+  lib-1.0.0-20261012.064627-2.jar       (.pom, .module, 체크섬 파일은 생략)</div>
+
+<p>게시할 때마다 <code>SNAPSHOT</code> 자리를 UTC 시각과 일련번호로 바꾼 파일이 새로 올라가요. 옛 파일을 남길지는 저장소 설정에 달렸는데, 이 목록은 옛 파일을 지우는 기본 설정의 모습이라 두 번째 게시물만 보입니다. 그리고 같은 디렉터리의 <code>maven-metadata.xml</code>이 "지금 최신은 몇 번째인가"를 적습니다.</p>
+
+<div class="obsv-code">&lt;metadata modelVersion="1.1.0"&gt;
+  &lt;groupId&gt;lab&lt;/groupId&gt;
+  &lt;artifactId&gt;lib&lt;/artifactId&gt;
+  &lt;versioning&gt;
+    &lt;lastUpdated&gt;20261012064627&lt;/lastUpdated&gt;
+    &lt;snapshot&gt;
+      &lt;timestamp&gt;20261012.064627&lt;/timestamp&gt;
+      &lt;buildNumber&gt;2&lt;/buildNumber&gt;
+    &lt;/snapshot&gt;
+    &lt;snapshotVersions&gt;
+      &lt;snapshotVersion&gt;
+        &lt;extension&gt;jar&lt;/extension&gt;
+        &lt;value&gt;1.0.0-20261012.064627-2&lt;/value&gt;
+        &lt;updated&gt;20261012064627&lt;/updated&gt;
+      &lt;/snapshotVersion&gt;
+      …  (module, pom 항목도 같은 값)</div>
+
+<p>두 블록은 <a href="#co-05">실습-1</a>의 Reposilite에서 같은 시점에 실제로 받은 내용을 줄인 거예요. <code>timestamp</code>와 <code>buildNumber</code>가 최신 게시를 가리키고, 둘을 이은 <code>1.0.0-20261012.064627-2</code>가 실제 파일 이름의 버전이 됩니다. 의존성에 <code>1.0.0-SNAPSHOT</code>을 적은 빌드는 이 파일을 먼저 읽고, 거기 적힌 파일을 받아요. 그러니 <span class="obsv-mark">SNAPSHOT은 바이너리의 이름이 아니라, 메타데이터 파일 하나를 거쳐 최신 바이너리를 가리키는 포인터예요.</span></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 변하는 모듈 (changing module)</div>
+  같은 좌표로 다른 내용이 올라올 수 있다고 빌드 도구가 알고 있는 의존성입니다. Gradle은 Maven의 SNAPSHOT 버전을 자동으로 이렇게 취급하고, 그래서 정해진 주기마다 저장소에 다시 물어봐요.
+</div>
+
+<h3>그런데 언제 다시 물어보나</h3>
+
+<p>포인터라는 사실보다 운영에서 더 골치 아픈 건 캐시예요. 빌드 도구는 SNAPSHOT을 받을 때마다 저장소에 묻지 않습니다. Gradle은 동적 버전과 변하는 모듈을 기본 24시간 캐시해요(Gradle 문서, Dependency Caching). 그 시간은 <code>cacheChangingModulesFor</code>로 바꿀 수 있고, <code>--refresh-dependencies</code>를 주면 캐시를 무시합니다. Maven은 저장소 설정의 <code>updatePolicy</code>가 정하는데, 기본값이 <code>daily</code>예요.</p>
+
+<p>그래서 이런 일이 생깁니다. 아침에 SNAPSHOT을 받은 개발자 PC는 오후에 새 SNAPSHOT이 올라와도 하루 동안 아침 것을 써요. 캐시가 빈 CI 에이전트는 오후 것을 받습니다. 같은 커밋, 같은 빌드 파일, 같은 <code>1.0.0-SNAPSHOT</code>인데 두 곳의 jar가 달라요. 그리고 어느 쪽도 오류를 내지 않습니다.</p>
+
+<p>실습-1에서 이 상황을 그대로 만들어 봤어요. SNAPSHOT을 두 번 게시하고, 첫 게시 뒤에 한 번 받아 둔 "PC" 두 대(Gradle, Maven)와 캐시가 빈 두 대, 그리고 갱신 옵션(<code>--refresh-dependencies</code>, <code>-U</code>)을 준 경우까지 여섯 번 받았습니다. 옵션 없이 다시 받은 두 대는 첫 번째 jar(SHA-256 <code>7a5a47c1…</code>)를, 나머지 넷은 두 번째 jar(<code>b30c4627…</code>)를 받았어요. 하나 더 있었습니다. Reposilite는 기본 설정(<code>preserveSnapshots: false</code>)에서 두 번째 게시가 들어오자 첫 번째 타임스탬프 파일을 지웠어요. 옛 jar를 쥔 두 대는 이제 저장소에 존재하지 않는 바이너리로 빌드하고 있는 셈입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="co2a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M24 130 C 80 128, 140 131, 186 129 C 188 150, 187 172, 186 194 C 140 196, 80 193, 25 195 C 23 172, 24 150, 24 130 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="105" y="158" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">lib:1.0.0-SNAPSHOT</text>
+  <text x="105" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">빌드 파일에 적힌 이름</text>
+  <path d="M236 128 C 285 126, 335 129, 372 127 C 374 150, 373 173, 372 196 C 335 198, 285 195, 237 197 C 235 173, 236 150, 236 128 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="304" y="156" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">maven-metadata.xml</text>
+  <text x="304" y="180" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5">buildNumber 2</text>
+  <path d="M188 162 C 205 161, 218 163, 233 162" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co2a1)"/>
+  <path d="M440 60 C 520 58, 600 61, 676 59 C 678 75, 677 92, 676 108 C 600 110, 520 107, 441 109 C 439 92, 440 75, 440 60 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+  <text x="558" y="90" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">…-064614-1.jar (아침)</text>
+  <path d="M440 214 C 520 212, 600 215, 676 213 C 678 229, 677 246, 676 262 C 600 264, 520 261, 441 263 C 439 246, 440 229, 440 214 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="558" y="244" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">…-064627-2.jar (오후)</text>
+  <path d="M374 172 C 400 190, 415 215, 436 232" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#co2a1)"/>
+  <text x="402" y="150" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">지금 가리키는 곳</text>
+  <text x="458" y="134" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">💻 개발자 PC: 아침에 받음,</text>
+  <text x="458" y="158" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">24시간 동안 다시 안 묻는다</text>
+  <path d="M520 138 C 540 125, 548 118, 556 112" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-dasharray="8 7" stroke-linecap="round" marker-end="url(#co2a1)"/>
+  <text x="458" y="294" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">🤖 캐시가 빈 CI: 오후 것을 받음</text>
+  <path d="M540 280 C 545 276, 550 272, 556 266" fill="none" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#co2a1)"/>
+  <text x="350" y="330" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">같은 이름, 다른 jar. 둘 다 오류는 없다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. SNAPSHOT은 메타데이터를 거치는 포인터이고, 캐시가 그 포인터를 기계마다 다른 시점에 멈춰 둔다</div>
+
+<p>출처 체인 쪽에서 보면 결론은 간단해요. 배포 기록에 <code>1.0.0-SNAPSHOT</code>이라고 적혀 있으면, 그 배포에 들어간 바이너리를 저장소에서 특정할 수 없습니다. 메타데이터는 이미 다음 게시를 가리키고 있을 수 있어요. 특정하려면 <code>1.0.0-20261012.064614-1</code>처럼 시각과 번호가 붙은 실제 버전을 기록해야 하고, 그건 SNAPSHOT을 쓰지 않는 것과 같은 말입니다. 게다가 앞의 실습처럼 저장소가 옛 파일을 지우면 그 기록으로도 바이너리를 되찾을 수 없어요.</p>
+
+<p>SNAPSHOT이 나쁜 도구라는 뜻은 아니에요. 라이브러리를 개발하는 동안 소비자가 매번 버전을 바꾸지 않고 최신 개발본을 받게 하려고 만든 장치입니다. 문제는 배포 단위로 쓸 때예요. 마이크로서비스는 테스트 환경에서 돌던 빌드를 언제든 운영으로 올리니, 테스트 환경에 나간 것부터 이미 고유하고 불변인 버전이어야 합니다.</p>
+
+<h2>3. 릴리스 버전은 덮어쓰지 않는다</h2>
+
+<p>릴리스 버전은 반대로 바뀌지 않는다는 약속 위에 있어요. <code>1.4.1</code> 디렉터리에는 <code>1.4.1</code>로 처음 올린 바이너리만 있어야 합니다. 빌드 도구도 이 약속을 믿어요. 앞에서 본 Gradle의 24시간 캐시는 동적 버전과 변하는 모듈에 붙는 설정이고, 고정 버전은 그 대상이 아닙니다. 한 번 받은 고정 버전은 <code>--refresh-dependencies</code>를 주기 전까지 캐시에서 꺼내 써요. Maven도 로컬 저장소에 이미 있는 릴리스 jar를 다시 받지 않습니다.</p>
+
+<p>그래서 누군가 릴리스를 덮어쓰면 SNAPSHOT보다 나쁜 상황이 돼요. 그 버전을 이미 받은 기계는 옛 바이너리를 계속 쓰고, 새로 받는 기계는 새 바이너리를 받습니다. SNAPSHOT은 최소한 "이건 바뀔 수 있다"고 이름에 적혀 있지만, 덮어쓴 릴리스는 그런 표시도 없어요. 같은 <code>1.4.1</code>이 기계마다 다른 jar를 뜻하게 되고, 체크섬 파일까지 같이 갈아 끼웠다면 그 차이를 알아챌 방법도 마땅치 않습니다.</p>
+
+<p>그래서 저장소 관리 도구 대부분이 릴리스 재게시를 막는 설정을 둬요. 예를 들어 Reposilite는 기본으로 같은 저장소에 같은 결과물을 다시 올리지 못하게 하고, 다시 올리면 409 Conflict로 응답해요(Reposilite 문서, Repositories). 실습-1에서 같은 <code>1.0.0</code>을 내용만 바꿔 다시 올리자 Gradle은 <code>Received status code 409 from server: Conflict</code>로 실패했고, 저장소의 jar 해시는 처음 그대로였어요. 그런데 같은 실습에서 아티팩트 단위의 <code>maven-metadata.xml</code>에 아무 내용이나 PUT 하자 200으로 받아들였습니다. 바이너리는 막아도 "어떤 버전들이 있고 최신 릴리스가 무엇인가"를 적은 목록은 덮어쓸 수 있었던 거예요. 3편에서 볼 <code>latest.release</code>나 Maven의 <code>RELEASE</code>는 바로 이 목록을 읽습니다. 막는 설정이 없다면 CI 쪽에서 "이 버전이 저장소에 이미 있으면 실패"하는 검사를 넣어야 합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 재게시가 막혔다고 고유성까지 지켜지지는 않는다</div>
+  &bull; 저장소가 막아 주는 건 불변성이에요. 같은 버전 번호로 두 번째 빌드를 시도했을 때 실패하게 할 뿐, 서로 다른 소스를 같은 번호로 빌드하는 것까지 막지는 못합니다<br>
+  &bull; 고유성은 버전 번호를 만드는 쪽의 규율이에요. 사람이 빌드 파일의 버전을 손으로 올리는 방식이면, 올리는 걸 잊은 두 빌드가 같은 번호를 다툽니다. 둘 중 먼저 올린 쪽이 이기고, 나중 쪽은 실패하거나 다른 저장소로 새요<br>
+  &bull; 그래서 6절에서 볼 것처럼 버전 번호를 사람이 아니라 Git 태그와 커밋에서 기계적으로 만드는 방식이 널리 쓰여요
+</div>
+
+<h2>4. 태그는 옮겨 붙고, 다이제스트는 내용이다</h2>
+
+<p>도커 이미지로 넘어오면 같은 이야기가 더 노골적이 돼요. 태그는 "매니페스트를 가리키는, 사람이 읽을 수 있는 포인터"이고, 다이제스트 하나에 태그가 없거나 하나거나 여럿일 수 있어요(OCI 배포 규격). 같은 이름으로 다시 푸시하면 레지스트리는 태그를 새 매니페스트로 옮겨 붙여요. 서두의 <code>orders:1.4</code>가 그렇게 바뀌었습니다.</p>
+
+<p><code>latest</code>는 특별한 기능이 있는 태그가 아니에요. 태그를 생략했을 때 쓰이는 기본 이름일 뿐이고, 레지스트리 입장에서는 <code>1.4</code>와 똑같은 가변 포인터입니다. 다만 쿠버네티스에서는 한 가지가 다르게 동작해요. 이미지 태그가 <code>:latest</code>이거나 태그가 없으면 <code>imagePullPolicy</code>의 기본값이 <code>Always</code>가 되고, 다른 태그면 <code>IfNotPresent</code>가 됩니다. 그래서 <code>1.4</code>를 다시 푸시하면 이미 받아 둔 노드는 옛 이미지로, 처음 받는 노드는 새 이미지로 파드를 띄워요. 1편에서 같은 태그 아래 다이제스트가 둘인 파드 목록을 본 게 이 경우입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="co2a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="120" y="38" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">🏷️ 태그</text>
+  <path d="M60 60 C 100 58, 140 61, 180 59 C 182 75, 181 92, 180 106 C 140 108, 100 105, 61 107 C 59 92, 60 75, 60 60 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="120" y="89" text-anchor="middle" font-family="Menlo, monospace" font-size="14" fill="#3d3a34">orders:1.4</text>
+  <text x="120" y="190" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">🔒 다이제스트</text>
+  <path d="M40 210 C 100 208, 150 211, 200 209 C 202 226, 201 242, 200 258 C 150 260, 100 257, 41 259 C 39 242, 40 226, 40 210 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="120" y="239" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">orders@sha256:41c3…</text>
+  <path d="M400 50 C 480 48, 560 51, 640 49 C 642 72, 641 95, 640 118 C 560 120, 480 117, 401 119 C 399 95, 400 72, 400 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+  <text x="520" y="78" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">manifest sha256:41c3…</text>
+  <text x="520" y="102" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">지난주에 잘 돌던 것</text>
+  <path d="M400 170 C 480 168, 560 171, 640 169 C 642 192, 641 215, 640 238 C 560 240, 480 237, 401 239 C 399 215, 400 192, 400 170 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="520" y="198" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">manifest sha256:9f86…</text>
+  <text x="520" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">🔥 핫픽스를 같은 태그로 푸시</text>
+  <path d="M182 80 C 260 70, 330 72, 396 82" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 7" stroke-linecap="round" marker-end="url(#co2a2)"/>
+  <text x="290" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">어제까지</text>
+  <path d="M182 92 C 260 120, 330 160, 396 196" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" marker-end="url(#co2a2)"/>
+  <text x="300" y="168" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">오늘</text>
+  <path d="M202 232 C 270 200, 340 130, 398 100" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#co2a2)"/>
+  <text x="350" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">롤백은 이름이 아니라 다이제스트로 해야 지난주로 돌아간다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 태그는 화살표를 옮길 수 있고, 다이제스트는 화살표가 아니라 내용 그 자체다</div>
+
+<p>다이제스트는 이 문제가 없어요. 매니페스트 내용의 해시이니 내용이 다르면 이름도 다릅니다. 파드가 늘 같은 이미지를 쓰게 하려면 <code>이미지@다이제스트</code>로 적고, 이름에 태그와 다이제스트가 같이 있으면 쿠버네티스는 받을 때 다이제스트만 써요(쿠버네티스 문서, Images). 그래서 실무에서는 <code>orders:1.4@sha256:41c3…</code>처럼 사람이 읽을 태그와 기계가 쓸 다이제스트를 같이 적는 경우가 많습니다. 태그는 읽기 좋으라고 남겨 두는 주석이 되는 셈이에요.</p>
+
+<p>실습-1에서 태그를 다시 푸시해 보니 이 차이가 화면에 그대로 드러났어요. <code>lab/app:1.0</code>으로 컨테이너 하나를 띄운 뒤 내용을 바꿔 같은 태그로 다시 푸시하고, 같은 이름으로 컨테이너를 하나 더 띄웠습니다. 두 컨테이너가 요청한 이미지 이름은 똑같았지만 실제 이미지는 <code>sha256:7ffe3490…</code>와 <code>sha256:ed86a2fc…</code>로 달랐고, 출력 내용도 v1과 v2로 갈렸어요. <code>docker ps</code>는 먼저 띄운 컨테이너의 IMAGE 칸에 이름 대신 <code>7ffe34901be2</code>이라는 ID만 보여 줬습니다. 그 이름이 더는 이 이미지를 가리키지 않으니까요. 옛 다이제스트로는 여전히 받을 수 있었어요. 태그가 옮겨 가도 실습의 레지스트리(registry 3.1.2)는 그 매니페스트를 지우지 않았어요. 태그 없는 매니페스트를 정리하는 가비지 컬렉션을 돌리기 전까지는 다이제스트로 적어 둔 롤백 대상이 살아 있다는 뜻입니다.</p>
+
+<p>레지스트리 쪽에서 막는 방법도 있습니다. Amazon ECR이나 Harbor 같은 레지스트리는 저장소나 규칙 단위로 태그를 불변으로 설정해, 이미 있는 태그로 다시 푸시하면 거부하게 할 수 있어요. 다만 이것도 3절의 저장소 설정과 같은 성격입니다. 불변성은 지켜 주지만 "어떤 내용에 어떤 태그를 붙일지"는 여전히 빌드하는 쪽이 정해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 매니페스트 (image manifest)</div>
+  이미지를 이루는 설정 파일과 레이어 목록을 다이제스트로 적은 JSON 문서입니다. 이미지의 다이제스트는 보통 이 매니페스트의 해시를 말해요. 여러 CPU 아키텍처를 묶은 이미지는 매니페스트 목록(인덱스)이 한 단계 더 있고, 그 인덱스의 해시가 다이제스트가 됩니다.
+</div>
+
+<h2>5. 다시 빌드하지 말고, 같은 바이너리를 승격한다</h2>
+
+<p>여기까지 오면 흔한 파이프라인 하나가 의심스러워져요. 테스트 환경에는 SNAPSHOT이나 개발용 태그로 빌드해 올리고, 통과하면 같은 커밋을 릴리스 버전으로 <b>다시 빌드</b>해 운영에 올리는 방식입니다. 버전 이름은 깔끔해지지만, 운영에 나간 바이너리는 테스트 환경에서 검증받은 그 바이너리가 아니에요.</p>
+
+<p>같은 커밋을 다시 빌드하면 무엇이 달라질 수 있을까요?</p>
+
+<div class="obsv-code">&bull; 동적 버전(1.5.+, latest.release)이 그사이 올라온 새 버전으로 풀린다      → 3편
+&bull; SNAPSHOT 의존성이 그사이 새로 게시됐다                                   → 2절
+&bull; Dockerfile 의 FROM eclipse-temurin:21-jre 가 그사이 새 기본 이미지를 가리킨다 → 4절
+&bull; jar 안의 파일 시각, 빌드 호스트, JDK 패치 버전이 다르다</div>
+
+<p>앞의 셋은 이 글과 3편이 다루는 "이름이 가리키는 대상이 바뀌는" 문제예요. 마지막 줄은 결과물에 빌드 환경이 묻어나는 문제이고, 이걸 없애려는 노력이 재현 가능한 빌드입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 재현 가능한 빌드 (reproducible build)</div>
+  같은 소스, 같은 빌드 환경, 같은 빌드 절차로 누가 빌드해도 비트 단위로 같은 결과물이 나오는 빌드입니다. 결과물의 해시를 비교해 "이 바이너리가 정말 이 소스에서 나왔나"를 제삼자가 확인할 수 있게 해 줘요.
+</div>
+
+<p>빌드 도구들은 최근 이 방향으로 기본값을 바꿨어요. Gradle은 9.0부터 아카이브를 재현 가능하게 만드는 설정(<code>preserveFileTimestamps=false</code>, <code>reproducibleFileOrder=true</code>)을 기본으로 둡니다. Maven은 3.10.0부터 Super POM이 <code>project.build.outputTimestamp</code> 기본값을 넣어서, jar 안의 파일 시각이 빌드할 때마다 바뀌지 않아요(Maven 3.10.0 릴리스 노트). 실습-1에서 같은 소스를 3초 간격으로 두 번 빌드해 봤어요. 기본 설정에서는 Gradle과 Maven 모두 jar 해시가 같았고, 설정을 예전 동작(Gradle <code>preserveFileTimestamps=true</code>, Maven <code>project.build.outputTimestamp=x</code>)으로 되돌리면 둘 다 달라졌어요.</p>
+
+<p>컨테이너 이미지는 한 단계가 더 있었어요. 같은 Dockerfile을 캐시 없이 두 번 빌드하면 다이제스트가 달랐고, 파일 시각을 고정하는 <code>SOURCE_DATE_EPOCH</code>와 <code>rewrite-timestamp</code>를 줘도 달랐습니다. 안을 열어 보니 이미지 매니페스트 자체는 두 빌드가 같았어요. 다른 건 buildx가 레지스트리로 내보낼 때 기본으로 함께 올리는 SLSA 출처 증명이었고, 거기에 빌드마다 새로 생기는 호출 ID와 시작 시각이 들어 있었습니다. <code>--provenance=false</code>로 증명을 빼자 두 빌드의 다이제스트가 같아졌어요. 같은 증명에는 빌드한 Git 저장소 주소와 커밋도 자동으로 들어가 있었으니, 빼기보다는 "증명이 붙은 인덱스의 다이제스트는 빌드마다 다르다"는 사실을 알고 쓰는 편이 낫습니다.</p>
+
+<p>그런데 재현 가능한 빌드가 되더라도 결론은 같아요. 재현성은 jar 안의 시각과 순서를 고정해 줄 뿐, 동적 버전과 가변 태그가 그사이 무엇을 가리키게 됐는지까지 고정하지 않습니다. 그리고 재현성의 쓸모는 "다시 빌드해도 된다"가 아니라 "다시 빌드해서 같은지 확인할 수 있다"예요. <span class="obsv-mark">운영에 올리는 건 다시 만든 바이너리가 아니라, 테스트 환경에서 검증받은 바로 그 다이제스트여야 합니다.</span> 환경마다 다른 값(접속 주소, 비밀값)은 바이너리에 굽지 않고 배포할 때 주입해요. 그래야 바이너리 하나가 테스트와 운영을 그대로 지나갈 수 있습니다.</p>
+
+<div class="obsv-code">빌드 한 번:    orders:1.4.812  →  sha256:41c3…   (커밋 a1b2c3d, CI 빌드 812)
+테스트 배포:   orders@sha256:41c3…  + 테스트 환경 설정
+운영 승격:     orders@sha256:41c3…  + 운영 환경 설정      ← 같은 다이제스트를 옮길 뿐</div>
+
+<h3>빌드의 입력도 포인터로 적혀 있다</h3>
+
+<p>"한 번 빌드한다"를 지켜도 그 한 번의 빌드가 무엇을 입력으로 받았는지는 따로 남겨야 해요. 빌드 입력에도 포인터가 섞여 있기 때문입니다. Dockerfile의 <code>FROM eclipse-temurin:21-jre</code>는 태그라서 오늘과 다음 주에 다른 기본 이미지를 가리켜요. 그래서 기본 이미지도 <code>FROM eclipse-temurin:21-jre@sha256:…</code>처럼 다이제스트로 적고, 새 기본 이미지가 나오면 Renovate나 Dependabot 같은 도구가 그 다이제스트를 바꾸는 풀 리퀘스트를 올리게 하는 방식이 쓰입니다. 이렇게 하면 기본 이미지가 바뀐 것도 커밋 하나로 남아요. 커밋 해시가 "소스는 고유하지만 의존성은 아니다"라는 1절의 표 마지막 줄을 기억하면, 이건 의존성까지 커밋 안으로 끌어들이는 작업입니다. 자바 의존성 쪽에서 같은 일을 하는 장치가 잠금 파일인데, <a href="#co-03">3편</a>에서 다뤄요.</p>
+
+<p>SNAPSHOT 의존성도 같은 방법으로 고정할 수 있을까요? 의존성 버전에 <code>1.0.0-SNAPSHOT</code> 대신 저장소의 실제 파일 버전인 <code>1.0.0-20261012.064614-1</code>을 적는 방법이에요. 실습-1의 기본 설정 저장소에서는 실패했습니다. 두 번째 게시 때 그 파일이 지워져서 jar 요청이 404를 받았고 빌드가 멈췄어요. <code>preserveSnapshots</code>를 켠 저장소에서는 같은 방법으로 첫 번째 게시물을 정확히 받았고, <code>1.0.0-SNAPSHOT</code>으로 적은 쪽은 두 번째를 받았습니다. 이 방법이 통하는지는 저장소의 보존 설정에 달려 있다는 뜻이에요.</p>
+
+<h2>6. 버전 번호에 커밋을 넣는 방법들</h2>
+
+<p>남은 문제는 버전 번호를 어떻게 만드느냐예요. SNAPSHOT을 버리면, 테스트 환경에 나가는 모든 빌드가 고유한 릴리스 버전을 가져야 합니다. 커밋마다 사람이 번호를 올릴 수는 없으니, 번호를 Git에서 기계적으로 만드는 방식이 쓰여요.</p>
+
+<p>Netflix가 공개한 Gradle 플러그인 nebula-release가 대표적인 예입니다. 지금 플러그인 ID는 <code>com.netflix.nebula.release</code>예요. 저장소의 마지막 버전 태그를 읽고 다음 버전을 계산해서, 태스크마다 다른 모양의 버전을 붙입니다. 형식은 이래요(nebula-release README).</p>
+
+<div class="obsv-code">./gradlew devSnapshot   →  0.2.0-dev.3+a1b2c3d             (태그를 만들지 않음)
+                           0.2.0-snapshot.202610120930+a1b2c3d
+                           (replaceDevWithImmutableSnapshot 기능을 켰을 때)
+./gradlew snapshot      →  0.2.0-SNAPSHOT                  (태그를 만들지 않음)
+./gradlew candidate     →  0.2.0-rc.1                      (태그 v0.2.0-rc.1)
+./gradlew final         →  0.2.0                           (태그 v0.2.0)</div>
+
+<p>위 표의 번호와 해시는 형식을 보여 주려고 넣은 예시예요. 마이크로서비스에 맞는 흐름은 이렇습니다. 마지막 태그가 <code>v0.1.0</code>이면 이후의 커밋은 모두 <code>0.2.0-dev.N+해시</code>로 빌드돼 저장소에 올라가요. 마지막 태그 뒤로 몇 번째 커밋인지(N)와 커밋 해시가 버전에 들어가니 커밋마다 버전이 다르고, 같은 버전으로 두 번 올라갈 일도 없습니다. 이 중 하나가 운영까지 승격되면 파이프라인이 승격된 바이너리의 커밋을 체크아웃하고 <code>./gradlew final</code>로 <code>v0.2.0</code> 태그를 푸시해요. 지금 체크아웃한 커밋에 태그가 붙으니, main HEAD에서 돌리면 승격된 커밋과 다른 곳에 붙을 수 있어요. README에 따르면 final은 jar를 만드는 프로젝트에서 <code>build</code>를 함께 돌리지만, 게시 태스크는 따로 묶지 않는 한 돌지 않습니다. 그러니 이 단계에서 다시 만든 <code>0.2.0</code> jar는 저장소에 올리지 않고 버려요. 태그는 "이번 주기가 끝났다"는 표시이고, 운영에 나간 건 여전히 <code>0.2.0-dev.N+해시</code> 바이너리예요. 다음 커밋부터는 <code>0.3.0-dev</code>로 넘어갑니다.</p>
+
+<p>이 방식에는 알아 둘 점이 둘 있어요. 하나는 <code>+</code> 뒤의 부분이 Semantic Versioning에서 빌드 메타데이터라는 점입니다. 버전의 선후를 정할 때 빌드 메타데이터는 무시합니다(SemVer 2.0.0, 10항). 해시만 다른 두 버전은 선후가 없다는 뜻이지만, 앞의 <code>dev.N</code>이 이미 순서를 정하니 실제로 문제 되는 경우는 드뭅니다. 다른 하나는 도커 태그에 <code>+</code>를 쓸 수 없다는 점이에요. OCI 배포 규격의 태그 규칙은 <code>[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}</code>이라 <code>+</code>가 없습니다. 같은 버전을 이미지 태그로도 쓰려면 <code>+</code>를 다른 문자로 바꿔야 해요. nebula-release의 <code>sanitizeVersion</code> 옵션이 이 용도로, 빌드 메타데이터를 프리릴리스 문자열 쪽으로 옮겨 붙입니다.</p>
+
+<p>플러그인 없이도 같은 성질을 만들 수 있어요. 흔한 방법 몇 가지를 적어 두면 이렇습니다.</p>
+
+<div class="obsv-code">&bull; Maven CI 친화 버전: &lt;version&gt;${revision}${sha1}${changelist}&lt;/version&gt;
+    mvn -Drevision=1.4.812 -Dsha1=-a1b2c3d -Dchangelist= deploy
+    (Maven 3 에서 install/deploy 하려면 flatten-maven-plugin 이 필요하다)
+&bull; 빌드 번호 방식: 버전 = 1.4.&lt;CI 빌드 번호&gt;, 커밋은 버전 밖에 따로 기록
+    (이미지 레이블 org.opencontainers.image.revision, jar 안 git.properties)
+&bull; 이미지 태그는 커밋 해시(git-a1b2c3d)로, 배포 매니페스트에는 다이제스트로</div>
+
+<p>어떤 방식이든 확인할 것은 두 가지예요. 커밋 하나에 버전이 하나 생기는가(고유성), 그리고 그 버전이 저장소에서 다시 쓰이지 않는가(불변성). 두 번째 방식처럼 커밋을 버전 밖에 기록해도 출처 체인은 이어집니다. 1편에서 본 대로 질의할 때 이미지 레이블이나 <code>/actuator/info</code>에서 커밋을 읽으면 되니까요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 테스트 환경에 나가는 빌드부터 SNAPSHOT을 쓰지 마세요. 마이크로서비스는 테스트 환경의 빌드가 그대로 운영 후보예요<br>
+  &bull; 아티팩트 저장소의 릴리스 저장소는 재게시 금지로 두고, 레지스트리도 운영 이미지 저장소는 태그 불변 설정을 켜 두세요<br>
+  &bull; 배포 매니페스트에는 <code>이름:태그@sha256:…</code>로 적어요. 태그는 사람이 읽고, 쿠버네티스는 다이제스트로 받아요<br>
+  &bull; 승격 파이프라인에서 "운영용으로 다시 빌드" 단계를 찾아 지우세요. 승격은 테스트 환경 배포 기록의 다이제스트를 운영 매니페스트로 옮기는 일이에요<br>
+  &bull; 롤백할 대상도 다이제스트로 기록해 두세요. 서두처럼 태그로 롤백하면 지금 그 태그가 가리키는 곳으로 갑니다
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>버전이 출처 체인의 고리가 되려면 고유해야 하고 불변이어야 해요.</b> SNAPSHOT은 <code>maven-metadata.xml</code>을 거쳐 최신 게시를 가리키는 포인터라 고유하지 않고, 빌드 도구의 캐시 때문에 기계마다 다른 시점의 jar를 쥐게 됩니다. 도커 태그도 레지스트리가 언제든 옮겨 붙이는 포인터예요. 다이제스트만 내용 그 자체를 가리킵니다.<br><br>
+  그래서 바이너리는 한 번만 빌드하고, 커밋에서 기계적으로 만든 버전을 붙이고, 테스트에서 운영으로는 같은 다이제스트를 옮겨요. 이름은 사람이 읽으라고 붙이는 것이고, 운영이 믿어야 할 것은 내용의 해시입니다.
+</div>
+
+</div>

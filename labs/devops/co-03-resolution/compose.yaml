@@ -1,0 +1,50 @@
+# co-03-resolution: 같은 의존성 그래프를 Maven 과 Gradle 이 다르게 푸는지 본다.
+# 빌드 도구 컨테이너는 `docker compose run --rm <서비스> <명령>` 으로만 쓴다(상주하지 않는다).
+# 캐시는 이 compose 프로젝트의 볼륨에만 쌓는다(~/.m2, ~/.gradle 마운트 금지).
+name: co-03-resolution
+
+x-java: &java
+  mem_limit: 768m
+  environment:
+    JAVA_TOOL_OPTIONS: "-Xmx384m"
+
+services:
+  mvn:
+    <<: *java
+    image: maven:3.10.0-eclipse-temurin-21-noble
+    working_dir: /work
+    volumes:
+      - ./:/work
+      - m2:/root/.m2
+    profiles: ["tools"]
+
+  gradle:
+    <<: *java
+    image: gradle:9.8.1-jdk21-noble
+    working_dir: /work/gradle
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx384m"
+      GRADLE_USER_HOME: /gradle-home
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+    volumes:
+      - ./:/work
+      - gradle-home:/gradle-home
+    profiles: ["tools"]
+
+  # Spring Boot 앱 측정용. JAR 환경변수로 어떤 jar 를 띄울지 고른다.
+  boot:
+    image: eclipse-temurin:21-jre-noble
+    mem_limit: 768m
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx256m"
+    working_dir: /work
+    volumes:
+      - ./:/work:ro
+    command: ["sh", "-c", "exec java -jar $${JAR}"]
+    ports:
+      - "31081:8080"
+    profiles: ["boot"]
+
+volumes:
+  m2:
+  gradle-home:

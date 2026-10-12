@@ -1,0 +1,52 @@
+# 같은 소스를 두 번 빌드했을 때 결과물이 같은가 (재빌드 승격이 왜 위험한지)
+
+## Gradle 9.8.1 jar (기본 설정)
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean jar -Pver=1.0.0 -Pcontent=same    # 3.2s, exit 0
+  build 1: fb1d048304b251da
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean jar -Pver=1.0.0 -Pcontent=same    # 2.8s, exit 0
+  build 2: fb1d048304b251da
+  같은가: True
+
+## Gradle, preserveFileTimestamps=true 로 되돌리면
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean jar -Pver=1.0.0 -Pcontent=same -PkeepTimestamps    # 2.7s, exit 0
+  build 1: bf9b468885f567f3
+$ docker compose run --rm -T gradle-ci gradle -q --console=plain -p /work/lib clean jar -Pver=1.0.0 -Pcontent=same -PkeepTimestamps    # 2.7s, exit 0
+  build 2: 5201cbe1a29ae338
+  같은가: False
+
+## Maven 3.10.0 jar (기본 설정)
+$ docker compose run --rm -T maven-b mvn -B -q -f /work/maven-lib/pom.xml clean package    # 6.1s, exit 0
+  build 1: 1b9e8ed9579bc96e
+$ docker compose run --rm -T maven-b mvn -B -q -f /work/maven-lib/pom.xml clean package    # 2.6s, exit 0
+  build 2: 1b9e8ed9579bc96e
+  같은가: True
+
+## Maven, project.build.outputTimestamp=x (재현 가능 빌드 끔)
+$ docker compose run --rm -T maven-b mvn -B -q -f /work/maven-lib/pom.xml clean package -Dproject.build.outputTimestamp=x    # 2.7s, exit 0
+  build 1: 13bb824299692d18
+$ docker compose run --rm -T maven-b mvn -B -q -f /work/maven-lib/pom.xml clean package -Dproject.build.outputTimestamp=x    # 2.7s, exit 0
+  build 2: 1a2b3ea0c6befb26
+  같은가: False
+
+## 컨테이너 이미지: 같은 Dockerfile 을 캐시 없이 두 번
+$ docker build -q --no-cache --build-arg CONTENT=same projects/image    # 0.5s, exit 0
+  build 1: sha256:c171d441013d2a7fcde182e382ff9527a4e141137647e73b5db29ae3ec8e4d3f
+$ docker build -q --no-cache --build-arg CONTENT=same projects/image    # 0.4s, exit 0
+  build 2: sha256:2ef3e1809d7ff8e883e56f94eb37a3d58a6b7911e2466024d9422db63bc35cb0
+  같은가: False
+
+## 컨테이너 이미지: SOURCE_DATE_EPOCH 와 rewrite-timestamp
+$ docker buildx build -q --no-cache --build-arg SOURCE_DATE_EPOCH=0 --build-arg CONTENT=same --output type=registry,name=localhost:30500/lab/repro:1,rewrite-timestamp=true,registry.insecure=true projects/image    # 1.1s, exit 0
+  build 1: sha256:745d46c30b10e884ac1fcf9ca3c905431944417f128a34b1fdee0322da143201
+$ docker buildx build -q --no-cache --build-arg SOURCE_DATE_EPOCH=0 --build-arg CONTENT=same --output type=registry,name=localhost:30500/lab/repro:2,rewrite-timestamp=true,registry.insecure=true projects/image    # 1.1s, exit 0
+  build 2: sha256:defb9b437ce061b30f9e92256d1c34fbf744bae6ac70a7576720ca73d317b348
+  같은가: False
+
+## 컨테이너 이미지: 위와 같고 --provenance=false (buildx 기본 출처 증명 첨부를 끔)
+$ docker buildx build -q --no-cache --provenance=false --build-arg SOURCE_DATE_EPOCH=0 --build-arg CONTENT=same --output type=registry,name=localhost:30500/lab/repro:np1,rewrite-timestamp=true,registry.insecure=true projects/image    # 1.0s, exit 0
+  build 1: sha256:20060dd03662ae4466c4ecc25d2c1bebf268d9a223bdf6534a3d8bbaddba64c0
+$ docker buildx build -q --no-cache --provenance=false --build-arg SOURCE_DATE_EPOCH=0 --build-arg CONTENT=same --output type=registry,name=localhost:30500/lab/repro:np2,rewrite-timestamp=true,registry.insecure=true projects/image    # 1.0s, exit 0
+  build 2: sha256:20060dd03662ae4466c4ecc25d2c1bebf268d9a223bdf6534a3d8bbaddba64c0
+  같은가: True
+
+(총 73초)

@@ -1,0 +1,275 @@
+<!-- lead: SNAPSHOT을 두 번 게시하자 소비자 여섯 중 둘이 옛 jar에 남았고 Reposilite는 그 jar를 지웠어요. 태그 재푸시, 2.10.+와 latest.release, 잠금 파일, 재빌드 해시까지 Gradle과 Maven으로 직접 쟀어요. -->
+<!-- tags: Reposilite, maven-metadata.xml, dependency locking, latest.release, buildx provenance -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧬 소스 코드 관찰, 실습-1</div>
+  1편. 지금 운영에 무엇이 떠 있는지는 Git이 아니라 플랫폼에 묻는다<br>
+  2편. SNAPSHOT과 latest는 버전이 아니라 포인터다<br>
+  3편. 빌드 파일에 적은 버전과 jar에 들어간 버전은 다르다<br>
+  4편. grep은 글자를 찾고, 타입이 붙은 구문 트리는 호출을 찾는다<br>
+  <b>실습-1. 같은 좌표가 다른 바이너리를 가리키는 순간을 만든다</b> &larr; 지금 이 글<br>
+  실습-2. 서비스 열 개에서 취약한 라이브러리를 쓰는 곳을 SBOM으로 찾는다<br>
+  실습-3. Maven과 Gradle이 같은 의존성 그래프를 다르게 푼다<br>
+  실습-4. grep, OpenRewrite, 커버리지가 센 호출 수가 다르다
+</div>
+
+<p><a href="#co-02">2편</a>에서 SNAPSHOT과 도커 태그는 버전이 아니라 포인터라고 했어요. <a href="#co-03">3편</a>은 <code>2.10.+</code>나 <code>latest.release</code> 같은 동적 버전이 저장소의 버전 목록을 읽어 실제 버전을 정한다고 했고요.</p>
+
+<p>이번 실습은 로컬에 Maven 저장소와 도커 레지스트리를 하나씩 띄우고, 같은 이름에 다른 내용을 일부러 다시 올리고, 그때마다 빌드 컨테이너들이 받은 jar의 SHA-256과 이미지 다이제스트를 적었어요. 숫자와 출력은 전부 이번에 돌린 결과예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; SNAPSHOT을 두 번 게시하면 캐시가 다른 소비자들은 무엇을 받는가?<br>
+  &bull; 릴리스 재게시와 태그 재푸시에서 저장소와 레지스트리는 무엇을 막는가?<br>
+  &bull; 동적 버전은 실제로 무엇을 고르고, 잠금은 변화를 0으로 만드는가?<br>
+  &bull; 같은 소스를 다시 빌드하면 결과물은 같은가?
+</div>
+
+<h2>1. 실습 환경: 저장소 둘, 캐시가 다른 빌드 컨테이너 다섯</h2>
+
+<p>Maven 저장소는 Reposilite로, 도커 레지스트리는 CNCF Distribution(<code>registry</code> 이미지)으로 띄웠어요. 빌드는 Gradle과 Maven 공식 이미지 컨테이너에서 하고, 컨테이너마다 캐시를 다른 볼륨에 둬서 볼륨 하나가 기계 한 대 역할을 해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="co5a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M250 30 C 330 28, 400 31, 450 29 C 452 55, 451 80, 450 104 C 400 106, 330 103, 251 105 C 249 80, 250 55, 250 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="350" y="60" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">📦 Reposilite 3.6.3</text>
+  <text x="350" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5">releases / snapshots  :30080</text>
+  <path d="M500 30 C 560 28, 620 31, 676 29 C 678 55, 677 80, 676 104 C 620 106, 560 103, 501 105 C 499 80, 500 55, 500 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="588" y="60" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">🐳 registry 3.1.2</text>
+  <text x="588" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5">:30500</text>
+  <path d="M24 30 C 90 28, 150 31, 200 29 C 202 55, 201 80, 200 104 C 150 106, 90 103, 25 105 C 23 80, 24 55, 24 30 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="112" y="60" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">🤖 gradle-ci</text>
+  <text x="112" y="88" text-anchor="middle" font-family="'Gowun Dodum', sans-serif" font-size="13" fill="#c07f18">게시 담당</text>
+  <path d="M202 66 C 220 65, 235 67, 246 66" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co5a1)"/>
+  <text x="224" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">publish</text>
+  <path d="M30 200 C 100 198, 160 201, 205 199 C 207 225, 206 250, 205 275 C 160 277, 100 274, 31 276 C 29 250, 30 225, 30 200 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="118" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">💻 gradle-a / maven-a</text>
+  <text x="118" y="258" text-anchor="middle" font-family="'Gowun Dodum', sans-serif" font-size="13" fill="#2e6b41">캐시가 있는 PC</text>
+  <path d="M260 200 C 330 198, 390 201, 440 199 C 442 225, 441 250, 440 275 C 390 277, 330 274, 261 276 C 259 250, 260 225, 260 200 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="350" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">💻 gradle-b / maven-b</text>
+  <text x="350" y="258" text-anchor="middle" font-family="'Gowun Dodum', sans-serif" font-size="13" fill="#2e6b41">처음 받는 PC</text>
+  <path d="M495 200 C 560 198, 620 201, 676 199 C 678 225, 677 250, 676 275 C 620 277, 560 274, 496 276 C 494 250, 495 225, 495 200 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linejoin="round"/>
+  <text x="585" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">🖥️ 호스트 docker</text>
+  <text x="585" y="258" text-anchor="middle" font-family="'Gowun Dodum', sans-serif" font-size="13" fill="#8a8272">태그 실험, 이미지 재빌드</text>
+  <path d="M120 196 C 180 160, 250 130, 300 110" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co5a1)"/>
+  <path d="M350 196 C 351 160, 349 135, 350 110" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co5a1)"/>
+  <path d="M585 196 C 586 160, 584 135, 585 110" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#co5a1)"/>
+  <text x="350" y="314" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">볼륨 하나 = 캐시를 따로 가진 기계 한 대</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 저장소는 하나인데, 그걸 보는 기계마다 기억하는 시점이 다르다</div>
+
+<div class="obsv-code">Reposilite 3.6.3, registry 3.1.2, Gradle 9.8.1, Maven 3.10.0 (JDK 21 공식 이미지)
+Docker Engine 29.5.3, buildx 0.34.1 (Docker Desktop, Apple M5 Pro)</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/co-01-coordinates">GitHub 저장소의 labs/devops/co-01-coordinates</a>에 있어요. Docker와 Python 3만 있으면 됩니다. 실험마다 결과가 <code>results/&lt;실험&gt;.txt</code>로 남아요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/devops/co-01-coordinates
+python3 scripts/lab.py up
+python3 scripts/lab.py snapshot   # 2절
+python3 scripts/lab.py release     # 3절
+python3 scripts/lab.py tag         # 4절
+python3 scripts/lab.py dynamic    # 5, 6절
+python3 scripts/lab.py rebuild     # 7절
+python3 scripts/lab.py down
+docker rm -f co01-node-a co01-node-b; docker images 'localhost:30500/lab/*' -q | xargs docker rmi -f</div>
+
+<h2>2. SNAPSHOT을 두 번 올리면 여섯 중 둘이 옛 jar에 남는다</h2>
+
+<p><code>lab:lib:1.0.0-SNAPSHOT</code>을 내용만 바꿔 두 번 게시했어요(<code>build-1</code>, <code>build-2</code>). 첫 게시 직후 gradle-a와 maven-a가 한 번 받아 두고, 두 번째 게시 뒤 여섯 경우로 다시 받았습니다.</p>
+
+<div class="obsv-code">두 번째 게시 뒤 받은 소비자           받은 파일 버전          SHA-256(앞 16자)
+gradle-a (첫 게시 때 캐시, 옵션 없음)  20261012.064614-1       7a5a47c1f272c614  ← 옛것
+gradle-b (캐시 없음)                 20261012.064627-2       b30c4627ae3955c0
+gradle-a --refresh-dependencies    20261012.064627-2       b30c4627ae3955c0
+maven-a (로컬 저장소 있음, 옵션 없음)  1.0.0-SNAPSHOT          7a5a47c1f272c614  ← 옛것
+maven-b (로컬 저장소 없음)            1.0.0-SNAPSHOT          b30c4627ae3955c0
+maven-a -U                         1.0.0-SNAPSHOT          b30c4627ae3955c0</div>
+
+<p><span class="obsv-mark">여섯 중 둘이 옛 jar를 그대로 썼고, 어느 쪽도 경고 한 줄 없이 성공했어요.</span> Gradle은 변하는 모듈을 24시간, Maven은 <code>updatePolicy</code> 기본값대로 하루 동안 저장소에 다시 묻지 않으니 문서대로의 동작입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Reposilite</div>
+  가벼운 Maven 저장소 서버입니다. 저장소마다 재게시 허용(<code>redeployment</code>)과 옛 스냅숏 보존(<code>preserveSnapshots</code>) 설정을 둬요. 이 실습은 기본값을 쓰고, 2절의 <code>lib-p</code> 실험에서만 <code>preserveSnapshots</code>를 켰어요.
+</div>
+
+<h3>예상과 달랐던 것: 옛 스냅숏 파일이 사라졌다</h3>
+
+<p>두 번째 게시 뒤 저장소의 파일 목록을 보니 <code>-1</code> 파일이 없었어요. 남은 건 <code>lib-1.0.0-20261012.064627-2.jar</code>와 그 체크섬, 그리고 <code>maven-metadata.xml</code>뿐이었습니다. 스냅숏 저장소의 <code>preserveSnapshots</code>가 기본값 <code>false</code>라서, 새 스냅숏이 들어오면 옛 타임스탬프 파일을 지운 거예요. 옛 jar를 쥔 gradle-a와 maven-a는 저장소에 더는 없는 바이너리로 빌드하고 있는 셈입니다.</p>
+
+<div class="obsv-code">gradle-ci, 첫 게시의 시각이 붙은 버전 1.0.0-20261012.064614-1 를 직접 적으면:
+    BUILD FAILED
+  GET lib-1.0.0-20261012.064614-1.jar -&gt; 404
+
+preserveSnapshots=true 로 바꾸고 lib-p 로 같은 일을 반복:
+  저장소의 jar: lib-p-1.0.0-20261012.064654-1.jar, lib-p-1.0.0-20261012.064657-2.jar
+  lab:lib-p:1.0.0-20261012.064654-1  →  sha256=7a5a47c1f272c614   (첫 게시)
+  lab:lib-p:1.0.0-SNAPSHOT            →  sha256=b30c4627ae3955c0   (두 번째 게시)</div>
+
+<p>보존을 켜야 <a href="#co-02">2편</a>에서 말한 "시각이 붙은 버전으로 고정하기"가 통했어요.</p>
+
+
+<h2>3. 릴리스는 409로 막혔지만, 목록 파일은 막히지 않았다</h2>
+
+<p><code>lab:lib:1.0.0</code>을 올린 뒤, 같은 좌표에 내용만 바꿔 다시 올렸어요.</p>
+
+<div class="obsv-code">&gt; Could not PUT 'http://reposilite:8080/releases/lab/lib/1.0.0/lib-1.0.0.jar'.
+&gt; Received status code 409 from server: Conflict
+
+PUT releases/lab/lib/1.0.0/lib-1.0.0.jar -&gt; 409 {"status":409,"message":"Redeployment is not allowed"}
+GET releases/lab/lib/1.0.0/lib-1.0.0.jar -&gt; 200, sha256=a2cb82ca89fff625 (처음 것과 같나: True)</div>
+
+<p>Gradle 게시도, 직접 보낸 PUT도 409로 거절됐고 저장소의 jar는 처음 그대로였어요. 그런데 같은 저장소에서 아티팩트 단위 목록 파일에 <code>&lt;metadata/&gt;</code> 한 줄을 PUT 하자 200이 돌아왔고, 다시 읽으니 그 한 줄만 남아 있었어요.</p>
+
+<div class="obsv-code">PUT releases/lab/lib/maven-metadata.xml -&gt; 200
+GET /releases/lab/lib/maven-metadata.xml -&gt; 200
+    &lt;metadata/&gt;</div>
+
+<p>이 파일은 "이 아티팩트에 어떤 버전들이 있고 최신 릴리스가 무엇인가"를 적은 목록이에요. 게시할 때마다 새로 써야 하는 파일이라, Reposilite는 이 파일을 재게시 금지 대상에서 뺍니다(소스 <code>Repository.kt</code>). 5절의 동적 버전이 읽는 게 바로 이 목록이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 목록 파일이 깨지면 누가 영향을 받나</div>
+  별도 실행(<code>scripts/lockcheck.sh</code>)에서 <code>lab:dyn</code>의 목록 파일을 <code>&lt;metadata/&gt;</code>로 덮어쓰고 다시 빌드했어요. 잠금 없는 <code>2.10.+</code> 빌드는 <code>no versions of lab:dyn are available</code>로 실패했고, 같은 빌드 파일에 잠금(2.10.10)을 켠 빌드와 고정 버전 빌드는 2.10.10을 그대로 받았어요.
+</div>
+
+<h2>4. 같은 태그로 다시 푸시하면 먼저 뜬 컨테이너의 IMAGE 칸에는 ID가 찍힌다</h2>
+
+<p>busybox 위에 문자열 하나를 적는 이미지를 <code>localhost:30500/lab/app:1.0</code>으로 푸시하고 컨테이너 <code>co01-node-a</code>를 띄웠어요. 그다음 내용을 v2로 바꿔 같은 태그로 다시 푸시하고 <code>co01-node-b</code>를 띄웠습니다.</p>
+
+<div class="obsv-code">첫 푸시 뒤 레지스트리의 1.0     -&gt; sha256:7ffe34901be2fac5…
+두 번째 푸시 뒤 레지스트리의 1.0 -&gt; sha256:ed86a2fc023ea6b2…
+
+co01-node-a: 요청한 이미지 localhost:30500/lab/app:1.0, 실제 sha256:7ffe3490…, 내용 v1
+co01-node-b: 요청한 이미지 localhost:30500/lab/app:1.0, 실제 sha256:ed86a2fc…, 내용 v2
+
+$ docker ps --format '{{.Names}}  IMAGE={{.Image}}'
+co01-node-b  IMAGE=localhost:30500/lab/app:1.0
+co01-node-a  IMAGE=7ffe34901be2</div>
+
+<p>두 컨테이너의 설정에는 똑같이 <code>lab/app:1.0</code>이 적혀 있지만 실제 이미지가 달라요. 그리고 <code>docker ps</code>는 먼저 뜬 컨테이너의 IMAGE 칸에 태그 대신 ID 앞부분만 보여 줬습니다. <a href="#co-01">1편</a>에서 질의를 다이제스트로 하라고 한 이유예요.</p>
+
+<p>마지막으로 로컬 태그를 지우고 첫 번째 다이제스트로 받아 봤어요. <code>docker pull localhost:30500/lab/app@sha256:7ffe3490…</code>가 그대로 성공했습니다. 레지스트리가 옛 매니페스트를 지우지 않았으니 다이제스트로 적어 둔 롤백 대상은 살아 있어요.</p>
+
+<h2>5. 동적 버전은 무엇을 골랐나</h2>
+
+<p><code>lab:dyn</code>을 2.9.0, 2.10.9, 2.10.10, 2.11.0-rc1 순서로 게시하고, 나중에 rc 다음의 핫픽스인 2.10.11을 하나 더 올렸어요. 해석 규칙은 <a href="#co-03">3편</a>에서 다뤘으니 결과만 적을게요. 24시간 캐시를 피하려고 Gradle은 모두 <code>--refresh-dependencies</code>, Maven은 <code>-U</code>로 받았어요.</p>
+
+<div class="obsv-code">표기                     도구     2.10.11 게시 전   게시 후
+2.10.+                   Gradle   2.10.10          2.10.11
+latest.release           Gradle   2.11.0-rc1       2.11.0-rc1
+latest.release (rc 제외)  Gradle   2.10.10          2.10.11
+[2.10,2.11)              Gradle   2.10.10          2.10.11
+[2.10,2.11)              Maven    2.11.0-rc1       2.11.0-rc1
+RELEASE                  Maven    2.11.0-rc1       2.10.11
+LATEST                   Maven    2.11.0-rc1       2.10.11</div>
+
+<p>"게시 후" 열의 Gradle 중 <code>latest.release</code> 말고 세 줄은 스크립트가 끝난 직후 같은 저장소 상태에서 손으로 잰 값이에요(<code>results/extra.txt</code>).</p>
+
+<p><b>첫째, <code>2.10.+</code>는 2.10.10을 골랐습니다.</b> 글자 순 정렬이 아니라 숫자 비교였어요. <b>둘째, <code>latest.release</code>는 rc를 골랐습니다.</b> SNAPSHOT이 아닌 버전은 모두 상태가 release이기 때문이에요. 저장소 선언에 <code>excludeVersionByRegex('lab', '.*', '.*-rc.*')</code>를 걸자 2.10.10으로 내려왔어요.</p>
+
+<p><b>셋째, 같은 범위 <code>[2.10,2.11)</code>를 두 도구가 다르게 풀었습니다.</b> Maven은 2.11.0-rc1을, Gradle은 2.10.11을 골랐어요. Maven에서는 <code>2.11.0-rc1 &lt; 2.11</code>이라 상한 안쪽에 들어요(<code>[1.0,2.0)</code>이 <code>2.0-rc1</code>을 포함하는 것은 "대부분이 예상하는 것과 반대"인 동작이에요. Maven POM 문서). Gradle 쪽은 정렬로 봐도 숫자 부분이 더 있는 2.11.0-rc1이 2.11보다 높고, "배타적 상한은 접두어 제외처럼 동작한다"는 규칙도 있어 <code>2.11</code>로 시작하는 버전을 모두 뺍니다(Gradle 문서, Declaring Versions). <b>넷째, Maven <code>RELEASE</code>는 가장 높은 버전이 아니라 마지막으로 게시한 버전을 따라갔어요.</b> 2.10.11을 올리자 Gradle이 목록 파일의 <code>&lt;release&gt;</code>와 <code>&lt;latest&gt;</code>가 둘 다 2.10.11로 바뀌었고, Maven은 rc에서 2.10.11로 "내려갔어요". 같은 시점에 Gradle <code>latest.release</code>는 여전히 2.11.0-rc1이었습니다.</p>
+
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 동적 버전 (dynamic version)</div>
+  <code>2.10.+</code>, <code>latest.release</code>, <code>[2.10,2.11)</code>처럼 조건으로 적고, 빌드할 때 저장소의 버전 목록(<code>maven-metadata.xml</code>)을 읽어 실제 버전을 정하는 표기입니다.
+</div>
+
+<h2>6. 잠금 파일은 변화를 0으로 만들었다</h2>
+
+<p><code>lab:dyn:2.10.+</code>와 <code>lab:util:latest.release</code> 두 개를 쓰는 소비자를 만들고, 2.10.11과 util 1.1.0을 올리기 전에 잠금 파일을 썼어요.</p>
+
+<div class="obsv-code">$ gradle dependencies --configuration runtimeClasspath -Plock --write-locks
+# gradle.lockfile
+lab:dyn:2.10.10=runtimeClasspath
+lab:util:1.0.0=runtimeClasspath</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 의존성 잠금 (dependency locking)</div>
+  동적 버전을 한 번 해소한 결과를 <code>gradle.lockfile</code>에 적고, 이후 빌드는 그 버전으로만 해소하게 하는 Gradle 기능입니다.
+</div>
+
+<p>새 버전 두 개를 올린 뒤 같은 소스를 <code>--refresh-dependencies</code>로 다시 빌드했어요.</p>
+
+<div class="obsv-code">            새 버전 게시 전                     새 버전 게시 후
+잠금 없음   dyn 2.10.10, util 1.0.0          dyn 2.10.11, util 1.1.0     → 2/2 바뀜
+잠금 있음   dyn 2.10.10, util 1.0.0          dyn 2.10.10, util 1.0.0     → 0/2 바뀜</div>
+
+<p>목표대로 0이었어요. 잠금 상태에서 빌드 파일만 <code>2.11.+</code>로 고치면 어떻게 되는지도 봤습니다. 처음 짠 확인 태스크는 해소 실패를 삼켜 dyn이 빠진 채 성공했고, 파일 목록을 실제로 요구하게 고치자 빌드가 멈췄습니다.</p>
+
+<div class="obsv-code">&gt; Could not resolve lab:dyn:2.11.+.
+  Dependency path: ... 'lab:dyn:2.11.+' ... rejected version 2.11.0-rc1
+  Constraint path: ... 'lab:dyn:{strictly 2.10.10}' ... Dependency version enforced by Dependency Locking</div>
+
+<p>잠금은 해소 결과에 <code>strictly</code> 제약을 거는 방식으로 동작해요. 빌드 파일이 잠금과 어긋나면 조용히 넘어가지 않고 실패하니, 잠금 파일을 갱신하는 커밋이 따로 생깁니다.</p>
+
+<h2>7. 같은 소스를 두 번 빌드하면 같은 결과물인가</h2>
+
+<p>2편의 "다시 빌드하지 말고 승격하라"를 확인하려고, 같은 소스를 3초 간격으로 두 번씩 빌드했어요.</p>
+
+<div class="obsv-code">대상                                     1회차              2회차              같은가
+Gradle 9.8.1 jar (기본)                  fb1d048304b251da   fb1d048304b251da   예
+Gradle, preserveFileTimestamps=true     bf9b468885f567f3   5201cbe1a29ae338   아니오
+Maven 3.10.0 jar (기본)                  1b9e8ed9579bc96e   1b9e8ed9579bc96e   예
+Maven, outputTimestamp=x                13bb824299692d18   1a2b3ea0c6befb26   아니오
+이미지, --no-cache                       sha256:c171d441…   sha256:2ef3e180…   아니오
+이미지, SOURCE_DATE_EPOCH, rewrite-timestamp  sha256:745d46c3…   sha256:defb9b43…   아니오
+이미지, 위 + --provenance=false           sha256:20060dd0…   sha256:20060dd0…   예</div>
+
+<p>jar는 두 도구 모두 기본 설정에서 같았고, 예전 동작으로 되돌리면 3초 차이로도 달라졌어요.</p>
+
+<p>예상과 다른 건 이미지였어요. 시각을 고정해도 다이제스트가 달라서 인덱스를 열어 봤습니다.</p>
+
+<div class="obsv-code">repro:1  arm64 sha256:2bfce8c59eef…   unknown(출처 증명) sha256:46e829e7edf8…
+repro:2  arm64 sha256:2bfce8c59eef…   unknown(출처 증명) sha256:33e2f18ace1e…
+증명 안의 invocationId: kpoogt5a… / ma433h3f…,  startedOn: 06:49:31.21Z / 06:49:35.30Z
+같은 증명의 vcs.revision: 30fd178c0713… (빌드한 Git 커밋)</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 출처 증명 (provenance attestation)</div>
+  이미지를 어떤 입력과 절차로 빌드했는지 적은 문서입니다. buildx는 SLSA 형식의 증명을 인덱스에 별도 매니페스트(위의 <code>unknown</code>)로 붙여요.
+</div>
+
+<p>이미지 매니페스트는 두 빌드가 같았고, buildx가 레지스트리로 내보낼 때 기본으로 붙이는 출처 증명만 달랐어요. 증명에 빌드마다 새 호출 ID와 시작 시각이 들어가니, 증명까지 묶은 인덱스의 다이제스트는 빌드할 때마다 바뀝니다. <code>--provenance=false</code>로 증명을 빼면 같아졌어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 스냅숏 저장소의 보존 설정을 확인하세요. 옛 스냅숏을 지우면 SNAPSHOT으로 만든 결과물은 재현할 수 없어요<br>
+  &bull; 재게시 금지가 바이너리만 막는지, 목록 파일까지 보호하는지 따로 보세요<br>
+  &bull; 이미지 재현성은 인덱스가 아니라 플랫폼별 매니페스트 다이제스트로 비교하세요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>SNAPSHOT을 두 번 올리자 여섯 소비자 중 둘이 경고 없이 옛 jar에 남았고, 기본 설정의 저장소는 그 옛 jar를 지워 버렸어요.</b> 같은 태그로 다시 푸시하자 같은 이름의 컨테이너 둘이 다른 이미지로 떠 있었고, 동적 버전은 rc를 고르거나 마지막에 올린 버전을 따라갔어요.<br><br>
+  릴리스 재게시는 409로 막혔고, 잠금은 변화를 2에서 0으로 줄였고, jar는 비트 단위로 같게 다시 만들어졌어요. 이름이 같아도 내용이 같다는 보장은 저장소 설정, 잠금, 다이제스트가 따로 지켜 줍니다.
+</div>
+
+</div>

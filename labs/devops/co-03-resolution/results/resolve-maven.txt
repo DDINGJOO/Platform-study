@@ -1,0 +1,69 @@
+=== maven m1
+lab.co3.consumer:m1:jar:1.0
++- lab.co3:a:jar:1.0:compile
+|  \- lab.co3:c:jar:1.0:compile
+\- lab.co3:b:jar:1.0:compile
+   \- lab.co3:d:jar:1.0:compile
+      \- (lab.co3:c:jar:2.0:compile - omitted for conflict with 1.0)
+RESULT m1 c=1.0
+RESULT m1 a OK legacy:a
+RESULT m1 b FAIL NoSuchMethodError: 'java.lang.String lab.c.Codec.encodeFast(java.lang.String)'
+=== maven m2
+lab.co3.consumer:m2:jar:1.0
++- lab.co3:b:jar:1.0:compile
+|  \- lab.co3:d:jar:1.0:compile
+|     \- (lab.co3:c:jar:2.0:compile - omitted for conflict with 1.0)
+\- lab.co3:a:jar:1.0:compile
+   \- lab.co3:c:jar:1.0:compile
+RESULT m2 c=1.0
+RESULT m2 b FAIL NoSuchMethodError: 'java.lang.String lab.c.Codec.encodeFast(java.lang.String)'
+RESULT m2 a OK legacy:a
+=== maven m3
+lab.co3.consumer:m3:jar:1.0
++- lab.co3:x:jar:1.0:compile
+|  \- lab.co3:c:jar:2.0:compile
+\- lab.co3:y:jar:1.0:compile
+   \- (lab.co3:c:jar:1.0:compile - omitted for conflict with 2.0)
+RESULT m3 c=2.0
+RESULT m3 x OK c2:x
+RESULT m3 y OK c2:y
+=== maven m4
+lab.co3.consumer:m4:jar:1.0
++- lab.co3:y:jar:1.0:compile
+|  \- lab.co3:c:jar:1.0:compile
+\- lab.co3:x:jar:1.0:compile
+   \- (lab.co3:c:jar:2.0:compile - omitted for conflict with 1.0)
+RESULT m4 c=1.0
+RESULT m4 y OK c1:y
+RESULT m4 x OK c1:x
+=== maven m5
+lab.co3.consumer:m5:jar:1.0
++- lab.co3:a:jar:1.0:compile
+|  \- (lab.co3:c:jar:1.0:compile - omitted for conflict with 2.0)
++- lab.co3:b:jar:1.0:compile
+|  \- lab.co3:d:jar:1.0:compile
+|     \- (lab.co3:c:jar:2.0:compile - omitted for duplicate)
+\- lab.co3:c:jar:2.0:compile
+RESULT m5 c=2.0
+RESULT m5 a FAIL NoSuchMethodError: 'java.lang.String lab.c.Codec.legacy(java.lang.String)'
+RESULT m5 b OK fast:d
+=== maven an
+lab.co3.consumer:an:jar:1.0
++- lab.co3:b:jar:1.0:compile
+|  \- lab.co3:d:jar:1.0:compile
+|     \- lab.co3:c:jar:2.0:compile
++- lab.co3:e:jar:1.0:compile
++- lab.co3:drv:jar:1.0:compile
+\- lab.co3:konst:jar:1.0:compile
+RESULT an c=2.0 c2:an
+RESULT an b fast:d
+RESULT an drv drv-loaded
+RESULT an konst konst
+=== maven an-decl
+lab.co3.consumer:an-decl:jar:1.0
++- lab.co3:b:jar:1.0:compile
+|  \- lab.co3:d:jar:1.0:compile
+|     \- (lab.co3:c:jar:2.0:compile - omitted for duplicate)
+\- lab.co3:c:jar:2.0:compile
+RESULT an-decl c=2.0 c2:an-decl
+RESULT an-decl b fast:d

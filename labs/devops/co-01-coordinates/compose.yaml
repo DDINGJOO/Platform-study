@@ -1,0 +1,68 @@
+# 소스 코드 관찰 실습-1: 같은 좌표가 다른 바이너리를 가리키는 순간을 만든다.
+# 호스트 포트는 30000번대(Reposilite 30080, 레지스트리 30500).
+# 빌드 도구 컨테이너는 profile "tools" 로만 뜬다(scripts/lab.py 가 docker compose run 으로 부른다).
+# Gradle/Maven 캐시는 이 프로젝트 안의 이름 있는 볼륨에만 둔다. 볼륨 하나가 "개발자 PC 한 대"다.
+
+x-gradle: &gradle
+  image: gradle:9.8.1-jdk21
+  profiles: ["tools"]
+  working_dir: /work
+  volumes:
+    - ./projects:/work
+  environment:
+    JAVA_TOOL_OPTIONS: -Xmx384m
+    GRADLE_OPTS: -Dorg.gradle.daemon=false
+  mem_limit: 900m
+
+x-maven: &maven
+  image: maven:3.10.0-eclipse-temurin-21
+  profiles: ["tools"]
+  working_dir: /work
+  volumes:
+    - ./projects:/work
+  environment:
+    MAVEN_OPTS: -Xmx256m
+  mem_limit: 600m
+
+services:
+  reposilite:
+    image: dzikoysk/reposilite:3.6.3
+    environment:
+      # 실습용 임시 토큰. 컨테이너가 떠 있는 동안만 쓰는 관리자 토큰이다.
+      REPOSILITE_OPTS: --token lab:lab-secret-123
+      JAVA_OPTS: -Xmx192m
+    volumes:
+      - repo-data:/app/data
+    ports: ["${REPO_PORT:-30080}:8080"]
+    mem_limit: 400m
+
+  registry:
+    image: registry:3.1.2
+    ports: ["${REGISTRY_PORT:-30500}:5000"]
+    mem_limit: 128m
+
+  # 개발자 PC 두 대와 CI 한 대를 흉내 낸다. 셋은 Gradle 캐시를 나눠 쓰지 않는다.
+  gradle-a:
+    <<: *gradle
+    volumes: [./projects:/work, gradle-a:/home/gradle/.gradle]
+  gradle-b:
+    <<: *gradle
+    volumes: [./projects:/work, gradle-b:/home/gradle/.gradle]
+  gradle-ci:
+    <<: *gradle
+    volumes: [./projects:/work, gradle-ci:/home/gradle/.gradle]
+
+  maven-a:
+    <<: *maven
+    volumes: [./projects:/work, ./maven/settings.xml:/root/.m2/settings.xml:ro, m2-a:/root/.m2/repository]
+  maven-b:
+    <<: *maven
+    volumes: [./projects:/work, ./maven/settings.xml:/root/.m2/settings.xml:ro, m2-b:/root/.m2/repository]
+
+volumes:
+  repo-data:
+  gradle-a:
+  gradle-b:
+  gradle-ci:
+  m2-a:
+  m2-b:

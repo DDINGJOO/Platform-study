@@ -1,0 +1,48 @@
+// 실습용 라이브러리. 좌표와 내용을 명령줄에서 받는다.
+//   -Paid=lib -Pver=1.0.0-SNAPSHOT -Pcontent=build-1
+// content 는 jar 안의 build.txt 에 들어간다. 같은 좌표에 다른 내용을 올리려고 쓴다.
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = 'lab'
+version = findProperty('ver') ?: '1.0.0-SNAPSHOT'
+def aid = findProperty('aid') ?: 'lib'
+def content = findProperty('content') ?: 'default'
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+
+def genRes = tasks.register('genBuildTxt') {
+    def out = layout.buildDirectory.dir('gen-res')
+    inputs.property('content', content)
+    outputs.dir(out)
+    doLast { out.get().file('build.txt').asFile.text = content + '\n' }
+}
+sourceSets.main.resources.srcDir(genRes)
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            artifactId = aid
+            from components.java
+        }
+    }
+    repositories {
+        maven {
+            name = 'lab'
+            url = uri(version.toString().endsWith('SNAPSHOT')
+                      ? 'http://reposilite:8080/snapshots' : 'http://reposilite:8080/releases')
+            allowInsecureProtocol = true
+            credentials { username = 'lab'; password = 'lab-secret-123' }
+        }
+    }
+}
+
+// rebuild 실험용: Gradle 9 의 재현 가능한 아카이브 기본값을 예전 동작으로 되돌린다
+if (project.hasProperty('keepTimestamps')) {
+    tasks.withType(AbstractArchiveTask).configureEach {
+        preserveFileTimestamps = true
+        reproducibleFileOrder = false
+    }
+}
