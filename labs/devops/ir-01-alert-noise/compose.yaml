@@ -1,0 +1,55 @@
+# 장애 대응 실습-1: 경고 폭풍을 Alertmanager로 묶고 누른다.
+# 호스트 포트는 27000번대. Alertmanager 설정은 AM_CONFIG 로 고른다(scripts/run_scenario.py 가 넣는다).
+x-app: &app
+  image: python:3.13-alpine
+  command: ["python", "-u", "/app/app.py"]
+  volumes:
+    - ./app:/app:ro
+  mem_limit: 64m
+
+services:
+  db:
+    <<: *app
+    environment: {ROLE: db, SERVICE: db}
+
+  orders-1:    {<<: *app, environment: {SERVICE: orders}}
+  orders-2:    {<<: *app, environment: {SERVICE: orders}}
+  payments-1:  {<<: *app, environment: {SERVICE: payments}}
+  payments-2:  {<<: *app, environment: {SERVICE: payments}}
+  cart-1:      {<<: *app, environment: {SERVICE: cart}}
+  cart-2:      {<<: *app, environment: {SERVICE: cart}}
+  search-1:    {<<: *app, environment: {SERVICE: search}}
+  search-2:    {<<: *app, environment: {SERVICE: search}}
+  inventory-1: {<<: *app, environment: {SERVICE: inventory}}
+  inventory-2: {<<: *app, environment: {SERVICE: inventory}}
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.external-url=http://localhost:${PROM_PORT:-27090}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+    ports: ["${PROM_PORT:-27090}:9090"]
+    mem_limit: 512m
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --web.external-url=http://localhost:${AM_PORT:-27093}
+    volumes:
+      - ./alertmanager/${AM_CONFIG:-c-group.yml}:/etc/alertmanager/alertmanager.yml:ro
+    ports: ["${AM_PORT:-27093}:9093"]
+    mem_limit: 128m
+
+  webhook:
+    image: python:3.13-alpine
+    command: ["python", "-u", "/receiver.py"]
+    environment:
+      OUT: /results/raw/${SCENARIO:-manual}.jsonl
+    volumes:
+      - ./webhook/receiver.py:/receiver.py:ro
+      - ./results/raw:/results/raw
+    mem_limit: 64m

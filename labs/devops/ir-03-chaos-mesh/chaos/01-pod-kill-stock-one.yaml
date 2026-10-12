@@ -1,0 +1,16 @@
+# stock 파드 셋 중 하나를 30초마다 강제로 죽인다(gracePeriod 0 은 SIGKILL 과 같다)
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Schedule
+metadata: {name: pod-kill-stock, namespace: ir03}
+spec:
+  schedule: "@every 30s"
+  concurrencyPolicy: Forbid
+  historyLimit: 10
+  type: PodChaos
+  podChaos:
+    action: pod-kill
+    mode: one
+    gracePeriod: 0
+    selector:
+      namespaces: [ir03]
+      labelSelectors: {tier: stock}

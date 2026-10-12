@@ -1,0 +1,16 @@
+# D. C 에 억제 규칙을 더한다. DBDown 이 울리는 동안 같은 env 의 증상 경고는 보내지 않는다.
+route:
+  receiver: human
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+receivers:
+  - name: human
+    webhook_configs:
+      - url: http://webhook:8080/human
+inhibit_rules:
+  - name: db-down-hides-symptoms
+    source_matchers: [alertname="DBDown"]
+    target_matchers: [alertname=~"DependencyDown|HighErrorRate|HighLatency"]
+    equal: [env]

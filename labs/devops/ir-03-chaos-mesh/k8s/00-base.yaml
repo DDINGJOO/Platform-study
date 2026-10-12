@@ -1,0 +1,159 @@
+# 실험 대상: loadgen -> front(3) -> stock(3), 그리고 지표를 모으는 프로메테우스
+# 처음 상태는 일부러 순진하게 둔다. readinessProbe 없음, front 는 stock 을 재시도하지 않는다.
+# 고친 상태는 k8s/10-fixed.yaml 이다
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ir03
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: prometheus, namespace: ir03}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: prometheus, namespace: ir03}
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: prometheus, namespace: ir03}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: prometheus}
+subjects: [{kind: ServiceAccount, name: prometheus, namespace: ir03}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: prometheus, namespace: ir03}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 2s
+    scrape_configs:
+    - job_name: lab
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces: {names: [ir03]}
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_tier]
+        regex: (front|stock|loadgen)
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "8080"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_label_tier]
+        target_label: tier
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: prometheus, namespace: ir03}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: prometheus}}
+  template:
+    metadata: {labels: {app: prometheus}}
+    spec:
+      serviceAccountName: prometheus
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v3.15.0
+        args: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.retention.time=12h]
+        ports: [{containerPort: 9090}]
+        resources:
+          requests: {cpu: 50m, memory: 128Mi}
+          limits: {memory: 400Mi}
+        volumeMounts: [{name: cfg, mountPath: /etc/prometheus}]
+      volumes: [{name: cfg, configMap: {name: prometheus}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: prometheus, namespace: ir03}
+spec:
+  selector: {app: prometheus}
+  ports: [{port: 9090, targetPort: 9090}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: stock, namespace: ir03}
+spec:
+  replicas: 3
+  selector: {matchLabels: {tier: stock}}
+  template:
+    metadata: {labels: {tier: stock}}
+    spec:
+      containers:
+      - name: app
+        image: obs-lab/ir-03-chaos-mesh:dev
+        imagePullPolicy: Never
+        env:
+        - {name: ROLE, value: stock}
+        - {name: BASE_MS, value: "15"}
+        - {name: STARTUP_S, value: "3"}
+        ports: [{containerPort: 8080}]
+        resources:
+          requests: {cpu: 50m, memory: 32Mi}
+          limits: {cpu: 500m, memory: 96Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: stock, namespace: ir03}
+spec:
+  selector: {tier: stock}
+  ports: [{port: 80, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: front, namespace: ir03}
+spec:
+  replicas: 3
+  selector: {matchLabels: {tier: front}}
+  template:
+    metadata: {labels: {tier: front}}
+    spec:
+      containers:
+      - name: app
+        image: obs-lab/ir-03-chaos-mesh:dev
+        imagePullPolicy: Never
+        env:
+        - {name: ROLE, value: front}
+        - {name: STARTUP_S, value: "3"}
+        - {name: STOCK_TIMEOUT_S, value: "1.0"}
+        - {name: RETRIES, value: "0"}
+        ports: [{containerPort: 8080}]
+        resources:
+          requests: {cpu: 50m, memory: 32Mi}
+          limits: {cpu: 500m, memory: 96Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: front, namespace: ir03}
+spec:
+  selector: {tier: front}
+  ports: [{port: 80, targetPort: 8080}]
+---
+# 사용자 역할. 초당 40건을 응답과 상관없이 보낸다. 사용자 쪽에서 본 성공률과 지연이 정상 상태 가설의 지표다
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: loadgen, namespace: ir03}
+spec:
+  replicas: 1
+  selector: {matchLabels: {tier: loadgen}}
+  template:
+    metadata: {labels: {tier: loadgen}}
+    spec:
+      containers:
+      - name: app
+        image: obs-lab/ir-03-chaos-mesh:dev
+        imagePullPolicy: Never
+        env:
+        - {name: ROLE, value: loadgen}
+        - {name: RATE, value: "40"}
+        - {name: TIMEOUT_S, value: "2.0"}
+        ports: [{containerPort: 8080}]
+        resources:
+          requests: {cpu: 100m, memory: 32Mi}
+          limits: {memory: 128Mi}

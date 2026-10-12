@@ -1,0 +1,22 @@
+groups:
+  - name: order
+    rules:
+      - record: order:error_ratio:rate1m
+        expr: |
+          (sum(rate(http_server_requests_total{service="order",code=~"5.."}[1m])) or vector(0))
+            / sum(rate(http_server_requests_total{service="order"}[1m]))
+      - alert: OrderErrorRatioHigh
+        expr: order:error_ratio:rate1m > 0.05
+        for: 1m
+        labels: { severity: page, service: order }
+        annotations:
+          summary: "주문 실패율 {{ $value | humanizePercentage }} (기준 5%)"
+          runbook_url: "https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/ir-02-gameday/RUNBOOK.md#ordererrorratiohigh"
+      - alert: OrderLatencyHigh
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(http_server_duration_seconds_bucket{service="order"}[1m]))) > 0.5
+        for: 2m
+        labels: { severity: ticket, service: order }
+        annotations:
+          summary: "주문 p99 {{ $value | humanizeDuration }} (기준 500ms)"
+          runbook_url: "https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/ir-02-gameday/RUNBOOK.md#orderlatencyhigh"

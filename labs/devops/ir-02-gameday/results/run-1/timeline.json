@@ -1,0 +1,172 @@
+{
+ "summary": {
+  "run": "run-1",
+  "주입→영향 시작(첫 503 스크레이프)": 2.8,
+  "주입→실패율 기준 초과": 22.8,
+  "주입→pending": 22.8,
+  "주입→firing": 82.8,
+  "주입→page 알림 수신 (TTD)": 113.3,
+  "page 알림→완화 명령": 7.7,
+  "주입→완화 명령": 121.0,
+  "주입→영향 끝(마지막 503 스크레이프) (TTM)": 122.8,
+  "주입→정상 경로 복귀 명령 (TTR)": 212.4,
+  "실패한 주문(503) 건수": 747,
+  "영향 구간(첫~마지막 503 스크레이프) 전체 주문 건수": 2500,
+  "재고 확인 보류로 받은 주문 건수": 1825,
+  "실패율 최고값(1m 창)": 0.328,
+  "점검: 스크레이프 수 / 기대값(5초 간격)": "106 / 106",
+  "점검: 주문 요청률 최저(30s 창, 건/초)": 19.0
+ },
+ "rows": [
+  {
+   "t": -30.2,
+   "source": "명령 기록",
+   "what": "[start] run-1"
+  },
+  {
+   "t": 0.0,
+   "source": "명령 기록",
+   "what": "[inject] inventory 경로 latency=900ms jitter=300ms"
+  },
+  {
+   "t": 2.8,
+   "source": "Prometheus",
+   "what": "503 카운터가 처음 늘어난 스크레이프(영향 시작)"
+  },
+  {
+   "t": 12.8,
+   "source": "Prometheus",
+   "what": "OrderLatencyHigh pending 시작"
+  },
+  {
+   "t": 22.8,
+   "source": "Prometheus",
+   "what": "OrderErrorRatioHigh pending 시작"
+  },
+  {
+   "t": 22.8,
+   "source": "Prometheus",
+   "what": "실패율 기록 규칙이 5% 를 넘음"
+  },
+  {
+   "t": 81.8,
+   "source": "Prometheus",
+   "what": "OrderErrorRatioHigh pending 마지막 관측"
+  },
+  {
+   "t": 82.8,
+   "source": "Prometheus",
+   "what": "OrderErrorRatioHigh firing 시작"
+  },
+  {
+   "t": 113.3,
+   "source": "웹훅 수신",
+   "what": "OrderErrorRatioHigh firing (page) startsAt=T+01:22.4"
+  },
+  {
+   "t": 117.0,
+   "source": "명령 기록",
+   "what": "[declare] OrderErrorRatioHigh page 수신. 장애 선언, IC 겸 운영 담당 1인"
+  },
+  {
+   "t": 117.1,
+   "source": "명령 기록",
+   "what": "[diagnose] 주문 실패율(1m)=0.304, 주문 서버 p99(s)=1.489, order가 본 재고 호출 p99(s)=1.489, 재고 서버 자체 p99(s)=0.005, 재고 호출 결과/초={'ok': 13.86, 'timeout': 6.1, 'error': 0.0}"
+  },
+  {
+   "t": 120.9,
+   "source": "명령 기록",
+   "what": "[decide] 절차서 2단계 표 1행: 재고 서버는 5ms인데 order가 본 호출은 1.5s. 가는 길이 느림 → 3-A 완화"
+  },
+  {
+   "t": 121.0,
+   "source": "명령 기록",
+   "what": "[mitigate] order fallback 켬(재고 확인 보류)"
+  },
+  {
+   "t": 122.8,
+   "source": "Prometheus",
+   "what": "503 카운터가 마지막으로 늘어난 스크레이프(영향 끝)"
+  },
+  {
+   "t": 126.6,
+   "source": "명령 기록",
+   "what": "[comms] [조사 중] 주문 일부가 실패하고 있습니다. 재고 확인을 보류하는 완화를 적용했고, 주문은 '확인 보류' 상태로 접수됩니다. 다음 공지 15분 뒤."
+  },
+  {
+   "t": 131.8,
+   "source": "Prometheus",
+   "what": "OrderLatencyHigh pending 마지막 관측"
+  },
+  {
+   "t": 132.8,
+   "source": "Prometheus",
+   "what": "OrderLatencyHigh firing 시작"
+  },
+  {
+   "t": 163.4,
+   "source": "웹훅 수신",
+   "what": "OrderLatencyHigh firing (ticket) startsAt=T+02:12.4"
+  },
+  {
+   "t": 181.8,
+   "source": "Prometheus",
+   "what": "OrderErrorRatioHigh firing 마지막 관측"
+  },
+  {
+   "t": 181.8,
+   "source": "Prometheus",
+   "what": "OrderLatencyHigh firing 마지막 관측"
+  },
+  {
+   "t": 182.8,
+   "source": "Prometheus",
+   "what": "실패율 기록 규칙이 5% 아래로"
+  },
+  {
+   "t": 201.8,
+   "source": "명령 기록",
+   "what": "[diagnose] 주문 실패율(1m)=0.000, 주문 서버 p99(s)=0.005, order가 본 재고 호출 p99(s)=nan, 재고 서버 자체 p99(s)=nan, 재고 호출 결과/초={'ok': 0.0, 'timeout': 0.0, 'error': 0.0}"
+  },
+  {
+   "t": 208.3,
+   "source": "명령 기록",
+   "what": "[note] 완화 후 재고 호출이 0건이라 절차서 5단계의 'order가 본 재고 호출 p99' 를 볼 수 없음. 경로를 직접 찔러 확인하기로"
+  },
+  {
+   "t": 208.4,
+   "source": "명령 기록",
+   "what": "[repair] inventory 경로 지연 독 제거"
+  },
+  {
+   "t": 209.2,
+   "source": "명령 기록",
+   "what": "[probe] 경로 직접 호출 10건(ms): [7.9, 2.1, 0.9, 0.7, 0.6, 0.6, 0.6, 0.5, 0.6, 0.5]"
+  },
+  {
+   "t": 212.4,
+   "source": "명령 기록",
+   "what": "[restore] order fallback 끔(정상 경로)"
+  },
+  {
+   "t": 302.6,
+   "source": "명령 기록",
+   "what": "[diagnose] 주문 실패율(1m)=0.000, 주문 서버 p99(s)=0.005, order가 본 재고 호출 p99(s)=0.005, 재고 서버 자체 p99(s)=0.005, 재고 호출 결과/초={'ok': 19.97, 'timeout': 0.0, 'error': 0.0}"
+  },
+  {
+   "t": 302.6,
+   "source": "명령 기록",
+   "what": "[resolved] fallback 끄고 90초간 실패율 0. 정상 경로 복귀"
+  },
+  {
+   "t": 413.7,
+   "source": "웹훅 수신",
+   "what": "OrderErrorRatioHigh resolved (page) startsAt=T+01:22.4, endsAt=T+03:02.4"
+  },
+  {
+   "t": 463.8,
+   "source": "웹훅 수신",
+   "what": "OrderLatencyHigh resolved (ticket) startsAt=T+02:12.4, endsAt=T+03:02.4"
+  }
+ ]
+}

@@ -1,0 +1,54 @@
+# 하위 의존성(db) 하나가 멈추면 네 종류, 31개 경고가 울리도록 만든 규칙.
+# 모든 경고에 summary, description, runbook_url 주석을 단다.
+groups:
+  - name: ir-01
+    rules:
+      # 원인: db 자체가 스크레이프에 응답하지 않는다 (1개)
+      - alert: DBDown
+        expr: up{job="db"} == 0
+        for: 15s
+        labels:
+          severity: critical
+          dependency: db
+        annotations:
+          summary: "db가 응답하지 않습니다"
+          description: "Prometheus가 {{ $labels.instance }} 를 15초 넘게 긁지 못했습니다. db를 쓰는 서비스 전부가 영향을 받습니다."
+          runbook_url: "https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/ir-01-alert-noise/runbooks/DBDown.md"
+
+      # 증상 1: 각 인스턴스가 db 헬스 체크에 실패한다 (인스턴스 10개)
+      - alert: DependencyDown
+        expr: app_dependency_up{dependency="db"} == 0
+        for: 15s
+        labels:
+          severity: warning
+          dependency: db
+        annotations:
+          summary: "{{ $labels.service }} 가 db에 닿지 못합니다"
+          description: "{{ $labels.instance }} 의 db 헬스 체크가 15초 넘게 실패하고 있습니다."
+          runbook_url: "https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/ir-01-alert-noise/runbooks/DependencyDown.md"
+
+      # 증상 2: 인스턴스별 에러 비율 5% 초과 (인스턴스 10개)
+      - alert: HighErrorRate
+        expr: |
+          sum by (service, instance) (rate(app_requests_total{result="error"}[1m]))
+            / sum by (service, instance) (rate(app_requests_total[1m])) > 0.05
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} 에러 비율 {{ $value | humanizePercentage }}"
+          description: "{{ $labels.instance }} 의 최근 1분 에러 비율이 5%를 넘었습니다."
+          runbook_url: "https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/ir-01-alert-noise/runbooks/HighErrorRate.md"
+
+      # 증상 3: 인스턴스별 p99 지연 0.5초 초과 (인스턴스 10개)
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, instance, le) (rate(app_request_duration_seconds_bucket[1m]))) > 0.5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} p99 {{ $value | humanizeDuration }}"
+          description: "{{ $labels.instance }} 의 최근 1분 p99 지연이 0.5초를 넘었습니다."
+          runbook_url: "https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/ir-01-alert-noise/runbooks/HighLatency.md"

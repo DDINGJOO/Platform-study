@@ -1,0 +1,22 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ir-03
+networking:
+  apiServerAddress: 127.0.0.1
+  apiServerPort: 29443          # 이 실습의 포트 대역(29000-29999) 안으로 고정
+nodes:
+- role: control-plane
+  image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  # 노드 하나라 리더 선출이 필요 없다. 같은 Docker Desktop 에 다른 실습이 같이 돌면 리스 갱신이
+  # 늦어져 controller-manager 와 scheduler 가 재시작하는 일이 있었다(배포 안전성 실습에서 겪었다).
+  # kubelet 하트비트가 늦어 노드가 NotReady 로 찍히면 엔드포인트가 전부 빠지므로 유예를 5분으로 늘린다
+  kubeadmConfigPatches:
+  - |
+    kind: ClusterConfiguration
+    controllerManager:
+      extraArgs:
+      - {name: leader-elect, value: "false"}
+      - {name: node-monitor-grace-period, value: "5m"}
+    scheduler:
+      extraArgs:
+      - {name: leader-elect, value: "false"}

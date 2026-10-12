@@ -1,0 +1,323 @@
+<!-- lead: DB 하나가 멈추면 알림이 수십 통 와요. 페이지·티켓·기록의 구분, 경고 등급과 장애 등급의 차이, 구글 SRE의 페이저 부하 기준, Alertmanager의 묶기·억제·침묵·라우팅 트리를 정리했어요. -->
+<!-- tags: 경고 피로, 장애 등급, Alertmanager, inhibit_rules, group_by -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚨 장애 대응, 2편</div>
+  1편. 경고 하나에는 운영 절차서 하나가 붙어야 한다<br>
+  <b>2편. 모든 경고가 사람을 깨울 필요는 없다</b> &larr; 지금 이 글<br>
+  3편. 장애에는 지휘하는 사람이 한 명 있어야 한다<br>
+  4편. 사후 분석은 누가 아니라 무엇을 묻는다<br>
+  5편. 장애를 일부러 일으켜 미리 겪어 본다<br>
+  실습-1. 경고 폭풍을 Alertmanager로 묶고 누른다<br>
+  실습-2. 장애를 일으키고 타임라인과 사후 분석을 남긴다<br>
+  실습-3. 정상 상태 가설을 세우고 Chaos Mesh로 깨 본다
+</div>
+
+<p>DB 한 대가 멈춥니다. 그 DB를 쓰는 서비스가 다섯이고, 서비스마다 인스턴스가 둘이에요. 1분도 안 돼서 폰이 연달아 울립니다. "db가 응답하지 않습니다", "orders-1이 db에 닿지 못합니다", "orders-2가 db에 닿지 못합니다", "payments-1 에러 비율 100%"… 한 화면을 다 넘겨도 끝이 안 나요. 원인은 하나인데 알림은 수십 통입니다.</p>
+
+<p>이 알림들 하나하나는 틀리지 않았어요. 각 인스턴스는 정말로 db에 닿지 못했고, 에러 비율도 정말로 100%였습니다. 그런데 받은 사람에게 필요한 정보는 "db가 멈췄다" 한 줄이었어요. 나머지 수십 통은 그 한 줄을 찾는 데 방해만 됐습니다.</p>
+
+<p><a href="#ir-01">1편</a>에서 경고 하나에 절차서 하나가 붙어야 한다고 했어요. 이번에는 그 경고가 <b>누구에게, 언제, 몇 번</b> 가야 하는지를 봅니다. 차례로 경고의 행선지 셋, 우선순위 수준, 경고 피로(알림 피로)의 실제 기준, 그리고 Alertmanager가 알림 수를 줄이는 네 가지 장치(묶기, 억제, 침묵, 시간대)와 라우팅 트리예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 경고는 왜 페이지, 티켓, 기록 셋으로 나눠 보내나?<br>
+  &bull; 경고의 등급과 장애의 등급은 같은 것인가?<br>
+  &bull; 사람을 몇 번까지 깨워도 되나? 그 기준은 어디서 나왔나?<br>
+  &bull; group_wait, group_interval, repeat_interval은 각각 무엇을 늦추고 무엇을 줄이나?<br>
+  &bull; 억제와 침묵은 무엇이 다르고, 각각 어디서 새나?
+</div>
+
+<h2>1. 경고의 행선지는 셋이다: 페이지, 티켓, 기록</h2>
+
+<p>모든 경고를 같은 채널로 보내면 받는 사람이 매번 분류를 해야 해요. "이건 지금 일어나야 하나, 내일 봐도 되나, 아예 안 봐도 되나." 이 판단을 새벽에 사람이 하게 두지 말고 경고를 만들 때 미리 해 두자는 게 출발점입니다.</p>
+
+<p>모니터링이 내보내는 유효한 출력은 세 가지예요(SRE Book, Introduction).</p>
+
+<div class="obsv-code">경고(alerts)  사람이 지금 바로 움직여야 상황이 나아지는 것
+티켓(tickets) 사람이 움직여야 하지만 지금은 아닌 것.
+              며칠 안에 손대면 피해가 없다
+기록(logging) 아무도 볼 필요가 없고, 진단이나 사후 조사를 위해 남겨 두는 것.
+              다른 무언가가 계기가 되기 전에는 아무도 읽지 않는다</div>
+
+<p>이 시리즈는 첫 번째를 <b>페이지</b>라고 부를게요. 「SLO와 경고」 시리즈에서 경고는 조건이 참이 된 판정 자체, 알림은 그걸 사람에게 밀어 넣는 통지라고 갈라 썼는데, 페이지는 그중 사람을 즉시 부르는 알림입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 페이지 (page)</div>
+  온콜 담당자를 즉시 불러내는 알림이에요. 전화, 푸시, 문자처럼 무음 모드도 뚫고 울리는 채널로 가고, 응답이 없으면 다음 사람에게 넘어갑니다. 예전에 무선 호출기(pager)로 부르던 데서 이름이 왔어요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 355" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="p2a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M250 25 C 316 24.3, 382 23.6, 450 25.3 C 448.7 43, 450.1 61, 449.7 80 C 382 78.2, 316 80.0, 249.1 79.9 C 248.7 61, 248.8 43, 250 25 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="60" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">🔔 경고가 참이 됐다</text>
+<path d="M300 82 C 245.7 96.9, 172.5 110.4, 120 125" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2a)"/>
+<path d="M350 82 C 350.5 97.6, 350.3 111.5, 350 125" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2a)"/>
+<path d="M400 82 C 455.9 92.2, 527.4 110.8, 580 125" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2a)"/>
+<path d="M25 130 C 91 128.6, 157 128.5, 225 129.6 C 225.9 186, 224.0 242, 225.2 300 C 157 300.6, 91 299.5, 25.1 299.1 C 23.7 242, 24.1 186, 25 130 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="125" y="162" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f" text-anchor="middle">📟 페이지</text>
+<text x="125" y="192" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">사람이 지금 움직여야</text>
+<text x="125" y="214" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">한다</text>
+<text x="125" y="248" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">밤에도 깨운다</text>
+<text x="125" y="272" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">교대당 손에 꼽을 만큼</text>
+<path d="M250 130 C 316 130.7, 382 129.7, 450 129.6 C 450.3 186, 449.9 242, 449.6 300 C 382 301.2, 316 300.8, 249.5 300.1 C 250.1 242, 251.1 186, 250 130 Z" fill="#fdf3dd" stroke="#c07f18" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="162" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#c07f18" text-anchor="middle">🎫 티켓</text>
+<text x="350" y="192" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">사람이 움직여야 하지만</text>
+<text x="350" y="214" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">며칠 뒤여도 괜찮다</text>
+<text x="350" y="248" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">업무 시간에 본다</text>
+<text x="350" y="272" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">대기열에 쌓인다</text>
+<path d="M475 130 C 541 130.9, 607 129.2, 675 131.0 C 673.9 186, 674.8 242, 675.5 300 C 607 298.6, 541 300.0, 474.1 300.3 C 475.8 242, 475.2 186, 475 130 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="575" y="162" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#8a8272" text-anchor="middle">🗂️ 기록</text>
+<text x="575" y="192" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">아무도 안 봐도 된다</text>
+<text x="575" y="214" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">나중에 진단할 때 쓴다</text>
+<text x="575" y="248" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">사람에게 보내지 않는다</text>
+<text x="575" y="272" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">대시보드에서 본다</text>
+<text x="350" y="335" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 같은 조건이라도 '누가 언제 움직여야 하나'로 행선지가 갈린다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 조건이라도 '누가 언제 움직여야 하나'에 따라 행선지가 셋으로 갈린다</div>
+
+<p><a href="https://dding-shark.tistory.com/449">「SLO와 경고」 1편</a>의 다중 창 burn rate 경고가 이미 이 구분을 따랐어요. 한 시간에 예산의 2%를 태우는 속도면 페이지, 사흘에 10%면 티켓이었습니다. 타는 속도가 행선지를 정한 셈이에요. 기록은 경고 규칙을 따로 만들 필요조차 없는 경우가 많아요. 대시보드와 로그가 그 역할을 하니까요. 이메일 경고를 보내는 대신 진행 중인 덜 심각한 문제를 모두 보여 주는 대시보드를 두는 편이 낫다는 권고도 있어요(SRE Book, Monitoring Distributed Systems).</p>
+
+<p>나누는 기준은 지표의 종류가 아니라 <b>받은 사람이 움직여야 하는 시점</b>이에요. 디스크 사용률 80%는 그 자체로는 티켓입니다. 하지만 지금 속도로 네 시간 안에 꽉 찬다면 페이지예요. 같은 지표에서 서로 다른 행선지의 경고 두 개가 나올 수 있습니다.</p>
+
+<h2>2. 경고의 등급과 장애의 등급은 다르다</h2>
+
+<p>행선지를 셋 이상으로 나누려면 등급이 필요해요. <a href="https://dding-shark.tistory.com/576">「SLO와 경고」 2편</a>에서 P1부터 P5까지 다섯 단계를 나누고 각 단계에 알림 시간대와 대상을 붙이는 표를 봤습니다. 그 편의 표는 이름은 장애 등급이지만, 알림 시간대와 대상을 미리 정한다는 점에서 이 글이 말하는 경고 등급에 가까워요. 공개된 실제 예를 두 개 더 보면 등급이 무엇을 정하는지가 더 분명해져요.</p>
+
+<p>다섯 단계로 나누는 예에서는 등급마다 <b>전형적인 대응</b>이 같이 정해져 있어요(PagerDuty Incident Response, Severity Levels).</p>
+
+<div class="obsv-code">SEV-1  공개 공지와 경영진 연락이 필요한 심각한 문제     → 대형 장애 대응, 장애 지휘자 호출, 대외 공지
+SEV-2  많은 고객이 제품을 쓰지 못하는 심각한 시스템 문제 → 대형 장애 대응, 장애 지휘자 호출
+SEV-3  안정성 문제나 작은 고객 영향, 즉시 봐야 함       → 서비스 팀에 high-urgency 페이지
+SEV-4  조치는 필요하지만 고객 사용에는 영향 없음        → 서비스 팀에 low-urgency 페이지
+SEV-5  겉모양 문제나 버그, 고객 사용에 영향 없음        → 담당자에게 티켓
+(response.pagerduty.com, Severity Levels. 요약은 필자)</div>
+
+<p>세 단계로 나누는 예도 있어요(Atlassian, Severity levels). SEV1은 "매우 큰 영향을 주는 심각한 장애", SEV2는 일부 고객에게 서비스가 안 되는 "큰 영향을 주는 주요 장애", SEV3는 고객이 약간 불편한 "영향이 작은 사소한 장애"입니다. SEV1과 SEV2는 온콜에게 알림을 보내고, SEV3는 업무 시간에 처리할 수 있어요. 단계 수는 달라도 구조는 같습니다. <span class="obsv-mark">등급은 심각도의 이름표가 아니라, 몇 명이 언제 움직일지에 대한 약속</span>이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 심각도와 긴급도 (severity, urgency)</div>
+  심각도는 문제가 얼마나 나쁜지, 긴급도는 사람에게 얼마나 서둘러 알릴지예요. 긴급도는 high와 low 둘로 나누는 경우가 많고, high는 응답이 없으면 다음 담당자로 넘어가고 low는 넘어가지 않습니다. 경고의 심각도 필드를 긴급도로 바꾸는 규칙도 있어요(critical과 error는 high, warning과 info는 low. PagerDuty, Dynamic Notifications).
+</div>
+
+<p>여기서 두 가지 등급을 구분해야 합니다. 하나는 <b>경고의 등급</b>이에요. 경고 규칙을 만들 때 <code>severity: critical</code>처럼 라벨로 미리 정하고, Alertmanager는 그 라벨로 행선지를 고릅니다. 다른 하나는 <b>장애의 등급</b>이에요. 실제로 장애가 났을 때 영향 범위를 보고 대응하는 사람이 판정합니다. 경고 서른 개가 울려도 장애는 하나일 수 있고, 경고 등급은 warning이었는데 알고 보니 SEV-2일 수도 있어요.</p>
+
+<p>장애 등급이 애매할 때의 규칙도 있어요. 두 등급 사이에서 확신이 없으면 <b>높은 쪽으로</b> 다루고, 등급이 맞았는지는 장애 중에 다투지 말고 사후 분석에서 다시 봐요(PagerDuty Incident Response, Severity Levels). 그리고 PagerDuty의 긴급도는 경고가 warning에서 critical로 올라가면 low에서 high로 오르지만, 반대로 내려가도 다시 낮아지지 않습니다. 올리는 실수보다 내리는 실수를 더 비싸게 본 설계로 읽혀요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 경고 등급 라벨은 적게</div>
+  &bull; 경고 라벨의 등급은 행선지 수만큼만 둬요. 페이지, 티켓, 기록이면 <code>critical</code>, <code>warning</code>, <code>info</code> 셋이면 충분합니다<br>
+  &bull; 장애 등급(SEV)은 경고 라벨이 아니라 장애를 연 사람이 정해요. 경고 라벨에 SEV를 미리 박아 두면 "경고 서른 개, 장애 하나"를 표현하지 못합니다<br>
+  &bull; 등급 정의에는 알림 대상, 알림 시간대, 기대 응답 시간을 같이 적어요. 전형적인 응답 시간은 사용자 대면 서비스 5분, 덜 급한 시스템 30분이에요(SRE Book, Being On-Call)
+</div>
+
+<h2>3. 사람을 몇 번까지 깨워도 되나</h2>
+
+<p>경고가 많으면 나쁘다는 데는 다들 동의해요. 그런데 "많다"의 기준은 무엇일까요? 숫자로 정해 둔 기준이 있어요.</p>
+
+<p>온콜 교대 한 번(12시간)에 장애는 <b>최대 두 건</b>이 상한이에요. 장애 하나를 처리하고 사후 분석까지 쓰는 데 평균 6시간쯤 들기 때문이에요. SRE의 업무 시간 중 온콜에 쓰는 비중도 25%를 넘지 않게 해요(SRE Book, Being On-Call). 이때 <b>장애 한 건은 경고가 몇 개 울렸든 문제 하나</b>로 셉니다(SRE Workbook, On-Call의 각주). 하나의 비정상 상태가 여러 경고를 만들 수 있으니, 관련된 경고는 모니터링 시스템이 묶게 하고, 장애마다 경고를 체계적으로 여러 개 내는 시끄러운 경고는 경고 수와 장애 수가 1:1에 가까워지도록 고쳐요(SRE Book, Being On-Call).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 페이저 부하 (pager load)</div>
+  온콜 한 명이 교대 한 번 동안 받는 페이지 장애의 수예요. 이 값은 팀이 관리하는 예산처럼 다뤄요. 21일 이동 평균으로 추세를 보고, 미리 정한 경고선을 넘으면 그 자체를 티켓 경고로 띄웁니다(SRE Workbook, On-Call).
+</div>
+
+<p>왜 이렇게 엄격할까요. 한 시간에 한 번 이상 온콜을 괴롭히는 낮은 우선순위의 경고는 생산성을 깎을 뿐 아니라, 그 피로 때문에 <b>심각한 경고도 덜 주의 깊게 다뤄지게</b> 만들어요(SRE Book, Being On-Call). 경고 피로의 진짜 비용은 짜증이 아니라 놓친 진짜 장애입니다. 비용으로 따지면 페이지 하나를 제대로 처리하는 데 평균 4 업무 시간이 들어요. 교대마다 페이지 다섯 건을 받던 팀을 분석해 보니 교대의 3분의 1이 예산을 넘고 있었다는 사례도 있습니다(SRE Workbook, On-Call).</p>
+
+<p>그래서 처방은 새 페이지 경고에 문턱을 두는 쪽입니다. 정말 필요할 때만 새 페이지 경고를 만들고, 팀 전체가 검토하고, 운영 환경에서 충분히 시험해 오탐을 거른 뒤에 페이지로 올려요. 새 경고 때문에 예산을 넘는다면 그건 시스템의 안정성에 더 손을 써야 한다는 신호로 봅니다(SRE Workbook, On-Call). 1편에서 본 "절차서가 써지지 않는 경고는 사람을 부를 이유가 없다"와 같은 방향입니다.</p>
+
+<h2>4. Alertmanager가 알림 수를 줄이는 네 가지 장치</h2>
+
+<p>경고 규칙을 잘 만들어도 서두의 장면은 생겨요. db 하나가 멈추면 db를 보는 경고 하나와, db를 쓰는 인스턴스마다의 증상 경고가 한꺼번에 참이 되니까요. 규칙 쪽에서는 "이 경고들은 같은 원인"이라는 걸 알 수 없습니다. 그 일을 하는 게 Alertmanager예요. 경고 규칙만으로는 완전한 알림 체계가 아니고, 요약과 알림 빈도 제한, 침묵, 경고 사이의 의존 관계를 처리할 층이 하나 더 필요해요(Prometheus 문서, Alerting rules).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 355" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="p2b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="p2c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M15 50 C 51 51.5, 88 49.3, 125 50.4 C 125.3 76, 125.2 103, 124.9 130 C 88 131.4, 51 131.8, 14.9 130.3 C 13.7 103, 15.6 76, 15 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="70" y="82" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f5f8f" text-anchor="middle">① 라우팅</text>
+<text x="70" y="108" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">라벨로 갈 곳</text>
+<text x="70" y="124" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">을 고른다</text>
+<path d="M145 50 C 186 50.6, 228 52.0, 270 50.6 C 269.4 76, 269.7 103, 270.3 130 C 228 128.1, 186 129.8, 144.3 129.2 C 143.7 103, 145.8 76, 145 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="207" y="82" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f5f8f" text-anchor="middle">② 묶음</text>
+<text x="207" y="106" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#3d3a34" text-anchor="middle">group_by 로 모으고</text>
+<text x="207" y="124" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#3d3a34" text-anchor="middle">타이머를 건다</text>
+<path d="M290 50 C 331 48.5, 372 49.0, 415 49.8 C 416.1 76, 413.7 103, 414.9 130 C 372 130.2, 331 131.5, 290.6 130.7 C 289.3 103, 289.7 76, 290 50 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="352" y="82" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">③ 거르기</text>
+<text x="352" y="106" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#3d3a34" text-anchor="middle">억제, 시간대,</text>
+<text x="352" y="124" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#3d3a34" text-anchor="middle">침묵</text>
+<path d="M435 50 C 475 49.4, 514 51.5, 555 50.9 C 554.0 76, 554.0 103, 554.5 130 C 514 128.9, 475 129.9, 435.2 129.5 C 433.5 103, 434.8 76, 435 50 Z" fill="#fdf3dd" stroke="#c07f18" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="495" y="82" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18" text-anchor="middle">④ 중복 제거</text>
+<text x="495" y="106" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#3d3a34" text-anchor="middle">달라진 게 없으면</text>
+<text x="495" y="124" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#3d3a34" text-anchor="middle">반복 간격까지 쉼</text>
+<path d="M575 50 C 611 49.5, 648 50.3, 685 50.9 C 685.6 76, 685.0 103, 685.2 130 C 648 130.7, 611 128.2, 575.8 130.6 C 576.1 103, 575.9 76, 575 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="630" y="82" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">⑤ 전송</text>
+<text x="630" y="108" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">수신자에게</text>
+<text x="630" y="124" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">한 통</text>
+<path d="M127 90 C 131.4 89.4, 136.6 90.8, 143 90" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#p2b)"/>
+<path d="M272 90 C 275.0 87.4, 282.0 88.0, 288 90" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#p2b)"/>
+<path d="M417 90 C 421.2 87.3, 426.2 87.9, 433 90" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#p2b)"/>
+<path d="M557 90 C 560.2 89.2, 566.3 92.2, 573 90" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#p2b)"/>
+<text x="207" y="165" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">group_wait 30s</text>
+<text x="207" y="183" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">첫 알림 전 기다림</text>
+<text x="207" y="208" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">group_interval 5m</text>
+<text x="207" y="226" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">그 뒤 확인 주기</text>
+<text x="495" y="165" font-family="Menlo, monospace" font-size="12" fill="#c07f18" text-anchor="middle">repeat_interval 4h</text>
+<text x="495" y="183" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">변화 없을 때 다시 보냄</text>
+<text x="495" y="208" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">group_interval 의 배수로</text>
+<text x="495" y="226" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">올림된다</text>
+<path d="M352 132 C 352.5 165.3, 351.0 213.7, 352 250" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" marker-end="url(#p2c)" stroke-dasharray="1 7"/>
+<text x="352" y="272" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">묶음이 보낼 차례가 됐을 때 거른다</text>
+<text x="352" y="294" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">(소스의 파이프라인 순서: 억제 → 활성 시간 → 음소거 시간 → 침묵)</text>
+<text x="350" y="335" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 알림 수는 '묶음이 몇 개이고 각자 몇 번 보낼 차례가 오나'로 정해진다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 알림 수는 묶음이 몇 개이고, 각 묶음에 보낼 차례가 몇 번 오는지로 정해진다</div>
+
+<h3>묶기: group_by와 세 개의 타이머</h3>
+
+<p>클러스터에 인스턴스가 수백 개 떠 있는데 네트워크가 갈려 절반이 DB에 닿지 못하면, 경고 수백 개가 Alertmanager로 옵니다(Alertmanager 문서, Grouping). 서두와 같은 장면이에요. 묶기는 이걸 알림 한 통으로 만드는 장치예요. <code>group_by</code>에 적은 라벨의 값이 같은 경고끼리 한 묶음이 됩니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 묶음 (aggregation group)</div>
+  Alertmanager가 같은 라우트에서 <code>group_by</code> 라벨 값이 같은 경고를 모아 둔 단위입니다. 알림은 경고 하나가 아니라 묶음 하나 단위로 나가요. 묶음마다 타이머가 따로 돌아서, 묶음이 많으면 알림도 그만큼 많아집니다.
+</div>
+
+<p>여기서 함정이 하나 있어요. 루트 라우트에서 <code>group_by</code>를 <b>아예 적지 않으면</b> 묶지 않는 게 아니라, 반대로 모든 경고가 한 묶음이 됩니다. 기본값이 빈 라벨 목록이고(<code>dispatch/route.go</code>), 묶음 키는 목록에 있는 라벨만 꺼내서 만드니 모든 경고의 키가 똑같이 비거든요. 자식 라우트에서 적지 않으면 부모의 값을 물려받고, <code>group_by: []</code>로 빈 목록을 직접 적으면 물려받기를 끊고 한 묶음이 됩니다(<code>config/config.go</code>). 묶지 않으려면 <code>group_by: ['...']</code>라고 적어서 경고마다 따로 묶음을 만드는데, 대개 원하는 동작이 아닐 거라는 단서가 붙어 있어요(Alertmanager 문서, Configuration).</p>
+
+<p>묶음에는 타이머가 셋 붙어요. 값은 모두 기본값입니다.</p>
+
+<div class="obsv-code">group_wait      30s  묶음이 새로 생기면 이만큼 기다렸다가 첫 알림을 보낸다
+                     그 사이 들어온 경고는 같은 알림에 실린다
+group_interval  5m   그 뒤로는 이 주기마다 묶음을 확인한다
+                     새 경고가 붙었거나 풀린 경고가 있으면 알림을 보낸다
+repeat_interval 4h   아무것도 안 바뀌었으면 이 시간이 지났을 때만 같은 알림을 다시 보낸다
+                     group_interval 마다 확인하므로 그 배수로 올림된다</div>
+
+<p>타이머는 알림 수와 첫 알림까지 걸리는 시간을 맞바꿉니다. <code>group_wait</code>를 길게 잡으면 늦게 참이 되는 증상 경고까지 한 알림에 담기지만, 첫 알림이 늦어요. 짧게 잡으면 빨리 알지만 첫 알림에 일부만 담기고, 나머지는 <code>group_interval</code> 뒤에 따로 옵니다. 그리고 "첫 알림은 group_wait 뒤"는 처음 생기는 묶음 이야기예요. <a href="#ir-06">실습-1</a>에서는 새 장애의 첫 알림이 group_wait 30초가 아니라 264초 뒤에 나간 묶음이 있었는데, 앞 장애에서 풀린 같은 이름의 경고가 원인으로 보여요. <code>group_wait</code>가 너무 짧으면 억제해야 할 경고가 제때 억제되지 않을 수도 있어요. 억제하는 쪽 경고가 아직 도착하지 않았을 수 있어서요(Alertmanager 문서, Configuration).</p>
+
+<p><code>repeat_interval</code>은 소스의 중복 제거 단계(<code>notify/dedup_stage.go</code>)에서 확인합니다. 마지막 알림 이후 새로 울린 경고도, 풀린 경고도 없을 때만 "반복 간격이 지났나"를 봐요. 풀린 경고를 따지는 건 <code>send_resolved</code>가 켜진 수신자뿐입니다(웹훅은 기본으로 켜져 있고, 슬랙은 꺼져 있어요). 그리고 이 확인 자체가 <code>group_interval</code>마다 한 번이라서, 반복 간격이 group_interval의 배수가 아니면 다음 배수까지 밀립니다(Alertmanager 문서, Configuration에도 있는 동작이에요). 실습-1에서 group_interval 1분, repeat_interval 90초로 돌렸더니 같은 묶음의 firing 알림 사이 간격 12번이 모두 120초였어요.</p>
+
+<h3>억제: 원인 경고가 울리는 동안 증상 경고를 누른다</h3>
+
+<p>묶기만으로는 서로 다른 경고 이름을 하나로 줄이지 못해요. "db가 응답하지 않는다"와 "orders가 db에 닿지 못한다"는 다른 경고입니다. 억제(inhibition)는 <b>어떤 경고가 울리는 동안 다른 경고의 알림을 보내지 않게</b> 해요.</p>
+
+<div class="obsv-code">inhibit_rules:
+  - source_matchers: [alertname="DBDown"]          # 이 경고가 울리는 동안
+    target_matchers: [alertname=~"DependencyDown|HighErrorRate|HighLatency"]  # 이 경고들은 보내지 않는다
+    equal: [env]                                   # 단, 두 경고의 env 값이 같을 때만</div>
+
+<p><code>equal</code>은 엉뚱한 억제를 막는 칸이에요. 운영 환경의 DBDown이 개발 환경의 증상까지 누르면 안 되니까요. 놓치기 쉬운 규칙이 하나 있어요. <b>라벨이 없는 것과 빈 값은 같은 것</b>으로 보기 때문에(Alertmanager 문서, Configuration), <code>equal</code>에 적은 라벨이 원인 경고와 증상 경고 양쪽에 다 없으면 억제가 걸려요. 반대로 한쪽에만 있으면 억제는 절대 안 걸립니다. 원인 경고에는 <code>service="db"</code>, 증상 경고에는 <code>service="orders"</code>가 붙어 있는데 <code>equal: [service]</code>로 적으면 아무것도 누르지 못해요.</p>
+
+<p>억제가 언제 판단되는지도 알아 둬야 합니다. 그림 2처럼 억제는 경고가 들어올 때가 아니라 <b>묶음이 알림을 보낼 차례가 됐을 때</b> 확인해요(소스의 파이프라인 순서는 억제, 활성 시간, 음소거 시간, 침묵 순입니다). 그러니 원인 경고가 증상 경고보다 늦게 참이 되면, 증상 경고의 첫 알림은 이미 나간 뒤예요. 반대로 원인이 먼저 풀리면, 아직 울리고 있는 증상 경고가 다음 차례에 억제에서 풀려 나갈 수 있습니다. 원인 경고의 <code>for</code>와 증상 경고의 <code>for</code>, 그리고 증상 쪽 측정 창의 길이가 서로 맞물려 있다는 뜻이에요. 실습-1에서는 db를 되살리고 32.5초 뒤, 억제가 풀린 이 틈에 증상 경고 10개를 담은 firing 알림이 실제로 나갔어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 억제는 다른 원인도 같이 가린다</div>
+  DBDown이 울리는 동안 HighErrorRate를 전부 누르면, 그 시간에 db와 상관없는 배포 실수로 에러가 난 서비스도 같이 가려져요. 억제의 대상은 원인 경고가 설명할 수 있는 범위로 좁히고(같은 클러스터, 같은 의존성 라벨), 사용자 증상 경고까지 누를지는 팀이 따로 정합니다. 사용자 증상으로 페이지를 보내라는 원칙과 원인 경고로 증상을 누르는 억제는 서로 당기는 관계예요.
+</div>
+
+<h3>침묵: 사람이 시간을 정해 누른다</h3>
+
+<p>억제는 설정 파일에 적힌 규칙이 자동으로 거는 것이고, 침묵(silence)은 사람이 그때그때 거는 것입니다. 점검 작업 동안, 또는 원인을 알고 고치는 중인 경고를 잠시 누를 때 써요. 매처(라벨 조건)로 대상을 고르는 건 라우팅과 같습니다.</p>
+
+<p>Alertmanager의 침묵은 만들 때 끝나는 시각을 반드시 받아요. API 스키마(<code>api/v2/openapi.yaml</code>)에서 <code>startsAt</code>, <code>endsAt</code>, 만든 사람(<code>createdBy</code>), 사유(<code>comment</code>)가 모두 필수 항목입니다. 다만 기간에 상한은 없어서(<code>silence/silence.go</code>의 검사는 시각이 비어 있지 않은지와 끝이 시작보다 앞서지 않는지만 봐요), 끝나는 시각을 9999년으로 적으면 사실상 영원한 침묵이 됩니다. 실무에서 조심할 것은 범위예요. <code>service="payments"</code>로 침묵을 걸면 고치는 중인 그 경고뿐 아니라 그 서비스의 모든 경고가 같이 꺼집니다. 고치는 중인 경고 이름까지 매처에 넣어 범위를 좁히고, 만료는 작업이 끝날 시각에 맞춰 짧게 잡아요. 만료가 지나도 문제가 남아 있으면 경고가 다시 울려서, 침묵을 건 사람이 상황을 다시 보게 됩니다.</p>
+
+<h3>시간대: 티켓은 업무 시간에만</h3>
+
+<p>네 번째 장치는 라우트에 시간대를 붙이는 거예요. <code>time_intervals</code>에 요일과 시각, 시간대를 정의하고, 라우트에 <code>active_time_intervals</code>(이 시간에만 보낸다)나 <code>mute_time_intervals</code>(이 시간에는 보내지 않는다)로 겁니다. 티켓 라우트에 업무 시간만 활성으로 걸면, 밤사이 울린 warning은 아침에 묶음이 보낼 차례가 왔을 때 아직 울리고 있으면 그때 나가요. 밤사이 풀린 건 아예 안 나가고요. 소스상 시간대 단계에서 걸러진 알림은 알림 기록에 남지 않아서, 활성 시간이 되면 "처음 보내는 알림"으로 다뤄지기 때문입니다.</p>
+
+<h2>5. 라우팅 트리: 등급 라벨 하나로 행선지와 서두름을 정한다</h2>
+
+<p>이제 장치를 엮습니다. Alertmanager의 설정은 라우트의 트리예요. 모든 경고는 루트에서 들어와 자식 라우트를 위에서부터 차례로 맞춰 보고, <b>처음 맞는 자식 하나</b>로 갑니다. 자식이 <code>continue: true</code>를 가지고 있으면 다음 형제도 계속 맞춰 봐요. 맞는 자식이 없으면 그 노드의 설정으로 처리되고요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="p2d" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M200 20 C 299 19.5, 398 18.5, 500 20.7 C 501.5 43, 499.9 66, 500.0 90 C 398 88.3, 299 88.4, 199.7 89.5 C 201.0 66, 199.0 43, 200 20 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="48" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">루트 route</text>
+<text x="350" y="74" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">receiver: log, group_by: [alertname]</text>
+<path d="M300 92 C 247.1 109.1, 181.1 123.5, 130 140" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2d)"/>
+<path d="M350 92 C 350.2 103.6, 350.1 128.5, 350 140" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2d)"/>
+<path d="M400 92 C 452.5 107.6, 518.0 124.8, 570 140" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p2d)" stroke-dasharray="8 8"/>
+<path d="M30 145 C 96 143.7, 162 146.1, 230 145.1 C 230.8 185, 229.5 224, 229.4 265 C 162 266.2, 96 266.9, 30.7 265.6 C 31.0 224, 30.7 185, 30 145 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="130" y="172" font-family="Menlo, monospace" font-size="12" fill="#b3502f" text-anchor="middle">severity=critical</text>
+<text x="130" y="200" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">📟 page</text>
+<text x="130" y="226" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">group_wait 10s</text>
+<text x="130" y="246" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">repeat 1h</text>
+<path d="M250 145 C 316 143.9, 382 145.1, 450 144.7 C 448.6 185, 448.6 224, 449.6 265 C 382 264.0, 316 265.8, 250.9 264.9 C 251.3 224, 251.5 185, 250 145 Z" fill="#fdf3dd" stroke="#c07f18" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="172" font-family="Menlo, monospace" font-size="12" fill="#c07f18" text-anchor="middle">severity=warning</text>
+<text x="350" y="200" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18" text-anchor="middle">🎫 ticket</text>
+<text x="350" y="226" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">group_wait 2m</text>
+<text x="350" y="246" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">interval 30m, repeat 24h</text>
+<path d="M470 145 C 536 146.8, 602 144.5, 670 144.4 C 669.2 185, 669.1 224, 669.4 265 C 602 265.5, 536 266.6, 470.7 265.0 C 470.5 224, 470.9 185, 470 145 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 6"/>
+<text x="570" y="172" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">어디에도 안 맞으면</text>
+<text x="570" y="200" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#8a8272" text-anchor="middle">🗂️ log</text>
+<text x="570" y="226" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">루트의 수신자와</text>
+<text x="570" y="246" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">루트의 시간 값</text>
+<text x="350" y="300" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">위에서부터 처음 맞는 자식 하나로 간다 (continue: true 면 다음 형제도 본다)</text>
+<text x="350" y="325" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">자식이 안 적은 값(group_by, 타이머)은 부모 것을 물려받는다</text>
+<text x="350" y="362" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 등급은 라벨 하나지만, 그 라벨이 행선지와 서두름의 정도를 함께 정한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. severity 라벨 하나가 수신자와 타이머를 함께 고른다</div>
+
+<p>트리의 장점은 <b>행선지마다 타이머를 다르게</b> 줄 수 있다는 점이에요. 페이지 라우트는 <code>group_wait</code>를 짧게 해서 빨리 깨우고, 티켓 라우트는 <code>group_wait</code>와 <code>group_interval</code>을 길게 해서 한 번에 모아 보냅니다. 자식이 적지 않은 값은 부모 것을 물려받아요. 루트의 수신자는 어디에도 안 맞은 경고가 떨어지는 곳이라, 사람을 깨우지 않는 기록용으로 두는 게 안전합니다. 등급 라벨을 깜빡한 새 경고가 페이지로 가지 않게요.</p>
+
+<p>등급 말고도 트리를 나누는 축은 많아요. 팀 라벨로 나눠 담당 팀의 수신자로 보내고, 그 안에서 다시 등급으로 나누는 2단 구성이 흔합니다. 「SLO와 경고」 2편에서 본 "통신 채널 자체에 등급을 박아 둔다"는 팁도 이 트리로 구현돼요. 수신자 이름을 <code>team-a-page</code>, <code>team-a-ticket</code>처럼 짓고, 경고를 만드는 사람은 라벨만 정확히 달면 됩니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 라우팅 설정을 바꾸기 전에</div>
+  &bull; <code>amtool check-config</code>로 문법을, <code>amtool config routes test</code>로 "이 라벨의 경고가 어느 수신자로 가는지"를 확인해요<br>
+  &bull; 루트 수신자는 기록용으로 둡니다. 라벨이 빠진 경고가 사람을 깨우지 않게요<br>
+  &bull; 페이지 라우트의 <code>group_wait</code>는 짧게, 티켓 라우트는 길게 둬요. 서두름의 정도를 타이머로 표현하는 거예요<br>
+  &bull; 억제 규칙의 <code>equal</code> 라벨이 원인 경고와 증상 경고 양쪽에 실제로 붙는지, Alertmanager 화면에서 경고의 라벨을 보고 확인해요
+</div>
+
+<h2>6. 알림이 안 오는 것도 장애다</h2>
+
+<p>알림을 줄이는 이야기를 하다 보면 반대쪽 실패를 잊기 쉬워요. Alertmanager가 죽었거나, 수신 채널의 토큰이 만료됐거나, Prometheus가 규칙 파일을 못 읽고 있으면 <b>알림이 0통</b>이 됩니다. 조용한 밤이 정말 아무 일도 없는 밤인지, 알림 체계가 멈춘 밤인지 구분할 수 없어요.</p>
+
+<p>그래서 모니터링 기반 자체를 감시하는 메타 모니터링이 필요해요. Prometheus 서버와 Alertmanager가 동작하는지 경고하고, 바깥에서 들여다보는 블랙박스 감시를 대비책으로 둡니다(Prometheus 문서, Alerting best practices). 쿠버네티스 기본 경고 묶음에는 이걸 위한 <code>Watchdog</code>이라는 경고가 들어 있어요. 조건이 늘 참이라 <b>항상 울리는</b> 경고입니다.</p>
+
+<div class="obsv-code">- alert: Watchdog
+  expr: vector(1)          # 늘 참
+  labels:
+    severity: none</div>
+
+<p>이 경고를 외부의 감시 서비스로 계속 보내고, 외부 서비스는 "일정 시간 동안 이 알림이 안 오면" 사람을 부르게 합니다. 흔히 데드맨 스위치(dead man's switch)라고 불러요. 경고가 오는 것이 정상이고, <b>안 오는 것</b>이 신호입니다. 그래서 Watchdog은 라우팅 트리에서 따로 빼서 외부 감시 수신자로만 보내고, 사람에게 가는 라우트에는 절대 섞지 않아요. 「SLO와 경고」 2편에서 관측 시스템 장애에 이중화 여부에 따라 등급을 따로 주자고 했던 것도 같은 문제를 다룹니다. 알림 체계가 멈추면 다른 모든 경고가 함께 멈추니까요.</p>
+
+<h2>7. 줄인 다음에 남는 질문</h2>
+
+<p>묶고, 누르고, 행선지를 나누면 알림 수는 줄어요. 그런데 줄이는 장치마다 대가가 있습니다. 묶으면 첫 알림이 늦어지거나 늦게 온 경고가 다음 주기까지 밀리고, 억제하면 다른 원인이 가려지고, 침묵은 범위를 넓게 잡는 순간 상관없는 경고까지 끕니다. 그래서 설정을 바꾼 뒤에는 "알림이 몇 통으로 줄었나"와 함께 "<b>첫 알림이 언제 왔나</b>", "<b>무엇이 새어 나갔나</b>"를 같이 봐야 해요.</p>
+
+<p>3장의 "경고 수와 장애 수를 1:1에 가깝게"라는 권고를 숫자로 보려면, 페이지 수를 장애 수로 나눈 값을 정기적으로 보면 좋아요. 이건 이 글의 제안이고, 값이 1에 가까울수록 "장애 하나에 알림 하나"에 가깝습니다. 실습-1에서 db 하나를 멈춰 놓고 Alertmanager 설정을 바꿔 가며 재 보니, 묶지 않으면 62통, 이름으로 묶으면 8통, 억제를 더하면 4통이었고, 등급별로 나누자 사람을 깨운 알림은 2통이었어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>경고는 페이지, 티켓, 기록 중 하나로 가야 하고, 그 갈림은 받은 사람이 언제 움직여야 하는지로 정해요.</b> 경고 등급은 만들 때 라벨로 미리 정하는 행선지이고, 장애 등급은 장애가 났을 때 사람이 판정하는 대응 규모라서 둘은 같지 않아요. 12시간 교대에 장애 두 건이 상한이고, 경고가 몇 개 울렸든 문제 하나를 장애 하나로 셉니다.<br><br>
+  Alertmanager는 묶기, 억제, 침묵, 시간대로 알림 수를 줄이고, 라우팅 트리로 등급마다 행선지와 타이머를 달리해요. group_by를 비우면 전부 한 묶음이 되고, repeat_interval은 group_interval의 배수로 올림되며, 억제는 보낼 차례에 판단돼서 원인 경고와 증상 경고의 시간이 어긋나면 새어 나갑니다. 줄인 알림 수는 첫 알림의 지연, 새어 나간 알림과 같이 봐야 해요.
+</div>
+
+</div>

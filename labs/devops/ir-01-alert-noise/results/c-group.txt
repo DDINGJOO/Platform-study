@@ -1,0 +1,39 @@
+시나리오 c-group  (alertmanager/c-group.yml)
+db 멈춤 0초, 되살림 360.3초, 이후 420초 관찰. 시각은 모두 db 를 멈춘 순간 기준
+
+[Prometheus 가 본 경고] 2초 간격 폴링
+  DependencyDown  처음 firing    24.2s   마지막 firing   366.3s (복구 +6.0s)
+  DBDown          처음 firing    28.2s   마지막 firing   362.3s (복구 +2.0s)
+  HighErrorRate   처음 firing    44.3s   마지막 firing   416.6s (복구 +56.2s)
+  HighLatency     처음 firing    68.4s   마지막 firing   422.6s (복구 +62.3s)
+  동시에 firing 인 경고 최대 31개 (74.5s)
+  Alertmanager 에서 억제(suppressed)된 경고 최대 0개
+
+[받은 알림] 한 줄 = 웹훅 한 번 = 사람(또는 기록)에게 간 알림 한 통
+  받은 시각                    수신자  상태      firing resolved  묶음 라벨
+     53.2s                    human  firing        10        0  alertname=DependencyDown
+                                     담긴 경고: DependencyDown 10
+     58.2s                    human  firing         1        0  alertname=DBDown
+                                     담긴 경고: DBDown 1
+     98.2s                    human  firing        10        0  alertname=HighLatency
+                                     담긴 경고: HighLatency 10
+    308.2s                    human  firing        10        0  alertname=HighErrorRate
+                                     담긴 경고: HighErrorRate 10
+    608.3s (복구 +248.0s)       human  resolved       0       10  alertname=HighErrorRate
+                                     담긴 경고: HighErrorRate 10
+    653.3s (복구 +293.0s)       human  resolved       0       10  alertname=DependencyDown
+                                     담긴 경고: DependencyDown 10
+    658.3s (복구 +298.0s)       human  resolved       0        1  alertname=DBDown
+                                     담긴 경고: DBDown 1
+    698.3s (복구 +338.0s)       human  resolved       0       10  alertname=HighLatency
+                                     담긴 경고: HighLatency 10
+
+[합계]
+  수신자별 알림 수: human 8
+  사람에게 간 알림: 8통 (장애 중 4, 복구 뒤 4)
+  그중 firing 상태 알림 4통, resolved 상태 알림 4통
+  첫 알림: 53.2s  (DependencyDown)
+  DBDown 이 처음 실린 알림: 58.2s
+  알림에 실린 경고 62건 중 runbook_url 주석이 있는 것 62건
+  commonAnnotations 에 runbook_url 이 들어 있던 알림 8통 / 8통
+  같은 묶음에 연달아 간 알림 사이 간격(초): 300, 600, 600, 600

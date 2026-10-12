@@ -1,0 +1,346 @@
+<!-- lead: db 하나를 멈춰 경고 31개를 울리고 Alertmanager 설정만 바꿔 쟀어요. 묶지 않으면 62통, 이름으로 묶으면 8통, 억제를 더하면 4통, 등급별 라우팅으로 사람을 깨운 알림은 2통이었고, 억제가 복구 직후에 새는 틈도 실측했어요. -->
+<!-- tags: Alertmanager, group_by, inhibit_rules, repeat_interval, 경고 폭풍 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚨 장애 대응, 실습-1</div>
+  1편. 경고 하나에는 운영 절차서 하나가 붙어야 한다<br>
+  2편. 모든 경고가 사람을 깨울 필요는 없다<br>
+  3편. 장애에는 지휘하는 사람이 한 명 있어야 한다<br>
+  4편. 사후 분석은 누가 아니라 무엇을 묻는다<br>
+  5편. 장애를 일부러 일으켜 미리 겪어 본다<br>
+  <b>실습-1. 경고 폭풍을 Alertmanager로 묶고 누른다</b> &larr; 지금 이 글<br>
+  실습-2. 장애를 일으키고 타임라인과 사후 분석을 남긴다<br>
+  실습-3. 정상 상태 가설을 세우고 Chaos Mesh로 깨 본다
+</div>
+
+<p><a href="#ir-02">2편</a>에서 db 하나가 멈추면 알림이 수십 통 온다고 했어요. 그리고 Alertmanager의 묶기, 억제, 라우팅이 그 수를 줄이는 대신 첫 알림을 늦추거나 무언가를 새게 만든다고 했습니다. 이번에는 그 말을 직접 돌려서 확인합니다.</p>
+
+<p>db 하나와 그 db를 부르는 인스턴스 열 개를 띄우고, db를 멈춰 경고 31개를 한꺼번에 울립니다. 그리고 Alertmanager 설정만 바꿔 가며 같은 장애를 반복해요. 재는 것은 둘입니다. <b>사람에게 간 알림이 몇 통이었나</b>, 그리고 <b>db를 멈춘 뒤 첫 알림이 몇 초 만에 왔나</b>. 숫자는 전부 이번에 돌린 결과예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 아무것도 안 적은 기본 설정은 몇 통을 보내나? 묶지 않으면, 이름으로 묶으면?<br>
+  &bull; 억제 규칙은 증상 경고를 얼마나 누르고, 무엇이 새어 나오나?<br>
+  &bull; 등급별 라우팅은 사람을 깨우는 알림과 첫 알림 시간을 어떻게 바꾸나?<br>
+  &bull; repeat_interval 은 정말 group_interval 의 배수로 올림되나?<br>
+  &bull; runbook_url 주석은 알림까지 실려 가나?
+</div>
+
+<h2>1. 실습 환경: db 하나, 인스턴스 열 개, 경고 31개</h2>
+
+<p>앱은 표준 라이브러리만 쓴 작은 파이썬 서버입니다. <code>db</code>는 5ms 뒤에 응답하는 하위 의존성이고, 서비스 다섯(orders, payments, cart, search, inventory)은 인스턴스를 둘씩 띄워요. 각 인스턴스는 초당 10건씩 db를 부르고(타임아웃 1초), 2초마다 db의 <code>/health</code>로 <code>app_dependency_up</code> 게이지를 갱신합니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 370" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="l1a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="l1b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="l1c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M25 40 C 108 39.3, 190 38.6, 275 40.3 C 273.7 122, 275.1 205, 274.7 290 C 190 288.2, 108 290.0, 24.1 289.9 C 23.7 205, 23.8 122, 25 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="150" y="68" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2f5f8f" text-anchor="middle">서비스 5개 × 인스턴스 2개</text>
+<path d="M40 88 C 75 87.7, 109 89.3, 145 87.2 C 144.2 97, 145.4 106, 145.9 116 C 109 116.3, 75 115.6, 41.0 115.1 C 41.1 106, 39.4 97, 40 88 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="92" y="107" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">orders-1</text>
+<path d="M155 88 C 190 86.6, 224 86.5, 260 87.6 C 260.9 97, 259.0 106, 260.2 116 C 224 116.6, 190 115.5, 155.1 115.1 C 153.7 106, 154.1 97, 155 88 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="207" y="107" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">orders-2</text>
+<path d="M40 126 C 75 126.7, 109 125.7, 145 125.6 C 145.3 135, 144.9 144, 144.6 154 C 109 155.2, 75 154.8, 39.5 154.1 C 40.1 144, 41.1 135, 40 126 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="92" y="145" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">payments-1</text>
+<path d="M155 126 C 190 126.9, 224 125.2, 260 127.0 C 258.9 135, 259.8 144, 260.5 154 C 224 152.6, 190 154.0, 154.1 154.3 C 155.8 144, 155.2 135, 155 126 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="207" y="145" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">payments-2</text>
+<path d="M40 164 C 75 165.5, 109 163.3, 145 164.4 C 145.3 173, 145.2 182, 144.9 192 C 109 193.4, 75 193.8, 39.9 192.3 C 38.7 182, 40.6 173, 40 164 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="92" y="183" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">cart-1</text>
+<path d="M155 164 C 190 164.6, 224 166.0, 260 164.6 C 259.4 173, 259.7 182, 260.3 192 C 224 190.1, 190 191.8, 154.3 191.2 C 153.7 182, 155.8 173, 155 164 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="207" y="183" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">cart-2</text>
+<path d="M40 202 C 75 200.5, 109 201.0, 145 201.8 C 146.1 211, 143.7 220, 144.9 230 C 109 230.2, 75 231.5, 40.6 230.7 C 39.3 220, 39.7 211, 40 202 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="92" y="221" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">search-1</text>
+<path d="M155 202 C 190 201.4, 224 203.5, 260 202.9 C 259.0 211, 259.0 220, 259.5 230 C 224 228.9, 190 229.9, 155.2 229.5 C 153.5 220, 154.8 211, 155 202 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="207" y="221" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">search-2</text>
+<path d="M40 240 C 75 239.5, 109 240.3, 145 240.9 C 145.6 249, 145.0 258, 145.2 268 C 109 268.7, 75 266.2, 40.8 268.6 C 41.1 258, 40.9 249, 40 240 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="92" y="259" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">inventory-1</text>
+<path d="M155 240 C 190 239.6, 224 239.6, 260 239.2 C 260.4 249, 258.7 258, 259.1 268 C 224 266.8, 190 266.6, 154.7 267.1 C 153.5 258, 154.0 249, 155 240 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="207" y="259" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">inventory-2</text>
+<path d="M277 165 C 295.8 164.2, 322.7 167.2, 345 165" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l1a)"/>
+<text x="312" y="150" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">초당 10건</text>
+<text x="312" y="190" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">타임아웃 1s</text>
+<path d="M350 120 C 386 120.5, 423 118.6, 460 119.5 C 459.5 150, 459.6 179, 459.2 210 C 423 211.4, 386 212.0, 349.9 210.0 C 348.8 179, 348.8 150, 350 120 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="405" y="155" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">💾 db</text>
+<text x="405" y="185" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#b3502f" text-anchor="middle">pause 로 멈춤</text>
+<path d="M500 40 C 559 39.4, 619 39.1, 680 40.7 C 679.0 63, 678.6 86, 680.9 110 C 619 110.1, 559 108.6, 500.1 109.1 C 500.1 86, 501.4 63, 500 40 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="590" y="68" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">Prometheus</text>
+<text x="590" y="94" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">5초마다 긁고 규칙 평가</text>
+<path d="M590 112 C 591.5 121.6, 589.0 130.8, 590 140" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l1a)"/>
+<path d="M500 145 C 559 143.7, 619 146.1, 680 145.1 C 680.8 168, 679.5 191, 679.4 215 C 619 216.2, 559 216.9, 500.7 215.6 C 501.0 191, 500.7 168, 500 145 Z" fill="#fdf3dd" stroke="#c07f18" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="590" y="173" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18" text-anchor="middle">Alertmanager</text>
+<text x="590" y="199" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">설정 A~G 를 갈아 끼움</text>
+<path d="M590 217 C 588.9 225.5, 589.4 233.8, 590 245" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l1a)"/>
+<path d="M500 250 C 559 248.1, 619 249.1, 680 249.5 C 680.6 273, 681.4 296, 679.9 320 C 619 321.7, 559 322.0, 500.9 319.7 C 499.2 296, 499.2 273, 500 250 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="590" y="278" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">📮 웹훅 수신기</text>
+<text x="590" y="304" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">한 통마다 한 줄 기록</text>
+<path d="M497 75 C 430.7 68.7, 345.6 66.9, 280 60" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" marker-end="url(#l1c)" stroke-dasharray="8 8"/>
+<text x="390" y="52" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">긁기</text>
+<path d="M497 90 C 487.9 103.4, 473.1 123.3, 462 135" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" marker-end="url(#l1c)" stroke-dasharray="8 8"/>
+<text x="350" y="350" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 원인은 db 하나, 경고는 네 종류 31개. 사람에게 몇 통이 가는지를 센다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 원인은 db 하나인데, 그 db를 보는 경고와 db를 쓰는 인스턴스마다의 경고가 같이 울린다</div>
+
+<p>장애는 <code>docker compose pause db</code>로 냅니다. 프로세스를 얼려 연결은 맺어지는데 응답이 오지 않는, "느려서 실패하는" 장애예요. 그래야 에러와 지연 경고가 같이 울려요.</p>
+
+<p>경고 규칙은 네 종류입니다. 모두 <code>summary</code>, <code>description</code>, <code>runbook_url</code> 주석을 달았고, <code>runbook_url</code>은 저장소의 <code>runbooks/경고이름.md</code>를 가리켜요(1편에서 본 그 절차서입니다).</p>
+
+<div class="obsv-code">경고             조건                                       for   severity  개수
+DBDown           up{job="db"} == 0                          15s   critical   1
+DependencyDown   app_dependency_up{dependency="db"} == 0    15s   warning   10
+HighErrorRate    인스턴스별 최근 1분 에러 비율 &gt; 5%          30s   critical  10
+HighLatency      인스턴스별 최근 1분 p99 &gt; 0.5초             1m    warning   10</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: for (경고 규칙)</div>
+  조건이 참이 된 뒤 이 시간 동안 계속 참이어야 경고가 울리게(firing) 하는 설정이에요. 그 전까지는 pending 상태로 기다리고, Alertmanager로는 firing이 된 경고만 갑니다. 짧게 튀는 값으로 사람을 부르지 않으려고 둬요.
+</div>
+
+<p>Prometheus는 5초마다 긁고 5초마다 규칙을 평가해요. 웹훅 수신기는 Alertmanager의 요청 한 번을 <b>사람에게 간 알림 한 통</b>으로 보고 한 줄씩 남깁니다. 시나리오마다 Alertmanager를 새로 띄우고, A~E는 db를 6분 멈췄다가 되살린 뒤 7분, G는 8분 멈추고 2분 반을 더 지켜봐요.</p>
+
+<div class="obsv-code">Alertmanager   0.34.1 (2026년 9월 릴리스, 지금 최신 안정판)
+Prometheus     3.15.0 (스크레이프·규칙 평가 5초, 스크레이프 타임아웃 2초)
+앱, db, 수신기  Python 3.13 (alpine), 표준 라이브러리만
+실행 환경       Docker Desktop 29.5 (메모리 8GB), Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/ir-01-alert-noise">GitHub 저장소의 labs/devops/ir-01-alert-noise</a>에 있습니다. Docker와 python3만 있으면 돼요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/devops/ir-01-alert-noise
+docker compose up -d                       # Alertmanager 설정 기본값은 c-group.yml
+docker compose pause db                    # 장애 주입
+docker compose unpause db                  # 복구
+docker compose logs -f webhook             # 받은 알림
+
+# 글의 시나리오 하나를 그대로: 이름, 설정 파일, 멈춘 시간(초), 복구 뒤 관찰(초)
+python3 scripts/run_scenario.py a-defaults a-defaults.yml 360 420
+python3 scripts/summarize.py a-defaults    # results/a-defaults.txt
+docker compose down -v
+
+# 4절의 따로 재 본 실험: Docker 없이 Alertmanager 바이너리만 필요
+GAP=36 GI=5m python3 scripts/stale_group.py /path/to/alertmanager</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 이 실습을 돌리다 걸린 것들</div>
+  &bull; <b>Alertmanager를 다시 만들어도 알림 기록이 남았어요.</b> 이미지가 <code>/alertmanager</code>를 익명 볼륨으로 선언해서, <code>--force-recreate</code>로는 앞 시나리오의 알림 기록이 이어져 resolved 알림이 다음 시나리오 시작 전에 나왔어요. 지금은 <code>docker compose rm -sfv alertmanager webhook</code>으로 볼륨째 지웁니다<br>
+  &bull; <b>노트북이 잠들거나 db를 멈추기 전에 pending/firing이던 경고가 있던 실행은</b> <code>results/aborted/</code>로 옮기고 다시 돌렸어요. 글의 숫자는 전부 그렇지 않은 실행입니다
+</div>
+
+<h2>2. 경고 31개는 1분 남짓에 걸쳐 차례로 울린다</h2>
+
+<p>시나리오 A에서 2초마다 찍은 Prometheus 경고 상태의 요약이에요(<code>results/a-defaults.txt</code>). 폴링 시각이라 실제 firing보다 최대 2초쯤 늦게 찍혀요.</p>
+
+<div class="obsv-code">경고             처음 firing   마지막 firing
+DBDown              20.3s        363.0s (복구 +2.0s)
+DependencyDown      20.3s        369.1s (복구 +8.1s)
+HighErrorRate       40.4s        423.4s (복구 +62.4s)
+HighLatency         64.6s        423.4s (복구 +62.4s)
+동시에 firing 인 경고 최대 31개 (70.7s)</div>
+
+<p>원인 경고와 증상 경고가 같은 순간에 울리지 않아요. <code>DBDown</code>은 스크레이프 실패(5초 주기, 타임아웃 2초)에 <code>for: 15s</code>가 더해져 20초 안팎에 울립니다. <code>HighErrorRate</code>는 최근 1분 창의 에러 비율이 5%를 넘는 데 몇 초, 거기에 <code>for: 30s</code>가 붙어 40초쯤이고, <code>HighLatency</code>는 <code>for: 1m</code>라서 1분이 넘어서야 울려요.</p>
+
+<p>풀릴 때는 반대예요. <span class="obsv-mark">원인 경고는 바로 풀리고, 1분 창을 쓰는 증상 경고는 1분쯤 늦게 풀립니다.</span> 이 틈이 5절의 누출이 돼요.</p>
+
+<h2>3. 아무것도 안 적었더니 3통이었다</h2>
+
+<p>시나리오 A의 Alertmanager 설정은 수신자 하나뿐입니다. <code>group_by</code>도 타이머도 적지 않았어요. 경고 31개가 울렸으니 알림도 수십 통일 거라고 예상했는데, 사람에게 간 알림은 <b>3통</b>이었습니다.</p>
+
+<div class="obsv-code">받은 시각               상태      firing resolved  담긴 경고
+  48.8s                 firing      21       0      DBDown 1, DependencyDown 10, HighErrorRate 10
+ 349.4s                 firing      31       0      위 21개 + HighLatency 10
+ 649.8s (복구 +288.8s)  resolved     0      31      전부
+(results/a-defaults.txt)</div>
+
+<p>2편에서 본 대로 루트 라우트에서 <code>group_by</code>를 비우면 모든 경고가 한 묶음이 되기 때문이에요. 첫 알림은 처음 들어온 경고에서 <code>group_wait</code> 30초 뒤인 48.8초에 나갔고, 그때까지 도착한 21개가 한 통에 실렸습니다.</p>
+
+<p>대신 세 가지를 잃었어요. 64.6초에 울린 <code>HighLatency</code>는 첫 알림을 놓쳐 다음 <code>group_interval</code>(5분) 차례인 349.4초, 울리고 <b>약 285초 뒤</b>에야 실렸어요. resolved 알림은 마지막 경고까지 풀린 뒤에 한 번 나가 복구 288.8초 뒤에 왔고요. 그리고 세 통 모두 <code>commonAnnotations</code>에 <code>runbook_url</code>이 없었어요. 서로 다른 종류의 경고가 한 묶음이라 값이 달랐으니까요. 경고마다의 주석에는 83건 전부 실려 있었으니, 공통 주석만 찍는 템플릿이었다면 링크를 하나도 못 봤을 거예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: resolved 알림 (send_resolved)</div>
+  묶음 안의 경고가 풀렸을 때 보내는 알림이에요. 수신자 설정의 <code>send_resolved</code>가 켜져 있어야 나가고, 웹훅은 기본으로 켜져 있어서 이 실습에서는 풀릴 때마다 한 통씩 더 왔습니다. 사람에게는 "이제 쉬어도 된다"는 신호지만, 알림 수로는 그만큼 더해져요.
+</div>
+
+<h2>4. 묶지 않으면 62통, 이름으로 묶으면 8통</h2>
+
+<p>시나리오 B는 <code>group_by: ['...']</code>로 경고 하나를 묶음 하나로 만들었어요. firing 31통, resolved 31통, <b>62통</b>이었고(<code>results/b-nogroup.txt</code>), firing 31통은 47.2초부터 102.2초 사이에 쏟아졌어요.</p>
+
+<p>순서도 나빴어요. 첫 알림(47.2초)은 <code>DependencyDown</code>이었고, 원인인 <code>DBDown</code>은 57.2초에야 왔습니다. 이번 실행에서는 헬스 체크(2초 주기)가 스크레이프(5초 주기)보다 먼저 실패를 봤거든요(18.2초 대 28.3초). 받은 사람은 증상 알림 사이에서 원인 알림을 찾아야 해요.</p>
+
+<p>시나리오 C는 <code>group_by: [alertname]</code>입니다. 경고 이름 네 개가 묶음 네 개가 되고, firing 4통과 resolved 4통, <b>8통</b>이었어요(<code>results/c-group.txt</code>).</p>
+
+<div class="obsv-code">받은 시각               상태       경고 수  묶음
+  53.2s                 firing      10      DependencyDown
+  58.2s                 firing       1      DBDown
+  98.2s                 firing      10      HighLatency
+ 308.2s                 firing      10      HighErrorRate      ← 울린 지 264초 뒤
+ 608.3s ~ 698.3s        resolved    네 통
+(results/c-group.txt)</div>
+
+<p>네 묶음 중 셋은 울리고 30초 안팎에 나갔어요. 그런데 <code>HighErrorRate</code>는 Prometheus에서 44.3초에 firing이 됐는데 첫 알림이 308.2초였습니다. 같은 설정의 다른 묶음은 정상이었으니 설정 때문은 아니에요.</p>
+
+<h3>앞 장애에서 풀린 경고가 첫 알림을 늦춘 것으로 보인다</h3>
+
+<p>단서는 실행 순서였어요. B의 <code>HighErrorRate</code>는 C에서 db를 멈추기 507초 전에 풀렸고, Prometheus는 풀린 경고를 15분 동안 다시 보내요(<code>resolvedRetention = 15 * time.Minute</code>, <code>rules/alerting.go</code>). 그 경고가 같은 이름의 묶음을 먼저 만들고 새 firing 경고가 거기에 붙었을 수 있어요. 다만 B에서 함께 풀린 다른 세 이름도 재전송 범위 안이었는데 늦지 않았습니다.</p>
+
+<p>Docker 없이 Alertmanager 바이너리 하나로 따로 재 봤습니다(<code>scripts/stale_group.py</code>). 같은 라벨의 경고 10개를 "8분 전에 풀림"으로 1분마다 다시 보내다가, 같은 라벨로 firing을 넣고 첫 알림까지 걸린 시간을 쟀어요.</p>
+
+<div class="obsv-code">group_wait 30s 고정                         첫 알림까지
+처음 보는 경고(대조군)                      30.0~30.1초  (네 번. 경고 1개짜리 포함)
+group_interval 2m, 마지막 재전송 60초 뒤 firing  30.0초
+group_interval 2m, 마지막 재전송 36초 뒤 firing  24.0초
+group_interval 5m, 마지막 재전송 36초 뒤 firing 144.0초
+(results/stale-group-*.txt)</div>
+
+<p>5분 주기에서는 30초가 144초로 늦어졌어요. G 시나리오(1분 주기)에서도 <code>HighErrorRate</code> 묶음은 울린 지 25초 만에 나가서 <code>group_wait</code>보다 빨랐습니다. C는 30초 대신 264초, 곧 약 234초 늦은 셈이에요.</p>
+
+<p>소스를 읽고 세운 추론은 이래요. 풀린 경고로 생긴 묶음은 생기자마자 차례를 맞고(<code>dispatch/dispatch.go</code>), 그 순간 목록에 있던 풀린 경고만 지운 뒤 비면 없어집니다(<code>store/store.go</code>). 경고 10개가 한 요청으로 와서 일부가 그 뒤에 도착하면 묶음이 살아남아 <code>group_interval</code> 주기로 돌고, 새 firing 경고는 타이머를 건드리지 않고 붙어서 다음 주기를 기다려요. 늦지 않은 경우들은 이 경쟁에서 묶음이 지워졌다고 보면 설명되지만, 경쟁 자체는 측정하지 못했습니다. 그래도 <a href="#ir-02">2편</a>의 "첫 알림은 group_wait 뒤"는 처음 생기는 묶음에만 맞아요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 알림 기록 (nflog)</div>
+  Alertmanager가 묶음마다 "언제 어떤 경고들을 firing, resolved로 보냈는지"를 적어 두는 기록이에요. 같은 알림을 다시 보낼지, 반복 간격이 지났는지를 이걸 보고 정합니다. 디스크에 저장돼서 재시작해도 남아요(기본 보존 120시간).
+</div>
+
+<h2>5. 억제는 30개를 눌렀고, 복구 뒤에 하나가 샜다</h2>
+
+<p>시나리오 D는 C에 억제 규칙을 더했어요.</p>
+
+<div class="obsv-code">inhibit_rules:
+  - name: db-down-hides-symptoms
+    source_matchers: [alertname="DBDown"]
+    target_matchers: [alertname=~"DependencyDown|HighErrorRate|HighLatency"]
+    equal: [env]          # Prometheus external_labels 로 모든 경고에 env="lab" 이 붙는다</div>
+
+<p>장애 중에는 기대대로였어요. 억제된 경고가 최대 30개였고, 장애 6분 동안 사람에게 간 알림은 49.5초의 <code>DBDown</code> <b>한 통</b>뿐이었습니다.</p>
+
+<p>그런데 db를 되살리고 32.5초 뒤, <code>HighLatency</code> 10개를 담은 firing 알림이 왔어요. 합계는 <b>4통</b>이었습니다(<code>results/d-inhibit.txt</code>).</p>
+
+<div class="obsv-code">  49.5s                 firing    DBDown 1
+ 394.5s (복구 +32.5s)   firing    HighLatency 10     ← 억제가 풀린 틈에 샘
+ 649.5s (복구 +287.5s)  resolved  DBDown 1
+ 694.5s (복구 +332.5s)  resolved  HighLatency 10</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="l2a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="l2b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">시나리오 D (억제 규칙 켬): db 를 0초에 멈추고 362초에 되살림</text>
+<path d="M40 250 C 229.4 249.3, 484.1 249.1, 674 250" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l2a)"/>
+<path d="M40 245 C 40.1 248.0, 38.2 252.0, 40 255" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+<text x="40.0" y="272" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">0s</text>
+<path d="M128 245 C 126.1 248.0, 126.3 252.0, 128 255" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+<text x="128.0" y="272" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">100s</text>
+<path d="M216 245 C 215.7 248.0, 214.5 252.0, 216 255" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+<text x="216.0" y="272" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">200s</text>
+<path d="M304 245 C 304.5 248.0, 304.3 252.0, 304 255" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+<text x="304.0" y="272" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">300s</text>
+<path d="M392 245 C 393.9 248.0, 393.4 252.0, 392 255" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+<text x="392.0" y="272" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">400s</text>
+<path d="M480 245 C 478.6 248.0, 479.2 252.0, 480 255" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+<text x="480.0" y="272" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">500s</text>
+<path d="M568 245 C 566.7 248.0, 568.6 252.0, 568 255" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+<text x="568.0" y="272" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">600s</text>
+<path d="M656 245 C 656.2 248.0, 654.2 252.0, 656 255" fill="none" stroke="#3d3a34" stroke-width="1.5" stroke-linecap="round"/>
+<text x="656.0" y="272" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">700s</text>
+<path d="M40 45 C 145 45.7, 250 44.7, 359 44.6 C 358.8 52, 358.4 60, 358.2 67 C 250 68.2, 145 67.8, 39.5 67.1 C 40.1 60, 41.1 52, 40 45 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 6"/>
+<text x="199.28" y="61" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">db 멈춤</text>
+<path d="M58 85 C 159 85.9, 260 84.2, 364 86.0 C 362.7 94, 363.6 102, 364.4 111 C 260 109.6, 159 111.0, 56.7 111.3 C 58.4 102, 57.8 94, 58 85 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="65.6" y="103" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#b3502f" text-anchor="start">DBDown firing (원인, 억제하는 쪽)</text>
+<text x="369.84" y="103" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#b3502f" text-anchor="start">368s 풀림</text>
+<path d="M98 140 C 186 141.5, 273 139.3, 364 140.4 C 364.1 149, 364.1 157, 363.8 166 C 273 167.4, 186 167.8, 98.0 166.3 C 96.8 157, 98.7 149, 98 140 Z" fill="#fdf3dd" stroke="#c07f18" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="106.08" y="158" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#c07f18" text-anchor="start">HighLatency firing, 억제됨</text>
+<path d="M364 140 C 380 140.6, 396 142.0, 413 140.6 C 412.5 149, 412.8 157, 413.5 166 C 396 164.1, 380 165.8, 363.2 165.2 C 362.5 157, 364.6 149, 364 140 Z" fill="#ffd54d" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="419.12" y="158" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#c07f18" text-anchor="start">424s 풀림</text>
+<path d="M123 178 C 121.7 194.2, 122.7 215.8, 123 232" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#l2a)" stroke-dasharray="1 7"/>
+<path d="M387 178 C 385.5 194.2, 387.4 215.8, 387 232" fill="none" stroke="#b3502f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#l2b)"/>
+<path d="M651 178 C 652.4 194.2, 650.3 215.8, 651 232" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#l2a)" stroke-dasharray="1 7"/>
+<text x="127.16" y="226" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="start">94.5s 차례: 억제 중이라 안 보냄</text>
+<text x="383.16" y="196" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="end">394.5s 차례: 보냄</text>
+<text x="647.16" y="226" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="end">694.5s resolved</text>
+<text x="87.56" y="128" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#b3502f" text-anchor="start">📟 49.5s DBDown 알림</text>
+<text x="350" y="310" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">= 원인 경고가 먼저 풀리고 증상 경고가 늦게 풀리는 56초 사이에, 증상 묶음의 차례가 오면 샌다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 원인 경고가 풀리고 증상 경고가 아직 울리는 56초 사이에 증상 묶음의 차례가 왔다</div>
+
+<p>억제는 묶음이 보낼 차례에 판단합니다. <code>DBDown</code>은 368초에, <code>HighLatency</code>는 424초에 풀렸고, <code>HighLatency</code> 묶음의 차례가 그 사이인 394.5초에 왔어요. 5분을 거슬러 계산한 앞 차례(94.5초)는 억제 중이었을 거예요. <code>HighErrorRate</code>는 처음 생긴 묶음이라 치면 차례(약 366초)가 틈 시작 직전이라 새지 않은 것으로 보이지만, 4절의 효과 때문에 이 전제는 확인할 수 없어요. <span class="obsv-mark">새느냐 마느냐는 묶음의 차례가 언제 오느냐에 달려 있어요.</span></p>
+
+<p>막는 방법은 두 가지가 보여요. 원인 경고에 <code>keep_firing_for</code>(조건이 마지막으로 참이었던 뒤에도 정한 시간만큼 경고를 계속 울림, Prometheus 문서 Alerting rules)로 증상 쪽 창(1분)보다 긴 값을 주거나, 증상 경고의 창과 <code>for</code>를 짧게 하는 거예요. 둘 다 돌려 보지는 않았습니다.</p>
+
+<h2>6. 등급별로 나누니 사람을 깨운 알림은 2통이었다</h2>
+
+<p>시나리오 E는 D에 라우팅을 더했어요. <code>critical</code>은 <code>page</code>(group_wait 10초), <code>warning</code>은 <code>ticket</code>(group_wait 2분, group_interval 30분, repeat 24시간), 어디에도 안 맞으면 <code>log</code>로 갑니다.</p>
+
+<div class="obsv-code">  30.2s                 page   firing    DBDown 1
+ 630.2s (복구 +268.3s)  page   resolved  DBDown 1
+ticket 0통, log 0통   (results/e-route.txt)</div>
+
+<p>사람을 깨운 알림은 <b>2통</b>이었고, 첫 page는 30.2초에 왔어요. <code>DBDown</code>이 울린 뒤 첫 알림까지 D는 29.3초, E는 8.0초로 약 21초 줄었습니다. 페이지 라우트의 <code>group_wait</code>를 30초에서 10초로 줄인 몫이에요.</p>
+
+<p>이번에는 복구 뒤에 새는 알림이 없었어요. 설계 덕분이라고 하기는 어렵습니다. <code>HighLatency</code>는 <code>ticket</code> 라우트라 첫 차례(울리고 2분 뒤)에는 억제 중이었고, 다음 차례는 30분 뒤라 관찰 시간 안에 오지 않았어요. <code>page</code> 쪽 <code>HighErrorRate</code>는 처음 생긴 묶음이라 치면 차례가 틈 밖이지만, 5절과 같은 이유로 확인할 수 없습니다. 긴 <code>group_interval</code>은 티켓 쪽 누출을 줄일 뿐이고, 페이지 쪽은 5절의 방법으로 막아야 해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 묶음의 차례 (flush)</div>
+  Alertmanager가 묶음 하나의 알림을 보낼지 판단하는 시점이에요. 처음에는 묶음이 생기고 <code>group_wait</code> 뒤, 그다음부터는 <code>group_interval</code>마다 옵니다. 억제, 시간대, 침묵, 반복 간격 판단이 모두 이 시점에 일어나요.
+</div>
+
+<h2>7. repeat_interval 90초는 120초마다 반복됐다</h2>
+
+<p>마지막으로 반복 간격을 봤어요. 시나리오 G는 <code>group_interval: 1m</code>, <code>repeat_interval: 90s</code>로 두고 db를 8분 멈췄습니다.</p>
+
+<div class="obsv-code">같은 묶음에 연달아 간 firing 알림 사이 간격(초)
+120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120   (12번)
+DBDown 묶음: 53.1s → 173.1s → 293.1s → 413.1s
+(results/g-repeat.txt)</div>
+
+<p>12번 모두 120초였어요. 반복 간격은 묶음의 차례(1분마다)에만 확인하니, 90초가 지난 뒤 처음 오는 차례인 120초에 나갑니다. 2편에서 본 "group_interval의 배수로 올림" 그대로예요. 이 실행에서 사람에게 간 알림은 20통(장애 중 16, 복구 뒤 4)이었어요.</p>
+
+<h2>8. 한 표로 보면</h2>
+
+<p>시나리오마다 한 번씩 돌린 결과입니다. 행마다 다른 실행이라, 경고가 울린 시각은 실행마다 몇 초씩 다르고 첫 알림 시각도 그만큼 흔들려요.</p>
+
+<div class="obsv-code">시나리오                  사람에게 간 알림   장애 중 / 복구 뒤   첫 알림         DBDown 첫 알림
+A 기본값(묶음 하나)          3                2 / 1          48.8s           48.8s
+B 묶지 않음 ['...']         62               31 / 31         47.2s           57.2s
+C 이름으로 묶음             8                4 / 4          53.2s           58.2s
+D C + 억제                  4                1 / 3          49.5s           49.5s
+E D + 등급별 라우팅          2 (page)         1 / 1          30.2s (page)    30.2s
+G 반복 90초, 주기 1분        20 (8분 장애)    16 / 4          48.1s           53.1s
+(각 행: results/&lt;시나리오&gt;.txt. A~E 는 db 6분 멈춤, G 는 8분)</div>
+
+<p>모든 시나리오에서 알림에 실린 경고는 전부 <code>runbook_url</code>을 갖고 있었어요. 받은 사람 눈에 보이느냐는 템플릿이 정합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 이 결과로 설정을 고른다면</div>
+  &bull; 루트 <code>group_by</code>를 비워 두지 마세요. 알림은 적지만 늦게 울린 경고가 최대 group_interval만큼 밀리고, 공통 주석에서 링크가 빠져요<br>
+  &bull; 원인 경고로 증상 경고를 누를 때는 원인 경고에 <code>keep_firing_for</code>를 주거나, 증상 쪽 창을 짧게 해서 복구 직후의 누출을 막아요<br>
+  &bull; 페이지 라우트는 <code>group_wait</code>를 짧게(10초로 두니 울린 뒤 첫 알림까지 29.3초가 8.0초가 됐어요), 티켓 라우트는 길게 둬요<br>
+  &bull; <code>repeat_interval</code>은 <code>group_interval</code>의 배수로 적어요<br>
+  &bull; 첫 알림 시간을 잴 때는 같은 이름의 경고가 최근에 풀린 적이 있는지부터 확인해요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>db 하나를 멈추자 경고 31개가 1분 남짓에 걸쳐 울렸고, 묶고, 누르고, 등급별로 나눌수록 사람에게 가는 알림이 줄었어요.</b> 아무것도 안 적은 기본값은 알림이 가장 적었지만 늦게 울린 경고가 5분 가까이 밀리고 공통 주석에서 runbook_url이 빠졌어요.<br><br>
+  줄이는 장치마다 새는 곳이 있었어요. 억제는 원인 경고가 먼저 풀린 틈에 증상 알림을 내보냈고, repeat_interval 90초는 120초가 됐고, 한 묶음은 첫 알림이 group_wait가 아니라 264초 뒤에 왔는데 앞 장애에서 풀린 경고가 원인으로 보여요. 알림 수를 줄였다면 첫 알림이 언제 왔는지, 무엇이 새어 나갔는지를 같이 봐야 해요.
+</div>
+
+</div>

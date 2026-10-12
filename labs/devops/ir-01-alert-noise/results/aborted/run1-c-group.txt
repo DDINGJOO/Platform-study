@@ -1,0 +1,40 @@
+시나리오 c-group  (alertmanager/c-group.yml)
+db 멈춤 0초, 되살림 361.0초, 이후 420초 관찰. 시각은 모두 db 를 멈춘 순간 기준
+!! 2초 폴링이 10초 넘게 끊긴 구간(시작 초, 길이 초): [(427, 354)]  호스트가 멈췄던 실행이라 믿을 수 없다
+
+[Prometheus 가 본 경고] 2초 간격 폴링
+  DBDown          처음 firing    20.3s   마지막 firing   371.1s (복구 +10.0s)
+  DependencyDown  처음 firing    26.3s   마지막 firing   375.1s (복구 +14.1s)
+  HighErrorRate   처음 firing    40.4s   마지막 firing   422.7s (복구 +61.7s)
+  HighLatency     처음 firing    66.6s   마지막 firing   422.7s (복구 +61.7s)
+  동시에 firing 인 경고 최대 31개 (70.6s)
+  Alertmanager 에서 억제(suppressed)된 경고 최대 0개
+
+[받은 알림] 한 줄 = 웹훅 한 번 = 사람(또는 기록)에게 간 알림 한 통
+  받은 시각                    수신자  상태      firing resolved  묶음 라벨
+    -10.1s                    human  resolved       0        1  alertname=HighErrorRate
+                                     담긴 경고: HighErrorRate 1
+    -10.1s                    human  resolved       0        1  alertname=HighLatency
+                                     담긴 경고: HighLatency 1
+     -0.0s                    human  resolved       0        1  alertname=DBDown
+                                     담긴 경고: DBDown 1
+      5.0s                    human  resolved       0        7  alertname=DependencyDown
+                                     담긴 경고: DependencyDown 7
+     50.0s                    human  firing         1        0  alertname=DBDown
+                                     담긴 경고: DBDown 1
+     55.0s                    human  firing        10        0  alertname=DependencyDown
+                                     담긴 경고: DependencyDown 10
+    292.0s                    human  firing        10        0  alertname=HighErrorRate
+                                     담긴 경고: HighErrorRate 10
+    297.0s                    human  firing        10        0  alertname=HighLatency
+                                     담긴 경고: HighLatency 10
+
+[합계]
+  수신자별 알림 수: human 8
+  사람에게 간 알림: 8통 (장애 중 8, 복구 뒤 0)
+  그중 firing 상태 알림 4통, resolved 상태 알림 4통
+  첫 알림: -10.1s  (HighErrorRate)
+  DBDown 이 처음 실린 알림: -0.0s
+  알림에 실린 경고 41건 중 runbook_url 주석이 있는 것 41건
+  commonAnnotations 에 runbook_url 이 들어 있던 알림 8통 / 8통
+  같은 묶음에 연달아 간 알림 사이 간격(초): 50, 50, 302, 307

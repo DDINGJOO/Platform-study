@@ -1,0 +1,31 @@
+시나리오 d-inhibit  (alertmanager/d-inhibit.yml)
+db 멈춤 0초, 되살림 362.0초, 이후 420초 관찰. 시각은 모두 db 를 멈춘 순간 기준
+
+[Prometheus 가 본 경고] 2초 간격 폴링
+  DBDown          처음 firing    20.2s   마지막 firing   368.0s (복구 +6.0s)
+  DependencyDown  처음 firing    20.2s   마지막 firing   368.0s (복구 +6.0s)
+  HighErrorRate   처음 firing    36.3s   마지막 firing   424.3s (복구 +62.3s)
+  HighLatency     처음 firing    66.4s   마지막 firing   424.3s (복구 +62.3s)
+  동시에 firing 인 경고 최대 31개 (70.4s)
+  Alertmanager 에서 억제(suppressed)된 경고 최대 30개 (70.4s)
+
+[받은 알림] 한 줄 = 웹훅 한 번 = 사람(또는 기록)에게 간 알림 한 통
+  받은 시각                    수신자  상태      firing resolved  묶음 라벨
+     49.5s                    human  firing         1        0  alertname=DBDown
+                                     담긴 경고: DBDown 1
+    394.5s (복구 +32.5s)        human  firing        10        0  alertname=HighLatency
+                                     담긴 경고: HighLatency 10
+    649.5s (복구 +287.5s)       human  resolved       0        1  alertname=DBDown
+                                     담긴 경고: DBDown 1
+    694.5s (복구 +332.5s)       human  resolved       0       10  alertname=HighLatency
+                                     담긴 경고: HighLatency 10
+
+[합계]
+  수신자별 알림 수: human 4
+  사람에게 간 알림: 4통 (장애 중 1, 복구 뒤 3)
+  그중 firing 상태 알림 2통, resolved 상태 알림 2통
+  첫 알림: 49.5s  (DBDown)
+  DBDown 이 처음 실린 알림: 49.5s
+  알림에 실린 경고 22건 중 runbook_url 주석이 있는 것 22건
+  commonAnnotations 에 runbook_url 이 들어 있던 알림 4통 / 4통
+  같은 묶음에 연달아 간 알림 사이 간격(초): 300, 600

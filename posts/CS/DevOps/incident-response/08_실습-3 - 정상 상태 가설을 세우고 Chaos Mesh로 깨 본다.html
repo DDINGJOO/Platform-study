@@ -1,0 +1,321 @@
+<!-- lead: 파드 셋 중 하나를 죽였더니 요청이 30건 안팎씩 실패했어요. kind와 Chaos Mesh로 정상 상태 가설을 PromQL로 적고, 파드 죽이기, 지연, 손실, CPU 부하를 걸어 가설이 깨진 원인과 고친 결과를 실측했어요. -->
+<!-- tags: Chaos Mesh, PodChaos, NetworkChaos, readinessProbe, kind -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🚨 장애 대응, 실습-3</div>
+  1편. 경고 하나에는 운영 절차서 하나가 붙어야 한다<br>
+  2편. 모든 경고가 사람을 깨울 필요는 없다<br>
+  3편. 장애에는 지휘하는 사람이 한 명 있어야 한다<br>
+  4편. 사후 분석은 누가 아니라 무엇을 묻는다<br>
+  5편. 장애를 일부러 일으켜 미리 겪어 본다<br>
+  실습-1. 경고 폭풍을 Alertmanager로 묶고 누른다<br>
+  실습-2. 장애를 일으키고 타임라인과 사후 분석을 남긴다<br>
+  <b>실습-3. 정상 상태 가설을 세우고 Chaos Mesh로 깨 본다</b> &larr; 지금 이 글
+</div>
+
+<p>재고 서비스 파드가 셋 떠 있고, 그 앞의 주문 서비스도 셋입니다. 누가 물으면 "파드 하나쯤 죽어도 괜찮아요"라고 답할 구성이에요. 이번 실습은 그 답을 숫자로 적은 다음 실제로 파드를 죽여 봅니다. 첫 실험에서 파드를 한 번 죽일 때마다 사용자 요청이 30건 안팎씩 실패했어요.</p>
+
+<p><a href="#ir-05">5편</a>에서 정리한 순서를 그대로 따릅니다. 정상 상태 가설을 사용자 쪽 지표로 적고, 기준 구간을 확인하고, 작은 반경에서 장애를 넣고, 가설이 연속으로 깨지면 실험을 스스로 멈춥니다. 장애는 Chaos Mesh로 파드 죽이기, 네트워크 지연과 손실, CPU 부하를 차례로 넣었어요. 숫자는 전부 이번에 돌린 결과입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 파드 하나를 죽였을 때 요청은 왜 실패했고, 무엇을 고치면 버티나?<br>
+  &bull; 반경을 하나, 둘, 67%, 전부로 바꾸면 결과가 어떻게 달라지나?<br>
+  &bull; 엔드포인트가 하나도 없는 Service는 왜 거절하지 않고 1초를 기다리게 하나?<br>
+  &bull; 지연과 손실을 넣으면 가설의 어느 숫자가 먼저 깨지나?
+</div>
+
+<h2>1. 실습 환경: kind 위의 서비스 셋과 Chaos Mesh</h2>
+
+<p>로컬 kind 클러스터 하나에 세 가지 역할을 띄웠어요. <b>loadgen</b>은 사용자 역할로 초당 40건을 주문 서비스(front)에 보냅니다. 응답이 늦어도 다음 요청은 제시각에 보내는 방식이라, 시스템이 느려져도 부하가 줄지 않아요. <b>front</b>는 요청마다 재고 서비스(stock)를 한 번 부르고, stock이 실패하면 503을 돌려줍니다. stock은 15ms 남짓 걸려 응답해요. front와 stock은 모두 기동할 때 3초 동안 포트를 늦게 엽니다. 설정 파일 읽기나 캐시 예열에 시간을 쓰는 실제 서비스를 흉내 낸 거예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="l3a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M24 70 C 70 67, 110 71, 140 69 C 143 92, 142 112, 141 132 C 110 135, 70 131, 26 133 C 23 112, 24 92, 24 70 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+    <text x="40" y="98" font-size="21" fill="#3d3a34">loadgen</text>
+    <text x="40" y="122" font-size="16" fill="#8a8272">초당 40건</text>
+    <path d="M142 100 C 170 98, 190 99, 214 100" stroke="#3d3a34" stroke-width="2" fill="none" marker-end="url(#l3a1)"/>
+    <path d="M218 50 C 290 47, 350 51, 390 49 C 393 92, 392 122, 391 152 C 350 155, 290 151, 220 153 C 217 122, 218 92, 218 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+    <text x="234" y="78" font-size="21" fill="#3d3a34">front × 3</text>
+    <text x="234" y="104" font-size="16" fill="#8a8272">stock 을 한 번 부른다</text>
+    <text x="234" y="128" font-size="16" fill="#8a8272">CPU 한도 500m</text>
+    <path d="M392 100 C 420 98, 440 99, 464 100" stroke="#3d3a34" stroke-width="2" fill="none" marker-end="url(#l3a1)"/>
+    <path d="M468 50 C 540 47, 610 51, 676 49 C 679 92, 678 122, 677 152 C 610 155, 540 151, 470 153 C 467 122, 468 92, 468 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+    <text x="484" y="78" font-size="21" fill="#3d3a34">stock × 3</text>
+    <text x="484" y="104" font-size="16" fill="#8a8272">약 15ms</text>
+    <text x="484" y="128" font-size="16" fill="#8a8272">기동에 3초</text>
+    <path d="M300 214 C 400 211, 520 215, 600 213 C 603 236, 602 254, 601 270 C 520 273, 400 269, 302 271 C 299 254, 300 236, 300 214 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+    <text x="316" y="240" font-size="20" fill="#b3502f">🔥 Chaos Mesh (chaos-daemon)</text>
+    <text x="316" y="262" font-size="16" fill="#3d3a34">파드 죽이기, tc 지연·손실, CPU 부하</text>
+    <path d="M520 210 C 540 190, 560 175, 572 158" stroke="#e5533c" stroke-width="2" fill="none" stroke-dasharray="8 8" marker-end="url(#l3a1)"/>
+    <path d="M360 210 C 340 190, 320 175, 310 158" stroke="#e5533c" stroke-width="2" fill="none" stroke-dasharray="8 8" marker-end="url(#l3a1)"/>
+    <path d="M24 200 C 90 197, 160 201, 230 199 C 233 222, 232 242, 231 262 C 160 265, 90 261, 26 263 C 23 242, 24 222, 24 200 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+    <text x="40" y="226" font-size="20" fill="#2e6b41">📈 Prometheus</text>
+    <text x="40" y="250" font-size="16" fill="#3d3a34">2초마다 수집</text>
+    <path d="M80 196 C 80 170, 82 150, 82 138" stroke="#5a9e6f" stroke-width="2" fill="none" marker-end="url(#l3a1)"/>
+    <text x="24" y="30" font-size="20" fill="#b3502f">가설은 loadgen 이 잰 숫자로 판정한다 (사용자 자리)</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 장애는 front와 stock에 넣고, 판정은 사용자 자리에서 한다</div>
+
+<p>loadgen과 front는 요청을 보낼 때마다 새 TCP 연결을 엽니다(stock은 받기만 해요). 연결을 재사용하면 쿠버네티스 Service가 처음 고른 파드에 요청이 계속 붙어서, 파드 하나를 죽여도 그 파드에 연결된 쪽만 영향을 받거든요. 요청마다 파드를 새로 고르게 해서 반경 계산을 단순하게 만들었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Chaos Mesh</div>
+  쿠버네티스에서 장애를 리소스로 선언해 넣는 도구입니다. PodChaos, NetworkChaos, StressChaos 같은 CRD를 만들면 컨트롤러가 대상 파드를 고르고, 노드마다 뜬 chaos-daemon이 그 파드의 네트워크나 프로세스에 장애를 겁니다. 리소스를 지우면 걸었던 장애를 걷어 내요.
+</div>
+
+<div class="obsv-code">kind                 0.33.0    (노드 kindest/node:v1.37.0, containerd 2.3.4, kube-proxy iptables 모드)
+Chaos Mesh           2.8.4     (공식 차트를 helm template 으로 그려서 적용)
+Prometheus           3.15.0
+앱                   Python 3.13 (alpine), 표준 라이브러리만
+실행 환경            Docker Desktop(메모리 8GB, 다른 실습과 같이 씀), Apple Silicon</div>
+
+<p>Chaos Mesh 차트는 컨테이너 런타임 기본값이 docker라서 kind에서는 <code>chaosDaemon.runtime=containerd</code>와 소켓 경로를 바꿔야 해요. 그리고 <code>enableFilterNamespace=true</code>로 켜서, <code>chaos-mesh.org/inject=enabled</code> 주석이 붙은 <code>ir03</code> 네임스페이스에만 장애가 들어가게 했습니다. 실험 정의를 잘못 써도 다른 네임스페이스는 건드리지 못하게 하는 첫 번째 반경 설정이에요. 실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/ir-03-chaos-mesh">GitHub 저장소의 labs/devops/ir-03-chaos-mesh</a>에 있습니다.</p>
+
+<p>실험은 클러스터 두 개에서 돌렸어요. 4절의 반경 비교 표와 5절의 지연 실험은 처음 만든 클러스터의 결과입니다. 나머지(3절, 4절의 PDB 실행, 5절의 손실 실험, 6절)는 노트북이 잠들어 기록이 끊긴 실행이 생겨서, 클러스터를 새로 만들어 한 번에 다시 돌린 결과예요. 다시 돌린 여덟 실행은 판정 사이 공백도, 컨트롤 플레인 재시작도 없었습니다. 한 표 안의 숫자는 모두 같은 클러스터에서 나왔어요. 두 번째 클러스터의 실행 순서는 <code>scripts/ir03-rerun.sh</code>에 그대로 적어 뒀어요(덮개가 닫혀 있거나 판정에 공백이 생기면 기다리거나 다시 돌려요).</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/devops/ir-03-chaos-mesh
+./scripts/up.sh                  # kind 클러스터 ir-03, Chaos Mesh, 프로메테우스, 앱
+kubectl --context kind-ir-03 -n ir03 port-forward svc/prometheus 29090:9090 &</div>
+
+<h2>2. 가설을 PromQL로 적고, 깨지면 스스로 멈춘다</h2>
+
+<p>정상 상태 가설은 이렇게 정했어요. 실험 전 기준 구간에서 p50은 19ms, p99는 30ms 안팎이었고, 거기에 여유를 둔 값입니다.</p>
+
+<div class="obsv-code">가설: 최근 15초 동안 성공률 &gt;= 99%  그리고  p99 &lt; 250ms   (loadgen 이 잰 값)
+
+sum(rate(loadgen_requests_total{outcome="ok"}[15s])) / sum(rate(loadgen_requests_total[15s]))
+histogram_quantile(0.99, sum by (le) (rate(loadgen_request_seconds_bucket[15s])))</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 판정 창 (evaluation window)</div>
+  가설을 판정할 때 돌아보는 시간 범위입니다. 여기서는 PromQL의 <code>[15s]</code>예요. 짧으면 잡음 하나에 가설이 깨지고, 길면 실패가 지나간 뒤에도 한동안 깨진 상태로 남습니다.
+</div>
+
+<p>판정과 중단은 <code>scripts/experiment.py</code>가 합니다. 먼저 기준 구간(30초)을 지켜보고 마지막 세 번의 판정이 모두 맞을 때만 장애를 넣어요. 장애를 넣은 뒤에는 5초마다 판정하고, 연속 두 번 깨지면 카오스 리소스를 지웁니다. 끝나면 장애를 넣은 순간부터의 경과 초로 5초 단위 기록(<code>results/&lt;실험&gt;.tsv</code>)과 요약(<code>results/summary.txt</code>)을 남겨요.</p>
+
+<p>Chaos Mesh에도 Workflow의 StatusCheck로 실험을 멈추는 기능이 있지만, 지원하는 검사가 HTTP 하나이고 기준이 응답 상태 코드뿐입니다. Prometheus API는 값이 기준을 넘어도 200을 돌려주니 이 가설을 그대로 걸 수 없어서 바깥 스크립트로 만들었어요.</p>
+
+<div class="obsv-code">python3 scripts/experiment.py e1-pod-kill-naive chaos/01-pod-kill-stock-one.yaml \
+  --baseline 30 --observe 120 --recover 30 --no-abort    # --no-abort: 깨져도 끝까지 본다</div>
+
+<p>이 기준 구간 확인이 실제로 두 번 일했어요. 기준 구간 마지막 판정에 실패 한 건이 생긴 실행과, 실패 없이 p99가 1.3초로 튄 실행이 있었습니다. 뒤의 것은 front를 재시도 설정으로 다시 띄운 직후라 원인을 하나로 단정하지 못했어요. 둘 다 실행기가 "기준 구간에서 가설이 맞지 않는다"며 장애를 넣지 않고 끝났어요(<code>*-baseline-refused.tsv</code>, 둘 다 처음 만든 클러스터). 다른 실습과 같은 호스트를 쓰는 환경이라 이런 잡음이 가끔 있었고, 그때 장애를 넣었다면 잡음을 실험의 결과로 읽었을 거예요.</p>
+
+<h2>3. 파드를 죽였더니 2%가 실패했다</h2>
+
+<p>첫 실험은 stock 파드 셋 중 하나를 30초마다 죽이는 것이에요. Chaos Mesh의 Schedule로 PodChaos를 반복합니다. <code>gracePeriod: 0</code>이라 프로세스가 정리할 시간 없이 바로 지워져요.</p>
+
+<div class="obsv-code">apiVersion: chaos-mesh.org/v1alpha1
+kind: Schedule
+metadata: {name: pod-kill-stock, namespace: ir03}
+spec:
+  schedule: "@every 30s"
+  type: PodChaos
+  podChaos:
+    action: pod-kill
+    mode: one              # 고른 파드 중 무작위 하나
+    gracePeriod: 0
+    selector:
+      namespaces: [ir03]
+      labelSelectors: {tier: stock}</div>
+
+<div class="obsv-code">t_s  가설  15초 성공률  p99    직전 5초 실패
+ 30   Y    100.00%     31ms    0
+ 35   N     96.00%     30ms   29     ← 30초에 첫 번째 죽이기
+ 40   N     96.78%     32ms    0
+ 45   N     97.45%     33ms    0
+ 50   Y    100.00%     32ms    0
+ 65   N     93.76%     32ms   35     ← 두 번째
+ 96   N     93.75%     30ms   35     ← 세 번째
+
+카오스 구간 121초, 요청 4,881건, 성공률 97.97%, 실패 99건(전부 front 의 503)
+front 의 stock 호출 실패: conn_refused 99   (네 번째 죽이기는 120초, 회복 구간에 30건)</div>
+
+<p>파드를 죽일 때마다 29~35건이 실패했어요. 실행기가 같이 남긴 front 지표를 보면 실패한 stock 호출 99번이 전부 연결 거절(connection refused)이었습니다. 숫자도 맞아떨어져요. stock이 받는 요청은 초당 약 13건(40건의 3분의 1)이고, 새 파드는 기동하는 3초 동안 포트를 안 엽니다. 13건 × 3초 ≈ 40건이니, 새 파드가 받은 요청 대부분이 거절된 셈이에요. 새 파드가 포트를 열기 전부터 요청을 받은 겁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: readinessProbe</div>
+  쿠버네티스가 파드에 "요청을 받을 준비가 됐나"를 주기적으로 묻는 검사입니다. 통과해야 Service의 엔드포인트에 들어가요. 설정하지 않으면 컨테이너가 시작되는 순간 준비된 것으로 칩니다.
+</div>
+
+<p>readinessProbe가 없으면 컨테이너 프로세스가 시작된 순간 엔드포인트에 들어가요. 그래서 고친 것은 한 가지입니다. <code>/healthz</code>에 1초마다 묻는 readinessProbe를 stock과 front에 넣고(아래 명령) 같은 실험을 다시 돌렸어요. 카오스 구간 121초, 요청 4,799건 중 실패 0건이었고 5초 판정 24번이 모두 가설을 지켰습니다. 파드는 이벤트 기록상 두 실행 모두 네 번씩 죽었어요.</p>
+
+<div class="obsv-code">./scripts/fix.sh readiness      # stock, front 에 readinessProbe(/healthz, 1초 주기)
+python3 scripts/experiment.py e1-pod-kill-readiness chaos/01-pod-kill-stock-one.yaml \
+  --baseline 30 --observe 120 --recover 30 --no-abort</div>
+
+<p>15초 창의 성질도 표에 보입니다. 실패는 35초 판정에 몰려 있는데 가설은 45초 판정까지 "깨짐"이에요. 판정 창이 15초라 실패가 창에서 빠져나갈 때까지 판정이 끌려갑니다. 그리고 실패가 35건이어도 p99는 30ms 안팎 그대로였어요. 연결 거절은 바로 돌아오니 지연이 늘지 않습니다.</p>
+
+<h2>4. 반경을 바꿔 한 번씩 죽였다</h2>
+
+<p>다음은 한 번만 죽이는 PodChaos를 <code>mode</code>만 바꿔 네 번 돌렸습니다. 이번에는 중단 조건을 켰어요(readinessProbe가 있는 상태).</p>
+
+<div class="obsv-code">for n in one fixed2 pct67 all; do     # chaos/04-pod-kill-stock-&lt;n&gt;.yaml 은 mode 만 다르다
+  python3 scripts/experiment.py e2-kill-$n chaos/04-pod-kill-stock-$n.yaml --baseline 30 --observe 60 --recover 30
+done</div>
+
+<div class="obsv-code">mode                 죽은 파드  카오스 구간  성공률    p99       판정 결과
+one                  1          23초         99.69%    675ms     연속 2번 깨져 22초에 중단 (실패 3건)
+fixed, value "2"     2          61초         99.96%     31ms     12번 중 1번 깨짐 (실패 1건)
+fixed-percent "67"   3 (!)      10초         64.66%   1482ms     10초에 중단 (실패 141건)
+all                  3          10초         72.50%   1477ms     10초에 중단 (실패 110건)
+(p99 는 카오스 구간 전체의 버킷 누적값 차이로 계산. 성공률도 구간 전체)</div>
+
+<p>먼저 셋째 줄이에요. 파드 둘을 노리고 <code>fixed-percent: 67</code>을 걸었는데 셋이 다 죽었습니다. Chaos Mesh는 고를 개수를 <code>math.Ceil(3 × 67 / 100)</code>으로 셉니다(소스 <code>pkg/selector/generic/mode.go</code>). 2.01이 올림되어 3이에요. 둘만 죽이려면 <code>mode: fixed</code>, <code>value: "2"</code>를 써야 했고, 그렇게 한 둘째 줄은 거의 버텼습니다. 남은 파드 하나가 초당 40건을 받아도 충분했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 첫째 줄의 실패 3건은 파드 죽이기 탓이 아니었다</div>
+  첫째 줄은 파드를 죽인 지 13초쯤 뒤에 실패 3건이 나고 p99가 1.4초로 뛰어 깨졌어요. 같은 시각 이벤트에 <b>살아 있던 다른 stock 파드</b>와 front 파드 하나의 readinessProbe가 <code>context deadline exceeded</code>로 실패한 기록이 있었습니다. 이 실습은 readinessProbe를 1초 주기, 한 번 실패하면 제외로 촘촘하게 잡았는데, 호스트가 잠깐 멈추면 멀쩡한 파드도 빠졌어요. 같은 "파드 하나 죽이기"가 3절의 반복 실험(다시 만든 클러스터, readinessProbe 있음)에서는 두 실행에서 네 번씩, 모두 실패 0건이었습니다. 가설이 깨졌다고 바로 실험의 탓으로 돌리지 말고 같은 시각의 다른 기록부터 봐야 해요.
+</div>
+
+<h3>전부 죽였는데 거절이 아니라 1.5초가 걸렸다</h3>
+
+<p>셋째, 넷째 줄은 둘 다 두 번째 판정(10초)에서 스스로 멈췄어요. 이상한 건 p99입니다. 파드가 하나도 없으면 연결은 바로 거절돼야 할 것 같은데, 실패한 요청은 1초 넘게 걸렸어요. <code>fixed-percent 67</code>을 걸어 둔 채 loadgen 파드 안에서 stock Service를 50ms마다 직접 불러 봤습니다(<code>scripts/probe.py</code>).</p>
+
+<div class="obsv-code"># 터미널 1: 20초 동안 50ms 마다 stock 호출. 출력은 경과 초, 받은 파드(또는 실패 종류), ms
+kubectl --context kind-ir-03 -n ir03 exec -i deploy/loadgen -- python - 20 &lt; scripts/probe.py
+# 터미널 2: 5초쯤 뒤에 장애를 걸고, 끝나면 지운다
+kubectl --context kind-ir-03 -n ir03 apply -f chaos/04-pod-kill-stock-pct67.yaml
+kubectl --context kind-ir-03 -n ir03 delete -f chaos/04-pod-kill-stock-pct67.yaml</div>
+
+<div class="obsv-code">  경과초  결과                     ms
+   5.99   stock-...-sgfpw          16
+   6.04   ConnectionRefusedError    0     ← 파드가 지워진 직후, 바로 거절
+   ...    (6.29초까지 바로 거절 5번 더)
+   6.34   timeout                1002     ← 여기부터 1초씩 기다리다 타임아웃
+   ...    (6.0~9.01초 사이: 거절 8건, 타임아웃 51건)
+   9.06   stock-...-xqfbk          16     ← 새 파드가 준비됨</div>
+
+<p>파드가 하나도 없는 Service에 대해 kube-proxy는 iptables에 <code>REJECT --reject-with icmp-port-unreachable</code> 규칙을 넣습니다. 노드에서 <code>iptables-save</code>로 <code>"ir03/stock has no endpoints"</code> 주석이 달린 그 규칙을 확인했어요. 이 규칙은 ICMP 오류를 돌려보내 연결을 바로 거절하게 하는데, 리눅스 커널은 ICMP 오류를 목적지마다 속도 제한합니다. 커널은 목적지마다 토큰을 최대 <code>6 × icmp_ratelimit</code>만큼 쌓고, 한 번 보낼 때마다 <code>icmp_ratelimit</code>(노드 값 1000ms)만큼 써요(커널 6.12 <code>inet_peer_xrlim_allow</code>). 처음 6개쯤은 바로 보내고, 그다음부터는 1초에 하나입니다. ICMP를 못 받은 클라이언트는 연결 요청 패킷(SYN)을 다시 보내며 기다리다가 1초 타임아웃에 걸렸어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ICMP 속도 제한 (icmp_ratelimit)</div>
+  커널이 같은 목적지로 보내는 ICMP 오류 메시지 수를 제한하는 장치입니다. 노드의 <code>/proc/net/snmp</code>에서 <code>OutRateLimitHost</code>가 이 제한에 막혀 못 보낸 수를 세요.
+</div>
+
+<p>노드 카운터로도 확인했습니다. 실행기가 실험 전후의 <code>/proc/net/snmp</code>를 읽어 두었는데, 파드를 전부 죽인 10초 동안 port unreachable을 24번 보냈고 88번은 속도 제한으로 못 보냈어요(fixed-percent 67 실행은 27번, 114번). 다시 만든 클러스터에서 PodDisruptionBudget(PDB)을 두고 전부 죽인 실행(아래 주의)에서는 front 쪽에서도 같은 모양이 잡혔어요. stock 호출 실패가 거절 27번, 타임아웃 114번이었고, 같은 10초 동안 노드는 port unreachable을 27번 보내고 115번은 못 보냈습니다. 거절 수와 보낸 ICMP 수가 같아요. 레플리카를 0으로 줄인 상태에서 2초 동안 50ms마다 부른 별도 실행(<code>probe-no-endpoints.txt</code>)에서도 처음 6건이 바로 거절됐고, 1초 뒤(1.03초)에 한 건이 더 거절됐으며, 나머지 32건은 1초 타임아웃이었습니다. 몰아서 6개, 그 뒤 1초에 하나라는 속도 제한의 모양이 그대로 보여요. <span class="obsv-mark">빨리 실패하라고 넣은 거절이 부하가 몰리면 느린 실패가 됩니다.</span> 3절에서 실패가 35건이어도 p99가 그대로였던 것과 반대로, 여기서는 p99가 1.5초로 뛰었어요.</p>
+
+<div class="obsv-code"># 엔드포인트가 하나도 없는 상태 만들기 (probe-no-endpoints.txt)
+kubectl --context kind-ir-03 -n ir03 scale deploy stock --replicas=0
+kubectl --context kind-ir-03 -n ir03 wait --for=delete pod -l tier=stock --timeout=90s
+kubectl --context kind-ir-03 -n ir03 exec -i deploy/loadgen -- python - 2 &lt; scripts/probe.py
+kubectl --context kind-ir-03 -n ir03 scale deploy stock --replicas=3</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: PodDisruptionBudget은 이 실험을 막지 않는다</div>
+  stock에 <code>minAvailable: 2</code>짜리 PodDisruptionBudget(<code>k8s/20-pdb-stock.yaml</code>)을 두고 <code>mode: all</code>로 다시 죽였어요. 걸기 전 PDB는 "허용되는 중단 1개"를 보여 줬는데, 이벤트 기록상 세 파드가 같은 초에 모두 지워졌습니다. 결과는 10초에 자동 중단, 성공률 64.75%, p99 1482ms였어요. 위 표의 <code>all</code> 실행은 처음 만든 클러스터라 숫자를 바로 비교할 수는 없지만, 10초에 자동 중단된 모양은 같았습니다. PDB는 축출(Eviction) API를 거치는 중단에만 적용되고, Chaos Mesh의 pod-kill은 파드를 Delete로 지우기 때문이에요(소스 <code>controllers/chaosimpl/podchaos/podkill/impl.go</code>). 반경은 실험 정의에서 줄여야 합니다.
+</div>
+
+<div class="obsv-code">kubectl --context kind-ir-03 -n ir03 apply -f k8s/20-pdb-stock.yaml       # minAvailable: 2
+python3 scripts/experiment.py e2-kill-all-pdb chaos/07-pod-kill-stock-all-pdb.yaml --baseline 30 --observe 60 --recover 30
+kubectl --context kind-ir-03 -n ir03 delete -f k8s/20-pdb-stock.yaml      # 다음 실험 전에 지운다</div>
+
+<h2>5. 네트워크를 늦추고, 패킷을 버렸다</h2>
+
+<p>NetworkChaos로 stock 파드에 100ms 지연을 넣었어요. 한 번은 파드 하나(<code>mode: one</code>), 한 번은 셋 모두(<code>mode: all</code>)에 60초씩입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: tc netem</div>
+  리눅스 트래픽 제어(tc)의 큐 규칙 중 하나로, 나가는 패킷을 붙잡아 두었다가 늦게 보내거나 일정 확률로 버립니다. Chaos Mesh의 NetworkChaos는 대상 파드의 네트워크 인터페이스에 이 규칙을 걸어 지연과 손실을 만들어요. 커널에 NET_SCH_NETEM 모듈이 있어야 해요(Chaos Mesh 문서).
+</div>
+
+<div class="obsv-code">python3 scripts/experiment.py e3-delay-one chaos/02-delay-stock-one.yaml --baseline 30 --observe 60 --recover 30 --no-abort
+python3 scripts/experiment.py e3-delay-all chaos/03-delay-stock-all.yaml --baseline 30 --observe 60 --recover 30 --no-abort</div>
+
+<div class="obsv-code">                       성공률     p50      p99     판정
+지연 없음(기준 구간)    100%      18ms     30ms    (두 실행의 기준 구간)
+stock 1개에 100ms       100%      21ms    230ms    12번 모두 버팀
+stock 3개 모두 100ms    100%     220ms    234ms    12번 중 2번 깨짐 (p99 가 348, 364ms 로 튄 판정)</div>
+
+<p>가설은 두 실험을 거의 구분하지 못했어요. p99는 230ms와 234ms로 같은데, 중앙값은 21ms와 220ms입니다. 셋 모두에 지연을 넣으면 모든 사용자가 열 배 느려졌는데 "p99 250ms 미만"은 대부분의 판정에서 버텼어요. 파드 하나가 요청의 3분의 1을 받으니, 상위 1%를 보는 p99에는 파드 하나든 셋이든 같은 값이 잡힙니다. 가설에 p50이나 평균 같은 지표를 같이 넣었어야 이 차이가 보여요.</p>
+
+<p>100ms를 넣었는데 요청은 200ms 늘어난 것도 눈여겨볼 점이에요. front는 요청마다 새 연결을 여니, stock에서 나가는 연결 수립 응답(SYN-ACK)과 실제 응답이 각각 100ms씩 늦은 것으로 보입니다. 연결을 재사용하는 클라이언트였다면 100ms만 늘었을 거예요.</p>
+
+<p>그리고 지연을 걷어 내는 순간 요청 4건이 실패했어요(셋 모두 지연 실험의 회복 구간 첫 5초, front의 503). netem 큐를 비울 때 커널은 아직 내보내지 않은 패킷을 그대로 해제합니다(<code>netem_reset</code>). 지연 규칙을 지울 때 큐에 남아 있던 응답 패킷이 버려졌고, 재전송을 기다리던 요청이 front의 1초 타임아웃에 걸린 것으로 보여요. 장애를 걷어 내는 동작도 장애를 낼 수 있습니다.</p>
+
+<h3>손실 30%: 재시도는 성공률을 올리고 지연을 늘렸다</h3>
+
+<p>이번에는 stock 파드 하나가 내보내는 패킷의 30%를 버렸어요. 연결 수립 패킷이 버려지면 TCP는 1초 뒤에 다시 보내니(RFC 6298의 초기 재전송 타임아웃이 1초예요) front의 1초 타임아웃에 걸립니다. 고치는 방법을 두 번 바꿔 같은 실험을 세 번 돌렸습니다.</p>
+
+<div class="obsv-code">python3 scripts/experiment.py e4-loss-one chaos/05-loss-stock-one.yaml --baseline 30 --observe 60 --recover 30 --no-abort
+./scripts/fix.sh retry-only      # front: stock 호출 타임아웃 1초, 실패하면 한 번 더
+python3 scripts/experiment.py e4-loss-one-retry-only chaos/05-loss-stock-one.yaml --baseline 30 --observe 60 --recover 30 --no-abort
+./scripts/fix.sh retry           # front: 타임아웃 300ms, 실패하면 한 번 더
+python3 scripts/experiment.py e4-loss-one-retry300ms chaos/05-loss-stock-one.yaml --baseline 30 --observe 60 --recover 30 --no-abort</div>
+
+<div class="obsv-code">front 의 stock 호출              성공률     p99      실패 종류
+타임아웃 1초, 재시도 없음          92.44%   1435ms    front 의 503 187건
+타임아웃 1초, 재시도 1번           99.42%   1476ms    loadgen 의 2초 타임아웃 14건
+타임아웃 300ms, 재시도 1번         98.96%    550ms    front 의 503 25건
+(각 60초, 약 2,400건. 세 실행 모두 12번 판정이 전부 깨짐.
+ front 의 stock 호출 타임아웃은 시도 단위로 182, 195, 224번)</div>
+
+<p>재시도만 붙이면 성공률은 99%를 넘었지만 p99는 오히려 늘었고, 실패의 모양이 바뀌었어요. 1초를 기다린 뒤 다시 1초를 기다리니 사용자(loadgen)의 2초 타임아웃에 먼저 걸립니다. 타임아웃을 300ms로 줄이고 재시도하면 p99는 550ms로 내려왔지만 성공률은 98.96%로 재시도만 붙였을 때보다 낮았어요. 잘린 stock 호출이 195번에서 224번으로 늘었습니다. 손실 있는 파드에서 재전송 끝에 300ms를 넘겨 성공하던 호출이 이제는 잘리고, 재시도가 다시 그 파드로 가면 실패하는 것으로 보여요. 이 실험은 <b>세 번 모두 가설이 깨진 채</b> 끝났습니다. 상한이 있는 타임아웃과 재시도로는 "나쁜 파드 하나"를 버틸 수 없었고, 그 파드를 요청 경로에서 빼는 장치(이상치 감지 같은 것)가 필요하다는 게 이번 결론이에요. 그 장치는 이 실습에서 만들지 않았습니다.</p>
+
+<h2>6. CPU를 태우고, 고친 상태로 다시 죽였다</h2>
+
+<p>StressChaos로 front 파드 하나의 컨테이너 안에 CPU 부하를 넣었어요. 워커 2개가 각각 100%를 목표로 도는데, front의 CPU 한도는 500m라서 앱과 같은 한도를 나눠 쓰게 됩니다(이때 front는 타임아웃 300ms, 재시도 1번 상태).</p>
+
+<div class="obsv-code">python3 scripts/experiment.py e5-stress-front-one chaos/06-stress-front-one.yaml --baseline 30 --observe 60 --recover 30 --no-abort</div>
+
+<div class="obsv-code">카오스 구간 61초, 요청 2,481건, 성공률 100%, p50 19ms, p99 74ms
+5초 판정 12번 모두 버팀 (15초 창 p99 는 71~77ms)
+
+부하 구간의 front 파드별 지연 (45초 창)
+front-...-6tm4n (부하 대상)   p50 18.8ms   p99 77.0ms
+front-...-qq2hz               p50 17.4ms   p99 29.7ms
+front-...-njvk4               p50 17.4ms   p99 29.9ms</div>
+
+<p>부하를 받은 파드만 p99가 30ms에서 77ms로 늘었고 실패는 없었어요. 사용자 쪽 p99는 74ms라 가설(250ms 미만)은 내내 버텼습니다. 이 가설로는 "파드 하나의 p99가 두 배 넘게 늘었다"는 사실이 안 보여요(p50은 17.4ms와 18.8ms로 거의 같았어요). 사용자 쪽 p99 하나로는 일부 파드의 나빠짐이 묻힌다는 점에서 5절과 같고, 이번에는 파드별 지연을 따로 봐야 잡혔습니다. CPU 한도 안에서 부하와 앱이 나눠 쓰니 지연은 늘지만, 요청이 15ms 남짓으로 짧아 실패까지 가지는 않았어요.</p>
+
+<p>마지막으로 readinessProbe와 재시도를 모두 넣은 상태에서 3절의 반복 파드 죽이기를 다시 돌렸어요. 카오스 구간 121초, 요청 4,881건 중 실패 0건, 판정 24번 모두 버텼습니다. 이벤트 기록상 파드는 네 번 죽었어요.</p>
+
+<div class="obsv-code">python3 scripts/experiment.py e1-pod-kill-fixed chaos/01-pod-kill-stock-one.yaml \
+  --baseline 30 --observe 120 --recover 30 --no-abort
+./scripts/down.sh                 # kind 클러스터 ir-03 을 지운다. 다른 클러스터는 건드리지 않는다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 첫 카오스 실험을 붙일 때</div>
+  &bull; <b>가설은 사용자 자리에서 재요.</b> 이번 실패의 대부분은 front의 503이었고, stock 지표에는 아무것도 안 남았어요. 죽은 파드는 지표를 못 내니까요<br>
+  &bull; <b>성공률, p50, p99를 같이 넣어요.</b> 빠른 실패는 성공률을, 느린 실패는 p99를 먼저 움직였고(느린 실패가 많으면 둘이 같이 움직였어요), 모두가 느려지면 p50이 움직였어요<br>
+  &bull; <b>모드는 개수로 써요.</b> 대상이 적으면 <code>fixed-percent</code>는 올림 때문에 생각보다 큰 반경이 돼요<br>
+  &bull; <b>실패 종류를 지표로 남겨요.</b> 거절인지 타임아웃인지가 원인을 바로 갈랐어요. 이번에 고친 readinessProbe도 "전부 거절"이라는 숫자에서 나왔습니다
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>"파드 하나쯤 죽어도 괜찮다"는 처음 실험에서 틀렸어요. 죽일 때마다 29~35건이 실패했고, 원인은 readinessProbe가 없어 포트를 열기 전의 새 파드가 요청을 받은 것이었습니다. 고친 뒤 같은 실험은 4,799건 중 실패 0건이었어요.</b><br><br>
+  반경은 설정값과 다르게 움직였어요. 파드 셋의 67%는 올림되어 셋이 됐고, PDB를 둬도 pod-kill은 셋을 다 지웠으며, 파드 하나에 넣은 지연은 p99로 보면 셋 모두에 넣은 것과 같았습니다. 엔드포인트가 사라진 Service의 거절은 ICMP 속도 제한 때문에 1초 타임아웃으로 바뀌었고, 손실이 있는 파드 하나는 재시도로 버틸 수 없었어요. 가설은 사용자 자리에서 여러 숫자로 적고, 깨졌을 때는 그 시각의 다른 기록부터 봐야 합니다.
+</div>
+
+</div>

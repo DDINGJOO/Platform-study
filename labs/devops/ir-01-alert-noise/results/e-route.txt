@@ -1,0 +1,28 @@
+시나리오 e-route  (alertmanager/e-route.yml)
+db 멈춤 0초, 되살림 361.9초, 이후 420초 관찰. 시각은 모두 db 를 멈춘 순간 기준
+
+[Prometheus 가 본 경고] 2초 간격 폴링
+  DBDown          처음 firing    22.2s   마지막 firing   363.9s (복구 +2.0s)
+  DependencyDown  처음 firing    22.2s   마지막 firing   370.0s (복구 +8.0s)
+  HighErrorRate   처음 firing    36.2s   마지막 firing   418.3s (복구 +56.3s)
+  HighLatency     처음 firing    66.4s   마지막 firing   424.3s (복구 +62.4s)
+  동시에 firing 인 경고 최대 31개 (70.4s)
+  Alertmanager 에서 억제(suppressed)된 경고 최대 30개 (70.4s)
+
+[받은 알림] 한 줄 = 웹훅 한 번 = 사람(또는 기록)에게 간 알림 한 통
+  받은 시각                    수신자  상태      firing resolved  묶음 라벨
+     30.2s                    page   firing         1        0  alertname=DBDown
+                                     담긴 경고: DBDown 1
+    630.2s (복구 +268.3s)       page   resolved       0        1  alertname=DBDown
+                                     담긴 경고: DBDown 1
+
+[합계]
+  수신자별 알림 수: page 2
+  사람에게 간 알림: 2통 (장애 중 1, 복구 뒤 1)
+  그중 firing 상태 알림 1통, resolved 상태 알림 1통
+  첫 알림: 30.2s  (DBDown)
+  DBDown 이 처음 실린 알림: 30.2s
+  page 수신자(사람을 깨움): 2통, 첫 page 30.2s
+  알림에 실린 경고 2건 중 runbook_url 주석이 있는 것 2건
+  commonAnnotations 에 runbook_url 이 들어 있던 알림 2통 / 2통
+  같은 묶음에 연달아 간 알림 사이 간격(초): 600

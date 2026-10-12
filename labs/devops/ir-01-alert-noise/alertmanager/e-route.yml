@@ -1,0 +1,35 @@
+# E. D 에 우선순위별 라우팅을 더한다.
+#    critical -> page   : 사람을 깨운다. 빨리 보낸다(group_wait 10s)
+#    warning  -> ticket : 업무 시간에 본다. 모아서 보낸다(group_wait 2m, group_interval 30m, repeat 24h)
+route:
+  receiver: log
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical"]
+      receiver: page
+      group_wait: 10s
+      group_interval: 5m
+      repeat_interval: 1h
+    - matchers: [severity="warning"]
+      receiver: ticket
+      group_wait: 2m
+      group_interval: 30m
+      repeat_interval: 24h
+receivers:
+  - name: page
+    webhook_configs:
+      - url: http://webhook:8080/page
+  - name: ticket
+    webhook_configs:
+      - url: http://webhook:8080/ticket
+  - name: log
+    webhook_configs:
+      - url: http://webhook:8080/log
+inhibit_rules:
+  - name: db-down-hides-symptoms
+    source_matchers: [alertname="DBDown"]
+    target_matchers: [alertname=~"DependencyDown|HighErrorRate|HighLatency"]
+    equal: [env]
