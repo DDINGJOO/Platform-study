@@ -104,7 +104,7 @@
 
 <p>어느 쪽이 옳다고 말하기는 어렵습니다. 둘 다 실행 중에 깨질 수 있어요. D가 C 2.0에서 새로 생긴 메서드를 부른다면 Maven이 고른 C 1.0 위에서는 그 호출이 <code>NoSuchMethodError</code>로 끝납니다. 반대로 A가 쓰던 메서드가 C 2.0에서 지워졌다면 Gradle 쪽에서 A가 깨지고요. 컴파일은 둘 다 통과합니다. 컴파일러는 앱의 소스만 검사하고, A와 D는 이미 컴파일된 jar로 들어오기 때문이에요. <span class="obsv-mark">충돌 해소는 빌드를 통과시키는 규칙이지 실행을 보장하는 규칙이 아닙니다.</span></p>
 
-<p>규칙이 다르다는 사실은 운영 질의에도 그대로 걸립니다. Maven과 Gradle을 섞어 쓰는 조직에서 "C 1.0을 쓰는 서비스"를 찾으려고 POM을 재귀로 따라가는 도구를 만들었다면, 그 도구는 둘 중 한 규칙을 흉내 낼 수밖에 없어요. 다른 도구로 빌드한 서비스에서는 답이 틀립니다. <a href="#co-07">실습-3</a>에서 이 그래프를 로컬 저장소에 직접 만들어 두 도구에 풀게 하고, 실행까지 시켜서 어느 쪽이 어디서 깨지는지 확인해요.</p>
+<p>규칙이 다르다는 사실은 운영 질의에도 그대로 걸립니다. Maven과 Gradle을 섞어 쓰는 조직에서 "C 1.0을 쓰는 서비스"를 찾으려고 POM을 재귀로 따라가는 도구를 만들었다면, 그 도구는 둘 중 한 규칙을 흉내 낼 수밖에 없어요. 다른 도구로 빌드한 서비스에서는 답이 틀립니다. <a href="https://dding-shark.tistory.com/640">실습-3</a>에서 이 그래프를 로컬 저장소에 직접 만들어 두 도구에 풀게 하고, 실행까지 시켜서 어느 쪽이 어디서 깨지는지 확인해요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">💡 실무에서는</div>
@@ -147,7 +147,7 @@
   구체적인 버전 대신 조건을 적어 두고, 빌드할 때 저장소에 있는 버전 목록을 보고 실제 버전을 정하는 방식입니다. 같은 빌드 파일이라도 저장소에 새 버전이 올라오면 다른 jar가 만들어져요.
 </div>
 
-<p>먼저 "가장 높은"의 기준부터 보겠습니다. 버전 문자열을 사전순으로 정렬하면 <code>2.10.9</code>가 <code>2.10.10</code>보다 뒤에 와요("9" &gt; "1"). 그래서 <code>2.10.+</code>가 2.10.9를 고른다는 설명을 가끔 보는데, Gradle의 버전 정렬은 그렇게 동작하지 않아요. 버전을 <code>. - _ +</code>로 나눈 뒤 <b>숫자 부분은 숫자로</b> 비교하고, 숫자 부분은 문자 부분보다 높게 칩니다(Gradle, Declaring Versions). 이 규칙대로라면 2.10.10이 더 높아요. <a href="#co-05">실습-1</a>에서 두 버전을 로컬 저장소에 올려 놓고 실제로 무엇을 고르는지 확인합니다.</p>
+<p>먼저 "가장 높은"의 기준부터 보겠습니다. 버전 문자열을 사전순으로 정렬하면 <code>2.10.9</code>가 <code>2.10.10</code>보다 뒤에 와요("9" &gt; "1"). 그래서 <code>2.10.+</code>가 2.10.9를 고른다는 설명을 가끔 보는데, Gradle의 버전 정렬은 그렇게 동작하지 않아요. 버전을 <code>. - _ +</code>로 나눈 뒤 <b>숫자 부분은 숫자로</b> 비교하고, 숫자 부분은 문자 부분보다 높게 칩니다(Gradle, Declaring Versions). 이 규칙대로라면 2.10.10이 더 높아요. <a href="https://dding-shark.tistory.com/638">실습-1</a>에서 두 버전을 로컬 저장소에 올려 놓고 실제로 무엇을 고르는지 확인합니다.</p>
 
 <p>더 자주 사람을 놀라게 하는 건 문자 부분이에요. <code>dev</code>는 다른 어떤 문자 부분보다 낮고, <code>rc</code>, <code>snapshot</code>, <code>final</code>, <code>ga</code>, <code>release</code>, <code>sp</code>는 다른 문자보다 높으며 이 순서를 따라요(같은 문서). 그리고 <code>latest.release</code>는 "상태가 release인 가장 높은 버전"이에요. 문제는 상태를 정하는 방식입니다. POM으로 메타데이터를 읽는 모듈의 상태는 <b>SNAPSHOT이면 integration, 나머지는 모두 release</b>예요(Gradle, Component Metadata Rules). 2.11.0.rc1도 SNAPSHOT이 아니니 release입니다.</p>
 
@@ -191,7 +191,7 @@ $ curl -s https://repo1.maven.org/maven2/org/springframework/boot/spring-boot/ma
 
 <p>메타데이터가 말하는 "release"는 SNAPSHOT이 아닌 가장 최근 버전이라는 뜻일 뿐이에요. Maven 3.9 계열의 최신 버전이 따로 있는데도 이 칸에는 4.0의 릴리스 후보가, Spring Boot는 4.2의 두 번째 마일스톤이 적혀 있습니다. 참고로 Maven 3부터는 플러그인 버전에 <code>RELEASE</code>와 <code>LATEST</code>를 쓸 수 없게 됐고(MNG-4205), 의존성에는 아직 쓸 수 있어요.</p>
 
-<p>동적 버전에는 시간 문제도 있습니다. <a href="#co-02">2편</a>에서 본 Gradle의 24시간 캐시가 동적 버전에도 걸려서, 같은 커밋을 오늘 빌드한 노트북과 내일 빌드한 CI가 다른 버전을 넣을 수 있어요. 2편의 "같은 이름이 다른 바이너리를 가리키는" 문제가 버전 하나가 아니라 의존성 목록 전체에서 생기는 셈이에요.</p>
+<p>동적 버전에는 시간 문제도 있습니다. <a href="https://dding-shark.tistory.com/635">2편</a>에서 본 Gradle의 24시간 캐시가 동적 버전에도 걸려서, 같은 커밋을 오늘 빌드한 노트북과 내일 빌드한 CI가 다른 버전을 넣을 수 있어요. 2편의 "같은 이름이 다른 바이너리를 가리키는" 문제가 버전 하나가 아니라 의존성 목록 전체에서 생기는 셈이에요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">⚠️ 주의: 릴리스 후보를 거르는 장치는 따로 걸어야 한다</div>
@@ -254,14 +254,14 @@ resolutionStrategy (Gradle)   바꾼다       바꾼다          규칙에 따�
 </div>
 <div class="obsv-figcap">그림 3. 질의는 해소 앞이 아니라 해소 뒤의 기록에서 출발해야 한다</div>
 
-<p>예전에는 해소된 목록을 POM의 <code>&lt;properties&gt;</code>에 문자열로 적어 넣는 방식이 쓰였어요(Netflix Nebula 플러그인 묶음의 info, maven-manifest가 그런 일을 했습니다). 지금은 이 자리를 <b>SBOM</b>(구성 요소 목록, <a href="#co-01">1편</a>의 용어 박스 참고)이 CycloneDX, SPDX 같은 표준 형식으로 채웁니다. 빌드 도구 플러그인이 해소된 결과를 보고 만들기 때문에 빌드 파일이 아니라 실제로 들어간 것을 적어요.</p>
+<p>예전에는 해소된 목록을 POM의 <code>&lt;properties&gt;</code>에 문자열로 적어 넣는 방식이 쓰였어요(Netflix Nebula 플러그인 묶음의 info, maven-manifest가 그런 일을 했습니다). 지금은 이 자리를 <b>SBOM</b>(구성 요소 목록, <a href="https://dding-shark.tistory.com/634">1편</a>의 용어 박스 참고)이 CycloneDX, SPDX 같은 표준 형식으로 채웁니다. 빌드 도구 플러그인이 해소된 결과를 보고 만들기 때문에 빌드 파일이 아니라 실제로 들어간 것을 적어요.</p>
 
-<p>Maven은 <code>cyclonedx-maven-plugin</code>, Gradle은 <code>org.cyclonedx.bom</code> 플러그인으로 빌드할 때 CycloneDX SBOM을 만들어요. Spring Boot는 3.3부터 이 플러그인 설정을 미리 잡아 두고, 만든 SBOM을 실행 jar 안에 넣고, Actuator의 <code>sbom</code> 엔드포인트로 노출합니다(Spring 블로그 "SBOM support in Spring Boot 3.3", Actuator 문서). 이렇게 하면 "지금 떠 있는 서비스에 무엇이 들어 있나"를 그 프로세스에 직접 물을 수 있어요. 어디에 떠 있는지를 플랫폼에 묻는 건 <a href="#co-01">1편</a>의 이야기이고, 서비스 열 개에 이 질의를 실제로 던져서 빌드 파일 기준 답과 비교하는 건 <a href="#co-06">실습-2</a>에서 합니다.</p>
+<p>Maven은 <code>cyclonedx-maven-plugin</code>, Gradle은 <code>org.cyclonedx.bom</code> 플러그인으로 빌드할 때 CycloneDX SBOM을 만들어요. Spring Boot는 3.3부터 이 플러그인 설정을 미리 잡아 두고, 만든 SBOM을 실행 jar 안에 넣고, Actuator의 <code>sbom</code> 엔드포인트로 노출합니다(Spring 블로그 "SBOM support in Spring Boot 3.3", Actuator 문서). 이렇게 하면 "지금 떠 있는 서비스에 무엇이 들어 있나"를 그 프로세스에 직접 물을 수 있어요. 어디에 떠 있는지를 플랫폼에 묻는 건 <a href="https://dding-shark.tistory.com/634">1편</a>의 이야기이고, 서비스 열 개에 이 질의를 실제로 던져서 빌드 파일 기준 답과 비교하는 건 <a href="https://dding-shark.tistory.com/639">실습-2</a>에서 합니다.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">💡 실무에서는</div>
   &bull; SBOM은 jar 밖의 파일로만 두지 말고 jar 안에도 넣어요. 운영 서버에 떠 있는 바이너리와 SBOM이 서로 다른 빌드에서 나오는 일을 막아 줍니다.<br>
-  &bull; <code>sbom</code> 엔드포인트를 열 때의 노출 범위와 관리 포트 이야기는 <a href="#co-01">1편</a>의 주의 콜아웃을 따라요.<br>
+  &bull; <code>sbom</code> 엔드포인트를 열 때의 노출 범위와 관리 포트 이야기는 <a href="https://dding-shark.tistory.com/634">1편</a>의 주의 콜아웃을 따라요.<br>
   &bull; Gradle에서 동적 버전을 쓴다면 잠금 파일과 SBOM을 같이 남겨요. 잠금 파일은 "의도한 결과", SBOM은 "실제로 들어간 결과"라서 둘을 비교하면 잠금이 빠진 구성(configuration)을 찾을 수 있어요.
 </div>
 
