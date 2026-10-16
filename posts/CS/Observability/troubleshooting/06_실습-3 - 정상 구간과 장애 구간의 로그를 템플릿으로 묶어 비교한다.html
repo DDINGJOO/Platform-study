@@ -34,7 +34,7 @@
 
 <p>인스턴스 두 개가 같은 이미지로 떠 있어요. 10분 동안 둘이 합쳐 로그 10만 줄을 찍었고, 뒤쪽 5분 동안 한쪽만 이상해졌습니다. 10만 줄을 위에서부터 읽을 수는 없어요. 요청 ID와 사용자 이름이 줄마다 달라서 두 인스턴스의 로그를 그대로 diff할 수도 없습니다.</p>
 
-<p><a href="#ts-03">3편</a>은 이럴 때 변하는 값을 지우고 문장 틀(템플릿)만 남겨 세라고 했어요. 장애 구간에만 나타난 템플릿을 고르고, 템플릿의 고정 문장을 로그를 남긴 코드 줄을 찾는 단서로 쓰라는 거였죠. 이번 실습은 그 과정을 직접 돌려서 셉니다. 템플릿을 뽑는 방법은 세 가지로 했어요. Drain3 기본 설정, 마스킹을 건 Drain3, 그리고 Loki의 pattern ingester입니다. 숫자는 전부 이번에 돌린 결과예요.</p>
+<p><a href="https://dding-shark.tistory.com/658">3편</a>은 이럴 때 변하는 값을 지우고 문장 틀(템플릿)만 남겨 세라고 했어요. 장애 구간에만 나타난 템플릿을 고르고, 템플릿의 고정 문장을 로그를 남긴 코드 줄을 찾는 단서로 쓰라는 거였죠. 이번 실습은 그 과정을 직접 돌려서 셉니다. 템플릿을 뽑는 방법은 세 가지로 했어요. Drain3 기본 설정, 마스킹을 건 Drain3, 그리고 Loki의 pattern ingester입니다. 숫자는 전부 이번에 돌린 결과예요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
@@ -139,7 +139,7 @@ docker compose down -v</div>
 
 <p>찍힌 문장은 25종인데 템플릿은 31개가 나왔어요. 합쳐진 건 하나도 없었습니다. 남는 여섯 개 중 다섯 개는 문장 네 개가 쪼개진 몫(2 + 1 + 1 + 1)이고, 하나는 3장에서 볼 종료 문장 <code>done: &lt;*&gt; lines</code>예요. 쪼개진 이유는 Drain3의 트리 구조에서 나와요. Drain3 0.9.11 코드는 첫 단계에서 토큰 수로 가지를 나누고, 그다음 앞 토큰을 열쇠로 트리를 내려갑니다. 열쇠로 쓰는 토큰 수는 깊이에서 2를 뺀 값까지 내려가는 동안이라, 기본 깊이 4에서는 첫 토큰 하나뿐이에요(<code>max_node_depth = depth - 2</code>, <code>tree_search</code>). 숫자가 든 토큰은 와일드카드 가지로 보내지만 글자만 있는 토큰은 그대로 열쇠가 돼요.</p>
 
-<p>그래서 요청 로그는 첫 토큰 <code>GET</code>, <code>PUT</code>, <code>POST</code>마다 템플릿이 따로 생겼고, 두 번째 토큰인 경로(<code>/orders</code>, <code>/cart</code> 등)로는 갈리지 않았습니다. 앞 토큰 하나만 본다는 코드와 맞는 결과예요. 주 이름이 <code>New York</code>처럼 두 낱말이거나 취소 사유가 <code>delivery too slow</code>처럼 세 낱말이면 토큰 수가 달라져 다른 가지로 가요. 이 실습에서 State Index 문장의 값은 미국 주 이름이에요. 드물게 찍히는 <code>Error loading State Index</code>는 두 낱말 주 이름이 단 한 번 나와서 <code>Error loading State Index 14 - North Carolina into memory</code>가 값까지 그대로 박힌 템플릿 하나로 남았습니다. <a href="#ts-03">3편</a> 예시 표의 마지막 두 줄(<code>Hawaii</code>와 <code>North Carolina</code>)이 이 결과예요. 같은 문장이 값의 낱말 수에 따라 갈렸습니다.</p>
+<p>그래서 요청 로그는 첫 토큰 <code>GET</code>, <code>PUT</code>, <code>POST</code>마다 템플릿이 따로 생겼고, 두 번째 토큰인 경로(<code>/orders</code>, <code>/cart</code> 등)로는 갈리지 않았습니다. 앞 토큰 하나만 본다는 코드와 맞는 결과예요. 주 이름이 <code>New York</code>처럼 두 낱말이거나 취소 사유가 <code>delivery too slow</code>처럼 세 낱말이면 토큰 수가 달라져 다른 가지로 가요. 이 실습에서 State Index 문장의 값은 미국 주 이름이에요. 드물게 찍히는 <code>Error loading State Index</code>는 두 낱말 주 이름이 단 한 번 나와서 <code>Error loading State Index 14 - North Carolina into memory</code>가 값까지 그대로 박힌 템플릿 하나로 남았습니다. <a href="https://dding-shark.tistory.com/658">3편</a> 예시 표의 마지막 두 줄(<code>Hawaii</code>와 <code>North Carolina</code>)이 이 결과예요. 같은 문장이 값의 낱말 수에 따라 갈렸습니다.</p>
 
 <h3>마스킹은 묶음을 바꾸지 않았다. 값을 지우고 검색을 도왔다</h3>
 
