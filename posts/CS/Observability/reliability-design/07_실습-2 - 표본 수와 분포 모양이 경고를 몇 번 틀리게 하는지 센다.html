@@ -1,0 +1,282 @@
+<!-- lead: 에러율 1%로 같은 서비스도 초당 1건이면 burn rate 경고가 하루 38번 켜졌어요. Prometheus 규칙으로 오탐을 세고, 실제 지연에 평균+3σ를 걸어 1.77%와 3.90%가 넘는 걸 확인했어요. -->
+<!-- tags: burn rate 오탐, Prometheus 경고 규칙, 3시그마, 저트래픽 서비스, quantile_over_time -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📐 신뢰성 설계, 실습-2</div>
+  1편. 같은 장애도 측정 창과 분모를 바꾸면 SLO를 지킨다<br>
+  2편. 요청이 적은 서비스의 99.9%는 소음이다<br>
+  3편. 지연에 평균 더하기 3σ를 걸면 경고가 틀린다<br>
+  4편. 가용성은 더하지 않고 곱한다<br>
+  5편. 이중화의 곱셈은 고장이 서로 모를 때만 성립한다<br>
+  실습-1. 같은 장애 기록을 네 가지 창으로 판정한다<br>
+  <b>실습-2. 표본 수와 분포 모양이 경고를 몇 번 틀리게 하는지 센다</b> &larr; 지금 이 글<br>
+  실습-3. 의존 서비스를 한 줄로 이으면 성공률이 곱으로 준다<br>
+  실습-4. 복제본 셋이 같은 것에 기대면 이중화가 사라진다
+</div>
+
+<p>에러율이 똑같이 1%인 서비스 셋을 띄웠습니다. 다른 건 초당 받는 요청 수뿐이에요. 1건, 10건, 100건. 같은 burn rate 경고 규칙을 걸고 실제 창 기준 24시간에 해당하는 시간 동안 돌렸더니, 초당 100건짜리는 경고가 한 번 켜져서 끝까지 켜져 있었고 초당 1건짜리는 21번 켜졌다 꺼졌어요. 서비스의 상태는 셋 다 처음부터 끝까지 같았습니다.</p>
+
+<p><a href="#rel-02">2편</a>과 <a href="#rel-03">3편</a>에서 계산으로 한 이야기를 실제 HTTP 요청과 Prometheus 규칙으로 다시 쟀어요. 숫자는 전부 이번에 돌린 한 번의 실행(60분, 요청 115만 9,670건)에서 나왔습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 에러율이 같으면 초당 요청 수가 달라도 경고는 같게 울리는가?<br>
+  &bull; 몬테카를로로 예측한 오탐 횟수와 실제 Prometheus 경고는 맞는가?<br>
+  &bull; 1시간 창 SLI는 요청 수에 따라 얼마나 흔들리는가?<br>
+  &bull; 실제 지연에 평균+3σ를 걸면 몇 %가 넘는가? 기준 표본이 적으면?<br>
+  &bull; 1분 평균 시계열의 p90과 요청의 p90은 얼마나 다른가?
+</div>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 실습 환경: 에러율만 다른 서비스 여섯, 지연만 다른 서비스 둘</h2>
+
+<p>앱 하나가 서비스 여덟 개를 흉내 냅니다. 파이썬 표준 라이브러리만으로 짠 HTTP 서버이고, 서비스마다 에러율과 지연 분포를 설정으로 받아요. 부하 생성기는 서비스마다 정해진 초당 요청 수를 포아송 도착으로 보내고, 요청마다 CSV 한 줄(보낼 예정이던 시각, 서비스, 상태 코드, 지연)을 남깁니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="l7a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M30 60 C 90 57, 150 61, 190 58 C 192 90, 191 130, 190 160 C 150 163, 90 159, 32 161 C 29 130, 30 90, 30 60 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
+    <text x="44" y="88" font-size="21" fill="#3d3a34">🐍 부하 생성기</text>
+    <text x="44" y="112" font-size="17" fill="#8a8272">열린 루프, 포아송 도착</text>
+    <text x="44" y="134" font-size="17" fill="#8a8272">초당 1·10·100건 x2</text>
+    <text x="44" y="154" font-size="17" fill="#8a8272">+ 지연용 50건 x2</text>
+    <path d="M196 110 C 220 108, 240 111, 262 110" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#l7a1)"/>
+    <path d="M270 40 C 340 37, 400 41, 440 38 C 442 100, 441 160, 440 200 C 400 203, 340 199, 272 201 C 269 160, 270 100, 270 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+    <text x="284" y="66" font-size="21" fill="#4a7fb5">☕ 앱 (서비스 8개)</text>
+    <text x="284" y="92" font-size="17" fill="#b3502f">e1 e10 e100 : 에러 1%</text>
+    <text x="284" y="114" font-size="17" fill="#2e6b41">h1 h10 h100 : 에러 0.1%</text>
+    <text x="284" y="140" font-size="17" fill="#3d3a34">lat-ln : 로그정규 지연</text>
+    <text x="284" y="162" font-size="17" fill="#3d3a34">lat-bi : 두 봉우리 지연</text>
+    <text x="284" y="188" font-size="16" fill="#8a8272">/metrics 카운터·히스토그램</text>
+    <path d="M446 120 C 470 118, 490 121, 512 120" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#l7a1)"/>
+    <text x="452" y="108" font-size="16" fill="#8a8272">2초</text>
+    <path d="M520 60 C 570 57, 620 61, 670 58 C 672 100, 671 150, 670 190 C 620 193, 570 189, 522 191 C 519 150, 520 100, 520 60 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.6"/>
+    <text x="534" y="88" font-size="21" fill="#c07f18">Prometheus</text>
+    <text x="534" y="114" font-size="16" fill="#8a8272">2초마다 규칙 평가</text>
+    <text x="534" y="138" font-size="16" fill="#8a8272">창 2m·10s → 14.4배</text>
+    <text x="534" y="160" font-size="16" fill="#8a8272">창 12m·1m → 6배</text>
+    <text x="534" y="182" font-size="16" fill="#8a8272">ALERTS 시계열</text>
+    <path d="M110 166 C 112 210, 116 240, 140 262" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#l7a1)"/>
+    <path d="M590 196 C 588 230, 560 250, 470 266" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#l7a1)"/>
+    <path d="M150 240 C 260 237, 360 241, 460 238 C 462 260, 461 280, 460 296 C 360 299, 260 295, 152 297 C 149 280, 150 260, 150 240 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+    <text x="166" y="264" font-size="20" fill="#b3502f">📋 analyze.py</text>
+    <text x="166" y="288" font-size="17" fill="#8a8272">요청 CSV + ALERTS 로 횟수·비율을 센다</text>
+    <text x="30" y="322" font-size="19" fill="#b3502f">창을 30분의 1로 줄였으니 초당 1건은 "시간당 120건 서비스"와 표본 크기가 같다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 에러율만 다른 여섯 서비스와 지연만 다른 두 서비스를 한 앱에 띄웠다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 열린 루프 부하 생성기 (open-loop load generator)</div>
+  응답을 기다리지 않고 미리 정한 시각에 다음 요청을 보내는 부하 생성기입니다. 서버가 느려져도 보내는 양이 줄지 않아요. 지연도 "보낼 예정이던 시각"부터 재서, 서버가 멈춘 동안의 대기가 빠지지 않습니다.
+</div>
+
+<div class="obsv-code">서비스   에러율   초당 요청   SLO 99.9% 기준 burn rate   정답
+e1        1%       1           10                        6배 단은 켜짐, 14.4배 단은 꺼짐
+e10       1%      10           10                        (같음)
+e100      1%     100           10                        (같음)
+h1        0.1%     1            1                        둘 다 꺼짐
+h10       0.1%    10            1                        (같음)
+h100      0.1%   100            1                        (같음)
+lat-ln    0       50           지연 로그정규(중앙값 40ms, σ_log 0.6)
+lat-bi    0       50           지연 두 봉우리(95%는 중앙값 20ms, 5%는 400ms)</div>
+
+<p>쓴 버전은 아래와 같아요. 앱과 부하 생성기에 라이브러리가 없어서 이미지를 빌드하지 않고 python 이미지에 코드만 붙였습니다.</p>
+
+<div class="obsv-code">Prometheus            3.15.0   (수집 2초, 규칙 평가 2초)
+Grafana               13.2.3
+Python                3.13     (python:3.13-alpine, 앱과 부하 생성기)
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/rel-02-small-samples">GitHub 저장소의 labs/observability/rel-02-small-samples</a>에 있어요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/rel-02-small-samples
+docker compose up -d
+caffeinate -dims docker compose --profile load run --rm load    # 60분. 끝나면 out/run.csv
+python3 analyze.py out/run.csv --prom http://localhost:32090
+docker compose down -v</div>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 창을 30분의 1로 줄이면 초당 1건은 "시간당 120건 서비스"가 된다</h2>
+
+<p>2편의 다중 창 경고는 1시간/5분 창(14.4배)과 6시간/30분 창(6배)을 씁니다. 6시간 창을 그대로 쓰면 한 번 돌리는 데 하루가 걸려요. 그래서 모든 창을 30분의 1로 줄였습니다. 1시간은 2분, 5분은 10초, 6시간은 12분, 30분은 1분이 돼요.</p>
+
+<div class="obsv-code"># prometheus/rules.yml 에서 page 두 단 (SLO 99.9%)
+- alert: FastBurn   # 실제 1h/5m 창, 14.4배
+  expr: route:error_ratio:rate2m &gt; 14.4 * 0.001 and route:error_ratio:rate10s &gt; 14.4 * 0.001
+- alert: SlowBurn   # 실제 6h/30m 창, 6배
+  expr: route:error_ratio:rate12m &gt; 6 * 0.001 and route:error_ratio:rate1m &gt; 6 * 0.001</div>
+
+<p>창을 줄이면 창 안의 요청 수도 30분의 1이 됩니다. 이 실습의 목적에는 이게 오히려 쓸모 있어요. 초당 1건 서비스의 2분 창에는 요청이 120건쯤 들어가는데, 실제 1시간 창에 120건이 들어가는 서비스, 즉 <b>시간당 120건 서비스</b>와 표본 크기가 같습니다. 초당 10건은 시간당 1,200건, 초당 100건은 시간당 12,000건 서비스에 해당해요. 2편에서 건강한 서비스도 한 달에 일곱 번 안팎 사람을 깨운다고 계산한 시간당 10건, 100건 근처의 영역을 초 단위 실행으로 재현하는 셈입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 기록 규칙 (recording rule)</div>
+  PromQL 식을 평가 간격마다 미리 계산해 새 시계열로 저장하는 Prometheus 규칙입니다. 여기서는 창 길이마다 서비스별 에러율을 <code>route:error_ratio:rate2m</code> 같은 이름으로 저장하고, 경고 식은 그 값을 비교만 해요.
+</div>
+
+<p>60분을 돌리고 앞 12분은 뺐습니다. 가장 긴 창(12분)이 다 차기 전에는 판정이 공정하지 않기 때문이에요. 남은 48분이 실제 창 기준 24시간입니다. 실행 중 Mac이 잠들면 시계가 건너뛰어 창이 망가집니다. 첫 시도는 중간에 잠들어 몇 분 넘게 기록이 비어서 버렸고, 이 글의 숫자는 다시 돌린 실행에서 나왔어요. 그 실행은 시작부터 끝까지 3,601초가 걸려 설정한 60분과 맞았습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: caffeinate -i 만으로는 잠들었다</div>
+  첫 실행은 <code>caffeinate -i</code>로 감쌌는데도 중간에 시스템이 잠들었어요. <code>-i</code>는 유휴 상태로 잠드는 것만 막습니다. 두 번째 실행은 <code>caffeinate -dims</code>로 디스플레이와 시스템 잠자기까지 막았어요. 긴 측정을 노트북에서 돌린다면 잠들었는지를 따로 확인해야 합니다. Docker Desktop의 가상 머신은 잠든 동안 통째로 멈춰서, 부하 생성기의 지연 기록에는 흔적이 남지 않아요.
+</div>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 같은 1%가 초당 1건과 100건에서 다르게 울렸다</h2>
+
+<p><code>analyze.py</code>가 Prometheus의 <code>ALERTS</code> 시계열을 2초 간격으로 받아, 꺼져 있다가 켜진 횟수와 켜져 있던 시간을 셌어요. 옆에는 같은 조건(창 기준 30시간 중 앞 6시간을 빼고 24시간, 50번 반복)을 <code>calc/burn_sim.py</code>로 시뮬레이션한 평균을 놨습니다.</p>
+
+<div class="obsv-code">실측 (창 기준 24시간)                                   시뮬레이션 평균 (50번)
+서비스  FastBurn 켜짐   켜진 시간    SlowBurn 켜짐  켜진 시간     FastBurn   SlowBurn
+e1        17회          4.7%          21회         46.2%          18.8회     14.9회
+e10       13회          2.3%          23회         82.2%          10.8회     23.4회
+e100       0회          0%             1회        100.0%           0회        1.2회
+h1         0회          0%             0회          0%             0.3회      0회
+h10        0회          0%             0회          0%             0회        0회
+h100       0회          0%             0회          0%             0회        0회</div>
+
+<p>정답과 비교해 보면 이렇습니다. 진짜 burn rate가 10이니 6배 단(SlowBurn)은 계속 켜져 있어야 하고 14.4배 단(FastBurn)은 꺼져 있어야 해요. 초당 100건(e100)은 정확히 그렇게 됐습니다. SlowBurn이 한 번 켜져 끝까지 갔고 FastBurn은 한 번도 안 켜졌어요.</p>
+
+<p>초당 1건(e1)은 둘 다 틀렸습니다. 켜져 있어야 할 SlowBurn이 시간의 54% 동안 꺼져 있었고 21번 다시 켜졌어요. 꺼져 있어야 할 FastBurn은 17번 켜졌습니다. 담당자 입장에서는 하루 동안 페이지가 38번 오고, 그중 절반은 "해결된 것 같다"는 신호처럼 보이는 꺼짐이 뒤따르는 셈이에요. 초당 10건(e10)도 SlowBurn이 23번 켜졌다 꺼졌습니다.</p>
+
+<p>시뮬레이션 예측과는 대체로 맞았어요. FastBurn은 17회 대 18.8회, 13회 대 10.8회였고, SlowBurn은 e10에서 23회 대 23.4회였습니다. e1의 SlowBurn만 21회로 예측(14.9회)보다 많았어요. 실행 한 번이라 이 차이가 우연인지 Prometheus의 <code>rate()</code> 외삽 때문인지는 가르지 못했습니다. 건강한 서비스(h1~h100)는 예측대로 한 번도 울리지 않았어요. 2편의 표에서 시간당 100건 서비스가 한 달에 여섯 번 넘게 울린다고 했는데, 시간당 120건 서비스의 하루로는 0.3회가 예측값이라 이번 실행에서 0회인 건 놀랍지 않습니다.</p>
+
+<p>왜 e1의 SlowBurn이 꺼졌다 켜졌는지는 두 창을 따로 그려 보면 보입니다. 12분 창(실제 6시간)의 에러율은 대부분 문턱 0.6% 위에 있었어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/reliability-design/images/lab-07/slow-window-e1-e100.png" alt="12분 창 에러율 그래프. e100은 1% 근처에서 평평하고, e1은 0.6%에서 1.6% 사이를 크게 오르내리지만 대부분 0.6% 문턱 위에 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 긴 창(12분 = 실제 6시간)에서는 e1도 대부분 문턱 위에 있었다</div>
+
+<p>범인은 짧은 창입니다. 1분 창(실제 30분)에는 e1의 요청이 60건쯤 들어가요. 진짜 에러율 1%면 평균 0.6건이라, 1분 창의 에러율은 절반 남짓(0.99<sup>60</sup> &asymp; 55%)이 0이고 에러가 1건 들어오면 1.7%로 뜁니다. 문턱 0.6%의 아래와 위만 오가는 거예요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/reliability-design/images/lab-07/short-window-e1-e100.png" alt="1분 창 에러율 그래프 10분 구간. e100은 0.85%에서 1.2% 사이를 오가고, e1은 0과 1.5~2.1% 사이를 계단처럼 오간다. 0.6% 문턱선이 두 상태 사이에 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 짧은 창(1분 = 실제 30분)의 e1은 0 아니면 1.5% 이상, 둘 중 하나다</div>
+
+<p>다중 창 경고는 짧은 창이 "지금도 진행 중인가"를 확인하게 만든 장치인데, 표본이 작으면 그 확인이 동전 던지기가 됩니다. <span class="obsv-mark">긴 창이 지속성을 보장해도, 짧은 창의 표본이 모자라면 경고는 꺼졌다 켜지기를 반복해요.</span></p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 1시간 창 SLI는 얼마나 흔들렸나</h2>
+
+<p>같은 CSV를 겹치지 않는 2분 창(실제 1시간)으로 잘라 창마다 SLI를 계산했어요. 창은 29개입니다.</p>
+
+<div class="obsv-code">서비스  창당 요청   전체 SLI   창별 SLI 범위          표준편차   이항분포 이론값   에러 0건 창
+e1          118     98.977%   97.44% ~ 100%          0.63%p     0.92%p           4개
+e10       1,202     99.004%   98.38% ~ 99.83%        0.27%p     0.29%p           0개
+e100     12,009     99.001%   98.81% ~ 99.19%        0.08%p     0.09%p           0개
+h1          118     99.883%   99.10% ~ 100%          0.28%p     0.29%p          25개
+h10       1,213     99.906%   99.59% ~ 100%          0.10%p     0.09%p          11개
+h100     11,994     99.896%   99.82% ~ 99.94%        0.03%p     0.03%p           0개
+
+이론값 = &radic;(p(1-p)/n), p 는 설정한 에러율, n 은 창당 요청</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 이항분포 이론값</div>
+  요청마다 같은 확률 p로 독립적으로 실패한다면, n건으로 잰 실패율의 표준편차는 &radic;(p(1&minus;p)/n)입니다. 측정한 흔들림이 이 값과 비슷하면 "그 흔들림은 표본이 작아서 생긴 것"이라고 말할 수 있어요.
+</div>
+
+<p>e1의 표준편차(0.63%p)가 이론값(0.92%p)보다 작게 나온 것만 빼면 측정과 이론이 잘 맞습니다. e1은 창이 29개뿐이고 창당 에러가 0~3건이라 표준편차 추정 자체가 거칠어요. 눈여겨볼 건 h1입니다. 진짜 SLI가 99.9%인 서비스의 1시간 창 29개 중 25개가 100%였어요. 2편에서 월 1,000건 서비스에 했던 계산을 요청 118건짜리 창에 그대로 적용하면, 실패가 0건일 확률은 0.999<sup>118</sup> &asymp; 89%이니 기대대로입니다. 이런 서비스의 1시간 SLI 그래프는 대부분 100%에 붙어 있다가 가끔 99%대로 뚝 떨어지는 모양이 돼요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 실제 지연에 평균+3σ를 걸었다</h2>
+
+<p>lat-ln과 lat-bi는 에러 없이 지연만 다른 서비스예요. 실행의 앞 절반(30분)으로 평균과 표준편차를 구해 평균+3σ 문턱을 만들고, 뒤 절반에서 그 문턱을 넘는 비율을 셌습니다. 앱은 지연을 흉내 내려고 설정한 분포만큼 <code>sleep</code>하는데, 여기에 HTTP 처리 시간이 조금 더해지니 분포는 설정값과 완전히 같지는 않아요.</p>
+
+<div class="obsv-code">            앞 절반 요청   평균     σ(n-1)    σ(n)      문턱      뒤 절반에서 넘은 비율
+lat-ln       90,233건    50.1ms   31.77ms   31.77ms   145.4ms   1.771% (1,595 / 90,075)
+lat-bi       89,784건    43.5ms   92.83ms   92.83ms   322.0ms   3.903% (3,511 / 89,965)
+정규분포라면                                                    0.135%
+
+요청 분위수(앞 절반)  lat-ln  p50 42.0  p90 89.0  p99 165.2  p99.9 257.7 ms
+                     lat-bi  p50 22.5  p90 35.0  p99 519.1  p99.9 745.8 ms</div>
+
+<p>로그정규에서는 문턱을 넘는 요청이 1.77%로 정규분포의 13배였고, 두 봉우리에서는 3.90%로 29배였어요. <a href="#rel-03">3편</a>에서 계산으로 낸 값(로그정규 σ<sub>log</sub> 0.5~1.0에서 1.5~1.8%, 같은 모양의 두 봉우리에서 3.94%)과 같은 범위입니다. lat-bi의 문턱 322ms는 느린 봉우리(중앙값 400ms, σ<sub>log</sub> 0.3) 안쪽, 그 봉우리의 아래에서 4분의 1쯤 되는 자리라서, 문턱이 잡는 건 이상한 요청이 아니라 느린 경로를 탄 정상 요청이에요. 표본이 9만 건이라 n과 n&minus;1의 차이는 소수 둘째 자리에서도 보이지 않았습니다.</p>
+
+<h3>기준 표본이 적으면</h3>
+
+<p>이번에는 앞 절반을 n건씩 겹치지 않게 잘라 문턱을 여러 개 만들고(n=30, 100이면 300개, n=1,000이면 90개 남짓), 각 문턱을 뒤 절반 전체에 댔어요.</p>
+
+<div class="obsv-code">기준 표본 n     lat-ln 넘는 비율                  lat-bi 넘는 비율
+                중앙값    5~95% 범위             중앙값    5~95% 범위
+30              2.32%    0.42% ~ 7.38%          4.22%    0.61% ~ 6.81%
+100             2.03%    0.69% ~ 3.86%          4.24%    2.01% ~ 5.01%
+1,000           1.79%    1.39% ~ 2.31%          3.90%    3.38% ~ 4.49%</div>
+
+<p>기준 30건으로 정한 문턱은 운에 따라 넘는 비율이 0.4%도 되고 7.4%도 됩니다. 3편의 시뮬레이션(로그정규 σ<sub>log</sub> 1.0, n=30에서 0.5~8.3%)과 같은 모양이에요. lat-ln에서는 표본이 적을수록 중앙값이 올라가는 것도 같았습니다(1.79%, 2.03%, 2.32%). 꼬리의 큰 값이 작은 표본에 잘 안 들어와서 σ를 작게 잡는 경우가 많기 때문이에요. lat-bi는 n=30과 n=100의 중앙값이 4.22%와 4.24%로 거의 같았고, n=1,000에서만 3.90%로 내려왔습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 동적 문턱을 쓰기 전에</div>
+  &bull; 기준 구간의 요청 수부터 셉니다. 수백 건이면 문턱 하나가 넘는 비율을 두세 배씩 바꿔요<br>
+  &bull; 문턱을 정한 뒤 그 기준 구간에 다시 대어 몇 %가 넘는지 세고, 그 값을 경고의 "평소 비율"로 씁니다<br>
+  &bull; 지연 분포에 봉우리가 둘 이상이면 경로별로 지표를 나눈 다음에 문턱을 정합니다
+</div>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 1분 평균의 p90과 요청의 p90</h2>
+
+<p>마지막으로 대시보드에 흔한 "1분 평균 지연" 시계열에서 p90을 구해, 요청 하나하나의 p90과 비교했어요. CSV로 직접 계산한 값과, 같은 질문을 Prometheus에 던진 값을 같이 적었습니다. Prometheus 질의는 결과 파일에 함수 이름과 값만 남아서, 식의 범위까지는 적지 못했어요. 3편에 실은 식과 같은 모양입니다.</p>
+
+<div class="obsv-code">                    CSV: 1분 평균 59개의 p90    CSV: 요청의 p90    차이
+lat-ln                     51.5ms                  89.3ms         요청 쪽이 37.8ms 크다
+lat-bi                     46.2ms                  35.6ms         요청 쪽이 10.6ms 작다
+
+Prometheus (질의 원문은 남지 않아 함수와 결과만 적음)
+quantile_over_time(0.9, 1분 평균 지연 시계열)
+  lat-ln 49.9ms    lat-bi 45.0ms
+histogram_quantile(0.9, 실행 구간 버킷 증가량의 합)
+  lat-ln 94.4ms    lat-bi 45.4ms</div>
+
+<p>예상과 다르게 나온 게 이 절의 핵심입니다. 쓰기 전에는 "1분 평균의 p90은 꼬리가 묻혀서 요청의 p90보다 작다"고 생각했고 3편 초고에도 그렇게 적었어요. 로그정규(lat-ln)에서는 맞았습니다. 1분 평균은 51ms 근처에 몰려 있고 요청의 p90은 89ms였어요. 그런데 두 봉우리(lat-bi)에서는 거꾸로였습니다. 느린 5%(400ms 근처)가 매분 평균을 43ms 안팎으로 끌어올려서, 평균이 요청의 90%가 겪는 35.6ms보다 커졌어요. 3편의 해당 문장은 이 결과에 맞춰 고쳤습니다.</p>
+
+<p>Prometheus 쪽에도 함정이 하나 있었어요. 히스토그램으로 구한 lat-bi의 p90이 45.4ms로, CSV의 35.6ms보다 10ms 가까이 컸습니다. 먼저 재는 위치가 달라요. CSV의 지연은 부하 생성기가 보내기로 예정한 시각부터 응답을 다 받을 때까지이고, 히스토그램은 앱 안에서 요청을 처리한 시간(대부분 <code>sleep</code>)만 셉니다. 그런데 이 차이는 히스토그램 쪽을 작게 만드는 방향이니, 더 큰 원인은 버킷이에요. 앱의 버킷 경계가 25ms 다음 50ms라, 그 사이에 몰린 요청을 고르게 퍼져 있다고 보고 선형 보간했기 때문이에요. lat-ln의 94.4ms도 같은 이유로 실제(89.3ms)보다 큽니다. 요청 기준 식을 골라도 버킷이 성기면 값이 어긋나요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: quantile_over_time</div>
+  범위 안의 시계열 점들을 줄 세워 분위수를 구하는 PromQL 함수입니다. 점 하나가 1분 평균이면 결과는 "분" 단위로 센 분위수, 즉 시간 기준 분포의 분위수가 돼요.
+</div>
+
+<!-- ================= 7장 ================= -->
+<h2>7. 개념 글과 맞춰 보면</h2>
+
+<p>2편의 주장은 실측과 맞았습니다. 같은 에러율에서도 창 안 요청이 수백 건 아래면 경고가 켜졌다 꺼지기를 반복했고, 횟수도 시뮬레이션 예측과 같은 크기였어요. 3편의 평균+3σ 초과 비율(1~4%)과 적은 기준 표본의 흔들림도 실제 HTTP 지연에서 그대로 나왔습니다.</p>
+
+<p>어긋난 곳은 하나였어요. "1분 평균 시계열의 p90은 요청의 p90보다 작다"는 분포에 따라 뒤집혔습니다. 그래서 3편의 문장을, 작을지 클지는 분포가 정한다는 내용으로 고쳤어요. 그리고 이번 실행은 한 번이라, e1 SlowBurn의 21회가 예측 14.9회보다 많은 이유는 확인하지 못했습니다.</p>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>에러율 1%로 같은 서비스 셋 중 초당 100건짜리는 경고가 한 번 켜져 끝까지 갔고, 초당 1건짜리는 6배 단이 21번, 14.4배 단이 17번 켜졌어요.</b> 범인은 짧은 창의 표본이었습니다. 실제 30분 창에 요청 60건이면 창의 에러율은 0 아니면 1.7% 이상이고, 문턱 0.6%를 사이에 두고 오가요. 횟수는 몬테카를로 예측과 같은 크기였습니다.<br><br>
+  실제 지연에 평균+3σ를 걸면 로그정규에서 1.77%, 두 봉우리에서 3.90%가 넘었고, 기준 표본 30건으로 정한 문턱은 0.4%에서 7.4%까지 흔들렸어요. 1분 평균의 p90은 분포에 따라 요청의 p90보다 작게도 크게도 나왔습니다. 표본의 크기와 분포의 모양을 보지 않은 숫자는 경고 문턱이 되지 못해요.
+</div>
+
+</div>

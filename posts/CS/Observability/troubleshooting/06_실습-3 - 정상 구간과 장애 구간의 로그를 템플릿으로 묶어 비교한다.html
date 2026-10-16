@@ -1,0 +1,352 @@
+<!-- lead: 같은 이미지의 인스턴스 둘이 찍은 로그 10만 줄을 Drain3와 Loki pattern ingester로 템플릿으로 묶어 정상 구간과 장애 구간을 비교했어요. 장애 템플릿 4개를 소스 위치까지 좁히는 데 검색 10번, Loki 패턴 화면에서는 565줄짜리 문장이 보이지 않았어요. -->
+<!-- tags: Drain3, Loki pattern ingester, 로그 템플릿, 로그 패턴, 로그 비교 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔦 트러블슈팅, 실습-3</div>
+  1편. 증상은 원인보다 늦게 도착한다<br>
+  2편. 반으로 나누는 디버깅은 시험이 정직할 때만 빠르다<br>
+  3편. 정상인 것과 나란히 놓는 것이 가장 싼 첫 수다<br>
+  실습-1. 쿼리 하나를 바꾸고 증상이 나타나기까지 몇 분 걸리는지 잰다<br>
+  실습-2. git bisect가 회귀 커밋을 몇 번 만에 찾는지 센다<br>
+  <b>실습-3. 정상 구간과 장애 구간의 로그를 템플릿으로 묶어 비교한다</b> &larr; 지금 이 글
+</div>
+
+<p>인스턴스 두 개가 같은 이미지로 떠 있어요. 10분 동안 둘이 합쳐 로그 10만 줄을 찍었고, 뒤쪽 5분 동안 한쪽만 이상해졌습니다. 10만 줄을 위에서부터 읽을 수는 없어요. 요청 ID와 사용자 이름이 줄마다 달라서 두 인스턴스의 로그를 그대로 diff할 수도 없습니다.</p>
+
+<p><a href="#ts-03">3편</a>은 이럴 때 변하는 값을 지우고 문장 틀(템플릿)만 남겨 세라고 했어요. 장애 구간에만 나타난 템플릿을 고르고, 템플릿의 고정 문장을 로그를 남긴 코드 줄을 찾는 단서로 쓰라는 거였죠. 이번 실습은 그 과정을 직접 돌려서 셉니다. 템플릿을 뽑는 방법은 세 가지로 했어요. Drain3 기본 설정, 마스킹을 건 Drain3, 그리고 Loki의 pattern ingester입니다. 숫자는 전부 이번에 돌린 결과예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 로그 10만 줄은 템플릿 몇 개가 되나? 템플릿 하나가 코드 줄 하나와 맞아떨어지나?<br>
+  &bull; 마스킹을 걸면 무엇이 좋아지고 무엇을 잃나?<br>
+  &bull; "장애 구간에만 나온 템플릿"을 고르면 무엇이 딸려 오나?<br>
+  &bull; Loki 패턴 화면에는 무엇이 안 보이나?<br>
+  &bull; 템플릿에서 소스 위치까지 검색을 몇 번 하나? 설정 diff와는 어떻게 이어지나?
+</div>
+
+<h2>1. 소스를 알고 있는 로그를 만든다</h2>
+
+<p>템플릿이 맞게 묶였는지 판정하려면 각 줄이 어느 코드 줄에서 나왔는지 정답을 알아야 합니다. 실제 서비스 로그로는 그 정답을 얻기 어려워서 로그를 합성했어요. <code>shop-src/</code>에 주문, 결제, 재고, 고객 서비스 자바 파일 8개를 두고, 그 안에 <code>log.info("Order {} created for user {} with {} items", ...)</code> 같은 로그 문장 29개를 적었습니다. 생성기(<code>app/gen.py</code>)는 이 소스를 읽어 형식 문자열의 <code>{}</code>에 UUID, 사용자 이름, IP, 숫자를 채워 Spring Boot 기본 형식으로 찍어요. 자바를 실행하는 게 아니라 로그 문장만 흉내 냅니다.</p>
+
+<p>컨테이너 둘(<code>app-healthy</code>, <code>app-broken</code>)이 같은 이미지로 뜨고, 각각 초당 85줄을 10분 동안 찍어요. 앞 300초는 둘 다 평소 비중대로 찍습니다. 뒤 300초는 <code>app-broken</code>만 장애 문장 네 종류(주소 조회 타임아웃, 재시도, 주소 누락, 커넥션 풀 고갈)를 섞고 캐시 미스 비중을 올려요. DEBUG 문장 3개와 장애 때도 쓰지 않는 문장 1개는 찍히지 않아서, 실제로 찍힌 문장은 25종입니다. 두 컨테이너는 환경 변수와 설정 파일도 일부 다르게 줬어요. 이건 5장에서 씁니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="ts6a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M30 28 C 100 25, 180 30, 250 27 C 253 45, 252 62, 251 80 C 180 83, 100 79, 32 81 C 29 62, 30 45, 30 28 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="140" y="52" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">app-healthy</text>
+  <text x="140" y="72" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">SEED=1, 초당 85줄</text>
+  <path d="M30 98 C 60 96, 110 99, 138 97" fill="none" stroke="#5a9e6f" stroke-width="9" stroke-linecap="round"/>
+  <path d="M144 97 C 180 99, 220 96, 250 98" fill="none" stroke="#5a9e6f" stroke-width="9" stroke-linecap="round"/>
+  <text x="84" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">정상 300초</text>
+  <text x="197" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">정상 300초</text>
+
+  <path d="M30 152 C 100 149, 180 154, 250 151 C 253 169, 252 186, 251 204 C 180 207, 100 203, 32 205 C 29 186, 30 169, 30 152 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="140" y="176" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">app-broken (같은 이미지)</text>
+  <text x="140" y="196" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">SEED=2, FAULT=1, 초당 85줄</text>
+  <path d="M30 222 C 60 220, 110 223, 138 221" fill="none" stroke="#5a9e6f" stroke-width="9" stroke-linecap="round"/>
+  <path d="M144 221 C 180 223, 220 220, 250 222" fill="none" stroke="#e5533c" stroke-width="9" stroke-linecap="round"/>
+  <text x="84" y="244" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">정상 300초</text>
+  <text x="197" y="244" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">장애 문장 4종 추가</text>
+  <text x="197" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">캐시 미스 비중 증가</text>
+
+  <path d="M300 110 C 340 108, 370 111, 400 109 C 402 125, 401 140, 400 156 C 370 158, 340 155, 302 157 C 299 140, 300 125, 300 110 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">Alloy</text>
+  <text x="350" y="149" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">도커 로그 수집</text>
+  <path d="M256 60 C 275 75, 285 95, 296 115" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#ts6a1)"/>
+  <path d="M256 178 C 275 168, 285 160, 296 150" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#ts6a1)"/>
+
+  <path d="M450 30 C 520 27, 600 32, 670 29 C 673 50, 672 75, 671 100 C 600 103, 520 99, 452 101 C 449 75, 450 50, 450 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="560" y="55" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">Loki 3.7.8</text>
+  <text x="560" y="76" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">pattern ingester</text>
+  <text x="560" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">/loki/api/v1/patterns</text>
+  <path d="M405 125 C 420 110, 432 90, 446 72" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#ts6a1)"/>
+
+  <path d="M450 150 C 520 147, 600 152, 670 149 C 673 180, 672 210, 671 245 C 600 248, 520 244, 452 246 C 449 210, 450 180, 450 150 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="560" y="175" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">analyze.py</text>
+  <text x="560" y="196" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">Drain3 기본 / 마스킹</text>
+  <text x="560" y="214" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">정답(소스 줄)과 대조</text>
+  <text x="560" y="232" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">grep 횟수, env diff</text>
+  <path d="M560 106 C 562 118, 559 132, 561 144" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#ts6a1)"/>
+  <text x="575" y="130" font-family="Menlo, monospace" font-size="10" fill="#8a8272">원문 + 패턴</text>
+
+  <text x="350" y="288" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">두 인스턴스 합계 101,998줄. 종료 문장 2줄 말고는 출처 코드 줄을 전부 안다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 정답을 아는 로그를 만들어 두면 템플릿이 맞게 묶였는지 셀 수 있다</div>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/ts-03-log-templates
+python3 -m venv .venv &amp;&amp; .venv/bin/pip install drain3==0.9.11
+docker compose up -d --build
+caffeinate -i sleep 630              # 정상 300초 + 장애 300초 + 여유
+.venv/bin/python analyze.py          # 스택이 떠 있을 때. time으로 재면 2초 안팎
+.venv/bin/python offline.py          # 보조 계산. 결과 tsv만 읽는다
+docker compose down -v</div>
+
+<p>Loki 3.7.8, Alloy v1.20.1, Drain3 0.9.11, Python 3.9.6, Apple M5 Pro의 Docker 29.5.3에서 돌렸어요. 같은 조건으로 두 번 돌렸어요. Drain3로 뽑은 템플릿과 후보는 두 번 같았고(줄 수 몇 줄과 처리 시간만 달랐어요), Loki 패턴 수와 주 이름 패턴 수는 한두 개씩 달랐습니다. 생성기의 난수 시드가 고정이라 같은 줄이 거의 그대로 다시 나오기 때문이에요. 그러니 두 번째 실행은 독립된 표본이라기보다 분석 과정이 재현되는지 본 확인입니다. 아래 숫자는 두 번째 실행이에요. 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/ts-03-log-templates">labs/observability/ts-03-log-templates</a>에 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Loki pattern ingester</div>
+  Loki가 로그를 받는 길에 붙어 줄을 템플릿(Loki는 "패턴"이라고 불러요)으로 묶는 구성 요소입니다. 설정에서 <code>pattern_ingester.enabled: true</code>로 켜고, 결과는 <code>/loki/api/v1/patterns</code> API와 Grafana Logs Drilldown의 Patterns 탭에서 봐요. Grafana 문서는 패턴을 최근 3시간 로그에서만 뽑는다고 적고 있습니다.
+</div>
+
+<h2>2. 10만 줄이 템플릿 31개로: Drain3 기본과 마스킹</h2>
+
+<p>먼저 Drain3입니다. 줄 머리(시각, 레벨, 스레드, 로거)를 떼고 메시지 부분만 넣었어요. 설정은 두 가지로 했습니다. 하나는 아무것도 바꾸지 않은 기본 설정이고, 다른 하나는 UUID, IP, URL, 숫자를 정규식으로 먼저 <code>&lt;UUID&gt;</code>, <code>&lt;NUM&gt;</code> 같은 이름표로 바꾸는 마스킹 설정이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Drain3와 sim_th</div>
+  Drain(He 외, ICWS 2017)을 파이썬으로 구현한 로그 템플릿 추출기입니다. 줄을 토큰 수로 먼저 나누고, 앞쪽 토큰 몇 개로 트리를 내려간 뒤, 끝에 모인 후보 템플릿과 토큰이 얼마나 같은지(<code>sim_th</code>, 기본 0.4) 보고 묶을지 새로 만들지 정해요. 다른 값이 들어간 자리는 <code>&lt;*&gt;</code>가 됩니다.
+</div>
+
+<div class="obsv-code">                                기본 설정     마스킹 설정
+템플릿 수                          31           31
+소스 문장 둘 이상을 합친 템플릿       0            0
+템플릿 여러 개로 쪼개진 소스 문장      4            4
+10만 줄 처리 시간                   0.3초        0.6초
+
+쪼개진 문장 (두 설정 모두 같음)
+  OrderController.java:10   "{} {} from {} completed ..."        3개 (GET / PUT / POST)
+  OrderService.java:21      "Order {} cancelled by user {}: {}"  2개 (취소 사유 낱말 수)
+  StockService.java:18      "Loaded State Index {} - {} ..."     2개 (주 이름 낱말 수)
+  StockService.java:22      "Error loading State Index ..."      2개 (그중 하나는 1줄짜리)</div>
+
+<p>찍힌 문장은 25종인데 템플릿은 31개가 나왔어요. 합쳐진 건 하나도 없었습니다. 남는 여섯 개 중 다섯 개는 문장 네 개가 쪼개진 몫(2 + 1 + 1 + 1)이고, 하나는 3장에서 볼 종료 문장 <code>done: &lt;*&gt; lines</code>예요. 쪼개진 이유는 Drain3의 트리 구조에서 나와요. Drain3 0.9.11 코드는 첫 단계에서 토큰 수로 가지를 나누고, 그다음 앞 토큰을 열쇠로 트리를 내려갑니다. 열쇠로 쓰는 토큰 수는 깊이에서 2를 뺀 값까지 내려가는 동안이라, 기본 깊이 4에서는 첫 토큰 하나뿐이에요(<code>max_node_depth = depth - 2</code>, <code>tree_search</code>). 숫자가 든 토큰은 와일드카드 가지로 보내지만 글자만 있는 토큰은 그대로 열쇠가 돼요.</p>
+
+<p>그래서 요청 로그는 첫 토큰 <code>GET</code>, <code>PUT</code>, <code>POST</code>마다 템플릿이 따로 생겼고, 두 번째 토큰인 경로(<code>/orders</code>, <code>/cart</code> 등)로는 갈리지 않았습니다. 앞 토큰 하나만 본다는 코드와 맞는 결과예요. 주 이름이 <code>New York</code>처럼 두 낱말이거나 취소 사유가 <code>delivery too slow</code>처럼 세 낱말이면 토큰 수가 달라져 다른 가지로 가요. 이 실습에서 State Index 문장의 값은 미국 주 이름이에요. 드물게 찍히는 <code>Error loading State Index</code>는 두 낱말 주 이름이 단 한 번 나와서 <code>Error loading State Index 14 - North Carolina into memory</code>가 값까지 그대로 박힌 템플릿 하나로 남았습니다. <a href="#ts-03">3편</a> 예시 표의 마지막 두 줄(<code>Hawaii</code>와 <code>North Carolina</code>)이 이 결과예요. 같은 문장이 값의 낱말 수에 따라 갈렸습니다.</p>
+
+<h3>마스킹은 묶음을 바꾸지 않았다. 값을 지우고 검색을 도왔다</h3>
+
+<p>Drain3 README는 마스킹이 템플릿 추출 정확도를 높일 수 있다고 소개해요. 이번 로그에서는 템플릿 수도, 쪼개진 문장도 기본 설정과 똑같았습니다. 쪼개진 원인이 숫자나 UUID가 아니라 낱말(HTTP 메서드, 주 이름, 취소 사유)이었으니 숫자를 가려 봐야 달라질 게 없었어요. 기본 설정도 숫자가 든 토큰은 트리에서 와일드카드로 보내기 때문에 UUID 때문에 갈라지는 일은 처음부터 없었습니다.</p>
+
+<p>대신 마스킹은 템플릿에 든 값을 바꿨어요. 장애 구간에만 나온 템플릿 둘을 두 설정에서 나란히 놓으면 이렇습니다.</p>
+
+<div class="obsv-code">기본   Address lookup for customer &lt;*&gt; timed out after 5000 ms (endpoint http://address-legacy:8080)
+마스킹 Address lookup for customer &lt;UUID&gt; timed out after &lt;NUM&gt; ms (endpoint &lt;URL&gt;)
+
+기본   Connection is not available, request timed out after 30000 ms (total=10, active=10, idle=0, &lt;*&gt;
+마스킹 Connection is not available, request timed out after &lt;NUM&gt; ms (total=&lt;NUM&gt;, active=&lt;NUM&gt;, idle=&lt;NUM&gt;, waiting=&lt;NUM&gt;)</div>
+
+<p>기본 설정의 Drain3는 1,936줄 내내 같은 값이었던 자리를 <code>&lt;*&gt;</code>로 바꾸지 않아요. 그래서 템플릿에 <code>5000</code>, <code>address-legacy</code>, <code>total=10</code>이 그대로 남았습니다. <span class="obsv-mark">이 세 값은 5장에서 보는 설정 diff의 세 줄과 정확히 같은 값이에요.</span> 마스킹 설정은 이걸 전부 이름표로 바꿔 버렸습니다. 늘 같은 값까지 가리면 그 값이 품은 정보도 사라져요.</p>
+
+<p>반대 방향의 효과도 있었어요. 값이 박힌 기본 설정 템플릿은 고정 조각에 <code>5000 ms (endpoint http://address-legacy:8080</code> 같은 실제 값이 섞여서, 그 조각으로 소스를 검색하면 0건이 나옵니다. 5장에서 보듯 소스 검색은 마스킹 템플릿으로 해야 네 개를 다 찾았어요. 값을 읽을 때는 기본 설정, 소스를 찾을 때는 마스킹 설정이 나았습니다.</p>
+
+<h2>3. "장애 구간에만 나온 템플릿"은 다섯 개였고, 그중 하나는 아니었다</h2>
+
+<p>템플릿마다 줄 수를 (구간 2개) &times; (인스턴스 2개)로 나눠 셌어요. 정상 구간에 한 줄도 없고 장애 구간에만 있는 템플릿은 두 설정 모두 다섯 개였습니다.</p>
+
+<div class="obsv-code">템플릿 (마스킹 설정)                                      정상 구간       장애 구간
+                                                      healthy broken  healthy broken
+Retrying address lookup for customer &lt;UUID&gt; (attempt..    0      0        0   2,607
+Address lookup for customer &lt;UUID&gt; timed out after ..      0      0        0   1,936
+Error processing customer &lt;UUID&gt;: Address Missing.         0      0        0   1,255
+Connection is not available, request timed out after..     0      0        0   1,100
+done: &lt;NUM&gt; lines                                          0      0        1       1</div>
+
+<p>다섯 번째 <code>done: 50998 lines</code>는 앱 로그가 아니에요. 생성기가 끝날 때 표준 에러로 찍는 한 줄인데, Alloy는 도커 로그를 통째로 가져가니 이것도 Loki에 들어갔습니다. 마지막 순간에 찍혔으니 시간 축으로만 보면 "장애 구간에만 나온 템플릿"이 맞아요. 하지만 같은 시각의 정상 인스턴스에도 똑같이 있습니다. 실제 서비스라면 배포, 재시작, 스케줄 작업 같은 문장이 이런 식으로 끼어들어요.</p>
+
+<p>그래서 시간 축 비교에 인스턴스 축을 하나 더 겹쳤습니다. 장애 구간에만 있고, 같은 시각의 정상 인스턴스에는 없는 템플릿만 후보로 남기니 네 개가 됐어요. 3편이 말한 "같은 시각의 다른 대상"과 "같은 대상의 다른 시각"을 동시에 쓴 셈입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="300" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">정상 구간</text>
+  <text x="545" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">장애 구간</text>
+  <text x="95" y="100" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">app-healthy</text>
+  <text x="95" y="210" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">app-broken</text>
+
+  <path d="M190 50 C 260 47, 340 52, 415 49 C 418 80, 417 115, 416 145 C 340 148, 260 144, 192 146 C 189 115, 190 80, 190 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="302" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">평소 문장 21종</text>
+  <text x="302" y="116" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">캐시 미스 비중 4.9%</text>
+
+  <path d="M430 50 C 500 47, 590 52, 670 49 C 673 80, 672 115, 671 145 C 590 148, 500 144, 432 146 C 429 115, 430 80, 430 50 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="550" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">평소 문장 21종</text>
+  <text x="550" y="104" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">+ done: &lt;NUM&gt; lines 1줄</text>
+  <text x="550" y="126" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">캐시 미스 비중 5.2%</text>
+
+  <path d="M190 160 C 260 157, 340 162, 415 159 C 418 190, 417 225, 416 255 C 340 258, 260 254, 192 256 C 189 225, 190 190, 190 160 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="302" y="202" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">평소 문장 21종</text>
+  <text x="302" y="226" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">캐시 미스 비중 5.2%</text>
+
+  <path d="M430 160 C 500 157, 590 162, 670 159 C 673 190, 672 225, 671 255 C 590 258, 500 254, 432 256 C 429 225, 430 190, 430 160 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="550" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">새 템플릿 4개 🔥</text>
+  <text x="550" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">Retrying 2,607 / timed out 1,936</text>
+  <text x="550" y="215" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">Address Missing 1,255 / Connection 1,100</text>
+  <text x="550" y="232" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">캐시 미스 비중 5.2% → 11.7%</text>
+  <text x="550" y="248" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#c07f18">+ done: &lt;NUM&gt; lines 1줄</text>
+
+  <path d="M545 150 C 600 148, 640 142, 690 110" fill="none" stroke="#c07f18" stroke-width="1.8" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="80" y="290" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">시간 축만: 장애 구간에만 나온 템플릿 5개 (done 포함)</text>
+  <text x="80" y="316" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">+ 같은 시각 정상 인스턴스에 없는 것만: 4개</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 시간 축으로 고른 후보를 같은 시각의 정상 인스턴스와 한 번 더 겹쳐야 잡음이 빠진다</div>
+
+<h3>양쪽에 다 있지만 비중이 바뀐 템플릿</h3>
+
+<p>3편은 두 번째로 볼 것으로 "양쪽에 있지만 비율이 크게 달라진 템플릿"을 꼽았어요. 고장 인스턴스 안에서 정상 구간 비중과 장애 구간 비중을 비교해 1.5배 넘게 바뀐 템플릿을 골랐더니, 처음에는 대상 24개 중 13개가 걸렸습니다(<code>out/offline.txt</code>). 이 생성기는 초당 줄 수가 고정이라 장애 문장이 끼어들면 나머지 문장의 비중이 고르게 3분의 2쯤으로 줄었기 때문이에요. 실제 서비스라면 장애 문장은 원래 로그 위에 더해지는 경우가 많겠지만, 처리량이 떨어져 평소 로그가 줄어드는 경우에도 같은 일이 생깁니다.</p>
+
+<p>비중의 분모를 정상 구간에도 있던 템플릿의 줄로만 잡자 하나만 남았어요. 기본 설정 템플릿 <code>Cache miss for customer &lt;*&gt; loading from database</code>가 고장 인스턴스에서 5.2%에서 11.7%로 늘었고, 같은 시각 정상 인스턴스는 5.2%였습니다(그 인스턴스의 정상 구간은 4.9%. <code>out/offline.txt</code>). 이 실습에서 캐시 미스를 올린 건 생성기의 장애 설정이에요. 비중 비교는 그걸 정확히 집어냈습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 비중을 비교할 때 분모를 먼저 정한다</div>
+  &bull; 새 템플릿이 많이 생기면 기존 템플릿의 비중은 원인과 관계없이 모두 줄어듭니다. 이번에는 이것 때문에 처음 돌린 비교에서 1.5배 기준에 템플릿 24개 중 13개가 걸렸어요<br>
+  &bull; 분모를 "정상 구간에도 있던 템플릿의 줄"로 잡거나, 비중 대신 초당 줄 수를 비교합니다. 초당 줄 수는 처리량이 바뀌면 다시 흔들리니, 같은 시각 정상 인스턴스의 값과 함께 봐요
+</div>
+
+<h2>4. 같은 기준으로 센 Loki 패턴: 보이지 않는 565줄</h2>
+
+<p>이번엔 같은 로그를 Loki 패턴 API로 봤어요. Loki 패턴은 메시지만이 아니라 시각, 레벨, 스레드, 로거까지 포함한 줄 전체에서 뽑힙니다. 비교하려고 패턴의 <code> : </code> 뒤 메시지 부분을 떼어 각 줄에 맞춰 봤어요.</p>
+
+<div class="obsv-code">                                         app-healthy    app-broken
+패턴 수                                       52             49
+장애 구간에만 나온 패턴                          0              4
+어떤 패턴에도 들어가지 않은 줄 (두 인스턴스 합계)          582
+  OrderController.java:15  Rejected request ...   565줄
+  StockService.java:22     Error loading ...       15줄
+  done: ... lines                                   2줄</div>
+
+<p>고장 인스턴스에서 장애 구간에만 나온 패턴은 Drain3와 같은 네 개였어요. 패턴에는 로거 이름도 붙어 있어서 <code>lab.shop.customer.AddressClient</code>처럼 어느 클래스의 로그인지가 바로 보였습니다. 이 실습은 로거 이름을 클래스 이름으로 찍게 만들었으니 당연한 결과지만, 클래스 이름으로 로거를 만드는 관례를 따르는 서비스라면 검색 전에 파일이 정해져요.</p>
+
+<p>다른 점은 쪼개짐이었어요. 요청 로그 문장 하나(OrderController.java:10)가 인스턴스마다 패턴 18개로 나뉘었습니다. 메서드 3개와 경로 6개의 조합 그대로예요. 취소 문장은 사유마다 4개, GC 문장은 수집기 이름마다 2개, 주 이름 문장은 정상 인스턴스에서 13개로 갈렸습니다. Loki의 Drain 구현은 기본 트리 깊이가 30(Drain3는 4)이고 유사도 임계값은 0.3이에요(<code>pkg/pattern/drain/drain.go</code>의 <code>DefaultConfig</code>). 트리를 내려가는 방식은 Drain3와 같아서 깊이에서 2를 뺀 값까지 내려가니, 앞 토큰을 최대 27개까지 열쇠로 씁니다. Drain3가 첫 토큰 하나만 보는 것과 달리 줄 머리 뒤 메시지의 낱말까지 열쇠에 들어가니 낱말 값마다 가지가 갈렸다고 봅니다. 코드로 확인한 건 여기까지이고, 이 갈림을 줄 단위로 추적하지는 않았어요.</p>
+
+<h3>565줄은 어디로 갔나</h3>
+
+<p>패턴 표본 합계가 전체 줄 수보다 적어서 줄 단위로 맞춰 보니 <code>Rejected request</code> 565줄(첫 번째 실행은 566줄)이 어떤 패턴에도 들어가 있지 않았어요. 첫 번째 실행 직후 Loki의 <code>/metrics</code>를 손으로 열어 봤어요(이 값은 <code>out/</code>에 남기지 않았고, 지금은 <code>analyze.py</code>가 <code>out/loki-metrics.txt</code>로 남기게 고쳤습니다). <code>loki_pattern_ingester_tokens_per_line_count</code>가 101,998이었어요. 그 실행의 102,000줄 중 두 줄을 뺀 전부가 학습에 들어갔다는 뜻입니다. 학습 단계에서 버린 건 토큰이 4개 미만이라 걸린 <code>done</code> 줄 두 개뿐이었어요(<code>patterns_dropped_total{reason="too_few_tokens"} 2</code>). 반면 <code>loki_pattern_ingester_query_pruned_total</code>은 167이었습니다. 이 값은 누적이라 <code>analyze.py</code>의 패턴 질의 두 번(인스턴스마다 한 번)과, 빠진 문장을 찾으려고 손으로 한 질의 한 번이 합쳐진 수예요. 학습은 했는데 질의 응답에서 빠졌다는 뜻이에요.</p>
+
+<div class="obsv-code">// grafana/loki v3.7.8, pkg/pattern/ingester_querier.go
+const (
+	minClusterSize = 30
+	maxPatterns    = 300
+)
+...
+		if seriesWithTotals[i].Total &gt;= minClusterSize {</div>
+
+<p>패턴 API는 질의 범위 안에서 합계가 30줄 미만인 패턴을 응답에서 빼고, 남은 것도 300개까지만 돌려줍니다. <code>Rejected request</code> 문장이 어떻게 갈렸는지는 응답에서 잘려 직접 볼 수 없었어요. 다만 같은 모양(메서드, 경로가 앞에 오는)의 요청 로그 문장이 메서드와 경로마다 18개로 갈린 걸 보면, 이 문장도 그렇게 갈렸다고 추정합니다. 그랬다면 565줄은 인스턴스당 조합 하나에 평균 16줄 정도라 전부 30줄에 못 미쳐요. 드문 <code>Error loading State Index</code> 15줄도 같은 이유로 빠졌습니다. <span class="obsv-mark">로그를 쪼개는 방식과 작은 묶음을 버리는 규칙이 겹치면, 수백 줄짜리 문장이 패턴 화면에서 통째로 사라집니다.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="160" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">소스 문장 (줄 수)</text>
+  <text x="430" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">Drain3</text>
+  <text x="595" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">Loki 패턴 API</text>
+  <path d="M20 42 C 200 40, 450 44, 680 41" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8" stroke-linecap="round"/>
+
+  <text x="30" y="80" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">"{} {} from {} completed ..."</text>
+  <text x="30" y="98" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">OrderController.java:10 (약 3만 5천 줄)</text>
+  <path d="M370 70 C 400 68, 460 71, 490 69 C 492 80, 491 92, 490 102 C 460 104, 400 101, 372 103 C 369 92, 370 80, 370 70 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="430" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">3개 (메서드)</text>
+  <path d="M525 70 C 560 68, 630 71, 670 69 C 672 80, 671 92, 670 102 C 630 104, 560 101, 527 103 C 524 92, 525 80, 525 70 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="597" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">18개 (메서드 x 경로)</text>
+
+  <text x="30" y="160" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">"Rejected request {} {} from {}: ..."</text>
+  <text x="30" y="178" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">OrderController.java:15 (565줄)</text>
+  <path d="M370 150 C 400 148, 460 151, 490 149 C 492 160, 491 172, 490 182 C 460 184, 400 181, 372 183 C 369 172, 370 160, 370 150 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="430" y="172" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">1개</text>
+  <path d="M525 150 C 560 148, 630 151, 670 149 C 672 160, 671 172, 670 182 C 630 184, 560 181, 527 183 C 524 172, 525 160, 525 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="597" y="172" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">0개 🗑️</text>
+  <text x="597" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">갈린 조각마다 30줄 미만</text>
+
+  <text x="30" y="240" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">"Error loading State Index {} - {} ..."</text>
+  <text x="30" y="258" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">StockService.java:22 (15줄)</text>
+  <path d="M370 230 C 400 228, 460 231, 490 229 C 492 240, 491 252, 490 262 C 460 264, 400 261, 372 263 C 369 252, 370 240, 370 230 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="430" y="252" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">2개 (1줄짜리 포함)</text>
+  <path d="M525 230 C 560 228, 630 231, 670 229 C 672 240, 671 252, 670 262 C 630 264, 560 261, 527 263 C 524 252, 525 240, 525 230 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="597" y="252" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">0개 🗑️</text>
+
+  <text x="350" y="304" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 많이 쪼갤수록 작은 묶음이 늘고, 작은 묶음은 응답에서 잘린다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 같은 문장이 도구마다 다르게 쪼개지고, Loki에서는 쪼개진 조각이 30줄을 못 넘기면 보이지 않는다</div>
+
+<p>장애 문장 네 종류는 각각 1,000줄이 넘어서 이 규칙에 걸리지 않았어요. 하지만 장애 신호가 10분에 몇십 줄 찍히는 드문 에러라면 패턴 화면에는 없을 수 있습니다. 패턴 화면에 없다고 로그에 없는 건 아니에요. 그런 경우를 의심하면 LogQL로 레벨이나 낱말을 걸러 원문을 직접 세는 쪽이 맞습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 나도 여기서 틀렸다, 10초 칸의 경계</div>
+  첫 번째 실행을 처음 분석했을 때는 고장 인스턴스의 "장애 구간에만 나온 패턴"이 0개였어요(<code>out/run1/analysis-v1.txt</code>). 패턴 API의 표본은 <code>step</code>(여기서는 10초) 칸마다 줄 수를 합친 값인데, 정상과 장애의 경계가 칸 한가운데 걸려 있었습니다. 그 칸의 시각은 경계보다 앞이라 정상 구간으로 셌고, 그 안에 든 장애 문장 수십 줄(두 번째 실행 기준 재시도 60줄, 타임아웃 41줄, 주소 누락 33줄, 커넥션 21줄) 때문에 네 템플릿 모두 "정상 구간에도 있었다"가 됐어요. 경계가 걸친 칸을 따로 빼자 4개가 됐습니다. 집계된 값을 구간으로 나눌 때는 칸의 폭과 경계 위치부터 확인해요.
+</div>
+
+<h2>5. 템플릿에서 소스 줄까지, 그리고 설정 diff까지</h2>
+
+<p>후보 템플릿 네 개가 남았으니 이제 코드를 찾을 차례예요. 검색은 사람이 할 법한 순서로 스크립트에 시켰습니다. 먼저 로그 한 줄을 그대로 검색하고, 안 되면 템플릿에서 가장 긴 고정 조각으로, 그래도 두 곳 이상이면 긴 조각 두 개를 이어 붙인 정규식으로 검색해요. 대상은 <code>shop-src/</code>의 <code>*.java</code>이고, 결과가 한 곳이 될 때까지 센 횟수입니다. 아래 표는 마스킹 설정 템플릿으로 검색한 결과예요.</p>
+
+<div class="obsv-code">템플릿 (마스킹 설정)                  원문 한 줄   가장 긴 고정 조각               조각 둘      검색 횟수
+Retrying address lookup ...           0건      'Retrying address lookup..' 1건    -            2
+Connection is not available ...       0건      'Connection is not avail..' 1건    -            2
+Address lookup ... timed out ...      0건      'Address lookup for customer' 2건  1건          3
+Error processing customer ...         0건      'Error processing customer' 2건    1건          3
+                                                                                 합계       10번
+찾은 곳: AddressClient.java:22, DataSourceMonitor.java:14, AddressClient.java:13, CustomerService.java:21
+
+done: &lt;NUM&gt; lines                     0건      'lines' 0건                     0건         소스에 없음</div>
+
+<p>원문 한 줄 검색은 네 번 모두 0건이었어요. 소스에는 <code>"... customer {} timed out ..."</code>처럼 자리표시자가 있고 로그에는 실제 값이 들어 있으니 당연합니다. 가장 긴 조각 한 번으로 끝난 건 네 개 중 두 개였어요. 3편이 고정 문장을 "단서가 됩니다"라고 하면서 "다만 한 번에 닿는다는 보장은 없어요"라고 덧붙인 근거가 이 표입니다. 나머지 둘은 같은 앞부분을 쓰는 다른 문장이 있었습니다. <code>Address lookup for customer</code>는 타임아웃과 HTTP 실패 두 문장이, <code>Error processing customer</code>는 주소 누락과 우편번호 누락 두 문장이 함께 써요. 그래서 조각을 하나 더 붙여야 한 곳으로 좁혀졌습니다. 소스 파일이 8개뿐인 실습에서도 이랬으니 실제 저장소에서는 공통 앞부분이 더 많을 거예요.</p>
+
+<p>같은 검색을 기본 설정 템플릿으로 하면 결과가 달라요. 검색 횟수는 똑같이 10번이었지만 한 곳으로 좁힌 건 두 개뿐이었습니다(<code>out/offline.txt</code>). 타임아웃 템플릿에서 가장 긴 조각은 <code>timed out after 5000 ms (endpoint http://address-legacy:8080</code>, 커넥션 템플릿에서는 <code>... after 30000 ms (total=10, active=10, idle=0</code>이었고, 소스에는 이 값들이 없으니 0건이었어요. 2장에서 값을 남겨 준 바로 그 성질이 검색에서는 걸림돌이 됐습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 고정 조각 (literal chunk)</div>
+  템플릿에서 <code>&lt;*&gt;</code>를 기준으로 잘랐을 때 남는 글자 그대로의 부분입니다. 소스 코드의 형식 문자열에도 똑같이 들어 있으니 <code>grep -F</code>로 찾을 수 있어요. 긴 조각일수록 다른 문장과 겹칠 가능성이 낮습니다.
+</div>
+
+<h3>템플릿의 값이 설정 diff를 가리켰다</h3>
+
+<p>마지막으로 두 컨테이너의 환경 변수를 정렬해서 diff하고, 두 설정 파일도 diff했어요. 3편에서 본 그 비교입니다.</p>
+
+<div class="obsv-code">환경 변수 24개 중 다른 것 7개
+  ADDRESS_SERVICE_URL   http://address:8080      -&gt; http://address-legacy:8080
+  ADDRESS_TIMEOUT_MS    800                      -&gt; 5000
+  DB_POOL_MAX           50                       -&gt; 10
+  INSTANCE, INSTANCE_ID                          (인스턴스 이름, 원래 다르다)
+  SEED, FAULT                                    (실습 장치: 난수 시드, 장애 스위치)
+
+설정 파일에서 다른 값 4개 (주석 한 줄 제외)
+  hikari.maximum-pool-size      50   -&gt; 10
+  address-service.url           http://address:8080 -&gt; http://address-legacy:8080
+  address-service.timeout-ms    800  -&gt; 5000
+  cache.customer-ttl-seconds    600  -&gt; 60</div>
+
+<p>환경 변수 diff 일곱 줄 중 둘은 인스턴스마다 원래 다른 이름이고, 둘은 이 실습을 돌리려고 넣은 장치예요. 실제 서비스에서는 이 자리를 파드 이름, 호스트명, IP 같은 "항상 다른 값"이 채울 겁니다. 남은 세 줄은 2장에서 기본 설정 Drain3 템플릿에 그대로 박혀 있던 값과 하나씩 맞아요. 생성기가 이 세 환경 변수를 읽어 로그 값으로 찍도록 만든 실습 설계라 맞는 게 당연하긴 해요. 실제 서비스도 타임아웃, 접속 주소, 풀 크기를 로그에 찍는 경우가 많아서 같은 연결을 기대할 수 있습니다. <code>timed out after 5000 ms (endpoint http://address-legacy:8080)</code>은 타임아웃과 주소를, <code>total=10, active=10</code>은 풀 크기를 가리킵니다. 템플릿과 diff를 나란히 놓으니 "이 값들이 다르다"가 "다른 값이 장애 로그에 찍혀 있다"로 이어졌어요.</p>
+
+<p>설정 파일에만 있는 캐시 TTL(600초와 60초) 차이는 캐시 미스가 늘어난 3장 결과와 그럴듯하게 엮여요. 그런데 TTL은 10분 내내 달랐고, 정상 구간에서 두 인스턴스의 캐시 미스 비중은 4.9%와 5.2%로 거의 같았습니다. 차이가 처음부터 있었는데 증상은 뒤 5분에만 있었으니, 이 차이 하나로는 증상이 시작된 시점을 설명하지 못해요. 실제로 이 생성기는 설정 파일을 읽지 않고, TTL 차이는 diff에 딸려 오는 "함께 다른 것"으로 넣어 둔 값입니다. 반대로 주소와 타임아웃 차이도 10분 내내 있었지만 증상은 뒤 5분에만 났어요. 이 실습의 시나리오로 읽으면 옛 주소 서비스가 그 시점에 느려졌고, 그쪽을 가리키던 인스턴스만 증상을 냈다는 뜻이 됩니다. 비교는 후보를 세 줄로 좁혔고, 그게 원인인지는 값을 바꿔 보는 시험으로 넘겨야 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 템플릿 비교는 시간 축(정상 구간과 장애 구간)과 인스턴스 축(같은 시각의 정상 인스턴스)을 함께 씁니다. 시간 축만 쓰면 배포·종료 문장 같은 일회성 줄이 후보로 섞여요<br>
+  &bull; 마스킹은 양면이에요. 숫자 전체를 가리면 타임아웃 값, 풀 크기처럼 설정에서 온 값이 사라지고, 가리지 않으면 그 값이 고정 조각에 섞여 소스 검색이 0건이 됩니다. 두 설정을 함께 돌려 값은 기본 설정에서 읽고 검색은 마스킹 설정으로 해요<br>
+  &bull; Loki 패턴 화면에서 찾는 문장이 안 보이면 질의 범위 안에서 30줄 미만으로 잘렸을 수 있어요. LogQL 줄 필터로 원문을 직접 셉니다<br>
+  &bull; 패턴의 로거 이름이 곧 클래스 이름인 서비스라면 파일부터 정하고 검색합니다. 아니면 가장 긴 고정 조각으로 검색하고, 두 곳 이상이면 조각을 하나 더 붙여요<br>
+  &bull; 템플릿에 값 그대로 남은 상수(주소, 타임아웃, 풀 크기)는 설정 diff에서 같은 값을 찾습니다
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>로그 101,998줄을 Drain3로 묶으니 템플릿 31개가 나왔고, 장애 구간에만 나온 템플릿 네 개를 소스 위치 네 곳으로 좁히는 데 검색이 10번 들었어요.</b> 템플릿이 소스 문장을 합친 경우는 없었지만 문장 네 개는 메서드, 주 이름, 취소 사유의 낱말 수에 따라 쪼개졌어요. 마스킹은 묶음을 바꾸지 못했어요. 템플릿에 남아 있던 타임아웃·주소·풀 크기 값을 지웠지만, 그 덕에 소스 검색은 네 개를 다 찾았고 기본 설정 템플릿으로는 두 개만 찾았어요. 지워진 값들은 환경 변수 diff 세 줄과 정확히 같았어요.<br><br>
+  시간 축만 보면 종료 문장 하나가 후보로 섞였고, 같은 시각의 정상 인스턴스를 겹쳐서야 빠졌어요. Loki 패턴 화면에서는 565줄짜리 문장이 갈린 조각마다 30줄을 못 넘겨 통째로 보이지 않았어요. 템플릿 비교는 싸지만, 무엇과 나란히 놓았고 무엇이 화면에서 빠졌는지까지 같이 확인해야 믿을 수 있어요.
+</div>
+
+</div>

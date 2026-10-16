@@ -1,0 +1,34 @@
+# 신뢰성 설계 실습-3: 의존 서비스를 한 줄로 이으면 성공률이 곱으로 준다
+#   체인: load -> h1 -> h2 -> h3 -> h4 -> h5 -> h6   (길이 N 은 h(7-N) 로 들어간다)
+#   병렬: load -> pf -> (r1 | r2 | r3)
+# 실패율·재시도는 실행 중에 각 홉의 POST /config 로 바꾼다(experiment.py 가 한다).
+x-hop: &hop
+  build: ./app
+  image: obs-lab/rel-03-serial-chain:dev
+  mem_limit: 64m
+  networks: [lab]
+
+services:
+  h1: { <<: *hop, environment: { HOP_NAME: h1, NEXT: "http://h2:8080/work" } }
+  h2: { <<: *hop, environment: { HOP_NAME: h2, NEXT: "http://h3:8080/work" } }
+  h3: { <<: *hop, environment: { HOP_NAME: h3, NEXT: "http://h4:8080/work" } }
+  h4: { <<: *hop, environment: { HOP_NAME: h4, NEXT: "http://h5:8080/work" } }
+  h5: { <<: *hop, environment: { HOP_NAME: h5, NEXT: "http://h6:8080/work" } }
+  h6: { <<: *hop, environment: { HOP_NAME: h6 } }
+  r1: { <<: *hop, environment: { HOP_NAME: r1 } }
+  r2: { <<: *hop, environment: { HOP_NAME: r2 } }
+  r3: { <<: *hop, environment: { HOP_NAME: r3 } }
+  pf:
+    <<: *hop
+    environment: { HOP_NAME: pf, NEXT: "http://r1:8080/work,http://r2:8080/work,http://r3:8080/work", PICK: failover }
+    ports: ["${PF_PORT:-33080}:8080"]     # 손으로 찔러 볼 때만 쓴다
+
+  load:
+    <<: *hop
+    profiles: [load]
+    mem_limit: 128m
+    command: ["python", "experiment.py", "all"]
+    volumes: ["./out:/out"]
+
+networks:
+  lab: {}

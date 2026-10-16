@@ -1,0 +1,307 @@
+<!-- lead: 새벽 60분 장애는 시간 기준 94.79%, 요청 기준 99.25%, 피크 10분은 98.75%와 98.91%로 순위가 뒤집혔어요. 헬스체크·봇·재시도로 분모를 바꾸고, 합성 1년을 달력 월·28일·30일·365일로 판정했어요. -->
+<!-- tags: 시간 기준 가용성, 요청 기준 가용성, 롤링 윈도우, 헬스체크, SLI 분모 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📐 신뢰성 설계, 실습-1</div>
+  1편. 같은 장애도 측정 창과 분모를 바꾸면 SLO를 지킨다<br>
+  2편. 요청이 적은 서비스의 99.9%는 소음이다<br>
+  3편. 지연에 평균 더하기 3σ를 걸면 경고가 틀린다<br>
+  4편. 가용성은 더하지 않고 곱한다<br>
+  5편. 이중화의 곱셈은 고장이 서로 모를 때만 성립한다<br>
+  <b>실습-1. 같은 장애 기록을 네 가지 창으로 판정한다</b> &larr; 지금 이 글<br>
+  실습-2. 표본 수와 분포 모양이 경고를 몇 번 틀리게 하는지 센다<br>
+  실습-3. 의존 서비스를 한 줄로 이으면 성공률이 곱으로 준다<br>
+  실습-4. 복제본 셋이 같은 것에 기대면 이중화가 사라진다
+</div>
+
+<p>같은 서비스로 하루를 두 번 보냈습니다. 첫날은 새벽 1시에 60분 멈췄고, 둘째 날은 오후 2시에 10분 멈췄어요. 시간으로 재면 첫날이 94.79%로 훨씬 나쁘고, 사용자 요청으로 재면 둘째 날이 98.91%로 더 나쁩니다. 어느 날이 더 나쁜 날이었는지는 무엇을 세느냐가 정했어요.</p>
+
+<p><a href="#rel-01">1편</a>에서 계산으로 보인 것들을 실제 HTTP 트래픽으로 다시 쟀습니다. 사용자, 봇, 헬스체크가 섞인 하루를 24분으로 압축해 흘리고, 같은 요청 기록에서 분모를 바꿔 가며 SLI를 계산했어요. 마지막 절은 컨테이너 없이, 합성한 1년 장애 기록을 달력 월, 28일 롤링, 30일 롤링, 365일로 판정합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 새벽 60분과 피크 10분은 시간 기준과 요청 기준에서 실제로 순위가 뒤집히나?<br>
+  &bull; 헬스체크와 봇을 분모에 넣으면 SLI가 몇 %p 움직이나? 방향은 늘 같은가?<br>
+  &bull; 재시도가 있을 때 서버가 센 SLI와 사용자가 겪은 SLI는 얼마나 다른가?<br>
+  &bull; 같은 1년 기록을 네 가지 창으로 판정하면 위반 횟수와 시작일이 어떻게 갈리나?
+</div>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 실습 환경: 한 앱을 세 종류가 두드린다</h2>
+
+<p>앱은 파이썬 표준 라이브러리로 짠 작은 HTTP 서버입니다. <code>/api/checkout</code>은 평소에도 0.2%의 확률로 500을 내는 일시 실패가 있고, 장애를 넣으면 정해진 시간 동안 503을 내요. <code>/health</code>는 장애 중에도 늘 200입니다. 의존성을 보지 않고 프로세스가 살아 있는지만 답하는 흔한 헬스체크를 흉내 냈어요. 그 밖의 경로는 404입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="l6a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <g font-family="'Nanum Pen Script', cursive">
+    <path d="M30 40 C 110 37, 180 41, 230 38 C 232 58, 231 74, 230 88 C 180 91, 110 87, 32 89 C 29 74, 30 58, 30 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+    <text x="42" y="64" font-size="20" fill="#4a7fb5">👤 사용자 (하루 곡선)</text>
+    <text x="42" y="82" font-size="15" fill="#8a8272">피크 초당 40건, 5xx 면 한 번 재시도</text>
+    <path d="M30 110 C 110 107, 180 111, 230 108 C 232 128, 231 144, 230 158 C 180 161, 110 157, 32 159 C 29 144, 30 128, 30 110 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+    <text x="42" y="134" font-size="20" fill="#c07f18">🤖 봇 (일정)</text>
+    <text x="42" y="152" font-size="15" fill="#8a8272">초당 2건, API·robots.txt·없는 경로</text>
+    <path d="M30 180 C 110 177, 180 181, 230 178 C 232 198, 231 214, 230 228 C 180 231, 110 227, 32 229 C 29 214, 30 198, 30 180 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+    <text x="42" y="204" font-size="20" fill="#c07f18">🩺 헬스체크 3대</text>
+    <text x="42" y="222" font-size="15" fill="#8a8272">각자 초당 1번 /health</text>
+    <path d="M236 64 C 270 80, 290 100, 312 118" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l6a1)"/>
+    <path d="M236 134 C 262 134, 286 134, 312 134" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l6a1)"/>
+    <path d="M236 204 C 270 190, 290 170, 312 152" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l6a1)"/>
+    <path d="M320 80 C 380 77, 430 81, 480 78 C 482 120, 481 160, 480 196 C 430 199, 380 195, 322 197 C 319 160, 320 120, 320 80 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6"/>
+    <text x="334" y="106" font-size="20" fill="#3d3a34">☕ 앱</text>
+    <text x="334" y="130" font-size="16" fill="#3d3a34">/api/checkout</text>
+    <text x="334" y="150" font-size="15" fill="#8a8272">평소 0.2% 일시 실패</text>
+    <text x="334" y="170" font-size="15" fill="#b3502f">장애 중 503 🔥</text>
+    <text x="334" y="190" font-size="15" fill="#2e6b41">/health 는 늘 200</text>
+    <path d="M486 136 C 510 134, 530 137, 552 136" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l6a1)"/>
+    <path d="M560 100 C 600 97, 640 101, 680 98 C 682 125, 681 150, 680 172 C 640 175, 600 171, 562 173 C 559 150, 560 125, 560 100 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.4"/>
+    <text x="570" y="128" font-size="19" fill="#c07f18">Prometheus</text>
+    <text x="570" y="152" font-size="15" fill="#8a8272">route·client·code</text>
+    <path d="M130 234 C 140 260, 170 270, 200 276" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#l6a1)"/>
+    <path d="M210 254 C 300 251, 400 255, 480 252 C 482 270, 481 286, 480 298 C 400 301, 300 297, 212 299 C 209 286, 210 270, 210 254 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+    <text x="224" y="282" font-size="18" fill="#b3502f">📋 요청마다 CSV 한 줄 → analyze_day.py</text>
+    <text x="30" y="330" font-size="19" fill="#b3502f">실제 1초 = 압축 1분. 하루 1,440초(24분) 동안 세 종류가 같은 앱을 두드린다</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 사용자, 봇, 헬스체크가 섞인 하루를 압축해서 흘린다</div>
+
+<p>부하 생성기는 하루를 1,440초로 압축합니다. 실제 1초가 압축된 1분이에요. 사용자 트래픽은 1편의 하루 곡선(새벽 3~4시에 피크의 6%, 오후 2시 피크)을 따라 피크 초당 40건까지 오르고, 5xx를 받으면 0.2초 뒤에 한 번 재시도합니다. 봇은 곡선과 상관없이 초당 2건이고 그중 40%는 실제 API를, 나머지는 <code>/robots.txt</code>와 없는 경로를 부릅니다. 헬스체크 3대는 각자 초당 1번씩 <code>/health</code>를 불러요. 요청마다 CSV 한 줄(시각, 압축 시각, 종류, 경로, 시도 번호, 상태 코드)을 남기고, Prometheus도 같은 요청을 <code>route</code>, <code>client</code>, <code>code</code> 라벨로 셉니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 사용자 에이전트 (User-Agent)</div>
+  요청을 보낸 프로그램이 스스로를 밝히는 HTTP 헤더입니다. 이 실습의 앱은 이 헤더에 bot이 있으면 봇, probe가 있으면 헬스체크로 분류해 <code>client</code> 라벨을 붙여요. 실제 운영에서는 이 헤더를 속이는 봇도 있어서 분류가 이만큼 깔끔하지 않습니다.
+</div>
+
+<div class="obsv-code">Prometheus            3.15.0   (수집 2초)
+Grafana               13.2.3
+Python                3.13     (python:3.13-alpine, 앱과 부하 생성기)
+실행 환경             Docker Desktop, Apple M5 Pro</div>
+
+<p>실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/rel-01-windows">GitHub 저장소의 labs/observability/rel-01-windows</a>에 있어요. 하루씩 차례로 돌립니다.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/rel-01-windows
+docker compose up -d
+
+# 하루 A: 새벽 1시에 60분(실제 60초) 장애
+caffeinate -dims docker compose --profile load run --rm day --out /out/day-night.csv --outage-at 1 --outage-min 60
+python3 analyze_day.py out/day-night.csv --outage-at 1 --outage-min 60
+
+# 하루 B: 오후 2시에 10분(실제 10초) 장애
+caffeinate -dims docker compose --profile load run --rm day --out /out/day-peak.csv --outage-at 14 --outage-min 10
+python3 analyze_day.py out/day-peak.csv --outage-at 14 --outage-min 10
+
+docker compose down -v</div>
+
+<p>하루에 요청이 3만 9천 건 남짓 쌓였어요. 하루 A는 39,474건(사용자 32,290, 봇 2,864, 헬스체크 4,320), 하루 B는 39,273건입니다. 헬스체크는 1,440초 동안 초당 3건이라 두 날 모두 정확히 4,320건이에요.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 새벽 60분과 피크 10분: 순위가 뒤집혔다</h2>
+
+<p>먼저 장애가 시간과 요청에서 어떻게 보이는지 Grafana로 하루 A의 앞부분을 그렸습니다. 사용자 요청은 새벽이라 초당 몇 건뿐이고, 헬스체크(초당 3건)와 봇(초당 2건)이 사용자보다 많은 시간대도 보여요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/reliability-design/images/lab-06/night-traffic-by-client.png" alt="하루 A의 압축 0시부터 7시까지 초당 요청 그래프. 장애 1분 동안 사용자 5xx가 초당 8건으로 솟고 사용자 성공은 0이 된다. 헬스체크 성공은 초당 3건으로 일정하고 봇은 2건 안팎이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 새벽 장애 동안 사용자는 전부 실패했는데, 헬스체크는 줄곧 200이었다</div>
+
+<p>장애 동안 사용자 5xx가 초당 8건까지 올라간 건 재시도 때문입니다. 첫 시도가 503을 받고 0.2초 뒤에 다시 보내도 여전히 장애 중이라 또 503을 받아요. 실패가 두 번씩 세어집니다(4절). 두 날의 숫자를 나란히 놓으면 이렇습니다.</p>
+
+<div class="obsv-code">                                   하루 A (새벽 1시, 60분)   하루 B (오후 2시, 10분)
+시간 기준  (압축 1분마다 판정)           94.79%                    98.75%
+  그중 장애 구간의 나쁜 분               60개                      10개
+  장애 밖에서 나쁜 분                    15개                       8개
+요청 기준  (사용자, 재시도 뒤 최종)      99.25%                    98.91%
+요청 기준  (사용자, 첫 시도)             99.05%                    98.71%
+
+1편의 곡선 계산 (장애만, 일시 실패 없음)
+시간 기준                               95.83%                    99.31%
+요청 기준                               99.28%                    98.81%</div>
+
+<p>시간 기준으로는 하루 A가 4%p 가까이 더 나쁘고, 요청 기준으로는 하루 B가 0.3%p 더 나쁩니다. 1편의 계산대로 순위가 뒤집혔어요. 요청 기준 숫자도 계산과 비슷합니다. 첫 시도 실패에서 평소의 일시 실패(0.2%)를 빼면 장애로 잃은 요청은 하루 A 약 0.75%, 하루 B 약 1.09%로, 계산값 0.72%와 1.19%와 같은 크기예요. 포아송 도착이라 그 1분, 10초에 들어온 요청 수가 곡선의 평균과 조금씩 달랐습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 시간 조각 판정 (time slice)</div>
+  시간을 일정한 조각(여기서는 압축 1분)으로 자르고, 조각마다 "에러율이 문턱(여기서는 5%)을 넘었나"로 좋고 나쁨을 정하는 방식입니다. 시간 기준 SLI는 좋은 조각의 비율이에요.
+</div>
+
+<h3>계산보다 시간 기준이 나빴던 이유</h3>
+
+<p>예상과 다르게 나온 건 시간 기준이었어요. 장애만 있었다면 하루 A는 95.83%여야 하는데 94.79%였습니다. 장애 밖에서 나쁜 분이 15개 나왔기 때문이에요. 그 분들을 열어 보면 이렇습니다.</p>
+
+<div class="obsv-code">하루 A, 장애 밖 나쁜 분 (실패 / 그 분의 사용자 요청)
+00:10 (1/8)  00:50 (1/7)  02:02 (1/6)  05:48 (1/8)  06:03 (1/4)  06:13 (1/8)  06:24 (1/9)
+08:05 (1/19) 08:30 (1/16) 12:39 (2/27) 14:01 (2/32) 16:09 (2/31) 22:09 (1/19) 23:00 (1/13)
+23:19 (1/15)
+
+하루 B, 장애 밖 나쁜 분
+02:28 (1/2)  04:30 (2/4)  07:53 (1/17)  08:12 (1/17)  10:00 (2/39)  11:55 (2/39)
+15:51 (2/39) 19:06 (2/32)</div>
+
+<p>전부 평소의 0.2% 일시 실패가 요청이 적은 분에 한두 건 떨어진 경우예요. 요청이 8건인 분에 실패 1건이면 그 분의 에러율은 12.5%이고, 문턱 5%를 넘어 1분 전체가 "장애"가 됩니다. 요청 기준이었다면 3만 2천 건 중 1건으로 들어갈 실패예요. 1편에서 요청이 적은 새벽에는 시간 조각의 문턱이 불안정하다고 했는데, 그게 실제로 하루 A의 시간 기준 SLI를 1%p 넘게(95.83%에서 94.79%로) 깎았습니다. 하루 B에서는 0.56%p였어요. 요청이 아예 없는 분도 하루 A에 19개, 하루 B에 20개 있었는데, 이 실습은 그런 분을 좋은 분으로 셌어요. 나쁜 분으로 세는 도구도 있으니 쓰는 도구의 규칙을 확인해야 합니다.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 분모에 헬스체크와 봇을 넣으면</h2>
+
+<p>같은 CSV에서 분모만 바꿔 SLI를 계산했어요. 여기서는 서버가 받은 요청을 시도마다 1건으로 셉니다(재시도도 1건). 기준은 "사용자가 부른 API 요청"이고, 나머지는 기준과의 차이입니다.</p>
+
+<div class="obsv-code">분모 (5xx 를 나쁨으로)                하루 A (새벽 60분)        하루 B (피크 10분)
+사용자 API 요청만 (기준)               98.3153%                  97.6534%
++ 봇의 API 요청                        98.1905%  (-0.125%p)      97.7072%  (+0.054%p)
++ 봇 전체 (404 포함)                   98.2790%  (-0.036%p)      97.8199%  (+0.167%p)
++ 헬스체크까지 (서버가 받은 전부)        98.4673%  (+0.152%p)      98.0597%  (+0.406%p)
+
+4xx 도 나쁨으로, 서버가 받은 전부        94.1126%                  93.6827%</div>
+
+<p>헬스체크는 두 날 모두 SLI를 올렸어요. 장애 중에도 늘 200이니 분모와 분자에 성공만 더하기 때문입니다. 올리는 폭은 하루 B에서 더 컸어요(0.41%p). 장애로 잃은 요청이 많을수록 헬스체크가 묽힐 실패도 많으니까요.</p>
+
+<p>봇의 API 요청은 방향이 날마다 달랐습니다. 하루 A에서는 SLI를 0.12%p 내렸고 하루 B에서는 0.05%p 올렸어요. 이유는 장애 시간의 봇 몫입니다. 봇은 시간대와 상관없이 일정하게 오니, 사용자가 적은 새벽 장애 동안에는 API 요청의 10.8%(537건 중 58건)가 봇이었어요. 하루 전체의 봇 몫(3.4%)보다 세 배 커서, 봇이 장애를 더 무겁게 만든 겁니다. 피크 장애 동안에는 706건 중 9건, 1.3%라 하루 평균보다 작았고요. <span class="obsv-mark">같은 봇이 장애 시각에 따라 SLI를 올리기도 내리기도 했어요.</span> "봇을 넣으면 SLI가 좋아진다/나빠진다"로 일반화할 수 없다는 뜻입니다.</p>
+
+<p>4xx까지 나쁨으로 세면 두 날 모두 SLI가 94% 언저리로 떨어집니다. 봇이 부른 <code>/robots.txt</code>와 없는 경로가 전부 404라서예요. 서비스는 아무 잘못이 없는데 분모 정의 하나로 4%p가 사라집니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 일정한 트래픽은 시간대에 따라 무게가 바뀐다</div>
+  헬스체크와 봇처럼 시간대와 상관없이 일정하게 들어오는 요청은 사용자가 적은 시간대에 몫이 커집니다. 그래서 같은 장애라도 언제 났느냐에 따라 이들이 SLI를 움직이는 폭과 방향이 달라져요. 분모에서 빼야 하는 이유가 "양이 많아서"가 아니라 "사용자 경험과 상관없는 무게를 시간대마다 다르게 얹어서"입니다.
+</div>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 재시도: 서버가 센 것과 사용자가 겪은 것</h2>
+
+<p>같은 사용자 요청을 세 가지로 셀 수 있어요.</p>
+
+<div class="obsv-code">                                          하루 A          하루 B
+사용자 요청                                31,985건        31,681건
+첫 시도 실패                                  305건           408건
+재시도 성공                                    66건            63건
+
+서버 기준 (시도마다 1건)                    98.3153%        97.6534%
+사용자 기준, 첫 시도                        99.0464%        98.7122%
+사용자 기준, 재시도 뒤 최종                  99.2528%        98.9110%</div>
+
+<p>서버 기준과 사용자 최종 결과가 하루 A에서 0.94%p, 하루 B에서 1.26%p 벌어졌습니다. 1편의 예시는 재시도가 실패를 대부분 살려 내서 사용자 쪽이 좋아 보이는 경우였는데, 여기서는 사정이 하나 더 있었어요. 장애 중의 재시도는 0.2초 뒤에도 여전히 장애라 거의 다 실패했습니다. 그 실패가 서버 쪽에서는 한 번 더 세어져요. 재시도 305건 중 성공은 66건이었고, 장애 도중에 성공한 재시도는 한 건도 없었어요. 66건 중 65건은 장애 밖의 일시 실패를 살린 것이고, 나머지 1건은 장애가 끝나기 직전에 실패한 요청의 재시도가 장애가 풀린 뒤에 도착한 경우입니다. 장애가 길면 재시도는 사용자를 구하지 못하고 서버 쪽 숫자만 두 배로 만들어요.</p>
+
+<p>그래서 둘 다 남겨야 합니다. 사용자 기준 최종 결과는 SLO로, 서버 기준 실패율은 "재시도가 얼마나 헛돌고 있나"를 보는 원인 쪽 신호로요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. Prometheus로 다시 세도 같았다</h2>
+
+<p>CSV는 실습에서만 가질 수 있는 재료이고, 운영에서는 지표로 계산합니다. 하루가 끝난 시각에 <code>increase(...[24m])</code>로 그 하루를 잘라 같은 정의로 계산했어요(<code>prom_sli.py</code>).</p>
+
+<div class="obsv-code">사용자 API 요청만 (하루 A)
+1 - sum(increase(lab_http_requests_total{client="user",route="/api/checkout",code=~"5.."}[24m]))
+  / sum(increase(lab_http_requests_total{client="user",route="/api/checkout"}[24m]))
+= 1 - 544.2 / 32301.5 = 98.3151%        (CSV 98.3153%)
+
+서버가 받은 전부 (하루 A)    98.4745%   (CSV 98.4673%)
+서버가 받은 전부 (하루 B)    98.0525%   (CSV 98.0597%)
+사용자 API 요청만 (하루 B)   97.6462%   (CSV 97.6534%)</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: increase()</div>
+  카운터가 지정한 시간 범위 동안 얼마나 늘었는지 구하는 PromQL 함수입니다. 범위 안의 첫 샘플과 마지막 샘플의 차이를 범위 양 끝까지 비례로 늘려서 계산해요. 그래서 정수 카운터에서도 결과가 소수로 나옵니다.
+</div>
+
+<p>차이는 0.01%p 안쪽이에요. 건수가 544.2처럼 소수로 나오는 건 <code>increase()</code>가 범위 양 끝까지 값을 외삽하기 때문입니다. 이 실습에서는 라벨 하나(<code>client</code>)로 분모를 바꿀 수 있었지만, 실제 앱 지표에는 요청자 라벨이 없는 경우가 대부분이라 1편에서 말한 대로 봇은 로드 밸런서나 접근 로그 단계에서 거르는 쪽이 현실적이에요.</p>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 같은 1년을 네 가지 창으로 판정했다</h2>
+
+<p>마지막은 컨테이너가 필요 없는 계산입니다(<code>calc/year.py</code>). 2025년(평년) 365일 동안 하루마다 5% 확률로 장애가 나고, 길이는 로그정규분포(중앙값 6분)로 뽑아 1년 기록을 만들었어요. 시드를 고정해서 누구나 같은 기록을 다시 만들 수 있습니다. SLO는 시간 기준 99.9%이고, 창 길이가 L일이면 허용 다운타임은 L &times; 1,440 &times; 0.1%분이에요.</p>
+
+<div class="obsv-code">python3 calc/year.py 3
+
+장애 19건, 다운타임 합 236.6분
+
+[달력 월] 위반 1번
+   6월  66.6분 / 허용 43.20분  위반 (예산을 넘긴 날 6월 29일)
+   7월  34.8분 / 허용 44.64분
+[28일 롤링] 위반 구간 3개
+  5월 4일부터 8일, 6월 29일부터 13일, 7월 21일부터 7일
+[30일 롤링] 위반 구간 3개
+  4월 23일부터 2일, 6월 29일부터 15일, 7월 21일부터 9일
+[365일] 다운타임 236.6분 / 허용 525.6분, 가용성 99.955%  지킴</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 위반 구간 (violation episode)</div>
+  롤링 창으로 매일 판정할 때, 위반이 이어진 날들을 하나로 묶은 것입니다. 위반 상태로 들어간 날이 시작일이고, 이 글에서는 들어간 횟수를 위반 횟수로 셉니다.
+</div>
+
+<p>같은 1년에서 네 판정이 모두 다른 말을 합니다. 하나씩 보면 이래요.</p>
+
+<p><b>6월 29일</b>은 넷 중 셋이 동의한 날입니다. 6월 14일(26.3분)과 6월 29일(30.3분)이 한 달 안에 겹쳤어요.</p>
+
+<p><b>7월 21일</b>에는 롤링 창 둘만 위반을 다시 켭니다. 6월 29~30일의 40.3분이 아직 창 안에 있는데 7월 21일에 29.9분이 더해졌기 때문이에요. 달력 월은 7월 1일에 장부를 비웠으니 7월은 34.8분으로 통과입니다.</p>
+
+<p><b>4월 23일</b>은 30일 롤링만 위반이에요. 3월 26일(15.0분)부터 4월 23일(17.3분)까지 46.8분이 30일 창 안에 들어와 예산(43.2분)을 넘는데, 28일 창에서는 3월 26일이 빠져서 31.8분으로 28일 예산(40.32분) 아래에 머뭅니다.</p>
+
+<p><b>5월 4일</b>은 거꾸로 28일 롤링만 위반입니다. 4월 7일부터 5월 4일까지의 41.2분이 28일 예산(40.32분)은 넘고 30일 예산(43.2분)은 넘지 않아요. 창이 짧으면 예산도 작아서 같은 기록에 더 엄격합니다.</p>
+
+<p>그리고 365일 판정은 이 모든 걸 99.955%로 통과시킵니다.</p>
+
+<h3>시드 200개로 넓혀 보면</h3>
+
+<p>한 해만 보면 우연일 수 있으니 시드 1~200으로 1년 기록 200개를 만들어 같은 판정을 했어요(<code>calc/year_many.py</code>).</p>
+
+<div class="obsv-code">합성 1년 200개 (하루 장애 확률 5%, 길이 중앙값 6분)
+
+365일 판정에서 위반한 해                       1
+달력 월 위반이 한 번 이상인 해                  128
+28일 롤링 위반이 한 번 이상인 해                167
+30일 롤링 위반이 한 번 이상인 해                158
+달력 월은 0번인데 28일 롤링은 위반한 해          39
+세 판정(달력·28일·30일)의 위반 횟수가 같은 해    94
+
+위반 횟수 합계   달력 186 / 28일 311 / 30일 276
+연 가용성        최소 99.898%, 중앙 99.966%, 최대 99.991%</div>
+
+<p>200년 중 199년이 연간 판정으로는 목표를 지켰습니다. 같은 해들을 달력 월로 보면 128년이 한 번 이상 위반이었어요. 롤링 창은 달력 월보다 위반을 더 자주 잡았고(28일 311번, 달력 186번), 달력 월이 한 번도 위반하지 않은 해 중 39년은 28일 롤링에서는 위반이 있었습니다. 재계산해 보니 그중 22년은 위반한 28일 창이 모두 달의 경계에 걸쳐 있었어요. 달의 경계가 장애를 둘로 쪼개 각각을 예산 안으로 숨긴 경우입니다. 6년은 장애가 한 달 안에 몰려 있었는데, 28일 예산(40.32분)이 31일짜리 달의 예산(44.64분)보다 작아서 28일 창만 위반이 됐어요. 나머지 11년은 두 경우가 섞였습니다. 세 판정이 위반 횟수에 동의한 해는 절반이 안 됐습니다(94년).</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 판정을 고를 때 이 실습에서 얻은 기준</div>
+  &bull; 연간 숫자는 계약 비교용으로만 씁니다. 이 실습에서는 200년 중 199년이 통과였어요<br>
+  &bull; 배포 정책에 묶는 판정은 롤링 창으로 합니다. 달의 경계에 걸친 장애를 놓치지 않아요<br>
+  &bull; 28일과 30일은 예산이 다르니(40.32분과 43.2분) 정책 문서에 며칠 창인지 적어요<br>
+  &bull; 시간 조각 SLI를 쓴다면 요청이 적은 시간대의 조각을 어떻게 셀지(문턱, 요청 0건인 조각)를 먼저 정해요
+</div>
+
+<!-- ================= 7장 ================= -->
+<h2>7. 개념 글과 맞춰 보면</h2>
+
+<p>1편의 주장은 실측에서 그대로 섰습니다. 새벽 60분과 피크 10분은 시간 기준과 요청 기준에서 순위가 뒤집혔고, 헬스체크는 SLI를 올렸고, 같은 1년 기록이 창에 따라 위반 0번부터 3번까지 갈렸어요.</p>
+
+<p>계산과 다르게 나온 것은 두 가지예요. 하나는 시간 기준 SLI가 계산보다 나빴던 것입니다(하루 A 1.04%p, 하루 B 0.56%p). 1편이 경고한 "요청이 적은 분의 일시 실패"가 하루 A에서 나쁜 분 15개를 만들었어요. 다른 하나는 봇의 방향입니다. 1편은 봇이 SLI를 움직이는 방향이 404를 실패로 세느냐에 달렸다고 했는데, 5xx만 세는 같은 정의 안에서도 장애가 언제 났느냐에 따라 방향이 바뀌었어요. 이 점을 1편에 한 문장 보탰습니다.</p>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>새벽 60분 장애는 시간 기준 94.79%, 요청 기준 99.25%였고, 피크 10분 장애는 98.75%와 98.91%였어요.</b> 계산대로 순위가 뒤집혔고, 시간 기준은 요청이 적은 분에 떨어진 일시 실패 때문에 계산보다 0.56~1.04%p 더 나빴습니다. 헬스체크를 분모에 넣으면 SLI가 0.15~0.41%p 올랐고, 봇은 장애 시각에 따라 SLI를 올리기도 내리기도 했어요.<br><br>
+  합성 1년 200개 중 199개가 연간 판정으로는 목표를 지켰지만 달력 월로는 128개가 위반이었고, 롤링 창은 달의 경계가 숨긴 위반과 더 작은 예산에 걸리는 위반을 더 찾아냈습니다. SLO 숫자를 읽을 때는 그 숫자를 만든 창과 분모를 먼저 물어요.
+</div>
+
+</div>

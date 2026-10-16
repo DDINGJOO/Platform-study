@@ -1,0 +1,307 @@
+<!-- lead: 파드 세 개 중 하나만 에러를 내는데 로그부터 읽기 시작하면 한 시간이 가요. 정상 인스턴스, 정상 구간, 이전 버전과 설정·환경 변수·SBOM·로그 템플릿을 diff하는 법과 비교가 틀리는 곳을 정리했어요. -->
+<!-- tags: 트러블슈팅, diff, 기준선 비교, SBOM, 로그 템플릿 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔦 트러블슈팅, 3편</div>
+  1편. 증상은 원인보다 늦게 도착한다<br>
+  2편. 반으로 나누는 디버깅은 시험이 정직할 때만 빠르다<br>
+  <b>3편. 정상인 것과 나란히 놓는 것이 가장 싼 첫 수다</b> &larr; 지금 이 글<br>
+  실습-1. 쿼리 하나를 바꾸고 증상이 나타나기까지 몇 분 걸리는지 잰다<br>
+  실습-2. git bisect가 회귀 커밋을 몇 번 만에 찾는지 센다<br>
+  실습-3. 정상 구간과 장애 구간의 로그를 템플릿으로 묶어 비교한다
+</div>
+
+<p>결제 API 파드는 세 개예요. 에러율 패널을 파드별로 쪼개 보니 하나만 30% 가까이 500을 내고 나머지 둘은 0%입니다. 담당자는 그 파드의 로그를 열고 스택 트레이스를 하나씩 따라가기 시작해요. 한 시간 뒤에도 원인은 나오지 않습니다.</p>
+
+<p>옆자리 동료가 명령 하나를 칩니다. 고장 난 파드와 멀쩡한 파드의 환경 변수를 정렬해서 diff한 거예요. 결과는 한 줄이었어요. 고장 난 파드만 결제 대행사 엔드포인트가 예전 주소를 가리키고 있었습니다. 설정 저장소에서 값을 바꾼 뒤 그 파드만 재시작되지 않았던 거예요. 이 명령은 2초가 걸렸습니다.</p>
+
+<p>비교는 시스템이 복잡할수록 시간이 많이 드니 마지막 수단으로 두라는 말을 듣기도 해요. 이 글은 반대 입장입니다. <b>정상인 것이 옆에 있다면, 그것과 나란히 놓는 것이 가장 싼 첫 수예요.</b> 다만 어떻게 비교하느냐에 따라 2초가 되기도 하고 한 시간이 되기도 합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 비교가 "오래 걸린다"는 말은 어떤 비교를 두고 하는 말인가?<br>
+  &bull; 정상 인스턴스, 정상 구간, 이전 버전 중 무엇과 비교하나?<br>
+  &bull; 설정, 환경 변수, 의존성, 로그는 각각 어떻게 diff하나?<br>
+  &bull; 정상 쪽도 같은 결함을 갖고 있으면 비교는 무엇을 말해 주나?<br>
+  &bull; 비교로 내린 결정은 무엇을 남겨야 다음 사람이 다시 쓸 수 있나?
+</div>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 비교가 오래 걸리는 건 눈으로 할 때다</h2>
+
+<p>비교를 마지막에 두자는 쪽의 논리는 대개 이래요. 두 서버, 두 컨테이너, 두 함수를 나란히 놓으면 다른 점이 너무 많다. 대부분은 설정이 조금 다르거나 이상해 보이는 것을 한눈에 찾는 수준이다. 오늘날 시스템은 복잡하니 그 차이를 다 보려면 엄청난 시간이 든다.</p>
+
+<p>이 논리는 <b>사람이 눈으로 훑는 비교</b>에는 맞아요. 설정 화면 두 개를 띄워 놓고 위에서부터 읽어 내려가면 수백 개 항목 중 어디가 다른지 찾는 데 오래 걸리고, 놓치기도 쉽습니다. 그런데 비교의 대부분은 기계가 할 수 있어요. 두 대상에서 같은 형식의 텍스트를 뽑고, 정렬하고, diff하면 다른 줄만 남습니다. 기계가 하는 부분은 몇 초예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: diff</div>
+  두 텍스트에서 다른 줄만 골라 보여 주는 도구입니다. 줄 순서가 다르면 내용이 같아도 다르다고 나오니, 환경 변수나 패키지 목록처럼 순서에 의미가 없는 것은 정렬한 뒤에 비교해요.
+</div>
+
+<p>시간이 드는 곳은 따로 있어요. 하나는 <b>무엇과 비교할지 고르는 일</b>이고(2장), 다른 하나는 <b>diff에 나온 줄 중 잡음을 걸러 내는 일</b>입니다(3장). 둘 다 미리 준비해 둘 수 있어요. 비교 대상을 뽑는 명령을 운영 절차서에 적어 두고, 시각이나 ID처럼 항상 다른 값을 지우는 필터를 만들어 두면 장애 중에 드는 시간은 다시 몇 초로 줄어듭니다.</p>
+
+<p>사실 트러블슈팅에서 가장 자주 쓰는 질문들이 이미 비교예요. 성능 문제를 정의할 때 묻는 질문 목록에는 "이 시스템이 잘 동작한 적이 있나?", "최근에 무엇이 바뀌었나? (소프트웨어? 하드웨어? 부하?)"가 들어 있습니다(Brendan Gregg의 성능 분석 방법론 중 Problem Statement Method). 앞의 것은 정상 구간과의 비교이고, 뒤의 것은 이전 상태와의 비교예요. 1편에서 다룬 "최근 변경부터 보라"는 조언도 지금과 과거를 나란히 놓는 일입니다.</p>
+
+<p>비교가 하는 일과 하지 않는 일도 갈라 둘게요. 비교는 <b>후보를 좁혀 줄 뿐 원인을 증명하지 않습니다.</b> 서론의 환경 변수 diff도 "엔드포인트 주소가 다르다"를 보여 줬을 뿐이고, 그게 500의 원인인지는 그 값을 고쳐 보고서야 알았어요. 비교로 좁힌 후보를 1편의 가설 검증으로 넘기는 것까지가 한 세트입니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 무엇과 나란히 놓나</h2>
+
+<p>비교 대상은 세 방향에서 고를 수 있어요. 지금 고장 난 대상을 가운데 두고, <b>같은 시각의 다른 대상</b>, <b>같은 대상의 다른 시각</b>, <b>같은 환경의 다른 빌드</b>입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="t1p3a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M262 140 C 310 137, 390 141, 440 139 C 442 160, 441 185, 440 200 C 390 203, 310 199, 263 201 C 261 182, 262 160, 262 140 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+  <text x="351" y="168" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">고장 난 대상</text>
+  <text x="351" y="190" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">지금, 이 파드, 이 빌드</text>
+  <path d="M30 30 C 100 28, 170 31, 236 29 C 238 55, 237 80, 236 98 C 170 100, 100 97, 31 99 C 29 78, 30 55, 30 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="133" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">정상 인스턴스</text>
+  <text x="133" y="82" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">같은 시각, 다른 대상</text>
+  <path d="M464 30 C 530 28, 600 31, 670 29 C 672 55, 671 80, 670 98 C 600 100, 530 97, 465 99 C 463 78, 464 55, 464 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="567" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">정상 구간</text>
+  <text x="567" y="82" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">같은 대상, 다른 시각</text>
+  <path d="M247 262 C 310 260, 390 263, 455 261 C 457 285, 456 305, 455 322 C 390 324, 310 321, 248 323 C 246 305, 247 285, 247 262 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="351" y="288" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">이전 버전</text>
+  <text x="351" y="312" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">같은 환경, 다른 빌드</text>
+  <path d="M270 150 C 240 130, 210 115, 180 104" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#t1p3a1)"/>
+  <path d="M432 150 C 462 130, 492 115, 520 104" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#t1p3a1)"/>
+  <path d="M351 204 C 352 222, 350 240, 351 256" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#t1p3a1)"/>
+  <text x="30" y="136" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">함께 다른 것:</text>
+  <text x="30" y="158" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">받은 요청, 뜬 시각</text>
+  <text x="520" y="136" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">함께 다른 것:</text>
+  <text x="520" y="158" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">부하, 쌓인 데이터</text>
+  <text x="470" y="292" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">함께 다른 것:</text>
+  <text x="470" y="314" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">그 사이 커밋 전부</text>
+  <text x="350" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">고를 기준: 다른 것이 가장 적은 쌍</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 어느 쪽과 비교하든 원인 말고도 함께 다른 것이 딸려 온다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 기준선 (baseline)</div>
+  비교할 때 "정상"으로 삼는 대상이나 구간입니다. 기준선이 정상이 아니면 비교 결과도 틀려요. 그래서 기준선을 고른 이유를 같이 적어 둡니다.
+</div>
+
+<h3>같은 시각의 다른 대상</h3>
+
+<p>서론처럼 같은 서비스의 다른 인스턴스, 다른 가용 영역, 다른 리전이에요. 같은 시각이라 부하 수준과 외부 의존성 상태가 같다는 게 장점입니다. 고장이 한 대에만 있다면 가장 먼저 볼 쌍이에요. 지표에서 이 비교는 <code>by (pod)</code>처럼 인스턴스 라벨로 쪼개는 것으로 시작합니다.</p>
+
+<div class="obsv-code">sum by (pod) (rate(http_server_requests_seconds_count{job="payment", status=~"5.."}[5m]))
+  /
+sum by (pod) (rate(http_server_requests_seconds_count{job="payment"}[5m]))</div>
+
+<p>함께 다른 것은 받은 요청과 뜬 시각이에요. 로드 밸런서가 특정 고객의 요청을 한 인스턴스로 몰았다면 차이는 인스턴스가 아니라 입력에 있습니다. 한 인스턴스만 최근에 재시작했다면 캐시와 힙 상태가 달라요.</p>
+
+<h3>같은 대상의 다른 시각</h3>
+
+<p>문제가 전체 인스턴스에 퍼져 있으면 옆에 정상인 것이 없어요. 그러면 같은 대상의 정상이었던 시각과 비교합니다. Prometheus에서는 <code>offset</code>으로 같은 쿼리를 과거 시각으로 옮겨 겹쳐 그릴 수 있어요.</p>
+
+<div class="obsv-code">rate(http_server_requests_seconds_count{job="payment"}[5m])             # 지금
+rate(http_server_requests_seconds_count{job="payment"}[5m] offset 1w)   # 일주일 전 같은 시각</div>
+
+<p>1시간 전보다 일주일 전 같은 요일 같은 시각을 고르는 건 함께 다른 것을 줄이기 위해서예요. 하루 중 시간대와 요일에 따라 부하 모양이 바뀌는 서비스라면 1시간 전과의 차이는 대부분 시간대 차이입니다. 그래도 그사이 쌓인 데이터와 늘어난 사용자는 다를 수 있어요.</p>
+
+<h3>같은 환경의 다른 빌드</h3>
+
+<p>"어제 빌드는 됐는데 오늘 빌드는 안 된다"면 두 빌드를 같은 환경에 나란히 띄웁니다. 함께 다른 것은 그사이 들어간 커밋 전부예요. 커밋이 많으면 diff보다 범위를 반씩 줄이는 쪽이 빠릅니다. 그 방법은 <a href="#ts-02">2편</a>에서 다뤄요. 배포 전에 새 빌드와 옛 빌드를 같이 띄워 비교하는 것이 카나리이고, 대조군을 어떻게 고르느냐에 따라 판정이 갈린다는 이야기는 <a href="https://dding-shark.tistory.com/621">배포 안전성 3편</a>에 있습니다. 이 글의 비교는 그 사후판이에요. 이미 장애가 난 뒤에 나란히 놓습니다.</p>
+
+<p>세 방향 모두에서 원칙은 하나예요. <span class="obsv-mark">원인 말고 다른 것이 가장 적은 쌍을 고릅니다.</span> 함께 다른 것이 많을수록 diff에 줄이 늘고, 그 줄 하나하나가 확인할 후보가 돼요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 무엇을 diff하나</h2>
+
+<p>비교 대상을 골랐으면 두 대상에서 같은 형식의 텍스트를 뽑습니다. 자주 쓰는 다섯 가지를 차례로 볼게요.</p>
+
+<h3>설정과 환경 변수</h3>
+
+<p>쿠버네티스라면 파드 명세를 JSON으로 뽑아 비교합니다. 그대로 diff하면 이름, UID, 생성 시각, 상태처럼 파드마다 당연히 다른 값이 수십 줄 나와요. 이걸 먼저 지웁니다.</p>
+
+<div class="obsv-code">norm='del(.metadata.name, .metadata.uid, .metadata.resourceVersion,
+         .metadata.creationTimestamp, .metadata.generateName, .status)'
+diff &lt;(kubectl get pod payment-7c9f-abcde -o json | jq -S "$norm") \
+     &lt;(kubectl get pod payment-7c9f-fghij -o json | jq -S "$norm")
+
+# 실제로 떠 있는 프로세스의 환경 변수 (컨테이너 시작 스크립트가 넣은 값까지)
+diff &lt;(kubectl exec payment-7c9f-abcde -- sh -c 'tr "\0" "\n" &lt; /proc/1/environ' | sort) \
+     &lt;(kubectl exec payment-7c9f-fghij -- sh -c 'tr "\0" "\n" &lt; /proc/1/environ' | sort)</div>
+
+<p>환경 변수를 <code>kubectl exec ... env</code>로 뽑지 않은 데는 이유가 있어요. <code>exec</code>로 띄운 새 셸은 컨테이너 명세의 환경 변수를 받지만, 시작 스크립트가 실행 중에 export한 값은 갖고 있지 않습니다. 실제로 일하는 프로세스(대개 PID 1)가 본 값은 <code>/proc/1/environ</code>에 있어요. 단, 시작 스크립트가 마지막에 <code>exec</code>로 앱 프로세스로 바뀌어 있어야 PID 1이 앱입니다. 셸이 PID 1로 남아 앱을 자식으로 띄웠다면 <code>/proc/1/environ</code>은 셸이 시작할 때의 값이라 export한 값이 안 보이고, 앱의 PID를 찾아 그 <code>environ</code>을 봐야 해요. 서론의 사례처럼 설정 저장소의 값은 바뀌었는데 재시작하지 않아 옛 값을 쥐고 있는 경우는 명세 diff에는 안 나오지만, 이건 <code>exec ... env</code>로도 잡혀요. 컨테이너가 뜰 때 받은 값을 그대로 갖고 있으니까요. <code>/proc</code> 쪽이 꼭 필요한 건 시작 스크립트가 값을 바꾸거나 더하는 경우입니다. 이미지에 셸이 없으면 이 명령은 실패하니, 그럴 때는 디버그 컨테이너를 붙이거나 앱이 노출하는 설정 엔드포인트를 씁니다.</p>
+
+<h3>이미지와 의존성</h3>
+
+<p>같은 태그라도 같은 이미지라는 보장은 없어요. 파드가 실제로 받은 이미지의 다이제스트를 먼저 비교합니다. 다이제스트가 다르면 안에 든 라이브러리를 비교해요.</p>
+
+<div class="obsv-code">kubectl get pod payment-7c9f-abcde -o jsonpath='{.status.containerStatuses[*].imageID}'
+
+syft registry.example.com/payment@sha256:aaaa... -o cyclonedx-json &gt; good.json
+syft registry.example.com/payment@sha256:bbbb... -o cyclonedx-json &gt; bad.json
+cyclonedx diff good.json bad.json --component-versions</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: SBOM (Software Bill of Materials)</div>
+  빌드 결과물에 들어간 라이브러리와 버전의 목록입니다. 두 빌드의 SBOM을 비교하면 소스에서는 안 보이는 전이 의존성 버전 변화가 드러나요.
+</div>
+
+<p>CycloneDX CLI의 <code>diff</code> 명령은 <code>--component-versions</code>를 주면 추가되거나 빠지거나 버전이 바뀐 컴포넌트를 보고합니다(CycloneDX CLI README). 운영 중인 서비스 여러 개에서 특정 라이브러리를 쓰는 곳을 SBOM으로 찾는 실습은 <a href="https://dding-shark.tistory.com/639">소스 코드 관찰 실습-2</a>에 있어요. 지금 운영에 무엇이 떠 있는지를 Git이 아니라 플랫폼에 물어야 하는 이유는 <a href="https://dding-shark.tistory.com/634">소스 코드 관찰 1편</a>에서 다뤘습니다.</p>
+
+<h3>런타임과 호스트</h3>
+
+<p>같은 이미지여도 실행 환경이 다를 수 있어요. JVM 옵션(<code>jcmd 1 VM.flags</code>), 커널 버전(<code>uname -r</code>), 노드의 인스턴스 타입, 마운트된 시크릿의 내용과 수정 시각을 두 대상에서 뽑아 같은 방식으로 정렬하고 diff합니다. 노드를 교체하는 작업이 진행 중이면 이 축에서 차이가 자주 나와요.</p>
+
+<h3>같은 요청의 빠른 것과 느린 것</h3>
+
+<p>대상이 아니라 요청끼리 나란히 놓을 수도 있어요. 같은 엔드포인트의 트레이스 중 빠른 것 하나와 느린 것 하나를 고르면, 함께 다른 것이 거의 없는 쌍이 됩니다. 같은 코드, 같은 시각대, 같은 인스턴스일 수도 있어요. 두 트레이스에서 스팬 목록을 서비스와 연산 이름으로 맞춰 보면 느린 쪽에만 있는 스팬, 느린 쪽에서만 길어진 스팬이 남습니다. Jaeger UI에는 두 트레이스를 이렇게 맞춰 보여 주는 비교 화면이 1.7 무렵부터 들어가 있어요. 도구가 없어도 스팬을 (서비스, 연산 이름, 걸린 시간) 표로 뽑아 정렬하면 같은 일을 할 수 있습니다.</p>
+
+<p>이 비교에서 자주 나오는 결과는 "느린 쪽에만 DB 스팬이 하나 더 있다"거나 "같은 스팬인데 느린 쪽에서만 10배 길다"예요. 앞의 것은 캐시를 놓쳐 다른 경로를 탄 경우이고, 뒤의 것은 같은 경로가 어떤 입력에서만 비싸진 경우입니다. 뒤의 경우라면 두 요청의 입력(파라미터, 사용자, 데이터 크기)을 다시 나란히 놓아요. 비교는 이렇게 한 단계씩 더 좁은 쌍으로 이어집니다.</p>
+
+<h3>로그 템플릿</h3>
+
+<p>로그는 줄마다 시각, 요청 ID, 사용자 ID가 달라서 그대로는 diff할 수 없어요. 그래서 변하는 부분을 지우고 고정된 문장 틀만 남긴 뒤, 틀 단위로 셉니다.</p>
+
+<div class="obsv-code">원래 로그                                                  템플릿
+Error processing customer 6ed03803-...: Address Missing.   Error processing customer &lt;*&gt;: Address Missing.
+Error processing customer 0b1e44c2-...: Address Missing.   (같은 템플릿, 2건)
+Error loading State Index 42 - Hawaii into memory          Error loading State Index &lt;*&gt; - &lt;*&gt; into memory
+Error loading State Index 14 - North Carolina into memory  Error loading State Index 14 - North Carolina into memory</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 로그 템플릿 (log template)</div>
+  로그 줄에서 요청마다 바뀌는 값(ID, 숫자, 이름)을 자리표시자로 바꾸고 남은 고정 문장입니다. 같은 코드 줄에서 나온 로그는 같은 템플릿으로 묶여요.
+</div>
+
+<p>템플릿을 자동으로 뽑는 대표적인 방법이 Drain(He 외, ICWS 2017)이에요. 고정 깊이 트리로 로그를 분류해서 스트림으로 들어오는 로그를 바로 템플릿에 배정합니다. 파이썬 구현인 Drain3는 유사도 임계값 <code>sim_th</code> 기본값이 0.4, 트리 깊이 기본값이 4이고, 줄마다 값이 다른 자리를 <code>&lt;*&gt;</code>로 바꿔요. IP나 숫자처럼 형식이 알려진 값을 정규식으로 먼저 가리는 마스킹도 걸 수 있고, README는 마스킹이 템플릿 추출 정확도를 높일 수 있다고 소개합니다(Drain3 README). Grafana의 로그 화면도 Loki의 pattern ingester를 켜면 Patterns 탭에서 비슷한 묶음을 보여 주는데, 최근 3시간 로그에서만 뽑습니다(Grafana 문서, Logs Drilldown Patterns).</p>
+
+<p>다만 위 표처럼 늘 깔끔하게 묶이지는 않아요. <a href="#ts-06">실습-3</a>에서 Drain3는 주 이름이 <code>Hawaii</code>처럼 한 낱말이면 <code>&lt;*&gt; - &lt;*&gt;</code>로 묶었지만, <code>North Carolina</code>처럼 두 낱말이면 토큰 수가 달라 다른 가지로 갔고, 한 번만 나온 그 줄은 값까지 그대로 박힌 템플릿으로 남았어요. 같은 문장을 Loki 패턴 API로 보면 패턴이 0개였습니다. 패턴 API는 질의 범위 안에서 합계가 30줄 미만인 패턴을 응답에서 빼는데(Loki v3.7.8 <code>pkg/pattern/ingester_querier.go</code>), 이 문장은 15줄뿐이었거든요. 마스킹은 묶는 데는 이번에 득이 없었어요. 템플릿 수와 쪼개진 문장은 기본 설정과 똑같았고, 기본 설정 템플릿에 그대로 남아 있던 <code>5000</code>, <code>address-legacy</code>, <code>total=10</code>을 이름표로 바꿔 버렸습니다. 이 세 값은 두 인스턴스의 환경 변수 diff에서 후보로 남은 세 줄과 같은 값이었어요. 반대로 소스 검색에는 마스킹 쪽이 나았어요. 값이 박힌 기본 설정 템플릿은 고정 조각에 그 값이 섞여서 네 개 중 두 개를 소스에서 찾지 못했습니다. 그래서 값은 기본 설정에서 읽고, 검색은 마스킹 설정으로 하는 식으로 두 결과를 함께 보는 편이 안전합니다.</p>
+
+<p>템플릿으로 묶은 뒤 비교할 것은 두 가지예요. <b>장애 구간에만 나타난 템플릿</b>과 <b>양쪽에 있지만 비율이 크게 달라진 템플릿</b>입니다. 앞의 것은 새로 생긴 코드 경로를, 뒤의 것은 원래 있던 경로가 더 자주 타는 상황을 가리켜요. 템플릿의 고정 문장은 소스의 형식 문자열에도 들어 있어서 로그를 남긴 코드 줄을 찾는 단서가 됩니다. 다만 한 번에 닿는다는 보장은 없어요. 실습-3에서 로그 한 줄을 그대로 검색하면 실제 값 때문에 네 번 모두 0건이었고, 가장 긴 고정 조각 한 번으로 한 곳에 닿은 건 템플릿 네 개 중 두 개였어요. 나머지 둘은 같은 앞부분을 쓰는 다른 문장이 있어서 조각을 하나 더 붙여야 했고, 네 개를 다 찾는 데 검색이 10번 들었습니다. 로그 10만 줄을 템플릿으로 묶어 정상 구간과 장애 구간을 비교하는 건 <a href="#ts-06">실습-3</a>에서 직접 해 봐요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: diff 결과의 대부분은 잡음이다</div>
+  &bull; <b>항상 다른 값부터 지웁니다.</b> 이름, UID, 시각, 호스트명, 파드 IP, 요청 ID는 정상 쌍끼리도 다르니 필터로 먼저 빼요. 정상 인스턴스 두 개를 diff해서 나오는 줄이 곧 지워야 할 목록입니다<br>
+  &bull; <b>정렬 없이 비교하지 않습니다.</b> 환경 변수, 패키지, 라벨은 순서에 의미가 없어요. 정렬하지 않으면 같은 내용이 전부 다르게 나옵니다<br>
+  &bull; <b>같은 명령으로 양쪽을 뽑습니다.</b> 한쪽은 명세, 한쪽은 프로세스에서 뽑으면 비교하는 대상이 이미 다릅니다
+</div>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 비교가 틀리는 곳</h2>
+
+<p>비교는 싸지만 틀릴 수 있어요. 틀리는 방식이 몇 가지로 정해져 있어서 미리 알아 두면 결과를 읽을 때 걸러 낼 수 있습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="t1p3a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M40 30 C 200 28, 300 31, 420 29 C 400 60, 380 80, 370 92 C 300 94, 160 91, 90 93 C 75 75, 55 55, 40 30 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="230" y="62" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">diff에 나온 줄 수백 개</text>
+  <path d="M95 110 C 180 108, 280 111, 365 109 C 352 130, 340 145, 332 158 C 280 160, 180 157, 128 159 C 118 145, 105 128, 95 110 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
+  <text x="230" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">항상 다른 값을 지운 뒤 몇 줄</text>
+  <path d="M135 176 C 190 174, 270 177, 326 175 C 316 195, 306 210, 300 222 C 260 224, 200 221, 162 223 C 152 210, 142 192, 135 176 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="230" y="205" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">후보</text>
+  <path d="M230 226 C 231 240, 229 252, 230 262" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#t1p3a2)"/>
+  <text x="230" y="288" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">가설 검증 (1편) &rarr; 원인</text>
+  <path d="M450 40 C 520 38, 600 41, 670 39 C 672 80, 671 120, 670 150 C 600 152, 520 149, 451 151 C 449 120, 450 80, 450 40 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+  <text x="560" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">함정 1: 0줄</text>
+  <text x="560" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">정상 쪽도 같은 결함을</text>
+  <text x="560" y="114" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">갖고 있으면 아무것도</text>
+  <text x="560" y="136" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">안 나온다</text>
+  <path d="M450 172 C 520 170, 600 173, 670 171 C 672 205, 671 235, 670 262 C 600 264, 520 261, 451 263 C 449 235, 450 205, 450 172 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+  <text x="560" y="198" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">함정 2: 결과를 원인으로</text>
+  <text x="560" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">GC 시간, 스레드 수처럼</text>
+  <text x="560" y="246" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">증상이 만든 차이</text>
+  <path d="M440 96 C 400 120, 360 150, 330 185" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-dasharray="4 6" stroke-linecap="round" marker-end="url(#t1p3a2)"/>
+  <text x="350" y="320" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">diff는 후보를 줄일 뿐, 원인이라고 말해 주지 않는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 걸러 낸 뒤 남은 줄도 후보일 뿐이고, 0줄이라고 해서 원인이 없는 것도 아니다</div>
+
+<h3>정상 쪽도 같은 결함을 갖고 있을 때</h3>
+
+<p>가장 위험한 경우예요. 1편의 장애를 떠올려 볼게요. 인덱스를 못 타는 쿼리는 모든 인스턴스에 똑같이 배포돼 있었습니다. 장애 중에 인스턴스끼리 비교하면 설정도 이미지도 같아서 diff는 0줄이에요. 정상 구간과 비교해도, 그 구간이 쿼리 변경 이후라면 결함은 이미 들어와 있었고 단지 테이블이 작아서 드러나지 않았을 뿐입니다.</p>
+
+<p>이때 diff 0줄은 "차이가 없으니 설정 문제가 아니다"로 읽히기 쉬워요. 맞는 결론은 <b>"이 비교 쌍은 결함이 들어오기 전과 후로 나뉘지 않았다"</b>입니다. 결함이 숨어 있다가 데이터 양, 특정 입력, 특정 시각 같은 조건이 맞을 때만 드러나는 종류라면 정상 쪽은 결함이 없는 게 아니라 아직 조건을 만나지 않은 거예요. 그래서 diff가 비면 기준선을 더 과거로, 결함이 확실히 없던 시점으로 옮깁니다. 1편의 장면이라면 쿼리 변경 전의 빌드예요.</p>
+
+<h3>차이가 결과일 때</h3>
+
+<p>고장 난 인스턴스는 대개 지표도 다릅니다. GC 시간이 길고, 스레드가 많고, 커넥션 대기가 있어요. 이것들은 diff에 차이로 나오지만 대부분 증상이 만든 차이예요. 설정, 이미지, 환경처럼 <b>장애 전부터 정해져 있던 것</b>의 차이를 먼저 보고, 지표 차이는 그다음에 봅니다. 지표 차이에서 출발할 때는 "이 차이가 다른 차이의 결과일 수 있나"를 먼저 묻습니다.</p>
+
+<h3>기준선이 정상이 아닐 때</h3>
+
+<p>정상 구간으로 고른 지난주 같은 시각에 마침 다른 장애가 있었거나, 정상 인스턴스로 고른 파드가 방금 재시작돼서 캐시가 빈 상태일 수 있어요. 방금 뜬 인스턴스는 1편에서 다룬 "쌓여야 터지는" 상태가 아직 쌓이지 않았을 뿐일 수도 있습니다. 기준선을 고른 뒤에는 그 기준선 자체의 핵심 지표가 평소 범위인지 한 번 확인해요.</p>
+
+<h3>후보가 너무 많을 때</h3>
+
+<p>손으로 하나씩 고쳐 온 서버끼리 비교하면 잡음을 지운 뒤에도 수십 줄이 남아요. 이건 비교의 실패라기보다 환경 관리의 문제를 드러내는 결과입니다. 장애 중에는 가능성이 높은 순서로 확인하고, 장애가 끝난 뒤에는 그 차이 자체를 줄이는 조치 항목으로 남겨요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 언제 첫 수가 되고, 무엇을 남기나</h2>
+
+<p>비교를 가장 먼저 꺼낼 수 있는 조건은 하나예요. <b>원인 말고 다른 것이 적은 정상 쌍이 있느냐</b>입니다. 고장이 일부 인스턴스에만 있으면 정상 인스턴스가 있어요. 특정 배포 이후에 시작됐으면 이전 빌드가 있습니다. 이런 쌍이 있으면 diff는 몇 초짜리 첫 수예요.</p>
+
+<p>쌍이 없으면 다른 수로 갑니다. 모든 인스턴스가 똑같이 아프고 언제부터인지도 모르겠다면 시스템을 경로로 나눠 반씩 줄이는 분해가 맞고(<a href="#ts-02">2편</a>), 원인과 증상 사이의 시간을 거슬러 가야 하면 1편의 시간 축 분석이 맞아요. 대응하는 사람이 여럿이면 분해, 흔한 원인 점검, 시간 축 분석을 나눠 맡을 수 있는데, 정상 쌍이 있다면 비교를 그 목록 맨 앞에 넣는 게 낫습니다. 다른 일을 막지 않을 만큼 싸니까요.</p>
+
+<h3>결정 기록에 남길 것</h3>
+
+<p>비교로 찾은 원인을 고치고 나면 결정이 남아요. 이 엔드포인트 설정을 배포 시 재시작과 묶을지, 노드 교체 작업을 멈출지 같은 것들입니다. 여기서는 아키텍처 결정 기록(ADR)의 흔한 칸(맥락, 결정, 결과)에 몇 칸을 더해 데이터로 내린 결정을 남기는 형식을 예로 들게요. 문제, 맥락, 동기, 논거, 결정, 결과, 다음 단계의 일곱 칸입니다.</p>
+
+<p>이 형식에서 자주 빠지는 연결이 있어요. <b>논거가 결정을 실제로 받치는지</b>입니다. 예를 들어 "지연이 시간의 10% 동안 3초를 넘었고, 사용자 평가 점수가 낮은 시점과 지연이 높은 시점이 겹쳤다"는 논거에서 "사용자와 데이터 센터 사이의 네트워크 대역폭을 늘린다"는 결정을 내렸다고 해 볼게요. 논거는 지연이 문제라는 것까지만 보여 줍니다. 그 지연이 네트워크에서 생겼다는 비교는 없어요. 네트워크 구간의 지연과 서버 처리 시간을 나란히 놓은 비교가 빠진 채로 비용이 드는 결정이 나간 겁니다.</p>
+
+<p>비교를 근거로 한 결정이라면 아래를 같이 남겨 두면 다음 사람이 기록을 다시 쓸 수 있어요.</p>
+
+<div class="obsv-code">결정 기록에 비교를 남기는 칸
+
+기준선        무엇과 비교했나 (pod-b, 지난주 같은 시각, 빌드 2.13.4)와 고른 이유
+뽑은 방법     실행한 명령 그대로. 지운 필드 목록
+나온 차이     잡음을 지운 뒤 남은 줄 전부
+제외한 차이   어떤 근거로 원인이 아니라고 봤나
+확인한 차이   원인으로 판정한 줄과 그 판정을 한 실험 (1편의 예측과 결과)
+확인 안 한 것  이번에 비교하지 않은 축 (예: 커널, 노드 타입)
+뒤집을 조건  어떤 관찰이 나오면 이 결정을 다시 보나</div>
+
+<p>마지막 두 칸이 중요해요. 확인하지 않은 축을 적어 두면 같은 증상이 다시 났을 때 어디부터 볼지 정해집니다. 뒤집을 조건을 적어 두면 결정이 근거보다 오래 살아남지 않아요. 장애 뒤에 쓰는 사후 분석의 형식은 <a href="https://dding-shark.tistory.com/629">장애 대응 4편</a>에서 다뤘으니, 비교 기록은 그 타임라인과 조치 항목 사이에 들어가면 됩니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 비교를 몇 초짜리로 만들어 두기</div>
+  &bull; 운영 절차서에 "정상 파드와 비교" 절을 두고 명세 diff, 프로세스 환경 변수 diff, 이미지 다이제스트 비교 명령을 복사해 쓸 수 있게 적어 둬요<br>
+  &bull; 정상 인스턴스 두 개를 diff해서 나온 줄로 잡음 필터를 만들어 두면 장애 중에 걸러 낼 게 거의 없어요<br>
+  &bull; 대시보드의 주요 패널에 <code>by (pod)</code> 분해와 <code>offset 1w</code> 겹침을 하나씩 만들어 두면 정상 쌍을 찾는 시간이 줄어요<br>
+  &bull; 빌드마다 SBOM을 남겨 두면 "이전 버전과 무엇이 달라졌나"를 이미지를 다시 받지 않고 비교할 수 있어요<br>
+  &bull; diff가 0줄이면 기준선이 결함 전으로 충분히 거슬러 갔는지부터 의심해요
+</div>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>비교가 오래 걸리는 건 눈으로 훑을 때예요. 같은 형식으로 뽑고, 정렬하고, 항상 다른 값을 지운 뒤 diff하면 몇 초면 끝나요.</b> 정상 인스턴스, 정상 구간, 이전 버전 중 원인 말고 다른 것이 가장 적은 쌍을 기준선으로 고르고, 설정, 프로세스 환경 변수, 이미지와 SBOM, 로그 템플릿을 비교합니다.<br><br>
+  비교는 후보를 줄여 줄 뿐 원인을 증명하지 않고, 정상 쪽도 같은 결함을 갖고 있으면 0줄을 돌려줘요. diff가 비면 기준선을 결함 전으로 옮기고, 남은 줄은 가설 검증으로 넘깁니다. 정상인 것이 옆에 있다면 그것과 나란히 놓는 일부터 해요.
+</div>
+
+</div>

@@ -1,0 +1,37 @@
+# 신뢰성 설계 실습-4: 복제본 셋이 같은 것에 기대면 이중화가 사라진다
+#   load -> haproxy -> r1, r2, r3   (액티브-액티브, 공유 Redis 의 설정 키 mode 를 요청마다 읽는다)
+#   load -> haproxy -> a (액티브), b (backup)
+# 실험마다 HAProxy listen 이 따로 있다(haproxy/haproxy.cfg). 상태 주입은 experiment.py 가 한다.
+x-rep: &rep
+  build: ./app
+  image: obs-lab/rel-04-redundancy:dev
+  mem_limit: 64m
+  networks: [lab]
+
+services:
+  redis:
+    image: redis:8.10.2
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    mem_limit: 64m
+    networks: [lab]
+  r1: { <<: *rep, environment: { NAME: r1 }, depends_on: [redis] }
+  r2: { <<: *rep, environment: { NAME: r2 }, depends_on: [redis] }
+  r3: { <<: *rep, environment: { NAME: r3 }, depends_on: [redis] }
+  a:  { <<: *rep, environment: { NAME: a }, depends_on: [redis] }
+  b:  { <<: *rep, environment: { NAME: b }, depends_on: [redis] }
+  haproxy:
+    image: haproxy:3.4.6
+    volumes: ["./haproxy:/usr/local/etc/haproxy:ro"]
+    ports: ["${HAP_STATS_PORT:-33404}:8404"]   # 통계 화면 http://localhost:33404/stats
+    mem_limit: 128m
+    depends_on: [r1, r2, r3, a, b]
+    networks: [lab]
+  load:
+    <<: *rep
+    profiles: [load]
+    mem_limit: 256m
+    command: ["python", "experiment.py", "all"]
+    volumes: ["./out:/out"]
+
+networks:
+  lab: {}

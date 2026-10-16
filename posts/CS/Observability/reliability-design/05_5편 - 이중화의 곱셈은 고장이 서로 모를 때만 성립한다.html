@@ -1,0 +1,387 @@
+<!-- lead: 90%짜리 복제본 셋이 99.9%가 된다는 병렬식은 고장이 서로 독립이고 전환이 즉시일 때만 맞아요. 공통 원인 고장의 베타 인자 모형, HAProxy inter와 fall이 정하는 감지 시간, TCP 검사와 앱 검사, 셀로 폭발 반경을 나누는 법을 계산으로 정리했어요. -->
+<!-- tags: 이중화, 공통 원인 고장, 페일오버, HAProxy 헬스 체크, 셀 기반 아키텍처 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📐 신뢰성 설계, 5편</div>
+  1편. 같은 장애도 측정 창과 분모를 바꾸면 SLO를 지킨다<br>
+  2편. 요청이 적은 서비스의 99.9%는 소음이다<br>
+  3편. 지연에 평균 더하기 3σ를 걸면 경고가 틀린다<br>
+  4편. 가용성은 더하지 않고 곱한다<br>
+  <b>5편. 이중화의 곱셈은 고장이 서로 모를 때만 성립한다</b> &larr; 지금 이 글<br>
+  실습-1. 같은 장애 기록을 네 가지 창으로 판정한다<br>
+  실습-2. 표본 수와 분포 모양이 경고를 몇 번 틀리게 하는지 센다<br>
+  실습-3. 의존 서비스를 한 줄로 이으면 성공률이 곱으로 준다<br>
+  실습-4. 복제본 셋이 같은 것에 기대면 이중화가 사라진다
+</div>
+
+<p>복제본을 세 대로 늘리고 가용 영역(AZ)도 셋으로 나눴습니다. <a href="#rel-04">4편</a>의 병렬식대로라면 한 대가 99%여도 셋이면 99.9999%예요. 그런데 다음 주 화요일 오후, 기능 플래그 설정 하나를 바꾼 직후 세 대가 <b>동시에</b> 500을 내기 시작합니다. 세 대는 같은 설정 저장소에서 같은 값을 읽었고, 같은 코드로 그 값을 해석했어요. 서로 다른 존에 있다는 사실은 아무 도움이 되지 않았습니다.</p>
+
+<p>병렬식이 틀린 건 아니에요. 식이 깔고 있는 가정이 깨졌을 뿐입니다. 이번 편은 그 가정이 얼마나 깨지면 숫자가 얼마나 바뀌는지를 셉니다. 무엇이 복제본들을 함께 죽게 만드나? 공통 원인이 1%만 섞여도 9가 몇 개 사라지나? 죽은 복제본을 알아채는 데는 얼마나 걸리나? 포트는 열려 있는데 앱은 죽은 서버는 누가 잡나? 셀은 무엇을 줄여 주나?</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 병렬식이 숨기고 있는 가정 두 개(독립 고장, 즉시 전환)<br>
+  &bull; 공통 원인 고장의 비율 β가 이중화 가용성을 깎는 정도<br>
+  &bull; HAProxy의 <code>inter</code>와 <code>fall</code>이 정하는 감지 시간, TCP 검사와 앱 검사의 차이<br>
+  &bull; 액티브-액티브와 액티브-스탠바이, 그리고 셀이 줄여 주는 것
+</div>
+
+<p>계산은 파이썬으로 다시 돌렸고, 스크립트와 출력은 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/rel-04-redundancy">labs/observability/rel-04-redundancy</a>의 <code>calc_concept.py</code>와 <code>out/concept-05.txt</code>에 있습니다.</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 병렬식이 말하지 않은 두 가지</h2>
+
+<p>4편의 병렬식을 다시 적으면 1 &minus; (1 &minus; R)<sup>n</sup>입니다. 0.9 셋이면 1 &minus; 0.1<sup>3</sup> = 0.999예요. 이 식은 "셋이 모두 실패할 확률은 각자 실패할 확률의 곱"이라는 데서 나옵니다. 확률을 곱해도 되는 건 사건이 서로 독립일 때뿐이에요. 그러니 첫 번째 가정은 <b>복제본의 고장이 서로를 모른다</b>는 겁니다.</p>
+
+<p>두 번째 가정은 식에 아예 보이지 않아요. "하나라도 살아 있으면 시스템이 동작한다"는 문장은 살아 있는 복제본에 요청이 <b>바로</b> 간다는 뜻을 품고 있습니다. 실제로는 누군가가 죽은 복제본을 알아채고 요청을 다른 쪽으로 돌려야 해요. 그 누군가는 로드 밸런서의 헬스 체크이고, 헬스 체크는 정해진 주기로만 봅니다. 알아채기 전까지 죽은 복제본으로 간 요청은 실패해요.</p>
+
+<p>세 번째로 "살아 있는 하나가 전체 부하를 받을 수 있다"는 용량 전제가 있는데, 이건 <a href="#rel-04">4편</a> 3장의 k-out-of-n과 「SLO와 경고」 시리즈 <a href="https://dding-shark.tistory.com/617">6편</a>의 N+2 계산으로 넘기고, 이번 편은 앞의 두 가정만 봅니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 함께 죽는 이유는 대개 공유한 것에 있다</h2>
+
+<p>복제본 셋이 함께 죽는 장애는 원자력 확률론적 안전성 평가 분야에서 공통 원인 고장이라는 이름으로 오래 연구돼 왔어요. 공통 원인 사건의 정의는 "같은 공유 원인 때문에 둘 이상의 구성 요소가 임무 시간 안에 고장 나거나 쓸 수 없게 되는 것"입니다(미국 원자력규제위원회 NUREG/CR-5485, 공통 원인 고장 모형화 지침).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 공통 원인 고장 (CCF, common cause failure)</div>
+  하나의 원인이 여러 구성 요소를 거의 같은 시간에 고장 내는 것입니다. 이중화된 복제본들이 같이 죽는 장애가 여기에 해당해요. 병렬식은 이 경우를 셈에 넣지 않습니다.
+</div>
+
+<p>공통 원인 고장은 두 가지가 겹쳐야 생깁니다. 구성 요소가 어떤 근본 원인에 약하다는 것, 그리고 그 원인을 여러 구성 요소에 동시에 미치게 만드는 <b>결합 요인</b>이 있다는 것이에요(같은 지침). 압력 밸브 두 개가 같은 잘못된 절차로 교정돼 설정값이 똑같이 높았던 사건이 지침에 실린 예입니다. 밸브가 각각 고장 난 이유는 설정값이지만, 둘이 <b>함께</b> 고장 난 이유는 같은 교정 절차와 같은 정비 인력이었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 결합 요인 (coupling factor)</div>
+  한 원인이 여러 구성 요소에 동시에 작용하게 만드는 공통점입니다. 같은 설계, 같은 절차, 같은 환경 같은 것들이에요. 원인을 없애는 것과 별개로, 결합 요인을 끊어야 고장이 함께 오지 않습니다.
+</div>
+
+<p>결합 요인은 하드웨어 기반, 운영 기반, 환경 기반 세 갈래로 나뉩니다(같은 지침 4.1.2절). 서비스 운영으로 옮기면 이렇게 보여요.</p>
+
+<div class="obsv-code">결합 요인         서비스에서 흔한 모양                          복제본을 늘려도 안 끊기는 이유
+하드웨어(설계)    같은 이미지, 같은 코드 버그, 같은 라이브러리    특정 요청 하나가 모든 복제본을 같은 줄에서 죽인다
+                  같은 인증서, 같은 만료일
+운영(절차)        같은 배포 파이프라인, 같은 시각의 배포          나쁜 버전이 모든 복제본에 거의 같이 깔린다
+                  같은 설정 저장소, 같은 기능 플래그
+                  같은 헬스 체크 임계값                          모두 같은 순간에 같은 판단을 내린다
+환경(공유 자원)   같은 DB, 같은 Redis, 같은 DNS, 같은 존·네트워크  그것이 멈추면 복제본 수와 상관없이 멈춘다</div>
+
+<p>"같은 헬스 체크 임계값"은 「트래픽 관리」 시리즈 <a href="https://dding-shark.tistory.com/580">2편</a> 6장에서 본 장면이에요. 사용률 90%에서 OUT_OF_SERVICE를 내는 규칙이 모든 인스턴스에 같이 걸려 있으면, 한 대가 빠진 몫이 나머지를 같은 임계값 위로 밀어서 전원이 함께 빠집니다. 고장을 막으려고 넣은 장치가 결합 요인이 된 경우예요.</p>
+
+<p>운영하는 사람에게 불편한 사실도 하나 있습니다. 근본 원인을 막는 방어는 구성 요소 하나하나의 신뢰성을 높이지만, 공통 원인으로 생기는 고장의 <b>비율</b>을 꼭 줄이지는 않아요(같은 지침). 복제본 각각을 더 튼튼하게 만드는 일과 복제본들이 같이 죽지 않게 만드는 일은 다른 일입니다.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 공통 원인 1%가 9를 몇 개 지우나</h2>
+
+<p>공통 원인이 섞이면 숫자가 얼마나 바뀌는지 셀 수 있는 가장 단순한 모형이 베타 인자 모형입니다. 공통 원인 고장 모형 가운데 처음 쓰였고 매개변수가 하나뿐이에요(NUREG/CR-5485 부록 A).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 베타 인자 모형 (beta factor model)</div>
+  한 구성 요소의 고장 확률 Q 가운데 일정 비율 β가 공통 원인에서 온다고 두는 모형입니다. 공통 원인 사건이 일어나면 그룹의 구성 요소가 <b>모두</b> 고장 난다고 가정해요. β = 0이면 완전한 독립, β = 1이면 한 몸입니다.
+</div>
+
+<p>계산할 때는 복제본 한 대의 비가용성 Q를 고정해 두고 β만 바꿨어요. 공통 원인 사건은 확률 βQ로 일어나 세 대를 모두 멈추고, 나머지는 각자 독립적으로 고장 납니다. 독립 고장 확률 q는 한 대의 비가용성이 정확히 Q가 되도록 맞췄어요. 지침의 근사식(독립 몫을 (1 &minus; β)Q로 두는 식)과는 소수 넷째 자리 이하에서만 다릅니다.</p>
+
+<div class="obsv-code">시스템 비가용성 = &beta;Q + (1 &minus; &beta;Q) &times; q^3,   q = (Q &minus; &beta;Q) / (1 &minus; &beta;Q)
+
+&beta;        한 대 90%(Q = 0.1)       한 대 99%(Q = 0.01)
+0       99.9000%                 99.9999%
+1%      99.8028%   (비가용성 2.0배)   99.9899%   (101배)
+5%      99.4134%   (5.9배)            99.9499%   (501배)
+10%     98.9256%   (10.7배)           99.8999%   (1,001배)
+50%     94.9862%   (50.1배)           99.4999%   (5,000배)
+100%    90.0000%   (100배)            99.0000%   (10,000배)</div>
+
+<p>Q = 0.1, β = 0.1 조건을 난수로 200만 번 굴려 본 검산은 시스템 비가용성 0.010604로, 식의 0.010744보다 1.3% 낮게 나왔어요. 200만 번의 표준오차가 0.000073이라 차이는 그 1.9배쯤, 95% 구간의 경계 바로 안쪽입니다. 식이 틀렸다고 볼 차이는 아니지만 넉넉하게 맞았다고 하기도 어려워서, 시행을 더 늘려 볼 만한 거리예요.</p>
+
+<p>컨테이너로도 확인했어요. HAProxy 뒤 복제본 셋(한 대 비가용성 10%)에 공유 Redis 설정으로 공통 원인을 섞은 <a href="#rel-09">실습-4</a>에서, 실패한 요청을 다른 복제본으로 다시 보내게 했더니 가용성이 β = 0에서 99.895%, 50%에서 94.855%, 100%에서 89.773%로 나왔습니다. 하나라도 살아 있던 시간의 성공률은 β와 상관없이 99.99% 이상이었어요. 재시도는 독립 고장만 비켜 갔고, 셋이 함께 죽은 시간은 그대로 실패였습니다. 그리고 β = 10%로 5분 돌린 실행에서는 공통 원인 슬롯이 기대값의 절반쯤만 뽑혀 가용성이 이론값보다 0.5%p 높게 나왔어요. 드문 사건의 비율은 짧은 측정으로 잘 잡히지 않는다는 걸 실험이 직접 보여 줬습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 348" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+
+<path d="M80 253 C 80 170, 80 106, 80 45" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M77 250 C 314 249, 492 249, 670 250" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="70" y="255" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">0</text>
+<text x="70" y="223" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">1</text>
+<path d="M80 218 C 272 219, 464 216, 660 218" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="70" y="191" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">2</text>
+<path d="M80 186 C 271 184, 462 186, 660 186" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="70" y="159" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">3</text>
+<path d="M80 154 C 270 153, 463 154, 660 154" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="70" y="127" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">4</text>
+<path d="M80 122 C 270 122, 464 120, 660 122" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="70" y="95" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">5</text>
+<path d="M80 90 C 273 91, 462 89, 660 90" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="70" y="63" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">6</text>
+<path d="M80 58 C 273 57, 461 56, 660 58" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="30" y="40" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="start">9의 개수</text>
+<path d="M100 154 C 110 155, 120 154, 130 155 C 130 186, 130 217, 131 250 C 120 250, 110 250, 101 250 C 101 217, 100 186, 100 154 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="115" y="148" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">3.0</text>
+<path d="M136 58 C 146 59, 156 56, 166 57 C 166 121, 165 185, 165 250 C 156 248, 146 249, 136 250 C 136 185, 135 121, 136 58 Z" fill="#eef3fa" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="151" y="52" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">6.0</text>
+<text x="133" y="272" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">0%</text>
+<path d="M195 163 C 205 163, 215 165, 225 164 C 225 192, 224 221, 225 250 C 215 249, 205 250, 196 250 C 195 221, 195 192, 195 163 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="210" y="157" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">2.7</text>
+<path d="M231 122 C 241 124, 251 123, 261 122 C 260 164, 261 207, 261 250 C 251 249, 241 252, 232 250 C 231 207, 231 164, 231 122 Z" fill="#eef3fa" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="246" y="116" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">4.0</text>
+<text x="228" y="272" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">1%</text>
+<path d="M290 179 C 300 180, 310 178, 320 178 C 319 202, 320 226, 320 250 C 310 250, 300 252, 290 249 C 291 226, 290 202, 290 179 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="305" y="173" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">2.2</text>
+<path d="M326 144 C 336 143, 346 143, 356 144 C 356 179, 357 214, 356 250 C 346 248, 336 250, 327 250 C 327 214, 327 179, 326 144 Z" fill="#eef3fa" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="341" y="138" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">3.3</text>
+<text x="323" y="272" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">5%</text>
+<path d="M385 187 C 395 185, 405 188, 415 187 C 415 208, 415 229, 415 250 C 405 248, 395 250, 385 251 C 386 229, 385 208, 385 187 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="400" y="181" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">2.0</text>
+<path d="M421 154 C 431 154, 441 153, 451 155 C 452 186, 451 217, 451 250 C 441 250, 431 249, 422 250 C 422 217, 421 186, 421 154 Z" fill="#eef3fa" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="436" y="148" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">3.0</text>
+<text x="418" y="272" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">10%</text>
+<path d="M480 208 C 490 206, 500 208, 510 207 C 511 222, 511 236, 511 250 C 500 249, 490 248, 481 251 C 479 236, 480 222, 480 208 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="495" y="202" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">1.3</text>
+<path d="M516 176 C 526 175, 536 177, 546 177 C 545 201, 546 225, 546 250 C 536 249, 526 251, 516 249 C 516 225, 516 201, 516 176 Z" fill="#eef3fa" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="531" y="170" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">2.3</text>
+<text x="513" y="272" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">50%</text>
+<path d="M575 218 C 585 217, 595 217, 605 219 C 605 229, 605 239, 605 250 C 595 248, 585 249, 575 250 C 574 239, 574 229, 575 218 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="590" y="212" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">1.0</text>
+<path d="M611 186 C 621 184, 631 187, 641 185 C 642 207, 642 228, 640 250 C 631 249, 621 251, 610 249 C 612 228, 611 207, 611 186 Z" fill="#eef3fa" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="626" y="180" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">2.0</text>
+<text x="608" y="272" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">100%</text>
+<text x="370" y="296" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">공통 원인 비율 β (한 대가 고장 날 때 그 원인이 셋 모두에 미치는 비율)</text>
+<path d="M470 26 C 475 26, 481 27, 486 27 C 485 31, 485 35, 486 40 C 481 40, 475 40, 470 40 C 471 35, 469 31, 470 26 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="492" y="39" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="start">한 대 90%</text>
+<path d="M570 26 C 575 26, 581 25, 586 27 C 585 31, 585 35, 586 40 C 581 40, 575 39, 569 41 C 570 35, 571 31, 570 26 Z" fill="#eef3fa" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="592" y="39" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5" text-anchor="start">한 대 99%</text>
+<text x="300" y="40" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">복제본 3대, 한 대 비가용성은 그대로</text>
+<text x="350" y="330" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 공통 원인 1%만으로 99% 셋의 9가 여섯에서 넷으로 준다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 복제본이 좋을수록 공통 원인 몇 %가 더 많은 9를 지운다</div>
+
+<p>표에서 볼 것은 오른쪽 열입니다. 한 대가 99%인 복제본 셋은 독립이면 9가 여섯 개예요. 그런데 고장 100번 중 한 번만 셋이 함께 겪어도 9가 넷으로 줄고, 열 번 중 한 번이면 셋으로 줄어요. β가 조금이라도 있으면 시스템 비가용성은 βQ에 거의 붙어 버립니다. q<sup>3</sup> 항이 βQ에 비해 너무 작아지기 때문이에요. <span class="obsv-mark">복제본이 좋아질수록 이중화의 가용성은 독립 고장이 아니라 공통 원인 몫이 정합니다.</span></p>
+
+<p>그래서 βQ가 q<sup>3</sup>보다 커지는 순간부터 복제본을 셋에서 다섯으로 늘리는 일은 거의 효과가 없어요. q<sup>3</sup>이 q<sup>5</sup>가 돼도 βQ는 그대로이기 때문입니다. 한 대 가용성 99%(Q = 0.01)라면 β가 1%만 돼도 다섯으로 늘려 줄어드는 비가용성이 1%가 안 됩니다. 한 대가 자주 죽는 Q = 0.1에서는 β가 1%일 때 비가용성이 0.00197에서 0.00101로 절반쯤 줄지만, β가 10%면 7% 줄 뿐이에요. 9를 늘리려면 β를 줄여야 하고, β를 줄이는 건 복제본 수가 아니라 2장 표의 결합 요인을 하나씩 끊는 일이에요. 배포를 한 번에 하지 않고, 설정 변경을 일부 복제본부터 적용하고, 공유 자원이 멈춰도 버티게 만드는 것들입니다. 4편에서 본 사본 셋짜리 저장소의 이야기, 이론상 9가 아홉 개지만 실제로는 근처에도 못 간다는 결론(Treynor 외, 「The Calculus of Service Availability」, ACM Queue 2017)이 이 표의 β가 0이 아닐 때의 모습이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: β는 측정하기 어렵고, 그래서 잊힌다</div>
+  &bull; 공통 원인 고장은 드물게 일어나서 표본이 적어요. 한 해에 한두 번 일어난 "전원 동시 장애"로 β를 추정하면 오차가 큽니다.<br>
+  &bull; 대신 사후 분석에서 "이번 장애에 몇 대가 같이 영향받았나"를 기록해 두면, 고장 중 공통 원인 비율을 거칠게라도 셀 수 있어요.<br>
+  &bull; 설계 문서에 "3중화로 99.9999%"라고 적었다면, 그 숫자는 β = 0이라는 가정을 함께 적은 것입니다.
+</div>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 전환은 공짜가 아니다: 감지 시간을 계산한다</h2>
+
+<p>이제 두 번째 가정입니다. 액티브 서버 하나와 백업 서버 하나를 HAProxy 뒤에 둔다고 해 볼게요. HAProxy는 백업 서버를 평소에는 쓰지 않고, 백업이 아닌 서버가 <b>모두</b> 쓸 수 없게 됐을 때만 부하 분산에 넣습니다(HAProxy 3.4 설정 매뉴얼의 <code>backup</code>). 그러니 액티브가 죽은 뒤 백업으로 넘어가는 시점은 HAProxy가 액티브를 DOWN으로 판정하는 시점이에요. 그 판정은 헬스 체크 설정 세 개가 정합니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: inter, fall, rise</div>
+  HAProxy 헬스 체크의 주기와 판정 횟수입니다. <code>inter</code>는 검사 간격(기본 2000ms), <code>fall</code>은 DOWN으로 판정할 연속 실패 횟수(기본 3), <code>rise</code>는 다시 UP으로 판정할 연속 성공 횟수(기본 2)예요. <code>fastinter</code>를 주면 UP에서 DOWN으로 넘어가는 중간 상태의 검사 간격이 그 값으로 바뀝니다.
+</div>
+
+<p>서버가 죽는 순간은 검사 주기 안의 아무 때나 올 수 있어요. 검사 직전에 죽으면 바로 첫 실패가 잡히고, 검사 직후에 죽으면 한 주기를 거의 다 기다린 뒤에 첫 실패가 잡힙니다. 그다음 <code>fall &minus; 1</code>번을 더 실패해야 DOWN이에요. 그래서 감지 시간은 하나의 값이 아니라 범위입니다.</p>
+
+<div class="obsv-code">감지 시간 = (첫 실패 검사까지 0 ~ inter) + (fall &minus; 1) &times; (fastinter 또는 inter)
+
+설정                         감지 범위        평균(고장 시점이 균일할 때)
+inter 2s, fall 3 (기본값)    4.0 ~ 6.0초      5.00초
+inter 1s, fall 3             2.0 ~ 3.0초      2.50초
+inter 2s, fall 3, fastinter 0.5s   1.0 ~ 3.0초      2.00초
+inter 1s, fall 2             1.0 ~ 2.0초      1.50초
+inter 5s, fall 3            10.0 ~ 15.0초    12.50초</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">액티브 서버가 죽은 뒤 백업으로 넘어가기까지 (inter 2s, fall 3)</text>
+<path d="M60 120 C 311 120, 499 119, 687 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="60" y="146" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">0s</text>
+<text x="155" y="146" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">1s</text>
+<text x="250" y="146" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">2s</text>
+<text x="345" y="146" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">3s</text>
+<text x="440" y="146" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">4s</text>
+<text x="535" y="146" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">5s</text>
+<text x="630" y="146" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">6s</text>
+<path d="M117 60 C 119 81, 119 101, 117 120" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round"/>
+<text x="117" y="54" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">💥 고장</text>
+<path d="M149.0 120.0 C 149.0 112.2, 161.0 112.2, 161.0 120.0 C 161.0 127.8, 149.0 127.8, 149.0 120.0 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<text x="155" y="106" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">실패 1/3</text>
+<path d="M339.0 120.0 C 339.0 112.2, 351.0 112.2, 351.0 120.0 C 351.0 127.8, 339.0 127.8, 339.0 120.0 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<text x="345" y="106" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">실패 2/3</text>
+<path d="M529.0 120.0 C 529.0 112.2, 541.0 112.2, 541.0 120.0 C 541.0 127.8, 529.0 127.8, 529.0 120.0 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<text x="535" y="106" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">실패 3/3</text>
+<text x="535" y="170" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">DOWN 판정 → 백업으로</text>
+<path d="M117 182 C 255 183, 393 181, 535 182 C 534 192, 535 202, 534 212 C 393 212, 255 214, 117 213 C 117 202, 117 192, 117 182 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="326" y="203" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">이 4.4초 동안 오는 요청은 죽은 서버로 간다</text>
+<text x="40" y="248" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">고장이 검사 직후에 나면 (fall−1)×inter + inter = 6초, 직전에 나면 (fall−1)×inter = 4초</text>
+<text x="40" y="272" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">fastinter 0.5s를 주면 2·3번째 검사가 당겨져 1~3초</text>
+<text x="350" y="312" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 이중화의 "즉시 전환"은 검사 주기만큼 늦다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 죽은 순간부터 DOWN 판정까지, 요청은 계속 죽은 서버로 간다</div>
+
+<p>범위 위쪽 끝이 더 늘어나는 경우도 있어요. 서버가 아예 응답하지 않고 멈춰 있으면 검사 하나가 실패로 끝나기까지 검사 타임아웃만큼 기다립니다. <code>timeout check</code>를 따로 주지 않으면 <code>inter</code>가 검사 타임아웃 역할도 해요(설정 매뉴얼의 <code>inter</code>). 연결을 거부하는 죽은 프로세스와 연결은 받아 놓고 대답하지 않는 멈춘 프로세스는 감지 시간이 다를 수 있다는 뜻입니다.</p>
+
+<p><a href="#rel-09">실습-4</a>에서 액티브를 죽여 8번씩 재 보니 DOWN 판정이 기본값(<code>inter 2s fall 3</code>)에서 4.21~5.87초, <code>inter 1s fall 3</code>에서 2.20~2.93초, <code>fastinter 500ms</code>에서 1.23~2.63초로 모두 위 표의 범위 안에 들었어요. 그 사이 초당 100건 중 판정까지의 시간만큼, 기본값에서는 416~581건이 죽은 서버로 갔습니다. 반면 응답 없이 멈춘 서버(검사 타임아웃 1초)에서는 판정이 2~4초씩 늦어졌고, <code>inter 500ms</code>는 1.15초에서 4.32초로 밀려 간격을 줄인 효과가 사라졌어요. 멈춘 서버 앞에서는 검사 간격보다 검사 타임아웃이 감지 시간을 정합니다.</p>
+
+<p><code>inter</code>와 <code>fall</code>을 줄이면 감지는 빨라지지만 대가가 있어요. 검사 요청이 늘고, 잠깐의 GC 멈춤이나 네트워크 흔들림에도 서버가 빠졌다 들어오기를 반복합니다. 빠졌다가 다시 들어오려면 <code>rise</code>번 연속 성공해야 하니, 그동안 용량이 줄어 있어요. <code>fall</code>은 오탐과 감지 지연 사이의 손잡이입니다.</p>
+
+<h3>요청 단위로 비켜 가기: retry-on과 redispatch</h3>
+
+<p>헬스 체크를 기다리지 않고 실패한 요청을 다른 서버로 다시 보내는 방법도 있어요. HAProxy의 <code>retries</code>는 기본적으로 <b>새 연결 시도가 실패했을 때만</b> 재시도합니다(<code>retry-on</code> 기본값이 <code>conn-failure</code>). 500이나 503 같은 응답에도 재시도하려면 <code>retry-on</code>에 상태 코드를 적어야 하고, 같은 서버가 아닌 다른 서버로 보내려면 <code>option redispatch</code>가 필요해요. 기본 동작에는 함정이 둘 있습니다(설정 매뉴얼의 <code>retries</code>, <code>option redispatch</code>).</p>
+
+<div class="obsv-code">retries 2
+retry-on conn-failure 503     # 연결 실패와 503에 재시도
+option redispatch 1           # 매 재시도마다 다른 서버를 고르게 한다
+
+redispatch 인자 기본값 -1  : 마지막 재시도에서만 다른 서버로 보낸다
+같은 서버로 재시도할 때     : min(timeout connect, 1초) 동안 기다린 뒤 다시 보낸다</div>
+
+<p>기본값으로 두면 재시도 대부분이 <b>같은 죽은 서버</b>로 가고, 그때마다 최대 1초씩 기다려요. 그리고 <code>conn-failure</code>와 <code>none</code> 말고 다른 값을 쓰려면 요청 전체를 버퍼에 복사해 둬야 해서 메모리 비용이 있어요. 같은 요청을 다시 보내도 안전한지 모르면 이 지시어를 쓰지 말라는 경고도 매뉴얼에 붙어 있습니다. 멱등성 이야기는 「트래픽 관리」 시리즈 <a href="https://dding-shark.tistory.com/583">5편</a>에서 했어요.</p>
+
+<p>그리고 요청 단위 재시도는 액티브-스탠바이에서는 백업으로 가지 않아요. 백업은 백업이 아닌 서버가 <b>모두</b> 쓸 수 없을 때만 쓰이니, 액티브가 아직 UP으로 남아 있는 감지 시간 동안 재시도할 "다른 서버"가 없습니다. 실습-4에서 기본 헬스 체크에 <code>retry-on 503</code>과 <code>option redispatch 1</code>을 더한 listen은 재시도 없는 listen과 실패 건수가 같았어요(중앙값 549건과 526건, 범위가 겹칩니다). 요청 단위 재시도가 이중화를 대신하는 건 액티브-액티브에서뿐이에요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 포트는 열려 있는데 앱은 죽어 있다</h2>
+
+<p>감지 시간이 몇 초라는 계산은 헬스 체크가 고장을 <b>볼 수 있을 때</b>의 이야기예요. HAProxy의 헬스 체크는 기본적으로 TCP 연결이 맺어지는지만 봅니다. <code>option httpchk</code>를 켜야 연결 뒤에 HTTP 요청을 보내고, 2xx와 3xx 응답만 정상으로 쳐요(설정 매뉴얼의 <code>option httpchk</code>).</p>
+
+<p>그러면 이런 서버는 어떻게 보일까요? 프로세스는 떠 있고 포트도 열려 있어서 TCP 연결은 받습니다. 그런데 스레드 풀이 막혔거나, 필수 설정을 못 읽었거나, DB 연결 풀이 바닥나서 모든 요청에 500을 돌려줘요. TCP 검사는 이 서버를 끝까지 UP으로 봅니다. 감지 시간은 몇 초가 아니라 <b>사람이 알아챌 때까지</b>예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 회색 고장 (gray failure)</div>
+  고장 감지 장치는 정상으로 보는데 실제 사용자는 실패를 겪는 상태입니다. 보는 쪽마다 다르게 보인다는 점이 핵심이라, 이 성질을 "차등 관측 가능성(differential observability)"이라고 부릅니다(Huang 외, 「Gray Failure」, HotOS 2017).
+</div>
+
+<p>숫자로 보면 이 차이가 얼마나 큰지 드러납니다. 30일 99.99%의 에러 예산은 259초, 곧 4.32분이에요.</p>
+
+<div class="obsv-code">한 달 장애 상황                                     실패 비중 환산    99.99% 예산 대비
+액티브-스탠바이, 고장 3번 &times; 감지 5초, 전체 트래픽         15초         5.8%
+액티브-액티브 3대, 고장 3번 &times; 감지 5초, 1/3 트래픽         5초         1.9%
+액티브-스탠바이, 고장 3번 &times; 감지 30초                     90초        34.7%
+회색 고장 1번, TCP 검사가 못 잡고 사람이 20분 뒤 발견,
+  3대 중 1대                                          400초       154.3%</div>
+
+<p>몇 초짜리 감지 지연은 예산의 몇 %지만, 감지하지 못하는 고장 한 번은 한 달 예산을 넘깁니다. <span class="obsv-mark">헬스 체크에서 중요한 건 주기보다 무엇을 보느냐입니다.</span> 앱 검사(HTTP 경로)는 프로세스가 요청을 처리하는 경로를 실제로 한 번 지나가게 해서 이 간극을 줄여요.</p>
+
+<p>그렇다고 헬스 체크를 깊게 만들면 다른 문제가 생깁니다. 헬스 엔드포인트가 공유 DB나 Redis까지 확인하면, 그 공유 자원이 잠깐 흔들릴 때 <b>모든</b> 복제본이 같은 순간에 검사에 실패해요. 2장 표의 "환경" 결합 요인을 헬스 체크가 스스로 만든 셈이고, 로드 밸런서는 쓸 수 있는 서버가 하나도 없다고 판정합니다. 스프링 부트 문서도 같은 고민을 적어 둡니다. 「트래픽 관리」 시리즈 <a href="https://dding-shark.tistory.com/581">3편</a>에서 본 대로 Liveness는 외부 시스템 점검에 묶지 말라고 못 박고, 트래픽을 받을지 정하는 Readiness에 대해서는 모든 인스턴스가 공유하는 외부 시스템을 넣으면 그 시스템이 멈출 때 인스턴스가 다 같이 서비스에서 빠진다고 경고해요. 넣고 그걸 감수할지, 빼고 호출하는 쪽의 서킷 브레이커 같은 상위 단계에서 처리할지는 판단해서 고르라는 거예요. 그래서 로드 밸런서용 검사는 "이 프로세스가 내 요청 경로를 처리할 수 있나"까지만 보고, 공유 자원의 상태는 경고와 대시보드로 따로 보는 편이 안전합니다.</p>
+
+<p>HAProxy에는 둘 사이를 메우는 장치도 있어요. <code>observe layer7</code>을 켜면 헬스 체크와 별개로 실제 요청의 응답을 지켜보다가, 연속 오류가 <code>error-limit</code>(기본 10)에 이르면 <code>on-error</code>에 정한 동작을 합니다. 기본 동작은 검사 실패 한 번으로 치는 것이고, <code>mark-down</code>으로 두면 그 자리에서 DOWN으로 내려요. 응답 코드 500도 오류로 칩니다. 다만 이 기능도 헬스 체크가 켜져 있어야 동작해요.</p>
+
+<p>실습-4에서는 이 장치의 성질이 두 가지 드러났어요. 앱만 죽어 모든 응답이 503인 서버를 헬스 체크(<code>inter 1s fall 3</code>)는 2.64초 만에, <code>observe</code>는 실제 요청 10건 만에(0.22초) 잡았습니다. TCP 검사는 30초 내내 못 잡았고요. 그런데 헬스 경로는 200, 실제 요청은 500을 주는 회색 고장에서는 HTTP 검사도 30초 내내 놓쳤고, <code>observe</code>를 붙인 서버는 10건 실패하면 내려갔다가 헬스 체크 두 번(<code>rise 2</code>)이 통과하면 2초 뒤 다시 올라오기를 16번 되풀이했어요. 실패는 3분의 1에서 3.55%로 줄었지만 0이 되지는 않았습니다. 헬스 체크와 실제 요청이 다른 답을 내는 동안에는 어느 한쪽만 믿을 수 없다는 뜻이에요.</p>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 액티브-액티브, 액티브-스탠바이, 그리고 셀</h2>
+
+<p>이중화의 모양은 크게 둘이에요. 평소에 모든 복제본이 요청을 나눠 받는 <b>액티브-액티브</b>와, 한쪽만 받고 다른 쪽은 기다리다가 넘겨받는 <b>액티브-스탠바이</b>입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 액티브-액티브, 액티브-스탠바이</div>
+  액티브-액티브는 모든 복제본이 동시에 트래픽을 처리하는 구성이고, 액티브-스탠바이는 액티브 하나가 처리하다 고장 나면 대기 중인 스탠바이가 이어받는 구성입니다. 스탠바이가 데이터와 상태를 항상 맞춰 두고 있으면 전환이 빨라요.
+</div>
+
+<p>둘은 감지 시간 동안 잃는 양이 다릅니다. 액티브-액티브에서 한 대가 죽으면 감지할 때까지 그 한 대의 몫(세 대면 1/3)만 실패하고, 액티브-스탠바이에서는 전체가 실패해요. 앞 절의 표에서 5초 감지가 예산의 1.9%와 5.8%로 갈린 이유입니다. 대신 액티브-액티브는 남은 복제본이 죽은 몫까지 받아야 하니 용량을 더 두어야 하고, 상태를 공유하거나 복제해야 해요. 데이터가 크거나 쓰기 충돌을 피하기 어려우면 액티브-스탠바이를 고르게 됩니다.</p>
+
+<p>액티브-스탠바이에는 계산에 안 잡히는 위험이 하나 더 있어요. 스탠바이는 평소에 요청을 받지 않으니, <b>정말로 받을 수 있는지</b>를 전환하는 순간에야 압니다. 설정이 어긋나 있거나 데이터가 따라오지 못했거나 연결 풀이 차갑다는 사실을 장애 한가운데서 발견하게 돼요. 전환을 사람 손으로 한다면 더 늦습니다. 사람을 불러 전환을 결정하게 할 때쯤이면 에러 예산을 이미 넘겼을 가능성이 크다는 지적도 있어요(Treynor 외 2017). 그래서 전환은 자동화하고, 정기적으로 일부러 일으켜 봅니다. 장애를 미리 일으켜 보는 실험의 원칙과 폭발 반경을 줄이는 방법은 「장애 대응」 시리즈 <a href="https://dding-shark.tistory.com/630">5편</a>에서 다뤘어요.</p>
+
+<h3>셀: 함께 죽는 범위를 미리 자른다</h3>
+
+<p>공통 원인을 모두 없앨 수는 없습니다. 같은 코드를 쓰는 이상 코드 버그는 모든 복제본에 있어요. 그렇다면 남은 선택은 공통 원인이 <b>한 번에 덮치는 범위</b>를 줄이는 겁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 셀 (cell)</div>
+  작업 부하 전체를 처리할 수 있는 독립된 사본 하나입니다. 셀끼리는 상태를 공유하지 않고, 앞단의 얇은 라우터가 고객 ID 같은 분할 키로 요청을 셀 하나에 보내요. 셀 하나가 고장 나도 다른 셀의 고객은 영향을 받지 않습니다.
+</div>
+
+<p>셀 10개로 요청 100개를 처리하면, 셀 하나가 고장 나도 요청의 90%는 영향을 받지 않아요. 셀이 특히 잘 가둬 두는 고장은 잘못된 배포와 특정 요청이 일으키는 고장(poison pill request)입니다(AWS 백서 「Reducing the Scope of Impact with Cell-Based Architecture」). 바로 2장 표의 "하드웨어"와 "운영" 결합 요인이에요. 나쁜 설정을 첫 셀에만 적용하고 지켜보면, 공통 원인 고장이 일어나도 그 범위가 셀 하나에서 멈춥니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+
+<text x="175" y="34" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5" text-anchor="middle">한 풀에 9대</text>
+<text x="525" y="34" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5" text-anchor="middle">셀 3개 × 3대</text>
+<path d="M30 50 C 126 52, 221 52, 320 50 C 320 100, 319 149, 320 200 C 221 202, 126 200, 30 200 C 29 149, 30 100, 30 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M52 66 C 74 66, 96 67, 118 65 C 119 76, 117 86, 117 96 C 96 96, 74 97, 51 95 C 53 86, 51 76, 52 66 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="87" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M142 66 C 164 66, 186 66, 208 66 C 208 76, 208 86, 209 96 C 186 95, 164 97, 141 96 C 142 86, 142 76, 142 66 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="175" y="87" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M232 66 C 254 65, 276 67, 298 65 C 298 76, 299 86, 299 96 C 276 94, 254 95, 232 97 C 233 86, 233 76, 232 66 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="265" y="87" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M52 108 C 74 107, 96 107, 118 109 C 118 118, 118 128, 119 138 C 96 139, 74 136, 53 138 C 52 128, 53 118, 52 108 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="129" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M142 108 C 164 107, 186 106, 208 107 C 208 118, 208 128, 208 138 C 186 139, 164 137, 142 138 C 142 128, 143 118, 142 108 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="175" y="129" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M232 108 C 254 109, 276 106, 298 108 C 298 118, 297 128, 299 138 C 276 139, 254 137, 232 138 C 232 128, 231 118, 232 108 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="265" y="129" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M52 150 C 74 148, 96 152, 118 151 C 118 160, 119 170, 118 180 C 96 179, 74 179, 52 181 C 53 170, 53 160, 52 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="171" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M142 150 C 164 152, 186 149, 208 149 C 207 160, 209 170, 209 180 C 186 180, 164 180, 141 181 C 143 170, 143 160, 142 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="175" y="171" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M232 150 C 254 151, 276 152, 298 149 C 298 160, 298 170, 299 180 C 276 181, 254 181, 233 180 C 233 170, 231 160, 232 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="265" y="171" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<text x="175" y="228" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">나쁜 설정이 한 번에 모두에게: 영향 100%</text>
+<path d="M380 50 C 409 51, 438 51, 468 49 C 469 100, 468 149, 468 200 C 438 201, 409 199, 379 199 C 380 149, 381 100, 380 50 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M391 66 C 413 68, 435 65, 457 66 C 457 76, 458 86, 457 96 C 435 98, 413 94, 392 95 C 392 86, 391 76, 391 66 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="424" y="87" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M391 108 C 413 106, 435 108, 457 108 C 457 118, 457 128, 457 138 C 435 138, 413 138, 391 138 C 390 128, 392 118, 391 108 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="424" y="129" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M391 150 C 413 150, 435 151, 457 150 C 457 160, 457 170, 456 180 C 435 181, 413 179, 391 181 C 391 170, 391 160, 391 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="424" y="171" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">v2 💥</text>
+<path d="M480 50 C 509 49, 538 50, 568 50 C 568 100, 567 149, 568 200 C 538 202, 509 201, 481 200 C 480 149, 480 100, 480 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M491 66 C 513 64, 535 65, 557 66 C 557 76, 557 86, 557 96 C 535 96, 513 95, 491 97 C 492 86, 490 76, 491 66 Z" fill="#eef6f0" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="524" y="87" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">v1</text>
+<path d="M491 108 C 513 106, 535 108, 557 108 C 557 118, 558 128, 558 138 C 535 139, 513 137, 490 137 C 490 128, 491 118, 491 108 Z" fill="#eef6f0" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="524" y="129" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">v1</text>
+<path d="M491 150 C 513 151, 535 148, 557 150 C 557 160, 556 170, 557 180 C 535 180, 513 179, 491 179 C 492 170, 492 160, 491 150 Z" fill="#eef6f0" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="524" y="171" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">v1</text>
+<path d="M580 50 C 609 48, 638 50, 668 49 C 669 100, 668 149, 667 200 C 638 199, 609 201, 580 201 C 580 149, 581 100, 580 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M591 66 C 613 66, 635 68, 657 67 C 657 76, 657 86, 657 96 C 635 97, 613 96, 592 96 C 591 86, 591 76, 591 66 Z" fill="#eef6f0" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="624" y="87" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">v1</text>
+<path d="M591 108 C 613 107, 635 109, 657 109 C 657 118, 657 128, 657 138 C 635 136, 613 137, 591 138 C 591 128, 590 118, 591 108 Z" fill="#eef6f0" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="624" y="129" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">v1</text>
+<path d="M591 150 C 613 149, 635 151, 657 150 C 656 160, 657 170, 657 180 C 635 180, 613 179, 591 181 C 591 170, 591 160, 591 150 Z" fill="#eef6f0" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="624" y="171" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">v1</text>
+<text x="525" y="228" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">첫 셀에서 멈추면: 영향 1/3</text>
+<path d="M350 50 C 351 114, 350 173, 350 240" fill="none" stroke="#8a8272" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="8 8"/>
+<text x="350" y="272" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 셀은 고장 횟수가 아니라 한 번에 같이 죽는 범위를 줄인다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 셀은 고장을 막지 않고, 같이 죽는 범위를 자른다</div>
+
+<p>여기서 하나 더 나아간 방식이 셔플 샤딩이에요. 워커 8대를 고객마다 2대씩 다른 조합으로 나눠 주면 조합이 28가지라, 한 조합을 망가뜨리는 요청이 와도 영향은 약 1/28로 줄고 다른 고객과 겹치는 워커는 많아야 한 대입니다(AWS Builders' Library, 「Workload isolation using shuffle-sharding」). 셀과 셔플 샤딩은 고장 횟수를 줄이지 않아요. 4편에서 본 9를 얻는 방법 셋(덜 나게, 좁게, 빨리) 가운데 "좁게"에 해당합니다. 그리고 셀마다 공유하는 것이 남아 있으면(셀 라우터, 공통 인증, 같은 DNS) 그것이 다시 결합 요인이 되니, 셀 경계 밖에 남은 공유 자원 목록을 따로 관리해야 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 이중화 가용성을 적을 때 "무엇을 공유하는가" 목록을 같이 적어요. 설정 저장소, DB, 캐시, 배포 파이프라인, 인증서, 존이 단골입니다.<br>
+  &bull; 설정과 배포는 복제본 전체에 한 번에 적용하지 않고, 한 대나 한 셀에서 먼저 확인한 뒤 넓혀요.<br>
+  &bull; 로드 밸런서 헬스 체크는 TCP 연결이 아니라 요청 경로를 지나는 HTTP 검사로 하되, 공유 자원까지 보지는 않게 얕게 둡니다.<br>
+  &bull; <code>inter &times; fall</code>로 감지 범위를 계산해 두고, 그 시간 동안 잃는 요청이 에러 예산의 몇 %인지 봐요.<br>
+  &bull; HAProxy에서 요청 단위 재시도를 쓴다면 <code>retry-on</code>과 <code>option redispatch 1</code>을 함께 두고, 멱등한 경로에만 겁니다.<br>
+  &bull; 남은 k대가 피크를 받을 수 있는지는 「SLO와 경고」 <a href="https://dding-shark.tistory.com/617">6편</a>의 N+2로 따로 계산해요.
+</div>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>병렬식 1 &minus; (1 &minus; R)<sup>n</sup>은 복제본의 고장이 서로 독립이고, 죽은 복제본을 즉시 비켜 갈 때만 맞아요.</b> 공통 원인이 고장의 1%만 차지해도 99% 셋의 9는 여섯에서 넷으로 줄고, 복제본이 좋아질수록 가용성은 공통 원인 몫이 정합니다.<br><br>
+  전환에는 <code>inter &times; fall</code>만큼의 감지 시간이 들고, TCP 검사가 못 보는 회색 고장은 감지 시간이 사람이 알아챌 때까지로 늘어나요. 복제본을 늘리는 것보다 결합 요인을 끊고, 끊지 못한 것은 셀로 범위를 자르는 편이 9를 더 많이 지켜 줍니다. 이중화는 개수가 아니라 서로 모르는 정도로 셉니다.
+</div>
+
+</div>

@@ -1,0 +1,37 @@
+// 도커 소켓으로 이 실습(compose 프로젝트 ts-03-log-templates)의 앱 컨테이너 로그만 읽어 Loki 로 보낸다.
+discovery.docker "local" {
+  host = "unix:///var/run/docker.sock"
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=ts-03-log-templates"]
+  }
+}
+
+discovery.relabel "apps" {
+  targets = discovery.docker.local.targets
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "app-healthy|app-broken"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "instance"
+  }
+  rule {
+    target_label = "service_name"
+    replacement  = "shop"
+  }
+}
+
+loki.source.docker "apps" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.apps.output
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

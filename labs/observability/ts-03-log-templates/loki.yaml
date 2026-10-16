@@ -1,0 +1,33 @@
+# 단일 바이너리 Loki. tracing-03-logs/loki.yaml 에 pattern ingester 와 볼륨 조회를 켠 것.
+auth_enabled: false
+server:
+  http_listen_port: 3100
+  log_level: info
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /tmp/loki
+  storage:
+    filesystem:
+      chunks_directory: /tmp/loki/chunks
+      rules_directory: /tmp/loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+pattern_ingester:
+  enabled: true          # /loki/api/v1/patterns 와 Grafana Logs Drilldown 의 Patterns 탭
+limits_config:
+  volume_enabled: true
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+analytics:
+  reporting_enabled: false

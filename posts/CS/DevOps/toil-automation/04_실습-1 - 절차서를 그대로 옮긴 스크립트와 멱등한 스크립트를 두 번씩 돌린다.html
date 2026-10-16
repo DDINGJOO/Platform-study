@@ -1,0 +1,369 @@
+<!-- lead: 신규 고객사 등록 절차서를 그대로 옮긴 스크립트와 멱등한 스크립트를 동시에, 끊긴 뒤에, 부하 중에 돌렸어요. 절차서 판은 동시 실행 20번 모두 깨졌고, 틀린 설정에서는 nginx -s stop부터 실패했어요. -->
+<!-- tags: 멱등성, flock, ON CONFLICT, nginx reload, nginx -s stop -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔁 운영 자동화, 실습-1</div>
+  1편. 수고의 적은 손이 아니라 선형 증가다<br>
+  2편. 자동화도 유지비를 내야 본전을 뽑는다<br>
+  3편. 절차서를 코드로 옮기면 두 번 돌려도 같아야 한다<br>
+  <b>실습-1. 절차서를 그대로 옮긴 스크립트와 멱등한 스크립트를 두 번씩 돌린다</b> &larr; 지금 이 글<br>
+  실습-2. 경고를 받아 스스로 고치는 스크립트에 상한을 건다
+</div>
+
+<p><a href="#auto-03">3편</a>은 서두에 사고 두 개를 놓았어요. VPN이 끊긴 뒤 다시 돌린 스크립트가 "이미 있음"으로 끝나 경로가 영영 안 생긴 사고, 두 사람이 같은 티켓을 동시에 돌려 DB 행과 경로가 둘씩 생긴 사고입니다. 그리고 절차서를 그대로 옮긴 스크립트를 수렴형으로 고치면 두 번 돌려도, 끊긴 뒤 다시 돌려도, 동시에 돌려도 결과가 같아진다고 했어요.</p>
+
+<p>이번 실습은 그 주장을 셉니다. 신규 고객사 등록 절차(DB 행 추가, nginx에 경로 추가, 설정 반영)를 두 스크립트로 옮기고, 차례로 두 번, 동시에 두 번, 단계마다 죽였다 다시, 부하를 건 채로 돌렸어요. 숫자는 전부 이번에 돌린 결과입니다. 틀린 설정을 반영할 때 어느 쪽이 실패하는지는 3편 5장이 정리한 대로 멈추는 방법에 달려 있었는데, 그 차이도 6장에서 nginx 소스와 함께 확인했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 절차서 그대로인 스크립트를 동시에 두 번 돌리면 불일치가 몇 건 생기나?<br>
+  &bull; 멱등 스크립트에서 잠금(flock)을 빼면, "바뀌었나"의 비교 대상을 바꾸면 무엇이 달라지나?<br>
+  &bull; 단계마다 죽이고 다시 돌리면 어느 쪽이 스스로 복구되나?<br>
+  &bull; 부하 중에 멈췄다 켜기와 다시 읽기(reload)는 요청을 몇 건 잃나?<br>
+  &bull; 틀린 설정을 반영하면 stop, kill, reload는 각각 어떻게 끝나나?
+</div>
+
+<h2>1. 실습 환경: 고객사마다 경로 한 줄</h2>
+
+<p>컨테이너 넷으로 이뤄져 있어요. nginx가 고객사마다 <code>location /t/&lt;이름&gt;/</code> 한 줄로 요청을 파이썬 업스트림에 넘기고, 고객사 목록은 PostgreSQL의 <code>tenants</code> 테이블에 있습니다. 운영 스크립트는 nginx 컨테이너 안에서 돌아요(psql, flock, curl을 넣어 뒀어요). 테이블은 절차서 시절 그대로라 이름에 UNIQUE 제약이 없고, <code>idem.sh</code>가 실행할 때 UNIQUE 인덱스를 스스로 만듭니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="au1a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M30 50 C 80 48, 120 52, 160 49 C 162 70, 161 92, 160 112 C 120 114, 80 111, 32 113 C 29 92, 30 70, 30 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="95" y="76" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">load</text>
+  <text x="95" y="98" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">초당 100건 + 1초 x4</text>
+  <path d="M168 80 C 200 79, 225 81, 255 80" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#au1a)"/>
+  <path d="M265 40 C 340 37, 400 42, 455 39 C 457 90, 456 160, 455 210 C 400 212, 340 209, 267 211 C 264 160, 265 90, 265 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="360" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">web (nginx)</text>
+  <text x="360" y="90" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">apps.conf: 고객사마다 location</text>
+  <path d="M285 112 C 330 110, 390 114, 435 111 C 437 140, 436 170, 435 196 C 390 198, 330 195, 287 197 C 284 170, 285 140, 285 112 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
+  <text x="360" y="136" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">/ops 스크립트</text>
+  <text x="360" y="158" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">naive.sh  idem.sh</text>
+  <text x="360" y="178" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">reset.sh  check.sh</text>
+  <path d="M463 80 C 500 79, 525 81, 560 80" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#au1a)"/>
+  <path d="M570 50 C 610 48, 640 52, 670 49 C 672 70, 671 92, 670 112 C 640 114, 610 111, 572 113 C 569 92, 570 70, 570 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="620" y="78" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">app</text>
+  <text x="620" y="98" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">항상 200</text>
+  <path d="M440 170 C 500 172, 530 190, 560 215" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#au1a)"/>
+  <path d="M570 205 C 610 203, 640 207, 670 204 C 672 225, 671 245, 670 262 C 640 264, 610 261, 572 263 C 569 245, 570 225, 570 205 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4"/>
+  <text x="620" y="232" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">db</text>
+  <text x="620" y="252" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">tenants</text>
+  <text x="30" y="250" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">불일치 = 중복 행 + 중복 location</text>
+  <text x="30" y="274" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">+ 응답 없는 경로 + DB에 없는 경로</text>
+  <text x="350" y="292" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">스크립트는 nginx 옆에서 돌고, check.sh가 매번 DB와 응답을 맞대 본다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 고객사 하나 = DB 행 하나 + location 한 줄 + 실제로 200이 오는 경로</div>
+
+<p>두 스크립트의 차이는 3편 2장의 표에 잠금과 naive의 맨 앞 확인을 더한 것이에요.</p>
+
+<div class="obsv-code">단계         naive.sh (절차서 그대로)            idem.sh (수렴형)
+잠금         없음                               flock -n, 잡혀 있으면 종료 코드 75
+DB 행        맨 앞에서 SELECT, 있으면 중단        UNIQUE 인덱스 + INSERT ... ON CONFLICT DO NOTHING
+             INSERT
+설정 파일     echo "location ..." &gt;&gt; apps.conf   DB 목록으로 파일 전체를 만들고, 다르면 임시 파일 + rename
+설정 반영     nginx -s stop, 내려갈 때까지 기다림,  마지막으로 reload에 성공한 내용과 다르면
+             nginx                              nginx -t 후 nginx -s reload
+확인         없음                               새 경로가 200을 줄 때까지 최대 5초, 못 받으면 종료 코드 1
+
+변형 (idem.sh 환경변수)
+LOCK=0        flock 을 끈다
+APPLIED=file  "바뀌었나"를 이번 실행에서 파일을 고쳤는지로만 판단한다 (처음 짠 판)
+DRY_RUN=1     바꾸지 않고 diff 만 보여 준다</div>
+
+<p><code>check.sh</code>가 매 시행 뒤 상태를 셉니다. 중복 행, 같은 location 두 줄, DB에 있는데 200이 안 오는 경로, 설정에는 있는데 DB에 없는 경로를 더한 값을 <b>불일치</b>라고 불렀어요. nginx가 살아 있는지도 따로 봅니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ON CONFLICT DO NOTHING</div>
+  PostgreSQL의 INSERT 옵션이에요. 넣으려는 행이 UNIQUE 인덱스(또는 제약)에 걸리면 오류를 내는 대신 아무것도 하지 않고 넘어갑니다(PostgreSQL 문서, INSERT). 두 실행이 동시에 넣어도 행이 하나만 생기는 건 UNIQUE 인덱스 덕분이고, ON CONFLICT는 그때 둘째 실행이 오류로 멈추지 않게 해 줘요.
+</div>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/devops/auto-01-idempotent
+docker compose up -d --build
+./scripts/run_all.sh              # 실험 전부. 하나만: ./scripts/run_all.sh e2
+python3 scripts/summarize.py      # out/ -&gt; results/summary.md
+docker compose down -v</div>
+
+<p>이미지는 <code>nginx:1.29-alpine</code>(로그에 찍힌 버전은 nginx/1.29.8), <code>postgres:18.6-alpine</code>, <code>python:3.13-alpine</code>이고, Docker 29.5.3과 Compose v5.1.4(<code>docker --version</code>, <code>docker compose version</code> 출력), Apple M5 Pro(<code>sysctl -n machdep.cpu.brand_string</code> 출력)에서 돌렸어요. 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/auto-01-idempotent">labs/devops/auto-01-idempotent</a>에 있고, 요약은 <code>results/summary.md</code>, 시행별 원자료는 <code>out/</code>에 있습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 첫 실행은 초기화 단계에서 멈췄다</div>
+  처음 돌렸을 때 컨테이너가 뜬 지 7분(<code>docker ps</code>의 Up 7 minutes)이 지나도 첫 실험의 출력 파일이 비어 있었어요. 컨테이너 안의 <code>ps</code> 출력은 이랬습니다(그 실행은 버렸고, 이 출력은 실습 README의 "고친 것"에 옮겨 뒀어요).<br>
+  <code>PID 1 tail -f /dev/null</code> / <code>PID 8 [nginx] &lt;defunct&gt;</code><br>
+  nginx를 멈췄다 켜도 컨테이너가 살아 있도록 PID 1을 <code>tail</code>로 뒀는데, <code>tail</code>은 끝난 자식 프로세스를 거두지 않아요. 멈춘 nginx 마스터가 좀비로 남았고, "nginx가 내려갈 때까지 기다린다"는 <code>pgrep -x nginx</code> 루프가 그 좀비를 계속 찾아냈습니다. compose에 <code>init: true</code>를 넣어 좀비를 거두는 init(tini)을 PID 1로 두고 다시 돌렸어요. 프로세스가 사라졌는지를 이름으로 기다리는 스크립트는 좀비까지 셉니다.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 좀비 프로세스 (zombie)</div>
+  이미 끝났지만 부모가 종료 상태를 읽어 가지 않아 프로세스 표에 남아 있는 프로세스예요. <code>ps</code>에 <code>Z</code> 상태, <code>&lt;defunct&gt;</code>로 보입니다. 부모가 죽으면 PID 1이 넘겨받아 거두는데, PID 1이 그 일을 하지 않는 프로그램이면 계속 남아요.
+</div>
+
+<h2>2. 차례로 두 번: 둘 다 멀쩡했다</h2>
+
+<p>같은 고객사 <code>t1</code>을 차례로 두 번 등록했어요.</p>
+
+<div class="obsv-code">## naive 1회차   [naive] t1 done
+## naive 2회차   [naive] t1 already exists
+## naive 확인    rows=2 dup_rows=0 locations=2 dup_locations=0 missing_routes=0 orphan_routes=0 nginx_up=1 mismatch=0
+## idem 1회차    [idem] t1 ok (changed=1)
+## idem 2회차    [idem] t1 ok (changed=0)
+## idem 확인     rows=2 dup_rows=0 locations=2 dup_locations=0 missing_routes=0 orphan_routes=0 nginx_up=1 mismatch=0</div>
+
+<p>둘 다 불일치 0이에요. 3편이 말한 "그 좁은 경우에는 멱등해요"가 그대로 나왔습니다. 첫 실행이 끝까지 성공했고, 그 사이 아무도 끼어들지 않았으니까요. 차이는 출력 한 줄에만 있어요. naive는 "already exists"로 <b>멈췄고</b>, idem은 단계마다 확인한 뒤 바꿀 게 없다고(<code>changed=0</code>) <b>지나갔습니다</b>. 이 차이가 숫자로 드러나는 건 다음 세 경우예요.</p>
+
+<h2>3. 동시에 두 번: naive는 20번 모두 깨졌다</h2>
+
+<p>같은 고객사 <code>t1</code>을 한 셸에서 두 개 동시에 띄웠어요(<code>naive.sh t1 &amp; naive.sh t1 &amp; wait</code>). 변형마다 20번, 시행마다 처음 상태로 되돌린 뒤입니다.</p>
+
+<div class="obsv-code">같은 고객사 둘을 동시에, 20회씩     중복 행   중복 location   경로 누락   nginx 꺼진 채 끝남   불일치 합
+naive                              20/20     20/20          20/20       1/20               61
+idem LOCK=0 (잠금 끔)               0/20      0/20           0/20        0/20                0
+idem LOCK=1 (기본)                  0/20      0/20           0/20        0/20                0</div>
+
+<p>naive는 3편 4장의 타임라인을 20번 모두 재현했어요. 둘 다 SELECT에서 "없음"을 보고, 둘 다 INSERT하고, 둘 다 같은 줄을 덧붙였습니다. 그다음이 예상과 달랐어요.</p>
+
+<div class="obsv-code">nginx: [emerg] duplicate location "/t/t1/" in /etc/nginx/apps/apps.conf:3
+[naive] nginx -s stop rc=1
+[naive] 10초 기다려도 nginx 가 내려가지 않음
+nginx: [emerg] duplicate location "/t/t1/" in /etc/nginx/apps/apps.conf:3
+[naive] nginx 시작 실패</div>
+
+<p>→ 설정 파일에 같은 경로가 두 번 있어서, <b>멈추는 명령부터 실패</b>했다는 뜻이에요. <code>nginx -s stop</code>은 신호를 보내기 전에 설정 파일을 읽는데, 읽다가 중복 location을 만나 종료 코드 1로 끝났고 신호는 가지 않았습니다(소스 근거는 6장). nginx는 옛 설정으로 계속 돌았어요. 그래서 경로 누락이 20/20입니다. <code>t1</code>은 DB에 행이 둘이나 있는데 nginx는 <code>t1</code>을 모르고 404를 돌려줬어요.</p>
+
+<p>스크립트에는 "멈출 때까지 기다린다" 루프가 있었습니다. 처음 판에는 상한이 없어서, 멈추지 않는 nginx를 영원히 기다렸을 거예요. 이번 실습에서는 10초 상한을 넣었고, 40번의 실행 중 38번이 그 상한에 걸렸습니다. 절차서를 따르는 사람이라면 "stop 실패"를 보고 멈췄을 자리예요. 스크립트는 종료 코드를 보지 않고 다음 줄로 갔습니다.</p>
+
+<p>예외가 한 번 있었어요(11번째 시행). 한쪽의 <code>nginx -s stop</code>이 다른 쪽이 줄을 덧붙이기 <b>전에</b> 설정을 읽어 성공했고, 실제로 nginx가 멈췄습니다. 그런데 켜는 시점에는 이미 중복 줄이 들어가 있어서 둘 다 시작에 실패했어요. 시행이 끝났을 때 nginx가 꺼져 있었고, <code>base</code> 경로까지 응답하지 않아 불일치가 하나 더 붙었습니다(합 61). 3편 5장이 말한, 멈출 때와 켤 때 설정이 다르면 멈추기는 성공하고 켜기는 실패한다는 경우가 20번 중 이 한 번, 두 실행이 엇갈린 순간에 나온 거예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: nginx -s</div>
+  실행 중인 nginx 마스터 프로세스에 신호를 보내는 명령이에요. <code>stop</code>은 빠른 종료, <code>quit</code>은 우아한 종료, <code>reload</code>는 설정 다시 읽기입니다(nginx 문서, Beginner's Guide). 신호를 보내기 전에 설정 파일을 끝까지 읽고(파싱), 설정이 틀리면 신호 없이 종료 코드 1로 끝나요(6장의 소스 근거).
+</div>
+
+<h3>잠금을 빼도 불일치는 0이었다</h3>
+
+<p>idem은 잠금을 꺼도(<code>LOCK=0</code>) 20번 모두 불일치 0이었어요. 구조상 이 경우를 막은 건 flock이 아니라 아래 두 장치예요. 이 둘은 빼 보지 않았으니 코드를 읽고 내린 판단입니다.</p>
+
+<p><b>UNIQUE + ON CONFLICT</b>가 행을 하나로 지켰어요. 두 INSERT가 동시에 들어가도 하나는 아무것도 하지 않고 넘어갑니다. <b>전체 재생성</b>이 location을 하나로 지켰어요. 두 실행 모두 DB에서 목록을 다시 읽어 파일 전체를 쓰니, 늦게 쓴 쪽도 같은 내용을 씁니다. 줄을 덧붙이는 동작이 없으니 줄이 둘이 될 수 없어요.</p>
+
+<p>잠금을 껐을 때 남은 흔적은 출력에 있었어요. 40번의 실행이 전부 <code>changed=1</code>을 찍었습니다. 시행마다 reload가 두 번 일어났다는 뜻이에요. 잠금을 켜면 20번 모두 한쪽이 "다른 실행이 진행 중이라 종료"(종료 코드 75)로 바로 빠졌고, reload는 한 번이었습니다.</p>
+
+<p>잠금이 꼭 필요한 경우를 만들려고, 이번에는 <b>서로 다른</b> 고객사 <code>t1</code>과 <code>t2</code>를 동시에 등록해 봤어요. 한쪽이 상대의 INSERT 전에 목록을 읽으면, 늦게 rename한 쪽이 상대 경로가 빠진 파일로 덮어쓸 수 있습니다.</p>
+
+<div class="obsv-code">다른 고객사 둘(t1, t2)을 동시에, 20회씩   불일치 합   출력
+naive                                  0          20/20 시행에서 한쪽이 "nginx 시작 실패" (종료 코드 1)
+                                                  12/20 시행에서 한쪽이 10초 대기 상한에 걸림
+idem LOCK=0                            0          40번 모두 ok, changed=1
+idem LOCK=1                            0          20/20 시행에서 한쪽이 종료 코드 75로 빠짐 (등록 안 됨)</div>
+
+<p>20번으로는 그 덮어쓰기가 한 번도 나오지 않았어요. 두 실행 모두 INSERT를 먼저 하고 목록을 읽기 때문에, 목록을 읽는 시점에는 대개 두 행이 다 들어가 있었을 거예요(읽은 시점은 재지 않았어요). 틈이 없다는 뜻이 아니라 이 환경에서 20번 안에 걸릴 만큼 넓지 않았다는 뜻이에요. 그래서 이 실습에서 flock이 막았다고 말할 수 있는 건 "reload 두 번"까지입니다.</p>
+
+<p>다른 두 줄이 더 눈에 띄었어요. naive는 최종 상태가 20번 모두 맞았는데도 <b>20번 모두 한쪽이 실패로 끝났습니다</b>. 20번 중 12번은 한쪽이 "아직 안 내려감"으로 10초를 기다리다 상한에 걸렸고, 20번 모두 그 한쪽이 결국 시작 단계에서 실패했어요. 다른 쪽이 멈췄다 켠 nginx가 이미 돌고 있었기 때문으로 보여요. 실패가 아닌데 실패를 보고하는 스크립트는, 다음에 진짜 실패했을 때 아무도 믿지 않게 됩니다. idem의 잠금은 반대 방향의 대가를 냈어요. 잠금을 켜면 20번 모두 <code>t2</code>나 <code>t1</code> 중 하나가 <b>등록되지 않고</b> 75로 끝났습니다. 불일치 0은 "남은 상태가 앞뒤가 맞다"는 뜻일 뿐이고, 등록 요청 하나는 호출한 쪽이 다시 시도해야 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; <code>flock -n</code>으로 빠지는 스크립트는 "다른 실행 중"을 실패와 다른 종료 코드로 돌려주고, 호출하는 쪽(CI, 작업 큐)이 그 코드를 보고 다시 시도하게 합니다. 이번에는 75(<code>EX_TEMPFAIL</code>, 임시 실패)를 썼어요<br>
+  &bull; 기다리지 않고 순서대로 처리해야 하면 <code>-n</code> 대신 <code>-w 30</code>처럼 상한이 있는 대기를 씁니다
+</div>
+
+<h2>4. 단계마다 죽였다 다시 돌리면</h2>
+
+<p>스크립트가 정해진 지점에서 스스로 <code>kill -9</code>하게 하고(<code>CRASH_AT</code>), 바로 같은 명령을 한 번 더 돌렸어요. 3편 서두에서 VPN이 끊긴 뒤 다시 친 명령이에요.</p>
+
+<div class="obsv-code">변형            끊은 지점        끊긴 직후   다시 돌린 뒤   다시 돌린 결과
+naive           DB 행 뒤          1          1            "t1 already exists"  (경로 영영 없음)
+naive           설정 파일 뒤      1          1            "t1 already exists"  (파일엔 있고 nginx는 모름)
+APPLIED=file    DB 행 뒤          1          0            ok (changed=1)
+APPLIED=file    설정 파일 뒤      1          1            확인 실패: /t/t1/ 가 404  (종료 코드 1)
+APPLIED=file    reload 뒤         0          0            ok (changed=0)
+APPLIED=marker  DB 행 뒤          1          0            ok (changed=1)
+APPLIED=marker  설정 파일 뒤      1          0            ok (changed=1)
+APPLIED=marker  reload 뒤         0          0            ok (changed=0)
+(APPLIED=file, APPLIED=marker 는 idem.sh 의 변형. marker 가 기본값)
+(숫자는 불일치. 1 = t1 경로가 200을 주지 않음)</div>
+
+<p>naive는 어디서 끊기든 다시 돌려도 고쳐지지 않았어요. 맨 앞의 SELECT가 행을 보고 "이미 있음"으로 끝내니 남은 단계가 돌 기회가 없습니다. 설정 파일 뒤에서 끊긴 경우가 더 나빠요. 파일에는 경로가 있으니 파일을 열어 본 사람은 "등록됐네"라고 판단하는데, nginx는 그 파일을 다시 읽은 적이 없습니다.</p>
+
+<p>이 표에서 구분해야 할 게 하나 있어요. <a href="#auto-03">3편</a> 2장의 표는 설정 반영을 "마지막으로 반영에 성공한 내용과 다를 때만 <code>nginx -t</code>로 검사 후 reload"라고 적었습니다. "다를 때"를 그 기록 대신 <b>이번 실행에서 파일을 고쳤는가</b>로 판단한 것이 <code>APPLIED=file</code> 변형이에요. 이 변형은 설정 파일 뒤에서 끊기면 다시 돌려도 파일이 이미 원하는 내용이라 <code>changed=0</code>이 되고, reload를 건너뜁니다. 3편 3장이 경고한, 파일만 보고 "이미 맞음"이라고 판단하는 함정 그대로예요. 기본값은 <b>마지막으로 reload에 성공했을 때 적어 둔 해시</b>(<code>/run/apps.applied</code>)와 비교하는 <code>APPLIED=marker</code>이고, 이쪽은 세 지점 모두 다시 돌리기만으로 복구됐습니다. 다만 이것도 돌고 있는 설정을 직접 읽은 값이 아니라 기록이에요. 누군가 손으로 reload하거나 nginx를 다시 띄우면 실제와 어긋날 수 있고, 3편 3장이 체크포인트에 대해 한 경고가 여기에도 적용됩니다.</p>
+
+<p><code>APPLIED=file</code>이 복구는 못 했지만 거짓말은 하지 않았다는 점도 봐 둘 만해요. 마지막 단계의 200 확인이 404를 잡아 종료 코드 1로 끝났습니다. naive는 같은 상태에서 종료 코드 0이었어요. 고치지 못하는 스크립트와, 고치지 못했다고 말하는 스크립트는 다릅니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="200" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">DB 행 뒤</text>
+  <text x="360" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">설정 파일 뒤</text>
+  <text x="520" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">reload 뒤</text>
+  <text x="640" y="34" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">(끊긴 지점)</text>
+  <path d="M30 50 C 250 48, 450 52, 680 49" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8"/>
+  <text x="30" y="90" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">naive</text>
+  <path d="M140 66 C 180 64, 220 68, 260 65 C 262 80, 261 96, 260 108 C 220 110, 180 107, 142 109 C 139 96, 140 80, 140 66 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+  <text x="200" y="93" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">✘ already exists</text>
+  <path d="M300 66 C 340 64, 380 68, 420 65 C 422 80, 421 96, 420 108 C 380 110, 340 107, 302 109 C 299 96, 300 80, 300 66 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+  <text x="360" y="93" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">✘ already exists</text>
+  <text x="520" y="93" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">(지점 없음)</text>
+  <text x="30" y="152" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">APPLIED</text>
+  <text x="30" y="172" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">=file</text>
+  <path d="M140 136 C 180 134, 220 138, 260 135 C 262 150, 261 166, 260 178 C 220 180, 180 177, 142 179 C 139 166, 140 150, 140 136 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+  <text x="200" y="163" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">✔ 복구</text>
+  <path d="M300 136 C 340 134, 380 138, 420 135 C 422 150, 421 166, 420 178 C 380 180, 340 177, 302 179 C 299 166, 300 150, 300 136 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
+  <text x="360" y="155" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">✘ reload 건너뜀</text>
+  <text x="360" y="173" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18">404 잡고 종료 코드 1</text>
+  <path d="M460 136 C 500 134, 540 138, 580 135 C 582 150, 581 166, 580 178 C 540 180, 500 177, 462 179 C 459 166, 460 150, 460 136 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+  <text x="520" y="163" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">✔ 이미 맞음</text>
+  <text x="30" y="222" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">APPLIED</text>
+  <text x="30" y="242" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">=marker</text>
+  <path d="M140 206 C 180 204, 220 208, 260 205 C 262 220, 261 236, 260 248 C 220 250, 180 247, 142 249 C 139 236, 140 220, 140 206 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+  <text x="200" y="233" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">✔ 복구</text>
+  <path d="M300 206 C 340 204, 380 208, 420 205 C 422 220, 421 236, 420 248 C 380 250, 340 247, 302 249 C 299 236, 300 220, 300 206 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+  <text x="360" y="233" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">✔ 복구</text>
+  <path d="M460 206 C 500 204, 540 208, 580 205 C 582 220, 581 236, 580 248 C 540 250, 500 247, 462 249 C 459 236, 460 220, 460 206 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+  <text x="520" y="233" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">✔ 이미 맞음</text>
+  <text x="350" y="280" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">"바뀌었나"를 파일끼리가 아니라 마지막 reload 성공 기록과 비교해야 다시 돌리기가 복구가 된다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 끊긴 뒤 같은 명령을 한 번 더. 무엇과 비교해 "이미 맞음"을 판단하느냐가 결과를 갈랐다</div>
+
+<h2>5. 부하 중 반영: 멈췄다 켜면 처리 중이던 요청이 끊긴다</h2>
+
+<p>부하기를 20초 돌리고, 8초째에 새 고객사를 등록했어요. 부하는 초당 100건의 빠른 요청(요청마다 새 연결)과, 늘 4개씩 동시에 처리 중인 1초짜리 요청입니다. naive(stop 후 start)와 idem(reload)을 각각 5번 돌렸어요.</p>
+
+<div class="obsv-code">                       시행   빠른 요청 실패          처리 중이던 1초 요청    반영에 걸린 시간
+naive (stop -&gt; start)   5     6, 5, 5, 6, 8 / 2000    5번 모두 4개 중 4개 끊김   0.074 ~ 0.097초
+idem  (reload)          5     0 / 2000 (5번 모두)      0 / 80 (5번 모두)         0.140 ~ 0.249초
+
+naive 실패 종류 (빠른 요청 30건)   ConnectionResetError 25, ConnectionRefusedError 5
+                (1초 요청)       반영 직전 0.73 ~ 0.78초에 시작한 4개가 RemoteDisconnected</div>
+
+<p>naive가 nginx를 멈췄다 켜는 데는 0.1초도 걸리지 않았어요. 그 짧은 사이에 빠른 요청이 시행마다 5~8건 실패했습니다. 대부분은 연결이 맺어진 직후 끊긴 경우(ConnectionReset)였고, 아예 연결을 거부당한 경우는 시행마다 0~2건이었어요. 더 확실한 피해는 1초 요청 쪽이었습니다. 반영 순간 처리 중이던 4개가 다섯 번 모두 예외 없이 끊겼어요. <code>nginx -s stop</code>은 빠른 종료라 처리 중인 요청을 기다리지 않습니다.</p>
+
+<p>1초 요청의 실패 수는 표에 넣지 않았어요. 부하기의 1초 요청 루프는 실패하면 곧바로 다음 요청을 보내서, 연결이 거부되는 동안에는 같은 0.01초 안에 수십 번 실패를 셉니다. 원자료에서 연결 거부로 센 수(시행마다 20~109건)는 피해 크기가 아니라 재시도 속도를 보여 줘요. 그래서 "처리 중이던 요청 중 몇 개가 끊겼나"만 셌습니다.</p>
+
+<p>idem은 reload에 0.14~0.25초가 걸렸지만 다섯 번 모두 한 건도 잃지 않았어요(앞의 시간에는 DB 조회와 200 확인이 들어 있습니다). <span class="obsv-mark">반영이 더 오래 걸린 쪽이 손실 0이었습니다.</span> 3편 5장의 설명대로 옛 워커가 붙어 있던 요청을 끝까지 처리하고, 새 연결은 새 워커가 받았어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="30" y="34" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">naive: nginx -s stop &#8594; nginx</text>
+  <path d="M40 66 C 150 65, 220 67, 300 66" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M308 66 C 318 67, 326 65, 336 66" fill="none" stroke="#e5533c" stroke-width="7" stroke-linecap="round"/>
+  <path d="M344 66 C 450 65, 560 67, 660 66" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <path d="M110 92 C 200 91, 260 93, 318 92" fill="none" stroke="#4a7fb5" stroke-width="4" stroke-linecap="round"/>
+  <text x="322" y="98" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#e5533c">✘</text>
+  <text x="110" y="118" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">0.75초 전에 시작한 1초 요청 4개</text>
+  <text x="380" y="98" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">0.07~0.10초 공백</text>
+  <text x="380" y="120" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">빠른 요청 5~8건 실패, 1초 요청 4/4 끊김</text>
+  <path d="M40 146 C 300 144, 450 148, 660 145" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="30" y="178" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">idem: nginx -t &#8594; nginx -s reload</text>
+  <path d="M40 204 C 150 203, 240 205, 330 204" fill="none" stroke="#4a7fb5" stroke-width="6" stroke-linecap="round"/>
+  <path d="M330 204 C 370 205, 400 203, 430 204" fill="none" stroke="#4a7fb5" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 6"/>
+  <text x="180" y="194" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">옛 워커</text>
+  <text x="400" y="194" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">남은 요청 마무리</text>
+  <path d="M320 230 C 430 229, 550 231, 660 230" fill="none" stroke="#5a9e6f" stroke-width="6" stroke-linecap="round"/>
+  <text x="560" y="220" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">새 워커가 새 연결</text>
+  <text x="350" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">5번씩: stop/start는 빠른 요청 30건 + 처리 중 요청 20개를 잃고, reload는 0건</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 공백은 0.1초가 안 됐지만, 그 순간 처리 중이던 요청은 하나도 남지 않았다</div>
+
+<p>등록 한 번에 빠른 요청 6건과 처리 중이던 요청 4개예요. <a href="#auto-01">1편</a>의 팀처럼 등록이 한 달에 스무 번이면, 이번 부하기 설정(초당 100건, 1초 요청 4개)과 프록시 한 대 기준으로 한 달에 빠른 요청 약 120건(시행 평균 6.0건 x 20)과 처리 중 요청 80개를 잃는 셈입니다. 1편의 팀은 프록시가 네 대라 그 기준과는 또 달라요. 3편이 "자동화는 그 멈춤을 반영 횟수만큼 곱한다"고 한 곱셈이에요.</p>
+
+<h2>6. 틀린 설정을 반영하면: stop은 실패했고, kill은 nginx를 내렸다</h2>
+
+<p>3편 5장은 멈출 때와 켤 때 설정이 다르면 꺼진 채 남을 수 있고, 어느 쪽이 실패하는지는 멈추는 방법에 달렸다고 정리했어요. 3장에서는 <code>nginx -s stop</code>이 먼저 실패했습니다. 이걸 따로 확인하려고, 부하를 건 채 설정에 중복 location 한 줄을 넣고 세 가지 방법으로 반영해 봤어요.</p>
+
+<div class="obsv-code">중복 location을 넣고 반영       멈추기         켜기/reload    반영 뒤 nginx    빠른 요청 실패
+nginx -s stop -&gt; nginx          종료 코드 1    종료 코드 1    옛 설정으로 돎     0 / 2000
+                               (10초 대기 상한에 걸림)
+kill -TERM &lt;마스터&gt; -&gt; nginx     종료 코드 0    종료 코드 1    꺼짐              1223 / 2000
+nginx -s reload                 (해당 없음)    종료 코드 1    옛 설정으로 돎     0 / 2000
+("켜기"는 nginx 명령. 첫 줄의 둘째 종료 코드 1은 옛 nginx가 그대로 떠 있고 설정도 틀린 상태에서 다시 켜려다 난 실패)
+
+nginx: [emerg] duplicate location "/t/base/" in /etc/nginx/apps/apps.conf:2</div>
+
+<p>→ 중복 location 오류는 설정을 <b>읽는 단계</b>에서 나요. <code>nginx -s stop</code>과 <code>nginx -s reload</code>는 둘 다 신호를 보내기 전에 설정을 읽어서, 둘 다 신호를 보내지 않고 종료 코드 1로 끝났습니다. nginx는 아무 일 없다는 듯 옛 설정으로 돌았고, 요청은 한 건도 실패하지 않았어요. nginx 1.29.8 소스로 보면 <code>src/core/nginx.c</code>의 <code>main()</code>은 설정을 읽는 <code>ngx_init_cycle</code>을 먼저 부르고 실패하면 바로 1을 돌려주며(293~300행), 신호를 보내는 <code>ngx_signal_process</code>는 그 뒤에 있어요(329~330행). 그래서 <code>-s</code>로 보내는 명령은 설정이 틀리면 어떤 신호도 보내지 못합니다.</p>
+
+<p>멈추기는 성공하고 켜기는 실패하는 순서가 나온 건 설정을 읽지 않고 멈추는 쪽이었습니다. 마스터 프로세스에 <code>kill -TERM</code>을 직접 보내면 nginx는 설정과 상관없이 멈추고, 켜는 <code>nginx</code>가 중복 location에서 실패해요. 부하기가 끝날 때까지 약 12초 동안 nginx가 없었고, 그사이 빠른 요청 2,000건 중 1,223건이 실패했습니다. 서비스 관리자가 프로세스에 신호를 보내 멈추는 구성이라면 이쪽이 됩니다. 3장의 11번째 시행도 같은 모양이었어요. 멈출 때는 설정이 맞았고 켤 때는 틀려 있었습니다.</p>
+
+<p>정리하면 stop/start의 위험은 "틀린 설정에서 켜기가 실패한다"보다 넓어요. <b>멈추는 시점과 켜는 시점에 설정이 같다는 보장이 없으면</b> 꺼진 채 남을 수 있습니다. reload는 같은 시점에 검사하고 적용하니 그 틈이 없어요.</p>
+
+<h3>reload가 0으로 끝나고 실패한 경우</h3>
+
+<p>3편 5장은 "reload가 실패해도 명령 자체는 신호를 보내는 데 성공했다고 끝나는 경우가 있다"고도 했어요. 중복 location에서는 reload가 종료 코드 1로 실패를 알렸으니 그 경우가 아닙니다. 그래서 읽는 단계는 통과하고 <b>적용하는 단계</b>에서 실패하는 설정을 만들었어요. 이 컨테이너에 없는 문서용 주소 <code>192.0.2.1:81</code>에 listen하는 server 블록입니다.</p>
+
+<div class="obsv-code">## nginx -t
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: [emerg] bind() to 192.0.2.1:81 failed (99: Address not available)
+nginx: configuration file /etc/nginx/nginx.conf test failed
+t_rc=1
+## nginx -s reload
+[notice] 61538#61538: signal 1 (SIGHUP) received from 61561, reconfiguring
+reload_rc=0
+workers_replaced=0
+healthz=200
+## 마스터의 오류 로그 (out/e3c-bind.txt 에서 줄임)
+[emerg] 61538#61538: bind() to 192.0.2.1:81 failed (99: Address not available)
+[emerg] 61538#61538: bind() to 192.0.2.1:81 failed (99: Address not available)</div>
+
+<p>→ <code>nginx -s reload</code>는 설정을 파싱만 하고 소켓은 열어 보지 않은 채 신호를 보낸 뒤 <b>종료 코드 0</b>으로 끝났어요. 신호를 받은 마스터가 새 설정을 적용하다 소켓을 열지 못했고, 오류는 마스터의 로그에만 남았습니다. 워커는 바뀌지 않았고 옛 설정으로 계속 응답했어요. 3편의 문장이 맞는 경우는 이쪽입니다. 그리고 <code>nginx -t</code>는 이 오류도 잡았어요. "syntax is ok" 다음 줄에서 bind 실패를 내고 종료 코드 1로 끝났습니다. 소스도 이렇게 갈려요. <code>src/core/ngx_cycle.c</code>의 <code>ngx_init_cycle</code>은 <code>-s</code>로 띄운 신호 프로세스라면 파싱 직후 돌아가고(314행 <code>if (ngx_process == NGX_PROCESS_SIGNALLER) return cycle;</code>), <code>nginx -t</code>는 630행의 <code>ngx_open_listening_sockets</code>까지 가서 bind를 해 봐요. 마스터는 새 설정이 실패하면 옛 설정을 그대로 씁니다(<code>src/os/unix/ngx_process_cycle.c</code> 225~228행). <span class="obsv-mark">reload의 종료 코드는 "신호를 보냈다"까지만 말해 줘요.</span> 반영 전의 <code>nginx -t</code>와 반영 뒤의 200 확인이 둘 다 필요한 이유입니다.</p>
+
+<h2>7. 드라이런과 빈 목록</h2>
+
+<p>마지막으로 3편 6장의 두 주장을 짧게 확인했어요.</p>
+
+<div class="obsv-code">## DRY_RUN=1 idem.sh t1
+[dry-run] DB: INSERT t1
+[dry-run] @@ -1 +1,2 @@
+[dry-run]  location /t/base/ { proxy_pass http://app:8080/; }
+[dry-run] +location /t/t1/ { proxy_pass http://app:8080/; }
+## 드라이런 뒤 상태     rows=1 locations=1 mismatch=0
+
+## DB 조회가 실패해 빈 목록을 받는 경우 (PGDATABASE=nope)
+psql: error: ... FATAL:  database "nope" does not exist
+[idem] DB 에서 고객사 목록을 못 읽었다. 멈춤
+rc=2
+## 그 뒤 상태          rows=1 locations=1 mismatch=0</div>
+
+<p>드라이런은 바뀔 내용을 diff로 보여 주고 아무것도 바꾸지 않았어요. DB 조회가 실패했을 때는 목록이 비었다는 걸 알아채고 설정 파일을 건드리지 않은 채 종료 코드 2로 멈췄습니다. 이 확인이 없었다면 빈 목록으로 경로가 하나도 없는 파일을 만들었을 거예요. 경로 수가 절반 아래로 줄면 멈추는 두 번째 안전장치도 스크립트에 있지만, 이번에는 첫 번째 확인에서 먼저 멈춰서 그 장치까지 가지 않았습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 절차서를 옮긴 스크립트는 같은 입력으로 동시에 두 번 돌려 보는 시험을 먼저 해 봅니다. 이번 실습에서 naive는 20번 중 20번 깨졌어요<br>
+  &bull; DB 행은 UNIQUE + ON CONFLICT로, 설정 파일은 전체 재생성으로 지킵니다. 이번 실습에서는 잠금 없이도 이 둘이 불일치를 0으로 막았어요<br>
+  &bull; "바뀌었나"는 파일끼리가 아니라 마지막으로 반영에 성공한 내용과 비교합니다. 파일끼리 비교한 판은 설정 파일 뒤에서 끊기면 다시 돌려도 복구되지 않았어요<br>
+  &bull; 설정 반영은 <code>nginx -t</code> 후 reload, 그리고 새 경로의 200 확인으로 끝냅니다. reload의 종료 코드 0은 성공을 뜻하지 않았어요<br>
+  &bull; stop/start를 꼭 써야 하면 각 명령의 종료 코드를 확인하고, 기다리는 루프에는 상한을 둡니다. 컨테이너 안이라면 PID 1이 좀비를 거두는지도 봐요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>차례로 두 번 돌리면 두 스크립트 모두 멀쩡했어요. 차이는 동시에, 끊긴 뒤에, 부하 중에 나왔습니다.</b> 같은 고객사를 동시에 두 번 등록하자 절차서 그대로인 스크립트는 20번 모두 중복 행, 중복 경로, 응답 없는 경로를 남겼고, 수렴형은 잠금을 꺼도 0이었어요. 단계마다 죽인 뒤 다시 돌리면 절차서 판은 한 번도 복구되지 않았고, 수렴형은 "바뀌었나"를 마지막으로 reload에 성공한 내용의 기록과 비교할 때만 세 지점 모두 복구됐어요. 부하 중 stop/start는 반영 한 번에 빠른 요청 5~8건과 처리 중이던 요청 4개를 잃었고, reload는 0건이었어요.<br><br>
+  틀린 설정에서는 <code>nginx -s stop</code>이 먼저 실패해 nginx가 옛 설정으로 남았고, 설정을 읽지 않는 <code>kill</code>로 멈추면 nginx가 꺼진 채 1,223건이 실패했어요. 적용 단계에서 실패하는 설정은 reload가 종료 코드 0으로 끝났고 <code>nginx -t</code>만 잡았어요. 스크립트를 믿게 만드는 건 명령의 종료 코드가 아니라 반영 전의 검사와 반영 뒤의 확인이에요.
+</div>
+
+</div>

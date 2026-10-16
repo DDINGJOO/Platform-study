@@ -1,0 +1,80 @@
+# 트러블슈팅 실습-3: 정상 구간과 장애 구간의 로그를 템플릿으로 묶어 비교한다.
+# 같은 이미지의 인스턴스 둘(app-healthy, app-broken)이 shop-src 의 로그 문장을 찍는다.
+# 앞 NORMAL_SECONDS 동안은 둘 다 평소대로, 뒤 INCIDENT_SECONDS 동안은 app-broken 만 장애 문장을 섞는다.
+# Alloy 가 도커 로그를 읽어 Loki 로 보내고, Loki 의 pattern ingester 가 패턴을 뽑는다.
+x-app: &app
+  build: ./app
+  image: obs-lab/ts-03-log-templates:dev
+  mem_limit: 128m
+  volumes:
+    - ./shop-src:/src:ro
+    - ./out:/out
+  environment: &app-env
+    TZ: UTC
+    RATE: ${RATE:-85}
+    NORMAL_SECONDS: ${NORMAL_SECONDS:-300}
+    INCIDENT_SECONDS: ${INCIDENT_SECONDS:-300}
+    SPRING_PROFILES_ACTIVE: prod
+    JAVA_TOOL_OPTIONS: -Xmx256m
+    SERVER_PORT: "8080"
+    DB_URL: jdbc:postgresql://db:5432/shop
+    DB_POOL_MAX: "50"
+    ADDRESS_SERVICE_URL: http://address:8080
+    ADDRESS_TIMEOUT_MS: "800"
+    PAYMENT_GATEWAY_URL: http://pg:8080
+    FEATURE_NEW_CHECKOUT: "true"
+    LOG_LEVEL: INFO
+
+services:
+  app-healthy:
+    <<: *app
+    volumes:
+      - ./shop-src:/src:ro
+      - ./out:/out
+      - ./config/healthy.yaml:/config/application.yaml:ro
+    environment:
+      <<: *app-env
+      INSTANCE: app-healthy
+      INSTANCE_ID: shop-7d9f-a1
+      SEED: "1"
+      FAULT: "0"
+
+  app-broken:
+    <<: *app
+    volumes:
+      - ./shop-src:/src:ro
+      - ./out:/out
+      - ./config/broken.yaml:/config/application.yaml:ro
+    environment:
+      <<: *app-env
+      INSTANCE: app-broken
+      INSTANCE_ID: shop-7d9f-b2
+      SEED: "2"
+      FAULT: "1"
+      DB_POOL_MAX: "10"
+      ADDRESS_SERVICE_URL: http://address-legacy:8080
+      ADDRESS_TIMEOUT_MS: "5000"
+
+  loki:
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki.yaml:/etc/loki/loki.yaml:ro
+    ports: ["${LOKI_PORT:-35100}:3100"]
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
+    volumes:
+      - ./alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports: ["${GRAFANA_PORT:-35000}:3000"]

@@ -178,7 +178,7 @@ IaC 작업일지에서 "코드 밖에 있는 자원을 어떻게 찾나"를 계�
 | 3 관찰 가능성과 디버깅 | 씀 | `tracing-debugging/` |
 | 4 차트와 경고 | 씀. 4.8.3 USL 은 식만 지나감 | 1차 `slo-alerting/` |
 | 5 멀티 클라우드와 지속적 전달의 안전성 | 씀(2026-10-11, 개념 4 + 실습 3) | 2차 `delivery-safety/` |
-| 6 소스 코드 관찰 가능성 | 쓰는 중 | 3차 `DevOps/code-observability/` |
+| 6 소스 코드 관찰 가능성 | 씀(개념 4 + 실습 4) | 3차 `DevOps/code-observability/` |
 | 7 트래픽 관리 | 씀(개념 7 + 실습 7) | `traffic-management/` |
 
 ## 책2 진도 (거의 시작 전)
@@ -186,9 +186,9 @@ IaC 작업일지에서 "코드 밖에 있는 자원을 어떻게 찾나"를 계�
 | 장 | 상태 | 어디에 |
 |---|---|---|
 | 1 SRE 직무, 3 임시방편 아키텍처와 스파게티 코드 | 안 씀 | 4차 `platform-culture/` |
-| 2 신뢰성 통계 | 쓰는 중(`slo-alerting/` 4편에 일부) | 3차 `reliability-design/` |
+| 2 신뢰성 통계 | 씀(`reliability-design/` 1~3편, 실습-1·2) | 3차 `reliability-design/` |
 | 4 메트릭·이벤트·로그·트레이스 | 책1과 겹쳐 사실상 다룸 | 쓰지 않음 |
-| 5 트러블슈팅, 7 관측 데이터 과학, 8 신뢰성 아키텍처, 9 단순 반복 작업 자동화 | 7·8장 쓰는 중, 5·9장 2진 대기 | 3차 `reliability-design/`(7·8), `troubleshooting/`(5, 7장 의사 결정), `DevOps/toil-automation/`(9) |
+| 5 트러블슈팅, 7 관측 데이터 과학, 8 신뢰성 아키텍처, 9 단순 반복 작업 자동화 | 씀(2026-10-16) | 3차 `reliability-design/`(7·8), `troubleshooting/`(5, 7장 의사 결정), `DevOps/toil-automation/`(9) |
 | 10 깃옵스·파이프라인 | 씀(배포 안전성 4편·실습-3) | 2차 `delivery-safety/` 에 합침 |
 | 12 테스트 전략과 용량 설계 | 안 씀 | 1차 `slo-alerting/`(용량 설계) |
 | 13 운영 절차서와 저소음 알람, 14 장애 관리, 15 사후 분석, 16 카오스 | 씀(장애 대응 개념 5 + 실습 3) | 2차 `incident-response/` |
@@ -200,7 +200,7 @@ IaC 작업일지에서 "코드 밖에 있는 자원을 어떻게 찾나"를 계�
 |---|---|---|
 | **1차** | 기존 시리즈 보강: 조율된 누락(A-2), 색각 이상 대시보드(A-4) → `aggregation/` · USL과 용량 설계(A-3, 책2 12장) → `slo-alerting/` · 1·5·15분의 기원(A-1) → `metrics-pipeline/` | 2026-10-11 작성·퇴고·감사 완료(9편). 개념 4편 두 곳(메트릭 수집 4편 EWMA 복원, SLO와 경고 4편 USL 역추론)을 실습대로 고침 |
 | 2차 | 새 시리즈 `posts/CS/DevOps/delivery-safety/`(책1 5장 + 책2 10장), `posts/CS/DevOps/incident-response/`(책2 13~16장) | 배포 안전성 7편(개념 4 + 실습 3, 코드 `labs/devops/`) 2026-10-11 작성·퇴고·감사 완료. 장애 대응 8편(개념 5 + 실습 3, 코드 `labs/devops/ir-0*`) 2026-10-12 작성·퇴고·감사 완료. 카테고리 `DevOps/Delivery Safety`, `DevOps/Incident Response`는 티스토리에 만들어 둠 |
-| 3차 | 새 시리즈 넷: `DevOps/code-observability/`(책1 6장), `Observability/reliability-design/`(책2 2·7·8장), `Observability/troubleshooting/`(책2 5장·7장 일부), `DevOps/toil-automation/`(책2 9장). 28편(개념 15 + 실습 13) | 2026-10-12 1진(소스 코드 관찰 8편, 신뢰성 설계 9편) 작성 중. 2진(트러블슈팅 6편, 운영 자동화 5편) 대기. 카테고리 DevOps/Code Observability, DevOps/Automation, Observability/Reliability Design, Observability/Troubleshooting 은 사용자가 만듦 |
+| 3차 | 새 시리즈 넷: `DevOps/code-observability/`(책1 6장), `Observability/reliability-design/`(책2 2·7·8장), `Observability/troubleshooting/`(책2 5장·7장 일부), `DevOps/toil-automation/`(책2 9장). 28편(개념 15 + 실습 13) | 2026-10-16 전부 작성·감사 완료. 소스 코드 관찰 8편(먼저 업로드), 신뢰성 설계 9편(개념 5 + 실습 4), 트러블슈팅 6편(개념 3 + 실습 3), 운영 자동화 5편(개념 3 + 실습 2). 실습이 개념 글을 고친 곳: 트러블슈팅 1편(M/M/1 표는 무작위 도착 가정, 균등 도착이면 수직으로 꺾임)·3편(템플릿→소스 검색은 한 번에 안 닿음, 마스킹은 값을 지우고 검색을 도움), 운영 자동화 3편(`nginx -s stop`은 설정을 먼저 파싱해 멈추기부터 실패, 적용 단계 오류만 reload exit 0, Alertmanager 기본값은 한 번 돌고 멈춤) |
 | 4차 | 새 시리즈 `platform-culture/`(책1 1장 + 책2 1·3장) | 대기 |
 
 **번호 규칙 보강**: 실습이 붙은 시리즈에 개념 글을 더할 때는 파일 앞 번호를 이어 붙인다(`07_4편 - …`).

@@ -1,0 +1,327 @@
+<!-- lead: 타임아웃이 시작되기 직전의 배포를 되돌렸는데 아무것도 나아지지 않았어요. 원인과 증상 사이의 지연, 직전 변경 오귀인, Grafana annotation으로 변경을 겹쳐 보기, 반증할 수 있는 예측을 적는 법을 정리했어요. -->
+<!-- tags: 트러블슈팅, 원인 분석, post hoc, Grafana annotation, 가설 검증 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔦 트러블슈팅, 1편</div>
+  <b>1편. 증상은 원인보다 늦게 도착한다</b> &larr; 지금 이 글<br>
+  2편. 반으로 나누는 디버깅은 시험이 정직할 때만 빠르다<br>
+  3편. 정상인 것과 나란히 놓는 것이 가장 싼 첫 수다<br>
+  실습-1. 쿼리 하나를 바꾸고 증상이 나타나기까지 몇 분 걸리는지 잰다<br>
+  실습-2. git bisect가 회귀 커밋을 몇 번 만에 찾는지 센다<br>
+  실습-3. 정상 구간과 장애 구간의 로그를 템플릿으로 묶어 비교한다
+</div>
+
+<p>오후 2시 40분, 주문 조회 API에서 타임아웃이 나기 시작합니다. 대시보드를 열어 보니 2시 25분에 배포가 하나 있었어요. 화면 상단 배너 문구를 바꾸는 설정 변경이었습니다. 증상 15분 전의 변경이니 누구라도 그걸 먼저 의심해요. 되돌립니다. 5분을 기다려도 타임아웃은 줄지 않아요.</p>
+
+<p>원인은 오후 1시에 나간 다른 배포에 있었습니다. 조회 쿼리를 조금 고쳤는데, 그 바람에 인덱스를 타지 못하고 테이블 전체를 읽게 됐어요. 배포 직후에는 테이블이 작아서 아무 일도 없었습니다. 주문이 쌓이면서 한 번 조회할 때 읽는 행이 조금씩 늘었고, 1시간 40분 뒤에 DB가 감당할 수 있는 선을 넘었어요. <b>원인은 1시에 이미 들어와 있었고, 증상이 도착한 건 2시 40분이었습니다.</b></p>
+
+<p>이 시리즈는 증상에서 원인으로 가는 길을 다룹니다. 1편은 시간 축을 봐요. 2편은 범위를 반씩 줄이는 법을, 3편은 정상인 것과 나란히 놓고 차이를 찾는 법을 다루고, 실습 세 편에서 그 주장을 실제로 돌려 확인합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 제보로 들어온 문제는 왜 실제보다 커져 있나?<br>
+  &bull; 원인과 증상 사이에 시간이 벌어지는 건 어떤 장애인가?<br>
+  &bull; "직전 변경"을 의심하는 습관은 언제 맞고 언제 틀리나?<br>
+  &bull; 변경 이력을 지표 위에 겹치면 무엇이 달라지나?<br>
+  &bull; 가설을 세울 때 예측을 어떻게 적어야 실험이 무언가를 가르쳐 주나?
+</div>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 문제는 전달될수록 커진다</h2>
+
+<p>시간 축을 보기 전에 확인할 것이 있어요. <b>지금 보고 있는 문제가 실제 문제인가</b>입니다. 장애 채널에 올라오는 문장은 대개 여러 사람을 거친 결과예요.</p>
+
+<p>상담원이 고객 결제 한 건을 처리하지 못했다고 해 볼게요. 상담원은 팀장에게 "결제가 안 돼요"라고 말하고, 팀장은 지원 데스크에 "결제가 계속 실패한대요"라고 올리고, 지원 데스크는 엔지니어에게 "결제 시스템이 다운됐다"고 넘깁니다. 엔지니어가 처음 제보한 상담원에게 직접 물어보면 실패는 한 건이었고, 몇 분 뒤 다시 시도했을 때는 성공했어요. 사람마다 한 단계씩 일반화를 더했을 뿐 아무도 거짓말은 하지 않았습니다.</p>
+
+<p>두 문제는 대응의 크기가 다릅니다. "결제 시스템 다운"이면 관련 엔지니어를 전부 부르는 게 맞고, "결제 한 건이 실패했다가 재시도로 성공"이면 같은 일이 또 생기는지 지켜보는 게 맞아요. 앞의 판단으로 뒤의 문제에 대응하면 여러 사람의 시간을 쓰는 통화가 열리고, 정작 실제 장애가 났을 때 쓸 주의력이 줄어듭니다.</p>
+
+<p>그래서 조사를 시작하기 전에 문제 문장을 다시 씁니다. 효과적인 문제 보고에는 <b>기대한 동작</b>과 <b>실제 동작</b>이 들어가고, 가능하면 재현 방법이 붙어요(Google SRE Book, Effective Troubleshooting 장). 여기에 시간 축을 위한 질문 두 개를 더합니다.</p>
+
+<div class="obsv-code">문제 문장을 다시 쓸 때 묻는 것
+
+누가 봤나        제보자에게 직접 묻는다. 전달자에게 묻지 않는다
+무엇을 기대했고  "결제 승인"
+실제로 무엇이     "결제 1건 실패, 재시도 성공"   ← "결제 시스템 다운"이 아니다
+얼마나            1건 / 일부 사용자 / 전체
+언제 처음         최초 관측 시각. 제보 시각과 다르다
+지금도            계속되는 중인가, 멈췄나</div>
+
+<p>마지막 두 줄이 이 글의 주제와 이어집니다. <b>최초 관측 시각</b>은 제보 시각보다 이르고, 원인이 시작된 시각은 그보다 더 이를 수 있어요. 이 차이를 처음부터 의식하지 않으면 제보 시각 근처만 보게 됩니다.</p>
+
+<p>긴급도도 같은 방식으로 다시 매깁니다. 목소리가 큰 고객이나 높은 직급에서 온 제보는 실제 영향과 상관없이 급해 보여요. 영향 범위를 숫자로 적어 두면 이 판단이 사람이 아니라 문제에 묶입니다. "결제 실패율이 평소 0.2%에서 지금 0.3%"와 "결제 실패율 100%"는 같은 제보 문장에서 나올 수 있어요. 숫자를 확인하는 데 드는 1분이 엉뚱한 크기의 대응에 드는 한 시간을 막습니다.</p>
+
+<p>부르는 이름도 해석해야 합니다. 로드 밸런서를 장비 제조사 이름으로 부르거나, 쿠버네티스를 "도커"라고 부르거나, 파드를 다시 띄운 걸 "컨테이너를 재부팅했다"고 말하는 일은 엔지니어끼리도 흔해요. 제보자가 가리킨 대상이 실제로 무엇인지 확인한 뒤에 그 이름으로 검색하고 대시보드를 고릅니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 원인과 증상 사이에는 시간이 있다</h2>
+
+<p>원인이 들어온 순간 증상이 나타나는 장애가 있어요. 잘못된 설정으로 서버가 뜨지 않거나, 존재하지 않는 테이블을 조회하는 코드가 배포된 경우입니다. 이런 장애는 시간 축만 봐도 원인이 거의 보여요. 증상이 시작된 순간과 변경이 들어온 순간이 겹치기 때문입니다.</p>
+
+<p>어려운 건 <b>쌓여야 터지는 장애</b>예요. 원인이 들어온 뒤 무언가가 조금씩 늘거나 줄다가, 어떤 선을 넘는 순간 증상이 됩니다.</p>
+
+<div class="obsv-code">쌓여야 터지는 장애의 예                원인 → 증상 사이에 쌓이는 것
+
+인덱스를 못 타는 쿼리로 변경            테이블 행 수 (조회 한 번의 비용)
+커넥션을 반납하지 않는 코드             빌려 간 커넥션 수
+닫지 않는 파일, 지우지 않는 임시 파일    파일 디스크립터, 디스크 사용량
+캐시 TTL을 늘리거나 키 형식을 바꿈        캐시가 비어 가는 정도 (만료 시각까지)
+메모리를 놓지 않는 컬렉션               힙 사용량, GC 시간
+야간 배치에만 타는 코드 경로             다음 배치 시각까지 남은 시간</div>
+
+<p>공통점은 <b>원인이 들어온 직후에는 지표가 멀쩡해 보인다</b>는 거예요. 정확히는 증상 쪽 지표(지연, 에러율)가 멀쩡하고, 원인 쪽 지표(읽은 행 수, 빌려 간 커넥션 수, 디스크 사용량)는 처음부터 움직입니다. 다만 그 움직임이 작고 완만해서 경고에 걸리지 않아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 370" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="t1p1a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M40 290 C 200 289, 450 291, 668 290" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#t1p1a1)"/>
+  <text x="640" y="280" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">시간</text>
+  <path d="M40 200 C 250 199, 450 201, 660 200" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="2 7" stroke-linecap="round"/>
+  <text x="44" y="192" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">SLO 기준 (p99)</text>
+  <path d="M120 62 C 121 140, 119 220, 120 290" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+  <text x="62" y="52" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5">① 쿼리 변경 배포</text>
+  <path d="M470 62 C 471 140, 469 220, 470 290" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+  <text x="372" y="52" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">② 무관한 재배포</text>
+  <path d="M40 262 C 80 261, 100 263, 120 262 L 123 234 C 300 206, 480 164, 660 120" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="200" y="246" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">DB가 조회마다 읽는 행 수</text>
+  <path d="M40 274 C 200 273, 330 272, 400 268 C 450 262, 490 232, 520 182 C 540 142, 556 102, 572 72" fill="none" stroke="#e5533c" stroke-width="2.8" stroke-linecap="round"/>
+  <text x="580" y="92" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">p99 지연</text>
+  <text x="522" y="222" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">③ SLO 위반</text>
+  <path d="M572 62 C 573 140, 571 220, 572 290" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="580" y="66" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">④ 타임아웃</text>
+  <path d="M122 310 C 250 312, 380 309, 508 310" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-start="url(#t1p1a1)" marker-end="url(#t1p1a1)"/>
+  <text x="315" y="332" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">원인에서 증상까지 벌어진 시간</text>
+  <text x="350" y="360" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">원인은 ①에서 시작됐는데, 눈에 띈 건 ② 바로 뒤였다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 원인 쪽 지표는 ①부터 움직였고, 증상 쪽 지표는 한참 뒤에 꺾였다</div>
+
+<h3>왜 천천히 늘다가 갑자기 터지나</h3>
+
+<p>테이블이 일정한 속도로 커진다면 지연도 일정한 속도로 늘어야 할 것 같아요. 실제로는 오랫동안 거의 그대로이다가 짧은 시간에 치솟습니다. 이유는 <b>대기</b>에 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 이용률 (utilization)</div>
+  자원이 일하느라 바쁜 시간의 비율입니다. 초당 요청 수에 요청 하나를 처리하는 시간을 곱하면 나와요. 초당 20건이 들어오는데 한 건에 30ms가 걸리면 이용률은 0.6이고, 50ms가 걸리면 1.0으로 쉬는 시간이 없습니다.
+</div>
+
+<p>가장 단순한 대기 모델(요청이 무작위로 들어오고 처리 시간도 무작위인 단일 서버 큐, M/M/1)에서 평균 응답 시간은 처리 시간 S를 (1 &minus; 이용률)로 나눈 값이에요. 처리 시간이 20ms인 서버를 이용률별로 계산하면 이렇습니다.</p>
+
+<div class="obsv-code">평균 응답 시간 = S / (1 &minus; &rho;)        S = 20ms 일 때
+
+&rho; = 0.50   &rarr;   40ms
+&rho; = 0.80   &rarr;  100ms
+&rho; = 0.90   &rarr;  200ms
+&rho; = 0.95   &rarr;  400ms
+&rho; &ge; 1.00   &rarr;  큐가 끝없이 길어진다 (들어오는 속도 &gt; 처리 속도)</div>
+
+<p>인덱스를 못 타는 쿼리라면 처리 시간 S가 테이블 행 수에 비례해서 늘고, 이용률도 같은 비율로 늘어요. 이용률이 0.5에서 0.8로 가는 동안 평균 응답 시간은 60ms 늘지만, 0.9에서 0.95로 가는 동안에는 200ms가 늘어납니다. 원인은 일정한 속도로 자라는데 <span class="obsv-mark">증상은 이용률이 1에 가까워지는 마지막 구간에 몰려서 나타나요.</span> 동시성을 늘릴 때 어느 지점부터 느려지는지는 <a href="https://dding-shark.tistory.com/616">SLO와 경고 5편</a>에서 다뤘습니다.</p>
+
+<p>이 표는 요청이 들어오는 간격도, 처리 시간도 무작위라고 가정한 값이에요. 대기가 얼마나 길어지는지는 이용률뿐 아니라 도착 간격과 처리 시간이 얼마나 들쭉날쭉한지에 달려 있습니다. 처리 시간이 일정하면 대기가 절반으로 줄어서 &rho; = 0.9에서 평균 응답 시간이 처리 시간의 5.5배가 되고, 도착 간격까지 일정하면 이용률이 1에 닿기 직전까지 대기가 거의 없다가 1에서 수직으로 꺾여요. 어느 쪽이든 오래 잠잠하다가 짧게 꺾인다는 모양은 같고, 꺾이는 날카로움만 다릅니다. 도착이 균등할 때 실제로 어떻게 꺾이는지는 <a href="#ts-04">실습-1</a>에서 잽니다.</p>
+
+<p>실제 시스템은 이 모델보다 복잡해요. DB 앞에는 커넥션 풀이 있고, 풀이 차면 애플리케이션 스레드가 기다리고, 스레드가 차면 로드 밸런서가 기다립니다. 그래도 모양은 같아요. 오래 잠잠하다가 짧게 꺾이고, 꺾인 다음에는 대기열이 대기열을 만들어서 타임아웃까지 금방 갑니다. 이 꺾이는 지점까지 걸리는 시간이 원인과 증상 사이의 지연이에요. 테이블이 빨리 자라면 짧고, 천천히 자라면 몇 시간이나 며칠이 됩니다.</p>
+
+<h3>증상은 늦게 사라지기도 한다</h3>
+
+<p>지연은 반대 방향에도 있어요. 원인을 없애도 증상이 바로 사라지지 않는 경우입니다. 대기열에 쌓인 요청은 원인이 사라진 뒤에도 처리되기를 기다리고, 그동안 지연은 높게 남아요. 클라이언트가 재시도를 하고 있었다면 쌓인 재시도가 한동안 부하를 더 얹습니다. 반대로 메모리 누수처럼 재시작으로 잠시 증상이 사라지는 장애도 있어요. 재시작하면 쌓였던 것이 비워지니 원인이 그대로인데도 한동안 정상으로 보입니다.</p>
+
+<p>그래서 "고쳤더니 바로 나아졌다"와 "고쳤는데 한참 뒤에 나아졌다"는 둘 다 판정이 어려워요. 앞의 것은 재시작 효과일 수 있고, 뒤의 것은 다른 이유로 저절로 나아진 것일 수 있습니다. 조치를 하기 전에 "이 조치가 맞다면 언제까지, 어떤 지표가, 얼마만큼 움직여야 한다"를 적어 두면 판정 기준이 생겨요. 이건 5장에서 다시 다룹니다.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. "직전 변경"을 의심하는 습관이 틀리는 때</h2>
+
+<p>최근 변경부터 보는 건 좋은 출발점이에요. 장애의 상당수는 배포와 설정 변경에서 나오고, 그래서 배포와 설정 변경은 기록을 남겨서 시스템 동작의 변화와 맞춰 볼 수 있어야 합니다(Google SRE Book, Effective Troubleshooting 장의 "What touched it last" 절). 문제는 "최근"의 범위예요. 증상이 시작된 시각 바로 앞 몇 분만 보면, 2장의 장애에서는 원인이 그 범위 밖에 있습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: post hoc 오류 (post hoc ergo propter hoc)</div>
+  "이것 다음에 일어났으므로 이것 때문이다"라고 추론하는 오류입니다. 시간 순서는 원인의 필요조건일 뿐 증거가 아니에요. 변경이 증상보다 먼저 일어났다는 것만으로는 그 변경이 원인이라고 말할 수 없습니다.
+</div>
+
+<p>직전 변경이 얼마나 약한 증거인지 계산해 볼 수 있어요. 배포와 설정 변경이 시간당 평균 &lambda;번, 서로 관계없이 일어난다고 가정합니다. 아무 시각이나 하나 골랐을 때 그 앞 w분 안에 변경이 하나라도 있었을 확률은 1 &minus; e<sup>&minus;&lambda;w</sup>예요.</p>
+
+<div class="obsv-code">증상 시작 직전 30분 안에 변경이 하나 이상 있을 확률 (변경은 무작위로 일어난다고 가정)
+
+시간당 변경 0.5번   &rarr;  1 &minus; e^(&minus;0.25) &asymp; 22%
+시간당 변경 1번     &rarr;  1 &minus; e^(&minus;0.5)  &asymp; 39%
+시간당 변경 2번     &rarr;  1 &minus; e^(&minus;1)    &asymp; 63%
+시간당 변경 4번     &rarr;  1 &minus; e^(&minus;2)    &asymp; 86%</div>
+
+<p>여러 팀이 하루에 수십 번 배포하는 곳이라면 장애와 아무 관계가 없어도 "직전 30분 안의 변경"은 대부분의 경우 존재합니다. 그 변경이 있었다는 사실은 원인일 가능성을 조금 올려 줄 뿐이에요. 지켜보는 지표와 변경이 많아질수록 우연한 상관은 피할 수 없게 되고, 상관이 인과를 뜻하지도 않습니다(같은 장). 정전이 패킷 손실과 디스크 고장을 함께 일으키면 두 현상은 강하게 상관되지만 서로의 원인은 아니에요.</p>
+
+<p>직전 변경을 되돌리는 건 그래도 할 만한 조치입니다. 되돌리기는 싸고, 대개 안전하고, 맞으면 바로 출혈이 멈춰요. 장애 중에는 원인을 밝히는 것보다 시스템을 가능한 한 잘 돌아가게 만드는 게 먼저이기도 하고요. 다만 되돌리기를 <b>실험</b>으로 다뤄야 합니다. 되돌렸는데 증상이 그대로라면 그 결과가 가설 하나를 지웠다는 뜻이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 되돌렸는데 그대로라면</div>
+  &bull; <b>그 변경을 다시 내보낼지는 나중에 정합니다.</b> 원인이 아니라고 확인됐으니 지금은 다음 가설로 넘어가요. 되돌린 상태로 두면 되돌리기 자체가 새 변경이 되어 시간 축을 한 줄 더 어지럽힙니다<br>
+  &bull; <b>되돌리기를 겹겹이 쌓지 않습니다.</b> 직전 것, 그 전 것, 그 전 것을 차례로 되돌리면 어느 되돌리기가 효과를 냈는지 알 수 없어요<br>
+  &bull; <b>재시작이 끼면 판정이 흐려집니다.</b> 되돌리기 배포가 프로세스를 다시 띄우면 커넥션 풀과 캐시가 비고 쌓여 있던 대기열도 사라져요. 잠깐 나아졌다가 다시 나빠지는 걸 "효과 있음"으로 읽지 않으려면 몇 분을 더 지켜봐야 합니다
+</div>
+
+<p>그렇다면 범위를 얼마나 넓혀 봐야 할까요? 고정된 답은 없어요. 대신 증상 쪽 지표가 아니라 <b>원인 쪽 지표가 처음 움직인 시각</b>을 찾으면 범위가 정해집니다. 그 시각을 찾는 도구가 다음 장의 annotation이에요.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 변경을 지표 위에 겹쳐 놓는다</h2>
+
+<p>변경 이력은 보통 배포 도구의 기록, 설정 저장소의 커밋, 채팅방의 공지에 흩어져 있어요. 그래프는 Grafana에 있고요. 둘을 맞춰 보려면 시각을 손으로 옮겨 적어야 하고, 그 과정에서 시간대가 틀리거나 한두 개가 빠집니다. 변경을 그래프 위에 직접 그려 두면 이 일이 사라져요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: annotation (Grafana)</div>
+  그래프의 특정 시각이나 구간에 남기는 표시입니다. 패널 위에 세로선으로 그려지고, 마우스를 올리면 설명과 태그가 보여요. 배포, 설정 변경, 장애 선언 같은 사건을 지표와 같은 화면에 놓을 때 씁니다.
+</div>
+
+<p>가장 확실한 방법은 배포 파이프라인이 끝날 때 Grafana HTTP API로 annotation을 하나 남기는 겁니다. <code>time</code>은 밀리초 단위 유닉스 시각이고, <code>dashboardUID</code>와 <code>panelId</code>를 빼면 특정 대시보드에 묶이지 않는 조직 단위 annotation이 돼요. 조직 단위 annotation은 Grafana 내장 데이터 소스를 annotation 쿼리로 추가한 어느 대시보드에서나 보입니다(Grafana HTTP API 문서, Annotations).</p>
+
+<div class="obsv-code"># 배포가 끝난 직후 파이프라인에서
+curl -s -X POST "$GRAFANA_URL/api/annotations" \
+  -H "Authorization: Bearer $GRAFANA_TOKEN" -H "Content-Type: application/json" \
+  -d '{
+        "time": '"$(date +%s000)"',
+        "tags": ["deploy", "order-api"],
+        "text": "order-api v2.14.0 배포 (조회 쿼리 변경, 커밋 3f9c2e1)"
+      }'</div>
+
+<p>대시보드에서는 annotation 쿼리를 추가하고 데이터 소스로 <code>-- Grafana --</code>를 고른 뒤 Filter by를 Tags로 둡니다. 태그를 여러 개 적으면 기본은 전부 맞는 것만 보여 주니, <code>deploy</code>와 <code>config</code> 중 하나만 맞아도 보이게 하려면 <b>Match any</b>를 켜요(Grafana 문서, Annotate visualizations). 태그 쿼리는 현재 대시보드에 한정되지 않고 조직 전체에서 맞는 annotation을 가져옵니다.</p>
+
+<p>배포 도구를 고칠 수 없다면 지표에서 변경을 뽑는 방법도 있어요. 버전 라벨이 붙은 <code>build_info</code> 같은 지표가 있으면 Prometheus 데이터 소스의 annotation 쿼리에 <code>changes(build_info{job="order-api"}[10m]) &gt; 0</code>을 넣어 버전이 바뀐 시각을 표시할 수 있습니다. 이때 쿼리가 돌려준 데이터 포인트 하나하나가 annotation이 되기 때문에, 10분 창이면 바뀐 뒤 10분 동안 step마다 표시가 찍혀요. 표시 간격은 Min step으로 조절합니다(Grafana 문서, Prometheus annotations).</p>
+
+<h3>그래프 위의 시각도 조금씩 늦다</h3>
+
+<p>annotation과 지표를 맞춰 볼 때는 그래프 자체가 만드는 지연도 감안해야 해요. 지표는 수집 주기(scrape interval)마다 한 번씩만 찍히니, 15초 주기라면 실제 변화보다 최대 15초 늦게 보입니다. 더 큰 건 쿼리의 창이에요. <code>rate(...[5m])</code>는 지난 5분의 평균 증가율이라, 값이 계단처럼 한 번에 뛰어도 그래프에서는 5분에 걸친 비탈로 그려집니다. 지연 백분위를 <code>histogram_quantile(0.99, rate(..._bucket[5m]))</code>로 그리면 증상이 시작된 뒤 몇 분이 지나서야 p99가 기준선을 넘는 것으로 보일 수 있어요.</p>
+
+<p>그래서 시각을 분 단위로 맞출 때는 창을 짧게 한 쿼리로 다시 보거나, 계단을 볼 수 있는 원래 값(카운터의 <code>increase</code>를 짧은 창으로, 또는 게이지 그대로)을 같이 봅니다. 창 5분짜리 그래프의 꺾인 점을 그대로 "증상 시작 시각"으로 적으면 원인과 증상 사이의 간격을 실제보다 길게 적게 돼요.</p>
+
+<h3>증상 패널이 아니라 원인 쪽 패널에서 맞춰 본다</h3>
+
+<p>annotation을 켜 두기만 하면 끝이 아니에요. 그림 1의 장애를 annotation이 켜진 대시보드에서 다시 본다고 해 볼게요. p99 패널만 보면 지연이 꺾인 지점 바로 앞에 ② 표시가 있습니다. 시간 축만으로는 여전히 ②가 가장 그럴듯해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <path d="M40 30 C 250 28, 460 31, 664 29 C 666 70, 665 120, 664 150 C 460 152, 250 149, 41 151 C 39 110, 40 70, 40 30 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="52" y="54" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">증상 패널: p99 지연</text>
+  <path d="M50 138 C 200 137, 360 136, 430 132 C 470 128, 500 108, 520 78 C 532 60, 545 48, 560 42" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M40 190 C 250 188, 460 191, 664 189 C 666 230, 665 280, 664 310 C 460 312, 250 309, 41 311 C 39 270, 40 230, 40 190 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="52" y="214" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">원인 쪽 패널: DB가 읽은 행 / 초</text>
+  <path d="M50 298 C 90 297, 110 299, 140 298 L 143 268 C 300 252, 470 232, 655 212" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M141 22 C 142 120, 140 220, 141 318" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+  <path d="M480 22 C 481 120, 479 220, 480 318" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+  <text x="128" y="16" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">①</text>
+  <text x="468" y="16" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">②</text>
+  <text x="300" y="100" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">꺾인 곳 바로 앞은 ②</text>
+  <text x="160" y="260" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">계단이 생긴 곳은 ①</text>
+  <text x="350" y="346" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">같은 annotation, 어느 패널에 맞춰 보느냐로 답이 갈린다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 증상 패널은 ②를 가리키고, 원인 쪽 패널은 ①을 가리킨다</div>
+
+<p>같은 annotation을 DB가 읽은 행 수 패널에서 보면 이야기가 달라집니다. ① 표시와 정확히 같은 자리에 계단이 있어요. ② 근처에서는 수준이 바뀌지 않았습니다(배포가 앱을 다시 띄우는 몇 초 동안 요청이 끊겨 잠깐 오목해질 수는 있어요. 실습-1에서는 10초 동안 10~20% 줄었다가 돌아왔습니다). <span class="obsv-mark">annotation은 증상이 꺾인 자리가 아니라 원인 쪽 지표가 처음 움직인 자리에 맞춰 봐야 합니다.</span></p>
+
+<p>원인 쪽 지표는 어떻게 고를까요? 증상이 난 서비스에서 출발해 의존하는 쪽으로 한 칸씩 내려가며 자원마다 세 가지를 봅니다. 얼마나 바쁜가(이용률), 처리하지 못하고 기다리는 일이 있나(포화), 에러가 나나(에러)예요. Brendan Gregg가 USE 방법이라고 이름 붙인 점검 순서입니다. DB라면 CPU 이용률, 읽은 행 수나 디스크 읽기, 커넥션 대기, 락 대기가 이 자리에 와요.</p>
+
+<p>그리고 내려가면서 각 지표에 <b>처음 움직인 시각</b>을 적습니다. 증상 패널의 꺾인 시각보다 이른 시각이 나오면 그 시각 근처의 annotation이 새 후보가 돼요. 이 방법은 원인 쪽 지표가 수집되고 있어야만 통합니다. DB 지표를 모으지 않았다면 그림 2의 아래 패널은 존재하지 않고, 남는 건 위 패널과 ② 표시뿐이에요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 가설을 세우고, 틀릴 수 있는 예측을 적는다</h2>
+
+<p>annotation이 후보를 좁혀 줘도 후보는 후보일 뿐입니다. "①이 원인이다"를 확인하려면 확인하는 절차가 필요해요. 트러블슈팅은 원인을 추측하고 그 추측을 시험하는 일을 되풀이하는 가설 연역법(hypothetico-deductive method)의 적용입니다(Google SRE Book, 같은 장). 단계로 풀면 질문, 가설, 예측, 실험, 분석이에요(Brendan Gregg의 성능 분석 방법론 목록에서 Scientific Method).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="t1p1a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M22 70 C 60 68, 90 71, 112 69 C 114 90, 113 108, 112 122 C 90 124, 60 121, 23 123 C 21 104, 22 88, 22 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="67" y="102" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">질문</text>
+  <path d="M152 70 C 190 68, 220 71, 248 69 C 250 90, 249 108, 248 122 C 220 124, 190 121, 153 123 C 151 104, 152 88, 152 70 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="200" y="102" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">가설</text>
+  <path d="M288 64 C 330 62, 370 65, 408 63 C 410 90, 409 112, 408 128 C 370 130, 330 127, 289 129 C 287 108, 288 86, 288 64 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+  <text x="348" y="94" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">예측</text>
+  <text x="348" y="117" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18">틀릴 수 있게</text>
+  <path d="M448 70 C 486 68, 516 71, 544 69 C 546 90, 545 108, 544 122 C 516 124, 486 121, 449 123 C 447 104, 448 88, 448 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="496" y="102" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">실험</text>
+  <path d="M584 70 C 620 68, 650 71, 678 69 C 680 90, 679 108, 678 122 C 650 124, 620 121, 585 123 C 583 104, 584 88, 584 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2"/>
+  <text x="631" y="102" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">분석</text>
+  <path d="M114 96 C 125 95, 135 97, 148 96" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#t1p1a3)"/>
+  <path d="M250 96 C 262 95, 272 97, 284 96" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#t1p1a3)"/>
+  <path d="M410 96 C 422 95, 432 97, 444 96" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#t1p1a3)"/>
+  <path d="M546 96 C 558 95, 568 97, 580 96" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#t1p1a3)"/>
+  <path d="M630 126 C 620 190, 420 200, 205 186 C 200 160, 201 140, 201 128" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#t1p1a3)"/>
+  <text x="300" y="214" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">예측이 빗나가면 가설을 버리고 다음 가설로</text>
+  <text x="350" y="242" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">빗나갈 수 없는 예측은 아무 가설도 지우지 못한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 고리의 힘은 예측이 빗나갈 수 있다는 데서 나온다</div>
+
+<p>다섯 단계 중 가장 자주 무너지는 곳이 <b>예측</b>이에요. 흔히 이런 예측을 적습니다.</p>
+
+<div class="obsv-code">약한 예측
+"가설이 맞다면 골든 시그널 중 하나 이상에서 이상 징후가 보이겠지만,
+ 경고 기준치까지는 넘지 않을 것이다."</div>
+
+<p>이 문장은 거의 어떤 데이터와도 맞아요. 지표 네 개 중 하나가 조금이라도 출렁이면 맞고, 기준치를 넘지 않았으니 경고가 없던 것도 설명됩니다. 실험을 해도 가설이 틀렸다고 판정할 결과가 나올 수 없어요. 틀릴 수 없는 예측으로 한 실험은 가설을 지우지 못하고, "확인됐다"는 느낌만 남깁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 반증 가능성 (falsifiability)</div>
+  어떤 관찰 결과가 나오면 그 주장이 틀렸다고 판정할 수 있는 성질입니다. 트러블슈팅에서는 "이 결과가 나오면 가설을 버린다"는 조건을 실험 전에 적어 둘 수 있느냐로 확인해요.
+</div>
+
+<p>같은 가설로 반증 가능한 예측을 적으면 이렇게 됩니다.</p>
+
+<div class="obsv-code">질문   14:40부터 주문 조회가 타임아웃 나는 이유는?
+가설   13:00 배포의 쿼리 변경으로 조회가 전체 테이블을 읽게 됐고,
+       테이블이 커지면서 DB 이용률이 1에 가까워졌다
+예측   (a) 13:00 직후부터 조회 한 번당 읽은 행 수가 테이블 행 수만큼으로 뛰었어야 한다
+           13:00 전과 같다면 가설을 버린다
+       (b) EXPLAIN 결과에 인덱스 스캔이 아니라 Seq Scan이 보여야 한다
+       (c) 쿼리만 이전 형태로 되돌리면 몇 분 안에 p99가 기준 아래로 내려와야 한다
+           배너 설정은 그대로 둔다. 내려오지 않으면 가설을 버린다
+실험   (a)(b)는 읽기만 하는 확인이라 먼저 한다. (c)는 되돌리기 배포
+분석   (a)(b)(c)의 결과를 예측과 나란히 적는다</div>
+
+<p>예측마다 <b>무엇이 나오면 가설을 버리는지</b>가 붙어 있어요. 그리고 비싼 실험보다 싼 관찰을 먼저 둡니다. (a)와 (b)는 시스템을 건드리지 않으니 부작용이 없어요. (c)는 시스템을 바꾸는 실험이라 이후 관찰 결과를 바꿀 수 있습니다. 시스템을 건드리는 시험은 다음 시험의 결과를 바꿀 수 있고, 시험은 가능성이 높은 순서로 하는 게 좋아요(Google SRE Book, 같은 장의 Test and Treat 절). 하나의 시험이 두 가설 중 하나를 확실히 지우도록 설계하면 더 좋습니다.</p>
+
+<p>분석에서도 조심할 게 있어요. (c)를 하고 p99가 내려왔다고 해서 가설이 증명된 건 아닙니다. 되돌리기 배포가 프로세스를 재시작했고, 같은 시각에 트래픽이 줄었을 수도 있어요. 이런 <b>교란 요인</b>이 있으면 실험 결과가 잘못된 방향을 가리킬 수 있습니다. 그래서 (a)와 (b)처럼 다른 경로로 같은 가설을 지지하는 관찰을 함께 둡니다. 반대로 예측이 빗나간 결과는 확실한 정보예요. 부정적인 결과는 결정적이고, 버리지 말고 기록해야 합니다(같은 장, Negative Results Are Magic 절).</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 장애 채널에 가설을 적는 형식</div>
+  &bull; 가설 한 줄, 예측 한 줄, "이게 나오면 버린다" 한 줄을 세트로 적어요. 세 번째 줄을 못 쓰면 아직 가설이 아니라 느낌이에요<br>
+  &bull; 읽기만 하는 확인(지표, EXPLAIN, 로그)을 앞에, 시스템을 바꾸는 시험(되돌리기, 재시작, 설정 변경)을 뒤에 둬요<br>
+  &bull; 버린 가설도 지우지 않고 "버림: 이유"를 붙여 남겨요. 사후 분석의 타임라인이 여기서 나옵니다(<a href="https://dding-shark.tistory.com/629">장애 대응 4편</a>)<br>
+  &bull; 배포, 설정 변경, 되돌리기는 전부 annotation으로 남겨요. 장애 중에 한 되돌리기도 다음 사람에게는 "최근 변경"이에요
+</div>
+
+<p>이 글의 장면은 실습-1(<a href="#ts-04">쿼리 하나를 바꾸고 증상이 나타나기까지 몇 분 걸리는지 잰다</a>)에서 그대로 만들어 봅니다. 쿼리를 바꾼 뒤 증상이 몇 분 뒤에 오는지, 직전 변경만 보고 되돌리면 어떻게 되는지, annotation을 겹쳤을 때 원인 변경까지 몇 단계가 걸리는지를 잽니다.</p>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>쌓여야 터지는 장애에서 원인은 증상보다 먼저 들어와 있어요.</b> 대기 때문에 증상은 이용률이 1에 가까워지는 마지막 구간에 몰려 나타나고, 그 앞의 긴 시간 동안 다른 변경이 끼어들어 "직전 변경"이 돼요. 변경이 잦은 곳에서 직전 변경은 거의 항상 있으니 약한 증거입니다.<br><br>
+  변경은 annotation으로 지표 위에 겹치되, 증상이 꺾인 자리가 아니라 원인 쪽 지표가 처음 움직인 자리에 맞춰 봐요. 그리고 가설마다 "이게 나오면 버린다"를 먼저 적습니다. 원인을 찾는 일은 증상이 도착한 시각에서 원인이 출발한 시각까지 거슬러 가는 일이에요.
+</div>
+
+</div>

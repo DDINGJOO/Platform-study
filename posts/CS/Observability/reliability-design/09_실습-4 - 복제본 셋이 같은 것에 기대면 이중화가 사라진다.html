@@ -1,0 +1,264 @@
+<!-- lead: HAProxy 뒤 복제본 셋에 공유 Redis 설정으로 공통 원인 고장을 섞어 가용성을 쟀어요. inter와 fall 조합별 페일오버 실패 요청 수, 포트는 열리고 앱만 죽은 서버를 TCP 검사와 HTTP 검사, observe가 각각 몇 건 놓치는지도 실측했어요. -->
+<!-- tags: HAProxy, 헬스 체크, 페일오버, 공통 원인 고장, observe layer7 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📐 신뢰성 설계, 실습-4</div>
+  1편. 같은 장애도 측정 창과 분모를 바꾸면 SLO를 지킨다<br>
+  2편. 요청이 적은 서비스의 99.9%는 소음이다<br>
+  3편. 지연에 평균 더하기 3σ를 걸면 경고가 틀린다<br>
+  4편. 가용성은 더하지 않고 곱한다<br>
+  5편. 이중화의 곱셈은 고장이 서로 모를 때만 성립한다<br>
+  실습-1. 같은 장애 기록을 네 가지 창으로 판정한다<br>
+  실습-2. 표본 수와 분포 모양이 경고를 몇 번 틀리게 하는지 센다<br>
+  실습-3. 의존 서비스를 한 줄로 이으면 성공률이 곱으로 준다<br>
+  <b>실습-4. 복제본 셋이 같은 것에 기대면 이중화가 사라진다</b> &larr; 지금 이 글
+</div>
+
+<p><a href="#rel-08">실습-3</a>에서 90%짜리 복제본 셋은 99.9%를 냈습니다. 다만 그 환경은 병렬식이 맞도록 만든 것이었어요. 복제본의 실패는 각자의 난수로 정해서 서로 독립이었고, 앞단은 실패 응답을 받자마자 다른 복제본을 불렀습니다. <a href="#rel-05">5편</a>은 이 두 가정, <b>독립 고장</b>과 <b>즉시 전환</b>이 운영에서는 깨진다고 했어요. 이번 글은 HAProxy와 공유 Redis를 붙여 두 가정을 하나씩 깨 보고, 숫자가 얼마나 바뀌는지 잽니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 복제본 고장 중 공통 원인 비율 β를 0, 10%, 50%, 100%로 바꾸면 가용성은 얼마인가?<br>
+  &bull; 액티브가 죽은 뒤 백업으로 넘어가기까지 <code>inter</code>와 <code>fall</code> 조합별로 몇 초, 몇 건이 실패하나?<br>
+  &bull; 포트는 열려 있고 앱만 죽은 서버를 TCP 검사, HTTP 검사, <code>observe</code>는 각각 얼마나 놓치나?
+</div>
+
+<h2>1. 실습 환경: listen 하나가 실험 하나</h2>
+
+<p>복제본은 표준 라이브러리만 쓰는 파이썬 HTTP 서버예요. <code>/work</code> 요청마다 공유 Redis에서 설정 키 <code>mode</code>를 읽고, 값이 <code>bad</code>면 500을 돌려줍니다. 공유 설정 하나가 복제본 전부를 같이 망가뜨리는 공통 원인이에요. 복제본 하나만 고장 내는 건 각자의 <code>POST /admin/state</code>로 합니다.</p>
+
+<div class="obsv-code">상태    /work               /health    뜻
+up      200 (Redis 확인)    200        정상
+down    503                 503        프로세스와 포트는 살아 있고 앱만 죽음
+gray    500                 200        헬스 체크로는 안 보이는 고장
+hang    30초 동안 응답 없음  30초 동안 응답 없음</div>
+
+<p>HAProxy에는 실험마다 <code>listen</code>을 따로 만들었어요. 여러 listen이 같은 복제본을 가리켜도 서버 상태와 헬스 체크는 listen마다 따로라서, 고장 한 번에 설정 일곱 가지의 반응을 동시에 잴 수 있습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 336" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="l41" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">HAProxy listen 하나가 실험 하나, 같은 복제본을 각자의 설정으로 본다</text>
+<path d="M14 150 C 37 150, 60 149, 84 151 C 83 166, 83 183, 84 200 C 60 200, 37 199, 13 201 C 14 183, 15 166, 14 150 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="49" y="181" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">load</text>
+<path d="M130 60 C 193 60, 255 58, 320 61 C 321 136, 321 212, 321 290 C 255 291, 193 289, 130 289 C 130 212, 129 136, 130 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="225" y="86" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">HAProxy 3.4</text>
+<path d="M146 104 C 198 104, 250 106, 304 104 C 305 119, 304 134, 304 150 C 250 152, 198 152, 146 150 C 145 134, 146 119, 146 104 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="225" y="124" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">A  9201~9202</text>
+<text x="225" y="143" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">액티브-액티브</text>
+<path d="M146 164 C 198 166, 250 164, 304 164 C 304 179, 303 194, 304 210 C 250 210, 198 211, 145 211 C 145 194, 145 179, 146 164 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="225" y="184" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">B  9301~9307</text>
+<text x="225" y="203" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">액티브-스탠바이</text>
+<path d="M146 224 C 198 224, 250 225, 304 223 C 303 239, 305 254, 303 270 C 250 270, 198 270, 146 270 C 146 254, 147 239, 146 224 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="225" y="244" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">C  9401~9403</text>
+<text x="225" y="263" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">검사 종류</text>
+<path d="M86 175 C 99 176, 113 175, 128 175" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#l41)"/>
+<path d="M400 70 C 426 71, 453 69, 480 70 C 481 82, 479 94, 480 106 C 453 108, 426 108, 399 105 C 400 94, 401 82, 400 70 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="440" y="94" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">r1</text>
+<path d="M322 140 C 349 124, 372 104, 398 88" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round" marker-end="url(#l41)"/>
+<path d="M482 88 C 504 103, 525 118, 546 130" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="6 6"/>
+<path d="M400 118 C 426 119, 453 116, 480 119 C 480 130, 480 142, 481 154 C 453 153, 426 152, 399 154 C 400 142, 400 130, 400 118 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="440" y="142" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">r2</text>
+<path d="M322 140 C 348 137, 373 136, 398 136" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round" marker-end="url(#l41)"/>
+<path d="M482 136 C 503 136, 526 130, 546 130" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="6 6"/>
+<path d="M400 166 C 426 166, 453 165, 480 165 C 481 178, 480 190, 480 202 C 453 203, 426 202, 400 201 C 399 190, 401 178, 400 166 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="440" y="190" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">r3</text>
+<path d="M322 140 C 349 155, 373 169, 398 184" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round" marker-end="url(#l41)"/>
+<path d="M482 184 C 502 165, 523 150, 546 130" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="6 6"/>
+<path d="M548 104 C 594 105, 640 105, 688 105 C 687 121, 687 138, 687 156 C 640 157, 594 158, 548 156 C 547 138, 549 121, 548 104 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="618" y="128" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">Redis</text>
+<text x="618" y="148" font-family="Menlo, monospace" font-size="13" fill="#b3502f" text-anchor="middle">mode = ok | bad</text>
+<text x="615" y="182" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">요청마다 읽는 공유 설정</text>
+<path d="M400 230 C 426 231, 453 232, 480 231 C 481 242, 479 254, 480 266 C 453 265, 426 268, 401 267 C 401 254, 400 242, 400 230 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="440" y="254" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">a 액티브</text>
+<path d="M520 230 C 553 231, 586 228, 620 231 C 621 242, 619 254, 621 266 C 586 266, 553 265, 521 265 C 519 254, 519 242, 520 230 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5"/>
+<text x="570" y="254" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">b backup</text>
+<path d="M322 190 C 346 211, 374 227, 398 248" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round" marker-end="url(#l41)"/>
+<path d="M482 248 C 494 248, 508 248, 518 248" fill="none" stroke="#8a8272" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="350" y="318" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 고장은 복제본의 /admin/state(독립)와 Redis 키(공통 원인)로 넣는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 복제본을 실험마다 다른 listen이 각자의 설정으로 본다</div>
+
+<div class="obsv-code">HAProxy           3.4.6 (LTS)
+Redis             8.10.2
+Python (이미지)   3.14.8-slim
+측정              같은 이미지의 experiment.py. listen마다 초당 100~150건을 일정 간격으로 보내고
+                  HAProxy 통계 CSV(/stats;csv)를 50ms마다 읽어 DOWN 판정 시각을 남긴다
+실행 환경         Docker Desktop, Apple M5 Pro</div>
+
+<p>버전은 HAProxy의 최신 LTS인 3.4를 골랐어요(2026년 6월 출시, 지원 종료 2031년 2분기). 설정 매뉴얼도 3.4 판을 기준으로 읽었습니다. 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/rel-04-redundancy">labs/observability/rel-04-redundancy</a>에 있어요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/rel-04-redundancy
+docker compose up -d --build
+docker compose --profile load run --rm load python experiment.py checks   --seconds 30
+docker compose --profile load run --rm load python experiment.py failover --trials 8
+docker compose --profile load run --rm load python experiment.py failover --trials 4 --fault hang
+docker compose --profile load run --rm load python experiment.py shared   --betas 0 --slots 6000
+docker compose --profile load run --rm load python experiment.py shared   --betas 0.1,0.5,1 --slots 3000
+python3 summarize.py                     # out/*.jsonl -> out/summary.txt
+docker compose down -v                   # HAProxy 통계 화면: http://localhost:33404/stats</div>
+
+<h2>2. 공통 원인 비율을 0에서 100%까지 올린다</h2>
+
+<p>복제본 r1~r3를 라운드로빈으로 받는 listen 두 개를 썼어요. 하나(<code>aa_noretry</code>)는 아무 장치 없이 요청을 돌리고, 다른 하나(<code>aa_retry</code>)는 실패 응답을 받으면 다른 복제본으로 다시 보냅니다. 헬스 체크는 일부러 끄고 요청 단위로만 비켜 가게 했어요. 병렬식의 "즉시 전환"에 가장 가까운 설정이에요.</p>
+
+<div class="obsv-code">listen aa_retry
+    balance roundrobin
+    retries 2
+    retry-on conn-failure 500 503     # 연결 실패와 500, 503에 재시도
+    option redispatch 1               # 재시도마다 다른 서버를 고른다
+    server r1 r1:8080
+    server r2 r2:8080
+    server r3 r3:8080</div>
+
+<p>고장 일정은 5편의 베타 인자 모형대로 만들었습니다. 시간을 100ms 슬롯으로 자르고, 슬롯마다 확률 βQ로 공통 원인 사건을 일으켜 Redis의 <code>mode</code>를 <code>bad</code>로 바꿔요. 그러면 세 복제본이 모두 500을 냅니다. 나머지는 복제본마다 독립적으로 <code>down</code>(503)으로 만들었고, 한 대의 비가용성 Q는 10%로 고정했어요. β = 0은 슬롯 6,000개(10분), 나머지는 3,000개(5분)를 돌렸고 listen마다 초당 150건을 보냈습니다. 복제본 상태를 바꾸는 몇 ms 사이에 보낸 요청은 어느 슬롯 상태로 볼지 애매해서 성공률에서 뺐어요(실행과 listen마다 19~740건).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: retry-on, redispatch</div>
+  HAProxy의 <code>retry-on</code>은 어떤 실패에 요청을 다시 보낼지 정하는 지시어예요. 기본값은 연결 실패(<code>conn-failure</code>)뿐이라 500이나 503 응답에는 재시도하지 않습니다. <code>option redispatch</code>는 재시도할 때 다른 서버를 고르게 하는 옵션이고, 인자 1은 매 재시도마다를 뜻해요.
+</div>
+
+<div class="obsv-code">&beta;      이론 가용성   실제 일정에서 하나라도   재시도 없음    retry-on + redispatch
+                      살아 있던 슬롯 비율      성공률         성공률       하나라도 살아 있던 동안
+0       99.900%      99.900%                89.944%       99.895%     99.994%
+10%     98.926%      99.433%                90.560%       99.449%     99.993%
+50%     94.986%      94.767%                89.922%       94.855%     99.993%
+100%    90.000%      89.533%                89.537%       89.773%    100.000%</div>
+
+<p>읽을 것이 세 가지예요.</p>
+
+<p><b>첫째, 비켜 가는 장치가 없으면 복제본 셋은 한 대와 같습니다.</b> 재시도 없는 listen은 β와 상관없이 90% 근처였어요. 라운드로빈은 요청을 순서대로 나눌 뿐이라, 지금 죽어 있는 복제본에 걸린 요청은 그대로 실패합니다. 병렬식의 99.9%는 "살아 있는 복제본에 요청이 간다"는 가정에서 나온 숫자라는 게 이 줄에서 보여요.</p>
+
+<p><b>둘째, 재시도로 비켜 가면 성공률은 "하나라도 살아 있던 시간"을 그대로 따라갑니다.</b> 오른쪽 열을 보면 하나라도 살아 있던 동안의 성공률은 β와 상관없이 99.99% 이상이었어요. 그러니 전체 성공률을 정하는 건 HAProxy가 아니라 고장 일정, 곧 세 대가 함께 죽은 시간이었습니다. β = 0에서 99.895%로 이론값 99.900%를 재현했고, β = 50%에서는 94.855%, β = 100%에서는 89.773%로 한 대짜리와 같아졌어요. <span class="obsv-mark">공통 원인 몫만큼은 재시도도 이중화도 되돌리지 못했습니다.</span></p>
+
+<p><b>셋째, β = 10% 줄은 이론값보다 높게 나왔어요(99.449%, 이론 98.926%).</b> 슬롯 3,000개에서 공통 원인 슬롯이 기대값 30개(1.0%)가 아니라 16개(0.53%)만 뽑혔기 때문입니다. 실제 일정으로 계산한 "하나라도 살아 있던 비율" 99.433%와 측정값은 맞았어요. 공통 원인처럼 드문 사건은 5분짜리 실험 한 번으로는 비율이 크게 흔들린다는 걸 그대로 보여 준 줄이라, 다시 돌리지 않고 남겼습니다. 5편의 "β는 측정하기 어렵다"는 주의가 실험 안에서도 나타난 셈이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 모두 죽은 동안에도 1~2%가 성공했다</div>
+  &bull; 표에는 없지만, β 10~100% 실행에서는 세 대가 모두 죽어 있던 슬롯에 보낸 요청도 재시도 listen에서 1.45~2.42%가 성공했어요(β = 0에서는 0.00%).<br>
+  &bull; 요청은 보낸 시각으로 슬롯에 붙였는데, 재시도를 두 번 거치는 몇 ms 사이에 슬롯이 바뀌어 다음 슬롯의 살아 있는 복제본에 닿은 요청으로 보입니다. 재시도 없는 listen도 β = 10%에서 0.40%가 성공했으니, 슬롯 경계에 걸린 몫이 섞여 있어요. <code>redispatch 1</code>이라 재시도는 매번 다른 서버로 가서, 같은 서버 재시도 앞의 대기는 여기서 걸리지 않습니다.<br>
+  &bull; 매뉴얼은 같은 서버로 다시 보낼 때 min(<code>timeout connect</code>, 1초)를 기다린다고 적고 있어요. 이 실습은 <code>timeout connect</code>를 50ms로 줄여 두었지만, 흔히 쓰는 5초 같은 값으로 두면 같은 서버 재시도 한 번에 1초를 기다리니 요청 지연이 그만큼 늘 수 있습니다.
+</div>
+
+
+<h2>3. 액티브가 죽은 뒤 백업으로 넘어가기까지</h2>
+
+<p>이번에는 서버 <code>a</code>를 액티브로, <code>b</code>를 <code>backup</code>으로 둔 listen 일곱 개를 만들었어요. 헬스 체크는 <code>option httpchk GET /health</code>로 하고, listen마다 <code>inter</code>와 <code>fall</code>만 다르게 줬습니다. <code>a</code>를 <code>down</code>(모든 응답 503)으로 바꾼 순간부터 15초 동안 listen마다 초당 100건을 보내고, HAProxy 통계에서 <code>a</code>가 DOWN이 된 시각을 50ms 간격으로 읽었어요. 고장 시점이 검사 주기의 아무 데나 떨어지도록 시행마다 0.5~2.5초를 무작위로 쉬고 8번 반복했습니다.</p>
+
+<div class="obsv-code">listen                 설정                        5편 계산      DOWN 판정(초)           실패 요청(건)
+                                                                   최소 / 중앙 / 최대      최소 / 중앙 / 최대
+fo_i2f3                inter 2s fall 3 (기본값)     4.0 ~ 6.0     4.21 / 5.27 / 5.87     416 / 526 / 581
+fo_i1f3                inter 1s fall 3              2.0 ~ 3.0     2.20 / 2.65 / 2.93     215 / 262 / 288
+fo_i1f2                inter 1s fall 2              1.0 ~ 2.0     1.13 / 1.58 / 1.86     108 / 155 / 183
+fo_i2f3_fast           inter 2s fastinter 500ms     1.0 ~ 3.0     1.23 / 1.66 / 2.63     120 / 162 / 262
+fo_i500f3              inter 500ms fall 3           1.0 ~ 1.5     1.02 / 1.15 / 1.34     100 / 114 / 130
+fo_i2f3_redispatch     기본값 + retry-on 503        4.0 ~ 6.0     4.22 / 5.54 / 6.02     418 / 549 / 598
+                       + redispatch 1
+fo_i2f3_observe        기본값 + observe layer7      (계산 없음)   0.11 / 0.11 / 0.11      10 /  10 /  10
+                       error-limit 10, mark-down</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 백업 서버 (backup)</div>
+  HAProxy 서버 줄에 <code>backup</code>을 붙인 서버입니다. 평소에는 요청을 받지 않고, 백업이 아닌 서버가 모두 쓸 수 없게 됐을 때만 부하 분산에 들어가요. 액티브-스탠바이를 HAProxy 설정 한 줄로 만드는 방법입니다.
+</div>
+
+<p>헬스 체크만으로 넘어가는 다섯 줄은 모두 5편의 계산 범위 안에 들었어요(통계를 50ms마다 읽어서 수십 ms 늦게 잡힌 몫이 있습니다). 실패 요청 수는 "초당 100건 &times; 판정까지 걸린 초"와 거의 같았습니다. 기본값 <code>inter 2s fall 3</code>에서는 고장 한 번에 중앙값으로 5.27초 동안, 요청 526건이 죽은 서버로 갔어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: observe layer7</div>
+  헬스 체크와 별개로, 실제 요청의 응답을 지켜보다가 연속 오류가 <code>error-limit</code>(기본 10)에 이르면 <code>on-error</code>에 정한 동작을 하는 HAProxy 서버 옵션입니다. <code>mark-down</code>이면 그 자리에서 서버를 DOWN으로 내려요. 100~499, 501, 505 말고는 오류로 칩니다.
+</div>
+
+<p>예상과 달랐던 줄이 둘 있어요. 하나는 <b>재시도를 켠 <code>fo_i2f3_redispatch</code>가 기본값과 똑같이 실패했다</b>는 겁니다. 503에 재시도하고 매번 다른 서버를 고르게 했는데도 실패가 줄지 않았어요. 매뉴얼에 따르면 <code>backup</code> 서버는 백업이 아닌 서버가 <b>모두</b> 쓸 수 없을 때만 부하 분산에 들어갑니다. <code>a</code>가 아직 UP으로 남아 있는 동안에는 재시도할 "다른 서버"가 없어서, 재시도가 전부 같은 <code>a</code>로 갔다고 봐요. 요청마다 어느 서버로 갔는지는 남기지 않았고, 실패 건수가 기본값과 같게 나온 데서 짐작한 것입니다. 요청 단위 재시도는 액티브-액티브에서만 이중화를 대신합니다.</p>
+
+<p>다른 하나는 <b><code>observe layer7</code>이 모든 시행에서 정확히 10건 만에 넘겼다</b>는 거예요. 헬스 체크 주기와 상관없이 실제 요청 10건이 연달아 실패한 순간(초당 100건이니 0.1초) DOWN이 됐습니다. 감지 시간이 검사 주기가 아니라 트래픽 양으로 정해지는 장치예요.</p>
+
+<h3>응답하지 않고 멈춘 서버는 더 늦게 잡힌다</h3>
+
+<p><code>a</code>를 <code>hang</code>(응답 없이 30초 멈춤)으로 바꿔 4번 더 돌렸어요. 이 설정의 <code>timeout check</code>는 1초라, 검사 하나가 실패로 끝나기까지 1초를 기다립니다.</p>
+
+<div class="obsv-code">listen            down일 때 DOWN 판정(중앙)    hang일 때 DOWN 판정(최소 / 중앙 / 최대)
+fo_i2f3           5.27초                       7.05 / 7.74 / 8.76
+fo_i1f3           2.65초                       5.36 / 5.68 / 6.05
+fo_i1f2           1.58초                       3.30 / 3.59 / 3.94
+fo_i2f3_fast      1.66초                       4.48 / 5.29 / 5.83
+fo_i500f3         1.15초                       4.21 / 4.32 / 4.48
+fo_i2f3_observe   0.11초                       7.11 / 7.65 / 8.13</div>
+
+<p>헬스 체크로만 넘어가는 다섯 줄은 2~4초씩 늦어졌고, 가장 빠르던 <code>inter 500ms</code>가 배수로는 가장 크게 밀렸어요(1.15초에서 4.32초, 3.8배). 검사 간격을 500ms로 줘도 검사 하나가 타임아웃 1초를 다 기다려야 실패로 끝나니, 간격을 줄인 효과가 사라진 겁니다. <code>observe</code>도 이번에는 도움이 안 됐어요. 응답이 아예 오지 않으면 HAProxy가 <code>timeout server</code>(5초)를 기다린 뒤에야 오류로 셀 수 있어서, 오류 10건이 쌓이기 전에 헬스 체크가 먼저 DOWN을 냈습니다.</p>
+
+<p>hang 시행의 실패 요청 수는 표에 넣지 않았어요. listen마다 스레드 4개로 보냈는데, 멈춘 서버로 간 요청이 5초씩 붙잡혀서 그동안 스레드가 다음 요청을 못 보냈기 때문입니다. 실패가 4~8건으로 찍혔지만 실제로 보내려던 요청은 수백 건이었어요. 실습-3에서 본 것과 같은 부하 생성기의 착시라, 이 경우는 DOWN 판정 시각만 믿을 수 있는 숫자로 봤습니다.</p>
+
+
+<h2>4. 포트는 열려 있는데 앱은 죽어 있다</h2>
+
+<p>마지막으로 복제본 셋을 라운드로빈으로 받는 listen 셋을 비교했어요. 검사 간격은 모두 <code>inter 1s fall 3 rise 2</code>로 같고, 검사 방식만 다릅니다.</p>
+
+<div class="obsv-code">chk_tcp       check                     TCP 연결만 본다(HAProxy 기본)
+chk_http      option httpchk GET /health  HTTP 응답 2xx/3xx만 정상
+chk_observe   chk_http + observe layer7 error-limit 10 on-error mark-down</div>
+
+<p>r1 하나를 30초 동안 고장 내고, listen마다 초당 150건을 보냈어요. 고장은 두 가지입니다.</p>
+
+<div class="obsv-code">r1 = down (모든 응답 503, 포트는 열림)
+listen        보냄    실패    실패율    HAProxy가 r1을 DOWN으로 판정
+chk_tcp       4,505   1,501   33.32%   판정 안 함 (30초 내내 UP)
+chk_http      4,505     131    2.91%   2.64초
+chk_observe   4,505      10    0.22%   0.22초
+
+r1 = gray (/work는 500, /health는 200)
+chk_tcp       4,511   1,503   33.32%   판정 안 함
+chk_http      4,510   1,503   33.33%   판정 안 함
+chk_observe   4,510     160    3.55%   0.22초에 처음 판정, 이후 UP과 DOWN을 반복</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: TCP 검사와 HTTP 검사</div>
+  TCP 검사는 서버 포트로 연결이 맺어지는지만 봅니다. HTTP 검사는 연결 뒤에 정해진 경로로 HTTP 요청을 보내 응답 코드까지 봐요. 프로세스는 살아 있고 앱만 고장 난 서버는 TCP 검사를 통과합니다.
+</div>
+
+<p>TCP 검사는 두 고장 모두 30초 내내 r1을 UP으로 봤고, 요청의 정확히 3분의 1이 실패했어요. <span class="obsv-mark">포트가 열려 있는 한 TCP 검사에게 그 서버는 정상</span>입니다. 5편의 표에서 TCP 검사가 못 잡은 회색 고장을 사람이 20분 뒤에 발견하면 한 달 예산의 154%를 쓴다고 계산한 게 이 상태예요.</p>
+
+<p>HTTP 검사는 <code>down</code>을 2.64초 만에 잡았지만 <code>gray</code>는 TCP 검사와 똑같이 놓쳤어요. <code>/health</code>가 200을 주는 한 HTTP 검사도 그 서버를 정상으로 봅니다. 앱 검사도 결국 <b>검사 경로가 실제 요청 경로를 얼마나 닮았느냐</b>만큼만 봐요.</p>
+
+<p><code>observe</code>를 붙인 listen이 두 고장 모두에서 가장 적게 실패했는데, <code>gray</code>에서는 모양이 특이했어요. 실패 160건을 시각순으로 묶어 보니 정확히 10건씩 16묶음이었고, 묶음 사이 간격이 2.0초였습니다. 실제 요청 10건이 실패하면 <code>mark-down</code>으로 내려가고, 그다음 헬스 체크(<code>/health</code>는 200)가 <code>rise 2</code>번 성공하면 2초 뒤 다시 UP으로 올라와 또 10건을 실패하는 순환이에요. 헬스 체크와 실제 요청이 서로 다른 답을 내는 동안 서버는 계속 들락날락하고, 그 사이 실패는 줄었지만 0이 되지는 않았습니다.</p>
+
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 이중화 가용성을 잴 때는 "하나라도 살아 있던 시간"과 "그 동안의 성공률"을 나눠 보면, 고장 일정의 문제(공통 원인)와 전환 장치의 문제가 따로 보여요.<br>
+  &bull; 라운드로빈만으로는 복제본을 늘려도 가용성이 오르지 않습니다. 헬스 체크든 요청 단위 재시도든 죽은 복제본을 비켜 가는 장치가 있어야 해요.<br>
+  &bull; 액티브-스탠바이에서 <code>retry-on</code>과 <code>redispatch</code>는 백업으로 가지 않습니다. 전환은 헬스 체크의 DOWN 판정이 정해요.<br>
+  &bull; <code>inter</code>를 줄일 때는 <code>timeout check</code>도 같이 봅니다. 멈춘 서버 앞에서는 타임아웃이 감지 시간을 정해요.<br>
+  &bull; 헬스 체크 경로가 실제 요청 경로와 다르게 답할 수 있으면 <code>observe layer7</code>을 함께 걸고, 서버가 들락날락하는지 통계 화면에서 확인합니다.
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>복제본 셋에 공통 원인 고장을 섞자 가용성은 β = 0에서 99.895%, 10%에서 99.449%, 50%에서 94.855%, 100%에서 89.773%로 떨어졌고, 하나라도 살아 있던 동안의 성공률은 늘 99.99% 이상이었어요.</b> 재시도는 독립 고장만 비켜 갔고, 함께 죽은 시간은 그대로 실패였습니다. 비켜 가는 장치가 없는 라운드로빈은 β와 상관없이 90%였어요.<br><br>
+  액티브-스탠바이 전환은 <code>inter</code>와 <code>fall</code>로 계산한 범위 안에서 일어났고(기본값에서 4.2~5.9초, 요청 416~581건 실패), 멈춘 서버 앞에서는 검사 타임아웃 때문에 2~4초 더 늦어졌어요. TCP 검사는 앱만 죽은 서버를 30초 내내 놓쳤고, HTTP 검사도 헬스 경로만 살아 있는 서버는 놓쳤습니다. 이중화는 복제본 수가 아니라, 무엇을 함께 쓰고 무엇으로 고장을 알아채느냐로 정해져요.
+</div>
+
+</div>

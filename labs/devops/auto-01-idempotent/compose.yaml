@@ -1,0 +1,39 @@
+# 운영 자동화 실습-1: 절차서를 그대로 옮긴 스크립트와 멱등한 스크립트를 두 번씩 돌린다.
+#   load ──→ web(nginx, 고객사마다 location 하나) ──→ app(파이썬 업스트림)
+#                │ /ops 의 스크립트가 여기서 돈다 (psql, flock, curl)
+#                └──→ db(PostgreSQL, tenants 테이블)
+# 호스트 포트는 36000번대만 쓴다.
+x-py: &py
+  image: python:3.13-alpine
+  mem_limit: 128m
+
+services:
+  db:
+    image: postgres:18.6-alpine
+    mem_limit: 256m
+    environment: { POSTGRES_PASSWORD: lab, POSTGRES_DB: ops }
+    volumes: ["./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro"]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, retries: 30 }
+
+  app:
+    <<: *py
+    command: ["python", "-u", "/app/app.py"]
+    volumes: ["./app:/app:ro"]
+
+  web:
+    build: ./web
+    # PID 1 이 tail 이라 멈춘 nginx 마스터가 좀비로 남고, pgrep 이 그 좀비를 잡아 "아직 안 내려감"으로 영원히 기다렸다.
+    # 좀비를 거둬 줄 init(tini)을 PID 1 로 둔다
+    init: true
+    image: obs-lab/auto-01-idempotent-web:dev
+    mem_limit: 128m
+    environment: { PGHOST: db, PGUSER: postgres, PGPASSWORD: lab, PGDATABASE: ops }
+    volumes: ["./ops:/ops:ro"]
+    ports: ["${WEB_PORT:-36080}:80"]
+    depends_on: { db: { condition: service_healthy }, app: { condition: service_started } }
+
+  load:
+    <<: *py
+    profiles: ["load"]
+    command: ["python", "-u", "/load/load.py"]
+    volumes: ["./load:/load:ro", "./out:/out"]

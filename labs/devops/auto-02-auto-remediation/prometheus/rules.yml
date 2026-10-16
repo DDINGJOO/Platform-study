@@ -1,0 +1,12 @@
+groups:
+  - name: app
+    rules:
+      - record: app:error_ratio:30s
+        expr: sum(rate(app_requests_total{result="error"}[30s])) / sum(rate(app_requests_total[30s]))
+      - alert: AppErrorRatioHigh
+        expr: app:error_ratio:30s > 0.05
+        for: 15s
+        labels: { severity: page, remediation: restart }
+        annotations:
+          summary: "app 실패율 {{ $value | humanizePercentage }} (기준 5%, 30초 창)"
+          runbook_url: "https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/auto-02-auto-remediation/RUNBOOK.md"

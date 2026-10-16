@@ -1,0 +1,418 @@
+<!-- lead: 팀마다 99%인 서비스 여섯 개를 한 줄로 이으면 사용자 성공률은 94.1%예요. 직렬·병렬·k-out-of-n 식과 그 가정, MTBF와 MTTR로 본 가용성, 재시도가 곱을 얼마나 되돌리는지를 직접 계산해 정리했어요. -->
+<!-- tags: 가용성 계산, 직렬 병렬, k-out-of-n, MTBF, 의존성 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📐 신뢰성 설계, 4편</div>
+  1편. 같은 장애도 측정 창과 분모를 바꾸면 SLO를 지킨다<br>
+  2편. 요청이 적은 서비스의 99.9%는 소음이다<br>
+  3편. 지연에 평균 더하기 3σ를 걸면 경고가 틀린다<br>
+  <b>4편. 가용성은 더하지 않고 곱한다</b> &larr; 지금 이 글<br>
+  5편. 이중화의 곱셈은 고장이 서로 모를 때만 성립한다<br>
+  실습-1. 같은 장애 기록을 네 가지 창으로 판정한다<br>
+  실습-2. 표본 수와 분포 모양이 경고를 몇 번 틀리게 하는지 센다<br>
+  실습-3. 의존 서비스를 한 줄로 이으면 성공률이 곱으로 준다<br>
+  실습-4. 복제본 셋이 같은 것에 기대면 이중화가 사라진다
+</div>
+
+<p>월요일 아침 장애 회의에서 각 팀이 지난주 대시보드를 띄웁니다. 게이트웨이 팀은 성공률 99%, 인증 팀도 99%, 주문, 재고, 결제, DB 팀도 모두 99% 근처예요. 누구도 자기 서비스를 원인으로 지목하지 않습니다. 그런데 고객 센터가 가져온 숫자는 결제 화면까지 간 주문 요청의 실패가 100건 중 6건쯤이라는 거예요.</p>
+
+<p>대시보드가 틀린 게 아닙니다. 요청 하나가 여섯 서비스를 차례로 지나야 성공하는 구조라면, 각자의 99%는 사용자 쪽에서 <b>곱해져서</b> 나타나요. 이번 편은 그 곱셈을 직접 해 봅니다. 한 줄로 이으면 왜 곱하나? 나란히 두면 무엇을 곱하나? "셋 중 둘은 살아 있어야 한다"는 어떻게 세나? 가용성을 장애 빈도와 복구 시간으로 쓰면 무엇이 보이나? 재시도는 이 곱을 얼마나 되돌리나?</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 직렬 구성의 가용성은 왜 곱이고, "더해도 되는" 경우는 언제인가?<br>
+  &bull; 병렬 구성과 k-out-of-n의 식, 그리고 식이 깔고 있는 가정<br>
+  &bull; MTBF는 무엇을 세는 숫자이고, 가용성과는 어떻게 이어지나?<br>
+  &bull; 재시도를 어디에 두면 곱이 얼마나 돌아오고, 무엇으로 값을 치르나?
+</div>
+
+<p>계산은 전부 파이썬으로 다시 돌렸어요. 스크립트와 출력은 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/rel-03-serial-chain">labs/observability/rel-03-serial-chain</a>의 <code>calc_concept.py</code>와 <code>out/concept-04.txt</code>에 있습니다.</p>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 한 줄로 이으면 성공 확률을 곱한다</h2>
+
+<p>사용자 요청이 게이트웨이, 인증, 주문, 재고, 결제, DB를 차례로 지난다고 해 볼게요. 이 요청이 성공하려면 여섯 곳이 <b>모두</b> 제 일을 해야 합니다. 한 곳이라도 실패하면 요청 전체가 실패해요. 이런 배치를 직렬 구성이라고 부릅니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 직렬 구성 (series system)</div>
+  구성 요소가 모두 동작해야 전체가 동작하는 배치입니다. 그림으로는 상자를 한 줄로 잇는데, 실제로 요청이 차례로 지나가는지는 상관없어요. 동시에 호출하더라도 "하나라도 실패하면 전체 실패"라면 직렬입니다.
+</div>
+
+<p>마지막 문장이 생각보다 자주 걸립니다. 상품 페이지 하나를 그리려고 추천, 리뷰, 재고, 가격 같은 백엔드 열 곳을 동시에 부르고, 하나라도 실패하면 페이지 전체를 에러로 돌려준다고 해 볼게요. 호출은 병렬로 나가지만 성공 조건은 직렬이라 0.99<sup>10</sup> = 90.4%입니다. 호출을 동시에 보내는 건 지연을 줄이는 선택이고, 실패 하나를 페이지 전체의 실패로 만들지 말지는 따로 정해야 하는 선택이에요.</p>
+
+<p>각 구성 요소가 성공할 확률을 R<sub>i</sub>라고 하면, 고장이 서로 독립일 때 전체 성공 확률은 곱입니다.</p>
+
+<div class="obsv-code">직렬:  R_전체 = R_1 &times; R_2 &times; ... &times; R_n
+
+0.99 여섯 개    = 0.99^6            = 0.941480   (94.1%)
+0.95, 0.96, 0.97 = 0.95 &times; 0.96 &times; 0.97 = 0.884640   (88.46%)</div>
+
+<p>두 번째 줄은 웹 서버, 앱 서버, DB를 직렬로 둔 교과서식 예제예요. 0.884640을 백분율로 소수 둘째 자리까지 반올림하면 88.46%입니다. 이 예제를 옮겨 적은 자료에서 88.47%라는 값을 본 적이 있는데, 끝자리 하나의 차이라도 숫자를 옮길 때마다 계산을 다시 해 보는 편이 안전해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 256" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="a41" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M14 60 C 46 61, 77 58, 110 60 C 109 80, 110 101, 110 122 C 77 124, 46 120, 14 121 C 13 101, 14 80, 14 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="62" y="88" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">게이트웨이</text>
+<text x="62" y="112" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">99%</text>
+<path d="M112 91 C 114 90, 121 91, 124 91" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a41)"/>
+<text x="62" y="160" font-family="Menlo, monospace" font-size="20" fill="#2e6b41" text-anchor="middle" font-weight="bold">99.0%</text>
+<path d="M126 60 C 158 59, 189 60, 222 61 C 221 80, 223 101, 222 122 C 189 121, 158 121, 127 122 C 125 101, 125 80, 126 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="174" y="88" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">인증</text>
+<text x="174" y="112" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">99%</text>
+<path d="M224 91 C 229 91, 233 92, 236 91" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a41)"/>
+<text x="174" y="160" font-family="Menlo, monospace" font-size="20" fill="#2e6b41" text-anchor="middle" font-weight="bold">98.0%</text>
+<path d="M238 60 C 270 60, 301 62, 334 60 C 334 80, 335 101, 334 122 C 301 123, 270 122, 238 121 C 237 101, 238 80, 238 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="286" y="88" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">주문</text>
+<text x="286" y="112" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">99%</text>
+<path d="M336 91 C 338 90, 342 90, 348 91" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a41)"/>
+<text x="286" y="160" font-family="Menlo, monospace" font-size="20" fill="#2e6b41" text-anchor="middle" font-weight="bold">97.0%</text>
+<path d="M350 60 C 382 61, 413 59, 446 60 C 445 80, 446 101, 447 122 C 413 123, 382 122, 349 122 C 349 101, 350 80, 350 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="398" y="88" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">재고</text>
+<text x="398" y="112" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">99%</text>
+<path d="M448 91 C 454 92, 456 92, 460 91" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a41)"/>
+<text x="398" y="160" font-family="Menlo, monospace" font-size="20" fill="#c07f18" text-anchor="middle" font-weight="bold">96.1%</text>
+<path d="M462 60 C 494 61, 525 61, 558 59 C 557 80, 558 101, 558 122 C 525 121, 494 124, 463 122 C 462 101, 462 80, 462 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="510" y="88" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">결제</text>
+<text x="510" y="112" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">99%</text>
+<path d="M560 91 C 566 91, 567 90, 572 91" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a41)"/>
+<text x="510" y="160" font-family="Menlo, monospace" font-size="20" fill="#b3502f" text-anchor="middle" font-weight="bold">95.1%</text>
+<path d="M574 60 C 606 60, 637 59, 670 60 C 671 80, 670 101, 669 122 C 637 124, 606 122, 573 121 C 573 101, 574 80, 574 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="622" y="88" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">DB</text>
+<text x="622" y="112" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">99%</text>
+<text x="622" y="160" font-family="Menlo, monospace" font-size="20" fill="#b3502f" text-anchor="middle" font-weight="bold">94.1%</text>
+<text x="350" y="34" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">요청 하나가 여섯 곳을 모두 지나야 성공한다</text>
+<text x="30" y="192" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="start">여기까지 성공할 확률 ↑ (0.99를 한 번씩 더 곱한 값)</text>
+<path d="M40 205 C 246 205, 447 205, 660 205" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="1 7"/>
+<text x="350" y="238" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">= 팀마다 99%로 초록인데, 사용자 요청은 100건 중 6건이 실패한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 각자 99%여도 여섯 번 곱하면 94.1%가 된다</div>
+
+<p>컨테이너 여섯 개를 이어 홉마다 1%씩 실패를 넣고 10만 건을 보낸 <a href="#rel-08">실습-3</a>에서는 94.190%가 나왔어요(95% 신뢰구간 &plusmn;0.145%p 안에 0.99<sup>6</sup>이 들어옵니다). 같은 실험에서 여섯째 홉이 받은 요청은 사용자 요청의 95.1%뿐이었습니다. 앞 홉에서 실패한 요청은 뒤 홉까지 오지 않으니, 뒤 홉이 자기 분모로 잰 성공률은 앞쪽 실패를 보지 못해요. 팀마다 99%인 대시보드가 거짓말을 한 게 아니라 각자 다른 분모를 본 겁니다.</p>
+
+<p>직렬 모형은 한 줄로 "고장률은 더하고 신뢰도는 곱한다"로 요약됩니다(NIST/SEMATECH e-Handbook of Statistical Methods, 8.1.8.2절). 이 식이 서려면 가정이 두 개 필요해요. 구성 요소는 적어도 첫 고장이 날 때까지 <b>서로 독립적으로</b> 동작하거나 고장 나고, <b>첫 고장이 곧 시스템 고장</b>이어야 합니다. 둘 중 하나라도 깨지면 곱은 틀립니다. 예를 들어 인증과 주문이 같은 DB를 쓰면 DB 장애 때 둘이 함께 실패하니 독립이 아니에요. 곱으로 셈하면 그 장애를 두 번 세게 됩니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 신뢰도 블록 다이어그램 (RBD, reliability block diagram)</div>
+  구성 요소를 상자로, "이 경로가 살아 있으면 전체가 산다"는 관계를 선으로 그린 그림입니다. 선이 한 줄이면 직렬, 갈라졌다 모이면 병렬이에요. 네트워크 구성도가 아니라 성공 조건을 그린 그림이라, 같은 시스템도 무엇을 성공으로 보느냐에 따라 그림이 달라집니다.
+</div>
+
+<p>용어 하나는 짚고 갈게요. 「SLO와 경고」 시리즈 <a href="https://dding-shark.tistory.com/616">5편</a>의 USL에도 "직렬"이 나오는데, 거기서는 한 번에 하나씩만 처리해야 하는 작업의 비율(직렬화 비율)을 뜻했습니다. 여기서 말하는 직렬은 성공 조건의 모양이라 전혀 다른 개념이에요.</p>
+
+<h3>"더하면 안 되나요?"에 대한 답</h3>
+
+<p>제목과 반대되는 이야기를 하나 해야 합니다. 가용성을 곱하는 대신 <b>비가용성(1 &minus; 가용성)을 더하는</b> 계산도 자주 쓰여요. 구글 SRE의 의존성 예산 계산이 대표적입니다(Treynor 외, 「The Calculus of Service Availability」, ACM Queue 2017). 99.99%짜리 서비스가 99.999%짜리 독립적인 치명적 의존성 다섯 개를 가지면, 의존성 몫의 연간 예산은 0.001% &times; 5 = 0.005%, 곧 26분이 됩니다. 365일 525,600분의 0.01%인 53분에서 26분을 빼면 서비스 자신에게 27분이 남는다는 계산이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 치명적 의존성 (critical dependency)</div>
+  그것이 오작동하면 내 서비스도 그대로 오작동하는 의존성입니다. 캐시가 죽어도 느려질 뿐 응답은 나간다면 그 캐시는 치명적 의존성이 아니에요. 직렬 곱에 들어가는 건 치명적 의존성뿐입니다.
+</div>
+
+<p>곱과 합은 비가용성이 작을 때 거의 같습니다. 곱을 전개하면 1 &minus; (u<sub>1</sub> + u<sub>2</sub> + ...) 뒤에 u끼리 곱한 항이 붙는데, u가 0.00001이면 그 항은 10<sup>&minus;10</sup> 수준이라 무시할 수 있어요. 직접 계산해 보면 차이가 언제 커지는지 보입니다.</p>
+
+<div class="obsv-code">구성                곱           1 &minus; (비가용성 합)    차이
+99.999% &times; 5개       0.99995000   0.99995000            1.0e-09
+99.9%   &times; 10개      0.99004488   0.99000000            4.5e-05
+99%     &times; 6개       0.94148015   0.94000000            1.5e-03
+90%     &times; 6개       0.53144100   0.40000000            1.3e-01</div>
+
+<p>9가 서너 개 붙는 목표를 다룰 때는 합으로 셈해도 됩니다. 계산이 쉽고 "예산을 나눠 준다"는 감각과도 맞아요. 반대로 90%나 99%처럼 비가용성이 큰 구성 요소가 여럿이면 합은 실제보다 비관적인 값을 냅니다. 곱이 정확한 식이고, <span class="obsv-mark">합은 비가용성이 작을 때만 쓸 수 있는 근사</span>예요.</p>
+
+<p>이 계산에는 흔한 오해가 하나 따라붙습니다. "의존성의 의존성은 9를 하나 더, 그다음은 둘 더"로 읽는 거예요. 그렇게 읽으면 안 됩니다(같은 글). 치명적 의존성은 트리의 몇 단계 아래에 있든 서비스를 똑같이 멈추니, 깊이와 상관없이 <b>고유한 의존성을 한 번씩만</b> 셉니다. 서비스 B가 트리에 두 번 나타나도 한 번이에요. 그래서 이 계산의 첫 단계는 식이 아니라 의존성 목록을 중복 없이 뽑는 일입니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 나란히 두면 실패 확률을 곱한다</h2>
+
+<p>이번에는 같은 일을 하는 복제본 세 개를 나란히 둡니다. 요청은 셋 중 아무 곳에서나 처리되면 성공해요. 실패하려면 <b>셋이 모두</b> 실패해야 합니다. 그래서 이번에는 성공이 아니라 실패 확률을 곱해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 병렬 구성 (parallel system, redundancy)</div>
+  구성 요소 중 하나만 동작해도 전체가 동작하는 배치입니다. 이중화, 다중화라고도 불러요. 전체가 실패하려면 모든 구성 요소가 함께 실패해야 합니다.
+</div>
+
+<div class="obsv-code">병렬:  R_전체 = 1 &minus; (1 &minus; R_1) &times; (1 &minus; R_2) &times; ... &times; (1 &minus; R_n)
+
+0.9 세 개  = 1 &minus; 0.1 &times; 0.1 &times; 0.1 = 0.999   (99.9%)</div>
+
+<p>90%짜리 셋으로 99.9%를 만든다는 계산이라, 이중화를 설명할 때 가장 자주 나오는 예입니다. 그런데 병렬 모형에도 가정이 붙어 있어요. 모든 구성 요소가 <b>신뢰성 측면에서 서로 독립적으로</b> 동작하고, 하나라도 동작하는 동안은 시스템이 동작한다는 가정입니다(NIST e-Handbook 8.1.8.3절).</p>
+
+<p>운영하는 사람 눈으로 보면 이 두 문장에 조건이 세 개 숨어 있습니다. 세 복제본이 같은 원인으로 함께 죽지 않아야 하고, 살아 있는 복제본에 요청이 <b>즉시</b> 가야 하고, 남은 한 대가 <b>전체 부하를</b> 받을 수 있어야 해요. 셋 다 공짜가 아닙니다. 첫째와 둘째는 <a href="#rel-05">5편</a>에서 따로 다루고, 셋째는 다음 절의 k-out-of-n으로 이어져요.</p>
+
+<p>99.9%짜리 저장소에 사본을 셋 두면, 인스턴스 고장의 상관이 0일 때 이론상 9가 아홉 개입니다. 실제로는 상관이 0인 경우가 없어서(여러 셀을 한꺼번에 덮치는 백본 네트워크 장애가 예예요) 아홉 개 근처에도 못 가고, 그래도 9 셋보다는 훨씬 높습니다(Treynor 외 2017). 병렬식의 숫자는 상한이고, 실제 값은 고장이 얼마나 서로 엮여 있느냐에 달려 있다는 뜻이에요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. "셋 중 둘은 살아 있어야" 세는 법</h2>
+
+<p>복제본 셋을 두었지만 피크 트래픽을 받으려면 두 대가 필요하다고 해 볼게요. 한 대만 남으면 그 한 대가 과부하로 무너집니다. 이때 "하나만 살아도 성공"이라는 병렬식은 틀린 질문에 대한 답이에요. 물어야 하는 건 "셋 중 <b>둘 이상</b> 살아 있을 확률"입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: k-out-of-n 구성</div>
+  n개 중 아무거나 k개 이상이 동작하면 전체가 동작하는 배치입니다. k = 1이면 병렬, k = n이면 직렬이에요. 둘 사이의 모든 경우를 이 식 하나로 셀 수 있습니다.
+</div>
+
+<p>구성 요소가 모두 같은 신뢰도 R을 갖고 서로 독립이라면, 살아 있는 개수는 이항 분포를 따릅니다(NIST 핸드북 8.1.8.4절).</p>
+
+<div class="obsv-code">R_전체 = &sum;(i = k ... n)  C(n, i) &times; R^i &times; (1 &minus; R)^(n &minus; i)
+
+2-out-of-3, R = 0.9
+  i = 2 :  C(3,2) &times; 0.9^2 &times; 0.1 = 3 &times; 0.081 = 0.243
+  i = 3 :  C(3,3) &times; 0.9^3       = 1 &times; 0.729 = 0.729
+  합                                         = 0.972   (97.2%)</div>
+
+<p>C(n, i)는 이항계수예요. n개 중 i개를 고르는 방법의 수입니다. "셋 중 둘이 산다"는 사건에는 (1, 2가 살고 3이 죽음), (1, 3), (2, 3)의 세 가지 경우가 있어서 0.081에 3을 곱해야 해요. 검산 삼아 같은 조건을 난수로 100만 번 굴려 보면 0.97203이 나옵니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 이항계수를 빼면 이중화가 해가 된다</div>
+  &bull; 이항계수를 빼고 R<sup>i</sup>(1 &minus; R)<sup>n&minus;i</sup>만 더하면 2-out-of-3은 0.810, 1-out-of-3은 0.819가 나옵니다.<br>
+  &bull; 둘 다 <b>복제본 한 대(0.9)보다 낮아요.</b> 복제본을 늘렸더니 가용성이 떨어지는 결과라 식이 틀렸다는 신호입니다.<br>
+  &bull; 식을 옮겨 적을 때는 k = 1(병렬식과 같아야 함)과 k = n(직렬식과 같아야 함)을 넣어 보면 바로 검산돼요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="a42" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">같은 부품 셋(각각 90%), 배치만 다르다</text>
+<text x="115" y="70" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">직렬: 셋 다 살아야</text>
+<path d="M24 100 C 40 102, 57 100, 74 101 C 75 113, 73 126, 74 140 C 57 141, 40 140, 24 140 C 23 126, 24 113, 24 100 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="49" y="126" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">0.9</text>
+<path d="M76 120 C 79 122, 84 119, 86 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a42)"/>
+<path d="M88 100 C 104 100, 121 99, 138 101 C 139 113, 138 126, 138 140 C 121 140, 104 139, 89 140 C 89 126, 88 113, 88 100 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="113" y="126" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">0.9</text>
+<path d="M140 120 C 141 119, 145 122, 150 120" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a42)"/>
+<path d="M152 100 C 168 102, 185 101, 202 100 C 201 113, 203 126, 203 140 C 185 138, 168 140, 151 141 C 153 126, 151 113, 152 100 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="177" y="126" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">0.9</text>
+<text x="115" y="200" font-family="Menlo, monospace" font-size="17" fill="#8a8272" text-anchor="middle">0.9³</text>
+<text x="115" y="236" font-family="Menlo, monospace" font-size="26" fill="#b3502f" text-anchor="middle" font-weight="bold">72.9%</text>
+<text x="345" y="70" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">병렬: 하나만 살아도</text>
+<path d="M320 86 C 336 86, 353 86, 370 86 C 371 95, 370 104, 369 114 C 353 114, 336 115, 319 114 C 321 104, 320 95, 320 86 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="105" font-family="Menlo, monospace" font-size="15" fill="#3d3a34" text-anchor="middle">0.9</text>
+<path d="M270 134 C 286 123, 300 110, 318 100" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M372 100 C 387 112, 403 121, 420 134" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M320 120 C 336 118, 353 121, 370 119 C 371 129, 371 138, 369 148 C 353 147, 336 149, 319 147 C 321 138, 320 129, 320 120 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="139" font-family="Menlo, monospace" font-size="15" fill="#3d3a34" text-anchor="middle">0.9</text>
+<path d="M270 134 C 286 135, 303 133, 318 134" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M372 134 C 386 134, 403 134, 420 134" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M320 154 C 336 155, 353 155, 370 155 C 369 163, 370 172, 370 182 C 353 183, 336 181, 319 182 C 320 172, 320 163, 320 154 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="173" font-family="Menlo, monospace" font-size="15" fill="#3d3a34" text-anchor="middle">0.9</text>
+<path d="M270 134 C 285 147, 301 158, 318 168" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M372 168 C 388 155, 406 147, 420 134" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<text x="345" y="200" font-family="Menlo, monospace" font-size="17" fill="#8a8272" text-anchor="middle">1 − 0.1³</text>
+<text x="345" y="236" font-family="Menlo, monospace" font-size="26" fill="#2e6b41" text-anchor="middle" font-weight="bold">99.9%</text>
+<text x="580" y="70" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">2-out-of-3: 둘은 살아야</text>
+<path d="M555 86 C 572 88, 588 88, 605 87 C 604 95, 605 104, 604 114 C 588 114, 572 112, 555 115 C 555 104, 556 95, 555 86 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="105" font-family="Menlo, monospace" font-size="15" fill="#3d3a34" text-anchor="middle">0.9</text>
+<path d="M505 134 C 521 122, 539 114, 553 100" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M607 100 C 623 112, 637 122, 655 134" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M555 120 C 572 122, 588 120, 605 120 C 605 129, 604 138, 605 148 C 588 148, 572 149, 554 149 C 554 138, 554 129, 555 120 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="139" font-family="Menlo, monospace" font-size="15" fill="#3d3a34" text-anchor="middle">0.9</text>
+<path d="M505 134 C 521 135, 536 132, 553 134" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M607 134 C 624 133, 639 134, 655 134" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M555 154 C 572 154, 588 154, 605 154 C 606 163, 604 172, 605 182 C 588 181, 572 182, 555 182 C 555 172, 556 163, 555 154 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="173" font-family="Menlo, monospace" font-size="15" fill="#3d3a34" text-anchor="middle">0.9</text>
+<path d="M505 134 C 519 145, 539 158, 553 168" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M607 168 C 621 156, 638 147, 655 134" fill="none" stroke="#8a8272" stroke-width="1.5" stroke-linecap="round"/>
+<text x="580" y="200" font-family="Menlo, monospace" font-size="16" fill="#8a8272" text-anchor="middle">3·0.9²·0.1 + 0.9³</text>
+<text x="580" y="236" font-family="Menlo, monospace" font-size="26" fill="#c07f18" text-anchor="middle" font-weight="bold">97.2%</text>
+<path d="M235 60 C 237 123, 234 181, 235 245" fill="none" stroke="#8a8272" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="8 8"/>
+<text x="350" y="282" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">= 몇 대가 살아야 "성공"인지가 숫자를 정한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 부품은 같고 "몇 대가 살아야 성공인가"만 바꿨다</div>
+
+<p>이 식이 실무에서 중요한 이유는 <b>용량 전제</b>를 숫자로 드러내기 때문이에요. 한 대 가용성이 99%인 복제본 셋을 두고, 피크에 몇 대가 필요한지만 바꿔 보면 이렇습니다.</p>
+
+<div class="obsv-code">한 대 가용성 0.99, 복제본 3대
+
+피크에 1대면 충분   1-out-of-3   99.9999%
+피크에 2대 필요     2-out-of-3   99.9702%
+피크에 3대 필요     3-out-of-3   97.0299%   &larr; 한 대(99%)보다 낮다</div>
+
+<p>세 대가 모두 있어야 피크를 받는 구성은 이중화가 아니라 직렬이에요. 복제본이 늘수록 "한 대라도 빠지면 과부하"가 될 확률이 커져서 한 대일 때보다 나빠집니다. <span class="obsv-mark">복제본 수가 아니라 남는 용량이 가용성을 정합니다.</span> 피크에 필요한 N대에 계획된 정지와 계획되지 않은 정지 몫을 더해 N+2를 두는 계산은 「SLO와 경고」 시리즈 <a href="https://dding-shark.tistory.com/617">6편</a>에서 다뤘어요.</p>
+
+<h3>섞인 구성은 블록 단위로 접어서 센다</h3>
+
+<p>실제 시스템은 직렬과 병렬이 섞여 있어요. 계산은 안쪽 블록부터 하나의 숫자로 접어 가면 됩니다. 게이트웨이(99.95%) 뒤에 앱 복제본 세 대(각 99%, 피크에 두 대 필요)가 있고, 그 뒤에 DB(99.95%)가 있는 구성을 접어 볼게요.</p>
+
+<div class="obsv-code">1단계  앱 계층을 하나로 접는다    2-out-of-3, R = 0.99       = 0.999702
+2단계  남은 직렬 셋을 곱한다       0.9995 &times; 0.999702 &times; 0.9995 = 0.998703
+
+앱 계층을 1-out-of-3로 잘못 세면            0.998999
+게이트웨이와 DB만 곱하면                     0.999000
+전체 비가용성 중 앱 계층의 몫                23.0%</div>
+
+<p>복제본 셋을 둔 앱 계층이 이 구성 비가용성의 4분의 1쯤을 차지합니다. 피크에 두 대가 필요하다는 용량 전제 때문이에요. 앱 계층을 "하나만 살면 된다"로 세면 그 몫이 거의 0으로 보이고, 개선할 곳을 엉뚱하게 고르게 됩니다. 그리고 남은 77%는 게이트웨이와 DB, 곧 이중화가 없는 직렬 구간에서 나와요. 9를 하나 더 얻고 싶다면 복제본이 셋인 곳보다 하나인 곳을 먼저 봐야 합니다.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 같은 가용성, 다른 장애: MTBF와 MTTR</h2>
+
+<p>지금까지는 가용성을 "성공할 확률" 하나로 다뤘습니다. 그런데 99.72%라는 숫자만으로는 한 달에 두 시간짜리 장애가 한 번 났는지, 1분짜리 장애가 120번 났는지 알 수 없어요. 둘은 대응 방법이 완전히 다릅니다. 그래서 가용성을 장애의 <b>빈도</b>와 <b>길이</b>로 나눠 적어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: MTBF, MTTF, MTTR</div>
+  MTBF(mean time between failures)는 고장과 고장 사이에 정상으로 돌아간 시간의 평균, MTTF(mean time to failure)는 정상 상태에서 다음 고장까지의 평균 시간, MTTR은 고장 난 뒤 정상으로 돌아오기까지의 평균 시간입니다. 고쳐 쓰는 시스템에서 "가동 시간 합 &divide; 고장 횟수"로 센 MTBF는 MTTF와 같은 값이 돼요.
+</div>
+
+<p>가동과 고장이 번갈아 오는 시스템이라면 한 주기는 "MTBF만큼 돌고 MTTR만큼 멈춤"이니, 가용성은 그 비율입니다. 같은 식을 MTTF/(MTTF + MTTR)로 쓰기도 하는데, 이때 장애 길이는 사용자가 겪은 기준(오작동 시작부터 정상 동작 복귀까지)으로 잽니다(Treynor 외 2017).</p>
+
+<div class="obsv-code">가용성 = MTBF / (MTBF + MTTR)
+
+30일(43,200분)에 40분짜리 장애 3번
+  MTBF = (43,200 &minus; 120) / 3 = 14,360분
+  MTTR = 120 / 3        = 40분
+  가용성 = 14,360 / 14,400 = 0.997222   (실제 가동 비율과 같다)</div>
+
+<p>여기서 MTBF를 세는 방법이 갈립니다. 셋을 비교해 볼게요.</p>
+
+<div class="obsv-code">MTBF를 센 방법                       값        식에 넣은 가용성
+가동 시간 합 &divide; 고장 수                14,360분   0.997222   맞음
+기간 &divide; 고장 수                        14,400분   0.997230   조금 높게 나옴
+고장 시작 시각 사이 간격의 평균          14,400분   0.997230   조금 높게 나옴
+  (이 값은 MTTF + MTTR 이다. 이 정의를 쓴다면 가용성 = (간격 &minus; MTTR) / 간격 = 0.997222)</div>
+
+<p>이 예에서는 차이가 소수 다섯째 자리라 작아 보이지만, 정의가 섞이면 장애 길이를 두 번 세거나 한 번도 안 세게 됩니다. 장애가 길고 잦은 서비스일수록 차이가 커져요. 그리고 "기간 &divide; 고장 수"는 고장 난 시간까지 정상 시간으로 쳐 주는 셈이라, 운영 지표로 쓸 때는 어느 쪽인지 대시보드에 적어 두는 게 좋습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 같은 99.72%를 만드는 세 가지 장애</div>
+  &bull; 30일에 120분짜리 1번: MTBF 43,080분. 드물지만 한 번 나면 한 시간 넘게 지속돼요. 복구 절차와 사람이 문제입니다.<br>
+  &bull; 30일에 10분짜리 12번: MTBF 3,590분. 매주 몇 번씩 납니다. 원인 제거가 문제예요.<br>
+  &bull; 30일에 1분짜리 120번: MTBF 359분. 하루 네 번꼴이에요. 탐지보다 빠르게 끝나서 경고조차 안 울릴 수 있습니다.<br>
+  &bull; 셋 다 가용성은 0.997222로 같아요. 가용성 하나만 보고하면 이 차이가 사라집니다.
+</div>
+
+<p>이 식에서 나오는 결론이 하나 더 있어요. 서비스는 "장애 빈도 &times; 탐지와 복구 시간"이 정하는 한도보다 가용할 수 없습니다(Treynor 외 2017). 1년에 20분짜리 전면 장애가 세 번이면 60분이고, 나머지 시간이 완벽해도 연 53분이 한도인 99.99%는 불가능해요. 그래서 9를 하나 더 얻는 방법은 셋으로 정리됩니다. 장애를 덜 나게 하고(MTBF를 늘리고), 장애가 나도 일부만 영향받게 하고, 빨리 복구하는(MTTR을 줄이는) 거예요. MTTR의 R이 무엇의 약자인지, 그 시간을 어디서부터 재는지는 「장애 대응」 시리즈 <a href="https://dding-shark.tistory.com/629">4편</a>에서 정리했습니다.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 재시도는 곱을 얼마나 되돌리나</h2>
+
+<p>다시 1장의 여섯 홉 체인으로 돌아갑니다. 94.1%가 불만이라면 가장 먼저 떠오르는 처방이 재시도예요. 실패하면 한 번 더 보내면 되니까요. 재시도를 어디에 두느냐에 따라 결과가 꽤 다릅니다. 홉마다 성공 확률 99%, 실패는 <b>시도마다 독립</b>이라고 두고 세 가지를 계산했어요.</p>
+
+<div class="obsv-code">N   재시도 없음   맨 앞(사용자 쪽)에서 1회      홉마다 다음 홉 호출을 1회
+                 성공률     시도 수            성공률
+1   0.990000     0.999900   1.0100배           0.990000
+2   0.980100     0.999604   1.0199배           0.989901
+3   0.970299     0.999118   1.0297배           0.989899
+4   0.960596     0.998447   1.0394배           0.989899
+5   0.950990     0.997598   1.0490배           0.989899
+6   0.941480     0.996575   1.0585배           0.989899</div>
+
+<p>맨 앞에서 한 번 재시도하면 체인 전체를 한 번 더 지나니 실패 확률이 제곱이 돼요. 0.0585가 0.0034가 되고, 대가로 요청이 5.85% 늘어납니다. 홉마다 재시도하는 쪽은 뜻밖의 결과가 나왔어요. 체인을 아무리 길게 해도 성공률이 <b>99.0%에서 멈춥니다.</b></p>
+
+<p>이유는 첫 홉에 있습니다. 둘째 홉부터는 실패하면 바로 위 홉이 다시 보내 주지만, 첫 홉 자신의 실패는 다시 보내 줄 위 홉이 없어요. 사용자 쪽 재시도가 없으면 그 1%가 그대로 남습니다. 대신 정상일 때 비용은 거의 없어요. 계산상 홉마다 받는 요청 수는 사용자 요청 하나당 1.0000 근처입니다. 아래 홉의 실패가 1%라 재시도도 1%만큼만 생기고, 위 홉의 실패가 그만큼 요청을 덜 내려보내서 서로 상쇄돼요. 같은 조건을 난수로 100만 번 돌린 검산은 성공 0.989856이었고, 컨테이너 여섯 개로 10만 건씩 잰 <a href="#rel-08">실습-3</a>에서도 N = 1부터 6까지 98.95~99.03%로 나왔어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 348" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+
+<path d="M90 254 C 90 169, 90 105, 90 40" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M86 250 C 284 250, 432 251, 580 250" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="80" y="255" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">94%</text>
+<text x="80" y="188" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">96%</text>
+<path d="M90 183 C 249 181, 408 183, 570 183" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="80" y="122" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">98%</text>
+<path d="M90 117 C 249 118, 405 115, 570 117" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="80" y="55" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="end">100%</text>
+<path d="M90 50 C 247 50, 406 50, 570 50" fill="none" stroke="#d8cfba" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="90" y="272" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">1</text>
+<text x="184" y="272" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">2</text>
+<text x="278" y="272" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">3</text>
+<text x="372" y="272" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">4</text>
+<text x="466" y="272" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">5</text>
+<text x="560" y="272" font-family="Menlo, monospace" font-size="15" fill="#8a8272" text-anchor="middle">6</text>
+<text x="325" y="294" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">한 줄로 이은 홉 수 N (홉마다 성공 99%)</text>
+<path d="M90 83 C 128 97, 156 106, 184 116 C 222 130, 250 138, 278 149 C 316 162, 344 173, 372 181 C 410 195, 438 203, 466 213 C 504 226, 532 235, 560 245" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M87.0 83.3 C 87.0 79.4, 93.0 79.4, 93.0 83.3 C 93.0 87.2, 87.0 87.2, 87.0 83.3 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<path d="M181.0 116.3 C 181.0 112.4, 187.0 112.4, 187.0 116.3 C 187.0 120.2, 181.0 120.2, 181.0 116.3 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<path d="M275.0 149.0 C 275.0 145.1, 281.0 145.1, 281.0 149.0 C 281.0 152.9, 275.0 152.9, 275.0 149.0 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<path d="M369.0 181.3 C 369.0 177.4, 375.0 177.4, 375.0 181.3 C 375.0 185.2, 369.0 185.2, 369.0 181.3 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<path d="M463.0 213.4 C 463.0 209.5, 469.0 209.5, 469.0 213.4 C 469.0 217.3, 463.0 217.3, 463.0 213.4 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<path d="M557.0 245.1 C 557.0 241.2, 563.0 241.2, 563.0 245.1 C 563.0 249.0, 557.0 249.0, 557.0 245.1 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1"/>
+<text x="572" y="251" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#e5533c" text-anchor="start">재시도 없음 94.1%</text>
+<path d="M90 50 C 128 49, 156 52, 184 51 C 222 52, 250 52, 278 53 C 316 55, 344 55, 372 55 C 410 56, 438 56, 466 58 C 504 58, 532 62, 560 61" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M87.0 50.3 C 87.0 46.4, 93.0 46.4, 93.0 50.3 C 93.0 54.2, 87.0 54.2, 87.0 50.3 Z" fill="#5a9e6f" stroke="#5a9e6f" stroke-width="1"/>
+<path d="M181.0 51.3 C 181.0 47.4, 187.0 47.4, 187.0 51.3 C 187.0 55.2, 181.0 55.2, 181.0 51.3 Z" fill="#5a9e6f" stroke="#5a9e6f" stroke-width="1"/>
+<path d="M275.0 52.9 C 275.0 49.0, 281.0 49.0, 281.0 52.9 C 281.0 56.8, 275.0 56.8, 275.0 52.9 Z" fill="#5a9e6f" stroke="#5a9e6f" stroke-width="1"/>
+<path d="M369.0 55.2 C 369.0 51.3, 375.0 51.3, 375.0 55.2 C 375.0 59.1, 369.0 59.1, 369.0 55.2 Z" fill="#5a9e6f" stroke="#5a9e6f" stroke-width="1"/>
+<path d="M463.0 58.0 C 463.0 54.1, 469.0 54.1, 469.0 58.0 C 469.0 61.9, 463.0 61.9, 463.0 58.0 Z" fill="#5a9e6f" stroke="#5a9e6f" stroke-width="1"/>
+<path d="M557.0 61.4 C 557.0 57.5, 563.0 57.5, 563.0 61.4 C 563.0 65.3, 557.0 65.3, 557.0 61.4 Z" fill="#5a9e6f" stroke="#5a9e6f" stroke-width="1"/>
+<text x="572" y="53" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#5a9e6f" text-anchor="start">맨 앞에서 1회 99.7%</text>
+<path d="M90 83 C 128 85, 156 83, 184 83 C 222 84, 250 84, 278 83 C 316 82, 344 82, 372 83 C 410 83, 438 85, 466 83 C 504 84, 532 84, 560 83" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M87.0 83.3 C 87.0 79.4, 93.0 79.4, 93.0 83.3 C 93.0 87.2, 87.0 87.2, 87.0 83.3 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1"/>
+<path d="M181.0 83.3 C 181.0 79.4, 187.0 79.4, 187.0 83.3 C 187.0 87.2, 181.0 87.2, 181.0 83.3 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1"/>
+<path d="M275.0 83.3 C 275.0 79.4, 281.0 79.4, 281.0 83.3 C 281.0 87.2, 275.0 87.2, 275.0 83.3 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1"/>
+<path d="M369.0 83.3 C 369.0 79.4, 375.0 79.4, 375.0 83.3 C 375.0 87.2, 369.0 87.2, 369.0 83.3 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1"/>
+<path d="M463.0 83.3 C 463.0 79.4, 469.0 79.4, 469.0 83.3 C 469.0 87.2, 463.0 87.2, 463.0 83.3 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1"/>
+<path d="M557.0 83.3 C 557.0 79.4, 563.0 79.4, 563.0 83.3 C 563.0 87.2, 557.0 87.2, 557.0 83.3 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1"/>
+<text x="572" y="105" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="start">홉마다 1회 99.0%</text>
+<text x="330" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">같은 1% 실패, 재시도를 어디에 두느냐</text>
+<text x="350" y="330" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 홉마다 재시도해도 입구 홉 자신의 1%는 아무도 다시 보내지 않는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 재시도는 곱을 되돌리지만, 아무도 다시 보내지 않는 자리는 남는다</div>
+
+<p>여기까지는 좋은 소식이고, 대가는 두 군데서 나옵니다.</p>
+
+<p><b>첫째, 이 계산은 실패가 시도마다 독립이라고 가정했어요.</b> 홉 하나가 잠깐 통째로 죽어 있는 동안에는 즉시 다시 보내도 같은 곳에서 또 실패합니다. 재시도가 되돌리는 건 "던질 때마다 1%"인 실패뿐이고, "시간의 1% 동안 0%"인 실패는 그대로 남아요. 홉마다 시간의 1%씩 죽어 있는 체인이라면 재시도 한 번을 붙여도 0.99<sup>6</sup> = 94.1% 근처에 머물러야 해요. <a href="#rel-08">실습-3</a>의 다섯 번 실행에서 홉마다 재시도를 붙인 성공률은 94.9~96.0%였습니다. 같은 재시도가 무작위 1% 실패에서는 99.0%까지 되돌렸으니, 시간에 몰린 실패 앞에서는 94.1%에서 2%p도 채 못 끌어올린 셈이에요. 홉마다 100ms 슬롯의 1%를 통째로 죽인 실행을 나눠 보면, 어느 홉이 죽어 있을 때 보낸 요청은 홉마다 재시도를 해도 9.97%(슬롯을 1초로 늘리면 0.82%)만 살아났습니다. 운영에서 만나는 실패는 대개 둘이 섞여 있어요.</p>
+
+<p><b>둘째, 정상일 때 싼 재시도가 아플 때는 비쌉니다.</b> 홉마다 한 번씩 재시도하면 맨 아래 홉이 다 실패하는 최악의 경우 요청이 계층마다 두 배가 돼요. 여섯 홉이면 맨 아래는 2<sup>5</sup> = 32배를 받습니다. 이 부하 증폭과 재시도 예산은 「트래픽 관리」 시리즈 <a href="https://dding-shark.tistory.com/583">5편</a>과 <a href="https://dding-shark.tistory.com/607">실습-5</a>에서 다뤘으니 여기서는 성공 확률 쪽만 봤어요. 정리하면 재시도는 독립적인 실패를 곱에서 지워 주는 대신, 독립이 아닌 실패 앞에서는 부하만 늘립니다.</p>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 곱과 실측이 어긋나면 그 차이가 단서다</h2>
+
+<p>식을 배웠으니 거꾸로 써 볼 수도 있어요. 호출하는 쪽에서 의존성마다 성공률을 재고, 그 곱을 사용자 쪽에서 잰 전체 성공률과 비교하는 겁니다. 고장이 정말 독립이고 목록이 빠짐없다면 둘은 비슷해야 해요. 어긋난다면 어느 쪽으로 어긋났는지가 정보입니다.</p>
+
+<div class="obsv-code">곱(의존성별 성공률)  vs  사용자 쪽 전체 성공률
+
+전체 &gt; 곱   실패가 같은 요청, 같은 시간대에 겹쳐 있다
+            예: DB가 느려진 1분 동안 인증과 주문이 함께 실패했다
+            곱은 그 1분을 두 번 셌고, 사용자는 한 번 겪었다
+
+전체 &lt; 곱   목록에 없는 실패가 있다
+            예: 의존성 사이의 네트워크, 게이트웨이 타임아웃, 직렬화 오류,
+                의존성은 성공했는데 응답을 합치다 실패한 경우</div>
+
+<p>첫 번째 경우가 1장에서 말한 "독립 가정이 깨진" 상태입니다. 곱이 비관적으로 나오니 당장은 해가 없어 보이지만, 같은 원인이 이중화 쪽에서도 작동한다는 신호예요. 직렬에서 실패가 겹치면 곱이 실제보다 나쁘게 나오고, 병렬에서 실패가 겹치면 곱이 실제보다 <b>좋게</b> 나옵니다. 앞의 것은 숫자를 보수적으로 만들고, 뒤의 것은 숫자를 믿을 수 없게 만들어요. <a href="#rel-05">5편</a>에서 이 방향을 다룹니다.</p>
+
+<p>두 번째 경우는 의존성 목록이 실제 경로보다 짧다는 뜻이에요. 서비스 지도를 설계 문서가 아니라 트레이스로 그려 보면 목록에 없던 호출이 보이는 경우가 많습니다(「추적과 디버깅」 시리즈 <a href="https://dding-shark.tistory.com/586">실습-1</a>에서 서비스 그래프가 기동 시 스키마 초기화 호출까지 그려 낸 것이 그런 예였어요).</p>
+
+<p>비교할 때 조심할 점이 셋 있습니다. 먼저 <b>분모를 맞춰야</b> 해요. 사용자 쪽 성공률은 사용자 요청 수가 분모인데, 의존성 쪽은 재시도까지 포함한 호출 수가 분모일 수 있습니다. 재시도가 있는 구간은 "재시도 끝에 성공한 호출"을 한 번의 성공으로 세야 사용자 쪽과 같은 단위가 돼요. 다음으로 <b>모든 요청이 모든 의존성을 지나지는 않습니다.</b> 재고가 없으면 결제는 호출되지 않으니, 결제 성공률은 결제까지 간 요청 중의 비율이에요. 곱은 같은 경로를 지난 요청끼리 해야 합니다. 마지막으로 <b>창을 맞춰야</b> 해요. 하루치 의존성 성공률과 한 시간치 사용자 성공률을 곱하고 비교하면 장애가 낀 시간대에 따라 아무 결론이나 나옵니다. 측정 창이 숫자를 바꾸는 이야기는 <a href="#rel-01">1편</a>에서 다뤘어요.</p>
+
+<p>이 비교는 대단한 장치 없이도 할 수 있습니다. 호출하는 쪽의 HTTP 클라이언트 지표(대상별 요청 수와 실패 수)와 진입점의 요청 지표만 있으면 돼요. 한 번 계산해 두면, 다음 장애 회의에서 "각 팀이 99%인데 왜 사용자는 94%냐"는 질문에 곱셈 한 줄로 답할 수 있고, 그 한 줄로 설명되지 않는 차이가 다음에 파야 할 곳이 됩니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 요청 경로마다 치명적 의존성 목록을 중복 없이 뽑고, 각 성공률을 <b>호출하는 쪽</b>에서 잽니다. 의존 서비스가 스스로 보고한 99%와 내가 받은 99%는 네트워크와 타임아웃만큼 달라요.<br>
+  &bull; 목록에서 치명적이지 않게 바꿀 수 있는 것을 고릅니다. 캐시된 값으로 응답하기, 비동기로 돌리기, 실패하면 기능을 줄여 응답하기가 그 방법이에요(Treynor 외 2017).<br>
+  &bull; 9를 셀 때 99.9% 이상끼리는 비가용성을 더해도 되지만, 99%나 90% 같은 값이 섞이면 곱으로 계산합니다.<br>
+  &bull; 이중화 가용성을 적을 때는 "피크에 몇 대가 필요한가"를 같이 적고 k-out-of-n으로 셉니다.<br>
+  &bull; 가용성 옆에 장애 횟수와 평균 길이를 같이 보고하고, MTBF를 어떻게 셌는지 적어 둡니다.
+</div>
+
+<!-- ================= 요약 ================= -->
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>모두 성공해야 하는 직렬은 성공 확률을 곱하고, 하나만 살면 되는 병렬은 실패 확률을 곱해요.</b> 99% 여섯 개를 이으면 94.1%이고, 90% 셋을 나란히 두면 99.9%예요. 비가용성이 작을 때는 더해도 되지만 그건 곱의 근사입니다. 셋 중 둘이 필요하면 이항계수를 넣어 97.2%로 세고, 셋 다 필요하면 한 대보다 나빠져요.<br><br>
+  가용성은 MTBF와 MTTR로 나눠 적어야 장애의 모양이 보이고, 재시도는 시도마다 독립인 실패만 곱에서 지웁니다. 모든 식은 고장이 서로 독립이라는 가정 위에 서 있어요. 곱셈을 믿기 전에 무엇이 함께 죽는지부터 셉니다.
+</div>
+
+</div>

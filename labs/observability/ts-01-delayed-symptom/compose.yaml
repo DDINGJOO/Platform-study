@@ -1,0 +1,81 @@
+# 트러블슈팅 실습-1: 쿼리 하나를 바꾸고 증상이 나타나기까지 몇 분 걸리는지 잰다.
+# 호스트 포트는 34000번대. 바꾸려면 환경변수로.
+services:
+  db:
+    image: postgres:18.6
+    # 병렬 쿼리를 끈다. 조회 한 번의 비용이 행 수에 그대로 비례하게 하려는 것이다.
+    command: ["postgres", "-c", "max_parallel_workers_per_gather=0"]
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+      SEED_ROWS: ${SEED_ROWS:-50000}
+    volumes:
+      - ./db/01-schema.sh:/docker-entrypoint-initdb.d/01-schema.sh:ro
+    cpus: 1.0
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "shop", "-d", "shop"]
+      interval: 2s
+      retries: 30
+
+  writer:
+    image: postgres:18.6
+    entrypoint: ["/bin/sh", "/writer.sh"]
+    environment:
+      PGPASSWORD: shop
+      WRITE_ROWS: ${WRITE_ROWS:-250}
+    volumes:
+      - ./db/writer.sh:/writer.sh:ro
+    depends_on:
+      db: { condition: service_healthy }
+
+  app:
+    build: ./app
+    image: obs-lab/ts-01-delayed-symptom:dev
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      APP_VERSION: ${APP_VERSION:-2.13.0}
+      QUERY_VARIANT: ${QUERY_VARIANT:-exact}
+      BANNER: ${BANNER:-autumn-sale}
+    mem_limit: 512m
+    ports: ["${APP_PORT:-34080}:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    environment:
+      DATA_SOURCE_NAME: postgresql://shop:shop@db:5432/shop?sslmode=disable
+    depends_on:
+      db: { condition: service_healthy }
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROM_PORT:-34090}:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["${GRAFANA_PORT:-34030}:3000"]
+
+  load:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    command: ["run", "--quiet", "--out", "csv=/out/${K6_OUT:-k6.csv.gz}", "/scripts/read.js"]
+    environment:
+      RATE: ${RATE:-30}
+      DURATION: ${DURATION:-60m}
+    volumes:
+      - ./k6:/scripts:ro
+      - ./out:/out

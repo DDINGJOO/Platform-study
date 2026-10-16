@@ -1,0 +1,244 @@
+<!-- lead: 커밋 1,024개짜리 합성 저장소에 회귀를 심고 git bisect run을 수백 번 돌렸어요. 정직한 시험은 매번 10번, 5% 흔들리는 시험은 100번 중 36번 오답이었고 오답은 범인 근처에 많았어요. -->
+<!-- tags: git bisect run, 회귀 커밋, flaky test, 델타 디버깅, 이진 탐색 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔦 트러블슈팅, 실습-2</div>
+  1편. 증상은 원인보다 늦게 도착한다<br>
+  2편. 반으로 나누는 디버깅은 시험이 정직할 때만 빠르다<br>
+  3편. 정상인 것과 나란히 놓는 것이 가장 싼 첫 수다<br>
+  실습-1. 쿼리 하나를 바꾸고 증상이 나타나기까지 몇 분 걸리는지 잰다<br>
+  <b>실습-2. git bisect가 회귀 커밋을 몇 번 만에 찾는지 센다</b> &larr; 지금 이 글<br>
+  실습-3. 정상 구간과 장애 구간의 로그를 템플릿으로 묶어 비교한다
+</div>
+
+<p><a href="#ts-02">2편</a>은 반분이 세 가정 위에 서 있다고 했어요. 결과가 한 번만 바뀌고, 원인이 하나이고, 시험이 정직해야 한다는 것이었죠. 그리고 그중 하나가 깨지면 반분은 느려지는 게 아니라 같은 속도로 틀린 답을 낸다고 했습니다. 계산으로는 시험이 5%만 흔들려도 열 번 중 네 번이 틀립니다.</p>
+
+<p>이번 실습은 그 주장을 직접 셉니다. 커밋 1,024개짜리 저장소를 만들고 회귀를 하나 심은 뒤 <code>git bisect run</code>을 수백 번 돌렸어요. 시험을 일부러 흔들고, 회귀를 둘로 늘리고, 빌드가 깨진 커밋을 섞었습니다. 숫자는 전부 이번에 돌린 결과예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 회귀 하나면 정말 10번인가? 앞에서부터 하나씩 보면 몇 번인가?<br>
+  &bull; 시험이 5%, 20% 확률로 거짓말하면 몇 번 틀리나? 틀린 답은 어디를 가리키나?<br>
+  &bull; 회귀가 둘이면 무엇을 찾아오나?<br>
+  &bull; 빌드가 깨진 커밋이 많으면 단계 수와 답은 어떻게 되나?<br>
+  &bull; 설정 키 64개를 반으로 나누면 몇 번이고, 두 키가 함께 있어야 실패하면 어떻게 되나?
+</div>
+
+<h2>1. 커밋 1,024개짜리 저장소를 만든다</h2>
+
+<p>실제 프로젝트에서 이런 실험을 하려면 회귀가 어디 있는지 미리 알아야 하고, 수백 번 반복해야 합니다. 그래서 저장소를 합성했어요. <code>make_repo.py</code>가 커밋 1,024개를 만드는데, 커밋마다 모듈 파일 40개 중 하나에 줄을 하나씩 덧붙입니다. 회귀는 지정한 커밋에서만 들어가요. 주문 금액을 계산하는 <code>src/pricing.py</code>의 반올림 방식을 내림으로 바꾸는 한 줄입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: git fast-import</div>
+  커밋 내용을 텍스트 스트림으로 받아 저장소에 한꺼번에 써 넣는 git 명령입니다. 커밋 1,024개를 <code>git commit</code>으로 하나씩 만들면 수십 초가 걸리지만, 이걸 쓰면 1초 안팎이라 시나리오마다 저장소를 새로 만들 수 있었어요.
+</div>
+
+<p>시험은 저장소 밖에 둔 <code>check.py</code>입니다. 1,999원짜리 3개에 부가세 10%를 붙이면 6,596.7원이고, 반올림하면 6,597원이에요. 내림으로 바뀐 커밋부터는 6,596원이 나와서 실패합니다. 종료 코드는 2편에서 본 규칙 그대로 정상 0, 고장 1, 빌드가 깨져 시험할 수 없으면 125예요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/observability/ts-02-bisect
+python3 run_bisect.py all        # 시나리오 전부. 약 10분
+python3 config_bisect.py         # 설정 키 반분. 1초
+
+# 한 번만 손으로 따라 하려면
+python3 make_repo.py work/demo --event 613:rounding=floor
+cd work/demo
+git bisect start main $(git rev-list --max-parents=0 main)
+git bisect run python3 ../../check.py
+git bisect reset</div>
+
+<p>컨테이너는 쓰지 않았어요. git 2.54.0(Apple Git-157), Python 3.9.6, Apple M5 Pro에서 돌렸습니다. 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/observability/ts-02-bisect">labs/observability/ts-02-bisect</a>에 있어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 시험 스크립트는 저장소 밖에</div>
+  처음에 <code>check.py</code>를 저장소 안에 두려다 그만뒀어요. bisect가 과거 커밋을 체크아웃하면 스크립트도 그 시점 버전으로 바뀌거나 사라집니다. git-bisect 문서의 예도 스크립트를 <code>~/check_test_case.sh</code>처럼 작업 트리 밖에 둡니다.
+</div>
+
+<h2>2. 회귀 하나: 100번 돌려 100번 모두 10번</h2>
+
+<p>회귀를 커밋 613에 넣고 한 번 돌린 출력입니다. 해시는 앞 7자리만 남겼어요.</p>
+
+<div class="obsv-code">Bisecting: 511 revisions left to test after this (roughly 9 steps)
+[16118c7] c0511
+Bisecting: 255 revisions left to test after this (roughly 8 steps)
+[a09d645] c0767
+Bisecting: 127 revisions left to test after this (roughly 7 steps)
+[69ae18b] c0639
+...
+[5889943] c0611
+[d833093] c0613 rounding=floor
+[0f7f915] c0612
+d833093 is the first bad commit</div>
+
+<p>시험한 커밋은 511, 767, 639, 575, 607, 623, 615, 611, 613, 612 순서로 10개예요. 첫 줄의 "roughly 9 steps"는 <b>지금 체크아웃한 커밋을 시험한 뒤</b> 남는 단계 수라서, 첫 시험까지 더하면 10입니다. 마지막에 613을 이미 시험했는데도 612를 한 번 더 본 건, 613이 실패했다는 것만으로는 612가 정상인지 모르기 때문이에요.</p>
+
+<p>회귀 위치를 1~1,023 사이에서 무작위로 바꿔 가며 100번 돌렸습니다. <b>100번 모두 정답이었고, 100번 모두 정확히 10번</b> 시험했어요. 정상 커밋 0과 고장 HEAD 사이의 후보는 1,023개라서 ⌈log₂1023⌉ = 10과 맞습니다.</p>
+
+<div class="obsv-code">회귀 위치를 바꿔 100번                 시험 횟수
+git bisect run                           100번 모두 10번
+앞에서부터 하나씩 (계산)                 평균 459.1번
+뒤에서부터 하나씩 (계산)                 평균 564.9번
+
+회귀가 613에 있을 때 실제로 돌려 본 시간
+앞에서부터 하나씩                       613번, 17.9초
+git bisect run                          10번,  0.4초</div>
+
+<p>선형 탐색은 100번 모두 돌리지 않고 회귀 위치로 계산했어요. 계산이 맞는지 보려고 613 하나만 실제로 돌렸고, 613번째에서 처음 실패했습니다. 시험 한 번이 30ms 남짓이라 18초로 끝났지만, 시험 한 번이 빌드를 포함해 5분이면 선형은 이틀, 반분은 50분이에요. <span class="obsv-mark">반분의 이득은 시험이 비쌀수록 커집니다.</span></p>
+
+<h2>3. 시험이 거짓말하면: 계산과 거의 같게 틀렸다</h2>
+
+<p><code>check.py</code>에 흔들림을 넣었어요. 두 가지 방식입니다. <b>양쪽</b>은 정상 커밋이든 고장 커밋이든 확률 p로 결과가 뒤집혀요. <b>정상만</b>은 고장 커밋은 늘 실패하고 정상 커밋만 확률 p로 잘못 실패합니다. 흔들리는 테스트 대부분이 이쪽이에요. 난수는 시도 번호와 커밋 번호로 정해서 같은 명령이면 같은 결과가 나오게 했습니다. 회귀는 613에 두고 경우마다 100번 돌렸어요.</p>
+
+<div class="obsv-code">흔들림      p      판정 방식              오답      2편의 계산    시험 실행 수
+양쪽       5%     1번                  36/100     40.1%         10
+양쪽       20%    1번                  83/100     89.3%         10
+정상만     5%     1번                  23/100     22.6%         10
+정상만     20%    1번                  66/100     67.2%         10
+양쪽       5%     3번 중 다수결          6/100      7.0%         30
+양쪽       20%    3번 중 다수결         69/100     66.7%         30
+정상만     5%     3번 모두 실패해야 고장  0/100      0.06%        30
+정상만     20%    3번 모두 실패해야 고장  4/100      3.9%         30</div>
+
+<p>여덟 줄 모두 2편에서 계산한 값과 가까웠어요. 가장 크게 벌어진 곳은 양쪽 20%의 6.3%p예요. 100번 표본의 표준오차가 3.1%p라 그 두 배쯤인데, 우연으로 넘기기에는 경계선입니다. 양쪽 흔들림 두 줄(36, 83)이 모두 계산보다 낮게 나왔다는 점도 있어서, 표본을 늘려 보기 전에는 우연이라고 단정하지 않을게요. 다수결은 5%에서는 효과가 컸지만 20%에서는 세 배의 비용을 들이고도 셋 중 둘이 틀렸고, 흔들림의 방향을 이용한 "3번 모두 실패해야 고장"은 20%에서도 오답이 4건이었어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 다수결 판정 (majority vote)</div>
+  같은 커밋에서 시험을 여러 번 돌려 많이 나온 쪽으로 판정하는 방법입니다. 한 번의 오판 확률이 p일 때 세 번 다수결의 오판 확률은 3p²(1&minus;p) + p³로 줄지만, 시험 비용은 세 배가 돼요.
+</div>
+
+<h3>틀린 답은 범인 근처에 많았다</h3>
+
+<p>계산에 없던 것이 하나 보였어요. 오답이 어디를 가리켰는지 모아 보니, 범인 근처에 많았습니다. 양쪽 5%에서 오답 36건 중 17건, 절반 가까이가 613에서 10커밋 안쪽이었고, 거리의 중앙값이 14였어요. 다만 이게 가장 몰린 경우예요. 정상만 5%는 23건 중 10건이 10커밋 안쪽이었고, 한 번만 판정한 나머지 경우는 거리 중앙값이 38~46이었습니다. 양쪽 5%에서 자주 나온 오답은 575(7번), 616(6번), 611(4번), 612와 614(3번씩) 순이었어요.</p>
+
+<p>이유는 2절의 시험 경로에 있어요. 정상 커밋 611이 거짓으로 실패하면 bisect는 "범인은 611 이하"로 좁히고, 그 아래는 전부 정상이니 마지막에 611을 첫 번째 고장 커밋으로 냅니다. 반대로 고장 커밋 615가 거짓으로 통과하면 "범인은 616 이후"로 좁히고, 그 뒤는 전부 고장이니 616을 내요. 616은 시험 경로에 없던 커밋입니다. 그래서 거짓말이 한 번이면 <span class="obsv-mark">오답은 거짓말한 시험 지점이거나 그 바로 다음 커밋이고, 경로의 끝은 범인 근처</span>예요. 정상 커밋이 거짓으로 실패하면 그 커밋이, 고장 커밋이 거짓으로 통과하면 그 다음 커밋이 나옵니다. 양쪽 5%에서 두 번 나온 640도 경로 위의 639가 거짓으로 통과한 결과였어요. 정상만 흔들리는 방식에서는 앞의 경우만 생깁니다. 범인에서 두 커밋 떨어진 611은 변경 내용을 읽어 봐도 그럴듯해 보일 수 있습니다. 엉뚱하게 먼 커밋이 나오면 의심이라도 하겠지만, 가까운 오답은 그대로 믿기 쉬워요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="tsl2a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="30" y="32" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">시험 경로 (회귀는 613)</text>
+  <text x="30" y="72" font-family="Menlo, monospace" font-size="14" fill="#2e6b41">511 O</text>
+  <text x="105" y="72" font-family="Menlo, monospace" font-size="14" fill="#b3502f">767 X</text>
+  <text x="180" y="72" font-family="Menlo, monospace" font-size="14" fill="#b3502f">639 X</text>
+  <text x="255" y="72" font-family="Menlo, monospace" font-size="14" fill="#2e6b41">575 O</text>
+  <text x="330" y="72" font-family="Menlo, monospace" font-size="14" fill="#2e6b41">607 O</text>
+  <text x="405" y="72" font-family="Menlo, monospace" font-size="14" fill="#b3502f">623 X</text>
+  <text x="480" y="72" font-family="Menlo, monospace" font-size="14" fill="#b3502f">615 X</text>
+  <path d="M548 54 C 572 52, 600 56, 618 55 C 619 62, 618 70, 618 78 C 600 79, 572 77, 548 79 C 547 70, 548 62, 548 54 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="555" y="72" font-family="Menlo, monospace" font-size="14" fill="#2e6b41">611 O</text>
+  <text x="630" y="72" font-family="Menlo, monospace" font-size="14" fill="#3d3a34">...</text>
+  <path d="M583 84 C 584 110, 582 130, 583 150" fill="none" stroke="#e5533c" stroke-width="2.2" marker-end="url(#tsl2a)"/>
+  <text x="390" y="125" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">여기서 거짓 X가 나오면</text>
+  <path d="M250 160 C 380 158, 520 162, 640 159 C 641 170, 640 180, 640 190 C 520 192, 380 188, 250 191 C 249 180, 250 170, 250 160 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="265" y="182" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">"범인은 608~611" 로 좁힌다. 613은 이미 버렸다</text>
+  <text x="30" y="232" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">608~610은 전부 정상이니 마지막 답은 611</text>
+  <text x="30" y="275" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 오답은 거짓 X를 낸 지점, 거짓 O면 그 다음 커밋. 끝일수록 범인 근처다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 경로의 마지막 몇 걸음에서 생긴 거짓말은 범인 바로 옆 커밋을 범인으로 만든다</div>
+
+<h2>4. 회귀가 둘이면: 처음 깨진 곳을 찾고 멈춘다</h2>
+
+<p>커밋 300에서 반올림을 내림으로 바꾸고, 커밋 700에서 기본 할인율을 0%에서 5%로 바꿨어요. 둘 다 같은 테스트를 깨뜨립니다. 결과는 300부터 끝까지 계속 실패라서 단조로워요.</p>
+
+<div class="obsv-code">1차 bisect                                  찾은 커밋 300, 시험 10번
+HEAD에서 커밋 300의 pricing.py 변경만 되돌림    시험 종료 코드 1 (여전히 고장)
+2차 bisect (시험할 때마다 반올림 수정을 적용)   찾은 커밋 700, 시험 10번</div>
+
+<p>2편 6장 그대로였어요. 반분은 300을 정확히 찾았고, 그걸 되돌려도 HEAD는 실패했습니다. 두 번째 반분은 시험 스크립트가 매번 반올림을 고친 채로 시험하게 해서(<code>APPLY_FIX=rounding</code>) 700을 찾았어요. git-bisect 문서가 "시험 전에 임시 수정을 적용하고, 끝나면 되돌리는" 방식이라고 설명한 것과 같은 구조입니다.</p>
+
+<p>되돌리는 과정에서 함정이 하나 있었어요. <code>git revert</code>로 커밋 300을 통째로 되돌리려 하자 충돌이 났습니다. 이 저장소는 커밋마다 <code>src/COMMIT_NO</code>를 바꾸기 때문이에요. 실제 저장소에서도 회귀 커밋에 다른 변경이 섞여 있으면 마찬가지입니다. 그래서 <code>git show &lt;커밋&gt; -- src/pricing.py | git apply -R</code>로 해당 파일의 변경만 거꾸로 적용했어요.</p>
+
+<h3>고장이 들어왔다 나갔다 하면 반반이다</h3>
+
+<p>이번엔 단조성을 깨 봤어요. 커밋 a에서 내림으로 바꾸고, 커밋 b에서 누군가 반올림으로 되돌리고, 커밋 c에서 다시 내림으로 바꿨습니다. 처음 정상, 끝은 고장이니 겉보기엔 회귀 하나와 같아요.</p>
+
+<div class="obsv-code">고장 a -&gt; 고침 b -&gt; 다시 고장 c      bisect가 찾은 커밋
+300 -&gt; 500 -&gt; 700                  700
+300 -&gt; 600 -&gt; 700                  300
+300 -&gt; 400 -&gt; 900                  900
+100 -&gt; 200 -&gt; 300                  300
+
+위치를 무작위로 100번                a를 찾음 44번, c를 찾음 56번, 그 밖 0번</div>
+
+<p>첫 줄에서 첫 시험 지점 511은 고쳐진 구간(500~699) 안이라 정상으로 나오고, bisect는 뒤쪽 절반으로 가서 700을 찾았어요. 둘째 줄은 511이 고장 구간(300~599)에 떨어져 앞쪽으로 가서 300을 찾았습니다. <b>어느 경계를 찾느냐는 첫 몇 번의 시험 지점이 어느 구간에 떨어지느냐로 정해졌어요.</b> 무작위 100번에서 a와 c가 44:56으로 갈렸고, 엉뚱한 커밋은 한 번도 나오지 않았습니다. 찾은 것은 늘 진짜 경계였지만, 어느 경계인지는 운이었어요.</p>
+
+<h2>5. 빌드가 깨진 커밋이 많으면</h2>
+
+<p><code>src/BUILD</code>가 <code>broken</code>인 커밋을 무작위로 섞었어요. <code>check.py</code>는 이런 커밋에서 125를 돌려주고, bisect는 건너뜁니다. 비율마다 깨진 커밋 배치를 30가지로 바꿔 돌렸어요. 회귀는 613입니다.</p>
+
+<div class="obsv-code">깨진 커밋 비율   하나로 좁힘    판정 시험   건너뜀   합계     후보 수 최대
+10%            25/30        9.9       0.9     10.8     3
+30%            12/30        9.6       3.8     13.4     4
+50%             8/30        9.5       9.7     19.1     9
+
+605~620이 전부 깨짐(613 포함)   후보 17개(605~621), 판정 9번, 건너뜀 16번</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 후보 목록 출력</div>
+  건너뛴 커밋 때문에 하나로 좁히지 못하면 git bisect는 "There are only 'skip'ped commits left to test. The first bad commit could be any of:" 다음에 후보 커밋을 나열하고 끝납니다. 성공처럼 보이지 않으니 출력을 끝까지 읽어야 해요.
+</div>
+
+<p>예상과 달랐던 건 <b>10%에서도 30번 중 5번은 하나로 좁히지 못했다</b>는 점이에요. 실패한 다섯 번을 열어 보니 모두 범인 613 자신이나 바로 앞 커밋 612가 깨진 경우였고, 후보 목록은 (612, 613), (613, 614), (613, 614, 615) 같은 모양이었어요. 2편에서 인용한 문서 문장 그대로예요. 범인과 붙어 있는 커밋을 건너뛰면 git은 그중 어느 것이 먼저 고장 났는지 알 수 없습니다. 판정 시험 수는 비율과 상관없이 10번 안팎으로 거의 같았고, 늘어난 건 건너뛰는 횟수였습니다. 건너뛸 때 드는 비용이 빌드 시간이라면 50%에서는 빌드를 20번쯤 하는 셈이에요.</p>
+
+<p>마지막 줄은 회귀와 같은 시기에 빌드까지 깨진 경우입니다. 605~620 16개가 모두 깨졌더니 bisect는 판정 9번, 건너뜀 16번 끝에 605~621 17개를 후보로 돌려줬어요. 이때는 해당 구간을 빌드 가능하게 만드는 패치를 시험 스크립트에서 적용하거나, 범위를 사람이 직접 읽는 수밖에 없습니다.</p>
+
+<h2>6. 설정 키 64개: 6번, 그리고 69번</h2>
+
+<p>커밋이 아닌 대상도 반으로 나눠 봤어요(<code>config_bisect.py</code>, git 없이 Python만). 옛 설정과 새 설정이 키 64개에서 다르고, 새 설정으로는 기동 검사가 실패합니다. 시험은 "옛 설정에 새 값 일부만 덮어 기동 검사를 돌린다"예요. 키 순서를 무작위로 바꿔 경우마다 100번 돌렸습니다.</p>
+
+<div class="obsv-code">경우 1: 키 하나(cache.ttl_seconds = -1)가 혼자 실패를 만든다
+  단계당 시험 1번 (git bisect 방식)        100번 모두 6번, 정답 100/100
+
+경우 2: 두 키가 함께 있어야 실패한다
+        db.pool.max_size 20 -&gt; 50, db.max_connections 200 -&gt; 80
+        (풀 50 x 레플리카 4 = 200 &gt; 80. 하나만 바뀌면 통과)
+  단계당 시험 1번 (git bisect 방식)        두 키 중 하나를 냄 13번, 무관한 키를 냄 87번
+  단계마다 양쪽 절반을 모두 시험            100번 모두 어느 단계에서 "두 절반 다 통과"로 멈춤
+                                         (평균 3.1번째 시험)
+  ddmin (델타 디버깅)                      두 키를 정확히 찾음 100/100
+                                         시험 평균 69.0번 (최소 24, 최대 82)</div>
+
+<p>키 하나가 원인이면 log₂64 = 6번으로 끝났어요. 두 키가 함께 있어야 실패하는 경우가 이번 실습에서 가장 나쁜 결과였습니다. git bisect처럼 단계마다 한쪽만 시험하고 "통과했으니 범인은 저쪽"이라고 넘겨짚으면 87번은 실패와 아무 관계 없는 키를 범인으로 냈어요. 두 키가 다른 절반으로 갈리는 순간 앞 절반은 통과하고, 반분은 뒤 절반을 범인 쪽으로 단정하는데 거기 있는 키 하나로는 실패가 재현되지 않습니다. 그 뒤 시험은 모두 통과하고, 반분은 마지막 남은 키를 냅니다.</p>
+
+<p>양쪽 절반을 모두 시험하면 "두 절반이 다 통과한다"는 모순을 평균 3.1번째 시험에서 잡아냈어요. 이게 상호작용의 신호입니다. 여기서 델타 디버깅(ddmin)으로 넘기면 100번 모두 두 키를 정확히 찾았지만, 시험이 평균 69번 들었어요. 반분의 6번과 비교하면 열 배가 넘습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 반분 전에 같은 정상 지점에서 시험을 20번쯤 돌려 한 번도 실패하지 않는지 봅니다. 흔들리면 이번 실습처럼 열 번 중 몇 번은 엉뚱한 커밋이 나와요<br>
+  &bull; 흔들림이 "정상이 가끔 실패"라면 "여러 번 모두 실패해야 고장"으로 판정합니다. 이번 실습에서 20% 흔들림의 오답이 66건에서 4건으로 줄었어요<br>
+  &bull; bisect가 찾은 커밋이 범인 바로 옆이라고 안심하지 않습니다. 흔들리는 시험의 오답도 범인 근처에 많았어요(양쪽 5%에서 절반 가까이가 10커밋 안쪽). 찾은 커밋과 그 직전 커밋을 각각 여러 번 시험해 경계를 확인합니다<br>
+  &bull; 찾은 변경을 HEAD에서 되돌려 시험합니다. 실패가 남으면 그 수정을 적용한 채로 다시 반분합니다<br>
+  &bull; 설정 반분은 양쪽 절반을 모두 시험하는 방식으로 합니다. 둘 다 통과하면 상호작용이니 델타 디버깅으로 넘기되, 시험이 열 배쯤 든다는 걸 감안해요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>회귀 하나, 정직한 시험이면 git bisect는 커밋 1,024개에서 100번 모두 정확히 10번 만에 범인을 찾았어요.</b> 앞에서부터 하나씩 보면 평균 459번이었고, 실제로 돌린 한 번은 613번에 18초, bisect는 10번에 0.4초였어요.<br><br>
+  가정을 하나씩 깨자 2편의 계산대로 틀렸어요. 시험이 5% 흔들리면 100번 중 36번, 20%면 83번 오답이었고 오답은 범인 근처에 많았어요. 회귀가 둘이면 처음 깨진 커밋만 찾았고, 고장이 들락날락하면 어느 경계를 찾을지가 44:56으로 갈렸어요. 두 설정 키가 함께 있어야 실패하면 한쪽만 시험하는 반분은 87번 무관한 키를 냈어요. 반분은 빨랐고, 틀릴 때도 똑같이 빨랐어요.
+</div>
+
+</div>

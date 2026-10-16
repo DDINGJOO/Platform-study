@@ -1,0 +1,40 @@
+# 신뢰성 설계 실습-1: 같은 장애 기록을 네 가지 창으로 판정한다
+# 포트: Prometheus 32190, Grafana 32130, 앱 32180
+services:
+  app:
+    image: python:3.13-alpine
+    command: ["python", "-u", "/app/app.py"]
+    volumes: ["./app:/app:ro"]
+    environment:
+      # 평소에도 0.2% 는 일시적으로 실패한다(재시도하면 대개 성공)
+      APP_CONFIG: '{"checkout": {"error_rate": 0.002, "latency": {"dist": "lognormal", "median_ms": 20, "sigma": 0.4}}}'
+    ports: ["${APP_PORT:-32180}:8080"]
+    mem_limit: 256m
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes: ["./prometheus:/etc/prometheus:ro"]
+    ports: ["${PROM_PORT:-32190}:9090"]
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes: ["./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/ds.yaml:ro"]
+    ports: ["${GRAFANA_PORT:-32130}:3000"]
+    mem_limit: 512m   # 256m 에서는 Explore 를 몇 번 열자 OOM 으로 죽었다
+
+  # 압축한 하루(24분)를 흘린다. 장애 시각과 길이는 command 를 바꿔 준다(README 참고)
+  day:
+    image: python:3.13-alpine
+    profiles: ["load"]
+    working_dir: /loadgen
+    volumes: ["./loadgen:/loadgen:ro", "./out:/out"]
+    entrypoint: ["python", "-u", "day.py", "--target", "http://app:8080"]
+    command: ["--out", "/out/day.csv"]
+    mem_limit: 512m

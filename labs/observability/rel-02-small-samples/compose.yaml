@@ -1,0 +1,50 @@
+# 신뢰성 설계 실습-2: 표본 수와 분포 모양이 경고를 몇 번 틀리게 하는지 센다
+# 포트: Prometheus 32090, Grafana 32030, 앱 32080
+services:
+  app:
+    image: python:3.13-alpine
+    command: ["python", "-u", "/app/app.py"]
+    volumes: ["./app:/app:ro"]
+    environment:
+      # e*: 에러율 1% (SLO 99.9% 기준 burn rate 10), h*: 에러율 0.1% (burn rate 1, 건강)
+      # 숫자는 부하 생성기가 보내는 초당 요청 수. lat-ln/lat-bi 는 지연 분포 실험용(에러 없음)
+      APP_CONFIG: >-
+        {"e1":  {"error_rate": 0.01,  "latency": {"dist": "lognormal", "median_ms": 5, "sigma": 0.3}},
+         "e10": {"error_rate": 0.01,  "latency": {"dist": "lognormal", "median_ms": 5, "sigma": 0.3}},
+         "e100":{"error_rate": 0.01,  "latency": {"dist": "lognormal", "median_ms": 5, "sigma": 0.3}},
+         "h1":  {"error_rate": 0.001, "latency": {"dist": "lognormal", "median_ms": 5, "sigma": 0.3}},
+         "h10": {"error_rate": 0.001, "latency": {"dist": "lognormal", "median_ms": 5, "sigma": 0.3}},
+         "h100":{"error_rate": 0.001, "latency": {"dist": "lognormal", "median_ms": 5, "sigma": 0.3}},
+         "lat-ln": {"error_rate": 0, "latency": {"dist": "lognormal", "median_ms": 40, "sigma": 0.6}},
+         "lat-bi": {"error_rate": 0, "latency": {"dist": "bimodal", "p_slow": 0.05,
+                    "fast": {"median_ms": 20, "sigma": 0.3}, "slow": {"median_ms": 400, "sigma": 0.3}}}}
+    ports: ["${APP_PORT:-32080}:8080"]
+    mem_limit: 256m
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes: ["./prometheus:/etc/prometheus:ro"]
+    ports: ["${PROM_PORT:-32090}:9090"]
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes: ["./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/ds.yaml:ro"]
+    ports: ["${GRAFANA_PORT:-32030}:3000"]
+    mem_limit: 512m   # 256m 에서는 Explore 를 몇 번 열자 OOM 으로 죽었다
+
+  load:
+    image: python:3.13-alpine
+    profiles: ["load"]
+    working_dir: /loadgen
+    volumes: ["./loadgen:/loadgen:ro", "./out:/out"]
+    entrypoint: ["python", "-u", "loadgen.py", "--target", "http://app:8080"]
+    command: ["--duration", "3600", "--out", "/out/run.csv",
+              "e1:1", "e10:10", "e100:100", "h1:1", "h10:10", "h100:100", "lat-ln:50", "lat-bi:50"]
+    mem_limit: 512m

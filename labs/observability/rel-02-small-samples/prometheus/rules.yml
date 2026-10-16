@@ -1,0 +1,32 @@
+# 생성: 아래 표의 창은 SRE 워크북 권고(1h/5m 14.4배, 6h/30m 6배)를 30분의 1로 줄인 것
+groups:
+  - name: burn
+    rules:
+      - record: route:error_ratio:rate2m   # 실제 1h 창에 해당
+        expr: |
+          (sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*",code=~"5.."}[2m]))
+            or sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*"}[2m])) * 0)
+          / sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*"}[2m]))
+      - record: route:error_ratio:rate10s   # 실제 5m 창에 해당
+        expr: |
+          (sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*",code=~"5.."}[10s]))
+            or sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*"}[10s])) * 0)
+          / sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*"}[10s]))
+      - record: route:error_ratio:rate12m   # 실제 6h 창에 해당
+        expr: |
+          (sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*",code=~"5.."}[12m]))
+            or sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*"}[12m])) * 0)
+          / sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*"}[12m]))
+      - record: route:error_ratio:rate1m   # 실제 30m 창에 해당
+        expr: |
+          (sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*",code=~"5.."}[1m]))
+            or sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*"}[1m])) * 0)
+          / sum by (route) (rate(lab_http_requests_total{client="user",route=~"/api/.*"}[1m]))
+  - name: alerts
+    rules:
+      - alert: FastBurn          # 실제 1h/5m, 14.4배 (SLO 99.9%: 에러율 1.44%)
+        expr: route:error_ratio:rate2m > 14.4 * 0.001 and route:error_ratio:rate10s > 14.4 * 0.001
+        labels: {severity: page}
+      - alert: SlowBurn          # 실제 6h/30m, 6배 (에러율 0.6%)
+        expr: route:error_ratio:rate12m > 6 * 0.001 and route:error_ratio:rate1m > 6 * 0.001
+        labels: {severity: page}

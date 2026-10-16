@@ -1,0 +1,47 @@
+# 운영 자동화 실습-2: 경고를 받아 스스로 고치는 스크립트에 상한을 건다.
+#   load(초당 20건) → app ← Prometheus(스크레이프 5s, 평가 5s) → Alertmanager → remediator(웹훅)
+#                      ↑                                                       │ POST /admin/restart
+#                      └───────────────────────────────────────────────────────┘
+#   app 은 /admin/restart 를 받으면 종료하고, restart: always 로 Docker 가 다시 띄운다.
+#   장애 원인(누수 스위치)은 state/ 볼륨의 파일이라 재시작해도 남는다.
+# 호스트 포트는 36100번대만 쓴다.
+x-py: &py
+  image: python:3.13-alpine
+  mem_limit: 128m
+
+services:
+  app:
+    <<: *py
+    command: ["python", "-u", "/app/app.py"]
+    restart: always
+    volumes: ["./app:/app:ro", "./state:/state"]
+    ports: ["${APP_PORT:-36180}:8080"]
+
+  load:
+    <<: *py
+    command: ["python", "-u", "/load/load.py"]
+    environment: { RATE: "20" }
+    volumes: ["./load:/load:ro", "./out:/out"]
+
+  remediator:
+    <<: *py
+    command: ["python", "-u", "/r/remediator.py"]
+    environment:
+      MODE: "${MODE:-unbounded}"      # unbounded | capped
+      MAX_ACTIONS: "3"                # capped: 창 안에서 최대 몇 번
+      WINDOW_S: "1800"                # capped: 창 길이(초)
+    volumes: ["./remediator:/r:ro", "./out:/out"]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+    ports: ["${PROM_PORT:-36190}:9090"]
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes: ["./alertmanager/${AM_CONF:-alertmanager.yml}:/etc/alertmanager/alertmanager.yml:ro"]   # AM_CONF=alertmanager.default.yml 이면 기본 간격
+    ports: ["${AM_PORT:-36193}:9093"]
