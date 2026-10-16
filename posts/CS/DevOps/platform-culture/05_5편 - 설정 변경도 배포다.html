@@ -1,0 +1,273 @@
+<!-- lead: 코드는 리뷰와 카나리를 거치는데, 타임아웃 값 하나는 몇 초 만에 모든 인스턴스로 갑니다. 정적 설정과 동적 설정의 차이, Facebook 논문의 설정 장애 통계와 카나리, 선언형 설정이 계산을 끌어들이는 이유를 정리했어요. -->
+<!-- tags: 동적 설정, 설정 카나리, Configerator, Kustomize, Jsonnet -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧭 플랫폼 엔지니어링, 5편</div>
+  1편. 경고는 아무도 읽지 않고, 고쳐 주는 도구는 쓰인다<br>
+  2편. SRE를 따로 둘지는 공통 문제를 맡을 사람이 있느냐가 정한다<br>
+  3편. 공통 기능은 실어 보내는 경로가 업그레이드 값을 정한다<br>
+  4편. 테스트는 아는 것을 증명하고, 모니터링은 모르는 것을 보여 준다<br>
+  <b>5편. 설정 변경도 배포다</b> &larr; 지금 이 글<br>
+  6편. 임시방편은 빚이지만, 갚을지는 남은 수명이 정한다<br>
+  실습-1. 재시도 값을 jar에 구우면 다섯 번 다시 뜨고, 사이드카에 두면 설정만 바뀐다<br>
+  실습-2. 복사해 붙인 코드가 바뀔 때 절반은 따로 고쳐지고, 놓친 한 벌은 오래 남는다
+</div>
+
+<p>금요일 오후, 외부 결제 API가 느려졌다는 말이 돕니다. 호출 타임아웃을 2초에서 5초로 늘리면 된다는 결론이 나오고, 설정 서버 화면에서 숫자 하나를 바꿔 저장해요. 코드 리뷰도, 빌드도, 카나리도 없습니다. 몇 초 뒤 모든 인스턴스가 새 값을 읽어요. 그런데 결제 API가 계속 느린 동안 요청 하나가 스레드를 5초씩 붙잡고, 스레드 풀이 바닥나면서 결제와 상관없는 화면까지 멈춥니다. 같은 변경을 코드로 했다면 일부 인스턴스에서 먼저 돌려 봤을 거예요.</p>
+
+<p>이 장면은 지어낸 것이지만, 같은 모양의 사고는 공개 기록에 있습니다. 2019년 7월 2일 Cloudflare는 WAF 규칙 하나를 바꿨다가 서비스 전체가 27분 동안 내려갔어요. 새 규칙의 정규식이 과도하게 역추적하면서 HTTP 트래픽을 처리하는 CPU가 네트워크 전체에서 100% 가까이 올라갔습니다. 그 규칙은 아무것도 차단하지 않고 지켜보기만 하는 시뮬레이트 모드로 넣은 것이었는데, 지켜보기만 해도 정규식은 모든 요청에 돌아갔어요. 규칙은 몇 초 만에 전 세계로 변경을 미는 키-값 저장소로 배포됐고, 위협에 빨리 대응해야 한다는 이유로 규칙 변경만은 긴급하지 않아도 전역 배포가 절차상 허용돼 있었습니다. 직전 60일 동안 이런 규칙 변경 요청이 476건, 평균 세 시간에 한 건이었다고 해요. 사후 조치는 WAF 릴리스 작업을 모두 멈추는 것에서 시작했고, 그 목록에는 "규칙도 다른 소프트웨어와 같은 방식으로 단계적으로 배포하도록 절차를 바꾼다"가 들어갔어요(<a href="https://blog.cloudflare.com/details-of-the-cloudflare-outage-on-july-2-2019/">Cloudflare, Details of the Cloudflare outage on July 2, 2019</a>).</p>
+
+<p>이 글은 설정 변경을 배포와 같은 무게로 다뤄야 하는 이유와, 그렇게 했을 때 드는 비용을 봅니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 환경 변수로 읽는 설정은 왜 다루기 쉽고, 실행 중에 바뀌는 설정은 왜 어려운가?<br>
+  &bull; "설정 변경까지 카나리로 판정하는 건 품만 든다"는 말은 숫자로 보면 맞나?<br>
+  &bull; 설정 장애는 어떤 종류로 나뉘고, 각각 무엇이 잡나?<br>
+  &bull; 설정을 배포로 다룬다는 건 구체적으로 무엇을 갖춘다는 뜻인가?<br>
+  &bull; 선언형 설정에 왜 자꾸 반복문과 변수가 붙고, 그걸 어디에 둬야 하나?
+</div>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 재시작이 필요한 설정은 배포를 따라간다</h2>
+
+<p>먼저 쉬운 쪽부터 봅니다. 12팩터 앱 방법론은 설정을 "배포마다 달라질 수 있는 모든 것"으로 정의하고, 코드와 분리해 환경 변수에 두라고 권해요. 판별법도 하나 줍니다. 지금 당장 코드베이스를 공개해도 자격 증명이 새지 않는가(<a href="https://12factor.net/config">The Twelve-Factor App, III. Config</a>). 스프링 클라우드 컨피그 서버처럼 시작할 때 중앙 서버에서 한 번 받아 오는 방식도 같은 부류입니다(2장에서 볼 @RefreshScope를 붙이지 않는 한).</p>
+
+<p>이런 설정이 다루기 쉬운 이유는 <b>프로세스가 시작할 때 한 번만 읽기</b> 때문이에요. 값을 바꾸려면 프로세스를 다시 띄워야 하고, 다시 띄우는 일은 이미 배포 도구가 맡고 있습니다. 롤링 업데이트가 인스턴스를 몇 개씩 바꾸고, 새 인스턴스가 헬스체크를 통과하지 못하면 진행이 멈추고, 이전 버전으로 되돌릴 수 있어요. 설정 변경이 코드 배포의 안전장치를 공짜로 얻습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 롤링 업데이트 (rolling update)</div>
+  인스턴스를 한꺼번에 바꾸지 않고 몇 개씩 새 버전으로 교체하는 배포 방식이에요. 교체 중에는 옛 버전과 새 버전이 함께 돌고, 새 쪽이 준비되지 않으면 다음 묶음으로 넘어가지 않습니다.
+</div>
+
+<p>다만 "재시작해야 반영된다"는 전제가 생각보다 쉽게 깨져요. 쿠버네티스의 ConfigMap이 좋은 예입니다. ConfigMap을 환경 변수로 넣으면 값을 바꿔도 자동으로 반영되지 않고 파드를 다시 시작해야 해요. 그런데 같은 ConfigMap을 볼륨으로 마운트하면 값을 바꿨을 때 파일 내용이 <b>결국</b> 갱신되고, 그 시차는 kubelet 동기화 주기에 캐시 지연을 더한 만큼까지 늘어날 수 있습니다(subPath로 마운트한 파일은 갱신되지 않고요)(<a href="https://kubernetes.io/docs/concepts/configuration/configmap/">Kubernetes, ConfigMaps</a>). 애플리케이션이 그 파일을 주기적으로 다시 읽는다면, ConfigMap 수정 한 번이 Deployment의 롤아웃 기록에도 남지 않고 롤아웃 없이 파드마다 제각각의 시점에 퍼집니다. 정적 설정이라고 생각한 것이 실제로는 동적 설정이었던 셈이에요.</p>
+
+<p>Kustomize의 configMapGenerator는 이 틈을 반대로 메웁니다. 내용이 바뀌면 생성되는 ConfigMap 이름의 해시 접미사가 바뀌고, Kustomize가 그 ConfigMap을 참조하는 워크로드를 새 이름으로 고쳐 써요(<a href="https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/configmapgenerator/">Kustomize, configMapGenerator</a>). 파드 템플릿이 바뀌었으니 Deployment는 평소처럼 롤링 업데이트를 하고, 설정 변경이 다시 배포가 됩니다. prune으로 지우지 않는 한 옛 ConfigMap도 남아 있으니 되돌리기도 배포 되돌리기와 같아요. 깃옵스 도구의 prune이 옛 ConfigMap을 지우면, 되돌린 Deployment가 없는 ConfigMap을 가리키게 되니 주의해야 합니다.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 실행 중에 바뀌는 설정은 배포 파이프라인을 건너뛴다</h2>
+
+<p>어려운 쪽은 프로세스를 다시 띄우지 않고 값을 바꾸는 <b>동적 설정</b>입니다. Netflix가 공개한 Archaius는 설정 원천을 주기적으로 폴링하고, 값이 바뀌면 등록해 둔 변경 핸들러를 불러 주는 라이브러리예요(<a href="https://github.com/Netflix/archaius">Netflix/archaius</a>). 스프링 클라우드에도 한때 이를 감싼 모듈이 있었지만 2020.0 릴리스 트레인에서 spring-cloud-netflix-archaius가 빠졌습니다(<a href="https://github.com/spring-cloud/spring-cloud-release/wiki/Spring-Cloud-2020.0-Release-Notes">Spring Cloud 2020.0 Release Notes</a>). 지금 스프링 쪽에서 같은 일을 하는 건 <code>@RefreshScope</code>와 <code>/actuator/refresh</code>예요. 갱신하면 해당 빈의 캐시가 비워지고, 다음 메서드 호출 때 새 값으로 다시 만들어집니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 동적 설정 (dynamic configuration)</div>
+  애플리케이션을 다시 배포하거나 재시작하지 않고, 실행 중에 바꿔 넣는 설정이에요. 기능을 켜고 끄는 플래그, 타임아웃, 트래픽 비율, 실험 파라미터가 흔한 예입니다.
+</div>
+
+<p>여기서 문서가 권하는 방향을 눈여겨볼 만해요. 스프링 클라우드 문서는 인스턴스가 여럿이면 각자 폴링하게 하지 말고 스프링 클라우드 버스로 변경 이벤트를 <b>모든 인스턴스에 방송하라</b>고 권합니다(<a href="https://docs.spring.io/spring-cloud-commons/reference/spring-cloud-commons/application-context-services.html">Spring Cloud Commons, Refresh Scope</a>). 반영을 빠르고 일관되게 하는 데는 맞는 권고예요. 그런데 안전의 눈으로 보면 이건 정확히 전역 동시 배포입니다. 버스에 목적지를 지정해 인스턴스 하나나 서비스 하나만 갱신할 수는 있지만(<a href="https://docs.spring.io/spring-cloud-bus/reference/spring-cloud-bus/addressing.html">Spring Cloud Bus, Addressing</a>), 몇 개에 먼저 넣고, 지표를 보고, 괜찮으면 넓히는 일은 사람이 직접 짜야 해요.</p>
+
+<p>SRE Workbook은 이 차이를 이렇게 적습니다. 코드로 시스템의 기능을 바꾸는 일은 대개 작은 단계, 코드 리뷰, 테스트를 거치는 긴 과정인데, 설정 옵션 하나를 바꾸면 기능이 극적으로 달라질 수 있고, 설정은 코드와 달리 테스트되지 않은(또는 테스트할 수 없는) 환경에 있는 경우가 많다(<a href="https://sre.google/workbook/configuration-design/">SRE Workbook, Configuration Design and Best Practices</a>). 그리고 같은 책의 카나리 장은 구글의 사후 분석 경험상 장애의 과반이 바이너리나 설정 배포에서 시작된다고 적어요(<a href="https://sre.google/workbook/canarying-releases/">SRE Workbook, Canarying Releases</a>).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="pc5a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <marker id="pc5b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="30" y="34" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">코드 변경</text>
+  <path d="M30 50 C 70 48, 110 51, 130 49 C 132 62, 131 76, 130 88 C 110 90, 70 87, 32 89 C 29 76, 30 62, 30 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2"/>
+  <text x="80" y="75" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">리뷰</text>
+  <path d="M135 69 C 145 68, 155 70, 163 69" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#pc5a)"/>
+  <path d="M168 50 C 210 48, 250 51, 268 49 C 270 62, 269 76, 268 88 C 250 90, 210 87, 170 89 C 167 76, 168 62, 168 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2"/>
+  <text x="218" y="75" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">빌드·CI</text>
+  <path d="M273 69 C 283 68, 293 70, 301 69" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#pc5a)"/>
+  <path d="M306 50 C 350 48, 390 51, 410 49 C 412 62, 411 76, 410 88 C 390 90, 350 87, 308 89 C 305 76, 306 62, 306 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2"/>
+  <text x="358" y="75" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">카나리 몇 대</text>
+  <path d="M415 69 C 425 68, 435 70, 443 69" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#pc5a)"/>
+  <path d="M448 50 C 490 48, 530 51, 550 49 C 552 62, 551 76, 550 88 C 530 90, 490 87, 450 89 C 447 76, 448 62, 448 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2"/>
+  <text x="499" y="75" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">롤링</text>
+  <path d="M555 69 C 565 68, 575 70, 583 69" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#pc5a)"/>
+  <path d="M588 50 C 620 48, 650 51, 670 49 C 672 62, 671 76, 670 88 C 650 90, 620 87, 590 89 C 587 76, 588 62, 588 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
+  <text x="629" y="75" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">전체</text>
+  <text x="350" y="116" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">단계마다 멈추고 되돌릴 자리가 있다 (수십 분에서 몇 시간)</text>
+  <path d="M30 146 C 250 143, 450 149, 670 145" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="8 8"/>
+  <text x="30" y="186" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">동적 설정 변경</text>
+  <path d="M30 202 C 70 200, 110 203, 130 201 C 132 214, 131 228, 130 240 C 110 242, 70 239, 32 241 C 29 228, 30 214, 30 202 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+  <text x="80" y="227" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">값 저장</text>
+  <path d="M136 221 C 300 218, 450 224, 580 221" fill="none" stroke="#e5533c" stroke-width="2.6" marker-end="url(#pc5b)"/>
+  <text x="358" y="210" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">폴링 또는 방송, 몇 초</text>
+  <path d="M588 202 C 620 200, 650 203, 670 201 C 672 214, 671 228, 670 240 C 650 242, 620 239, 590 241 C 587 228, 588 214, 588 202 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2"/>
+  <text x="629" y="227" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">전체</text>
+  <text x="358" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">리뷰, 테스트, 일부 먼저 넣기는 따로 만들지 않으면 없다</text>
+  <text x="350" y="310" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">더 자주 바뀌는 쪽이 더 짧은 길로 간다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 코드는 여러 관문을 지나고, 동적 설정은 따로 만들지 않으면 저장 한 번에 전체로 간다</div>
+
+<p>얼마나 자주 바뀌는지도 봐야 합니다. Facebook은 2015년 논문에서 facebook.com 코드를 하루 두 번 배포하는데 설정은 그보다 훨씬 자주, 하루 수천 번 바뀐다고 적었어요. 2014년 한 해 동안 실시간 설정을 바꾼 엔지니어 수가 프런트엔드 제품 코드를 바꾼 엔지니어 수보다 많았다고도 합니다(<a href="https://www.sigops.org/s/conferences/sosp/2015/current/2015-Monterey/printable/008-tang.pdf">Tang 외, Holistic Configuration Management at Facebook, SOSP 2015</a>). <span class="obsv-mark">가장 자주, 가장 많은 사람이 바꾸는 것이 가장 짧은 길로 운영에 들어가는 구조</span>라면 사고가 거기서 나는 게 이상하지 않아요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. "설정 카나리는 품만 든다"를 숫자로 다시 본다</h2>
+
+<p>그래서 동적 설정도 카나리를 거치게 하자는 말이 나오면, 흔히 이런 반론이 따라옵니다. 설정 변경은 작고 많아서 하나하나 카나리로 판정하는 건 들인 노력만큼 얻는 게 없다. 일리는 있어요. 카나리 판정을 믿을 만하게 만드는 데 품이 많이 든다는 건 배포 안전성 3편 <a href="https://dding-shark.tistory.com/621">"카나리는 누구와 비교하느냐가 전부다"</a>에서 비교 대상과 표본 수 문제로 다뤘습니다. 그런데 설정 변경을 하루 수천 번 하는 조직이 실제로 그 품을 들였고, 결과를 숫자로 공개했어요. 앞의 Facebook 논문입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 카나리 (canary)</div>
+  변경을 운영 환경의 일부에만 잠깐 넣고, 나머지(대조군)와 지표를 비교해 계속 넓힐지 판정하는 방식이에요. Workbook은 "서비스 변경의 부분적이고 시간이 제한된 배포와 그 평가"로 정의합니다.
+</div>
+
+<p>논문의 설정 관리 도구(Configerator)는 설정 변경 하나를 다섯 겹으로 막습니다. 설정마다 불변 조건을 검사하는 검증기, 설정 프로그램과 생성된 JSON 모두에 대한 코드 리뷰, 일부 서버에 임시로 넣어 보는 수동 테스트, 샌드박스에서 사이트 전체를 돌리는 통합 테스트(프런트엔드 제품과 관련된 설정에만), 그리고 자동 카나리예요. 카나리 명세는 단계를 정의합니다. 예를 들어 1단계는 서버 20대, 2단계는 서버 수천 대로 이뤄진 클러스터 하나예요. 단계마다 대상 서버, 헬스체크 지표, 통과 조건(새 설정을 받은 서버의 클릭률이 옛 설정 서버보다 x% 넘게 낮지 않을 것 같은)을 적습니다.</p>
+
+<div class="obsv-code">Facebook Configerator, 논문(SOSP 2015)이 밝힌 숫자
+
+설정 변경 빈도           하루 수천 번   (코드 배포는 하루 2번)
+자동 카나리 소요         약 10분
+커밋 후 전 서버 반영      기준 약 14.5초 (git 커밋 5초 + 변경 읽기 5초 + 배포 트리 4.5초)
+고영향 장애 중 설정 관련   16%          (3개월치를 사람이 직접 분류, 나머지는 주로 코드 버그)
+  Type I   흔한 설정 오류            42%   오타, 범위를 벗어난 값, 잘못된 클러스터 지정
+  Type II  미묘한 설정 오류          36%   부하, 장애 상황에서만 드러나는 문제, 나비 효과
+  Type III 맞는 설정이 코드 버그를 드러냄 22%</div>
+
+<p>위 숫자에서 먼저 볼 것은 시간입니다. 반영 자체는 기준 약 15초(부하가 늘면 더 길어짐)이고 카나리가 10분이에요. 논문은 반영 지연을 줄이는 일이 덜 급하다고 적는데, 이유가 "어차피 자동 카나리가 10분쯤 걸리기 때문"입니다. 적어도 Configerator를 거치는 변경은 약 10분짜리 자동 카나리를 지난다는 뜻이에요(원본 설정의 상당수는 자동화 도구가 바꾸고, 모든 변경이 같은 경로를 탄다고 논문이 말하지는 않습니다).</p>
+
+<p>다음은 장애 유형입니다. 논문은 Type I은 리뷰를 더 꼼꼼히 하면 도움이 되고, Type II는 미리 예상하기 어렵고, Type III는 원인이 설정이 아니라 코드에 있다고 설명해요. Type III가 이렇게 많은 건 저자들에게도 처음엔 의외였다고 합니다. 그리고 결론은 <b>세 유형 모두 더 나은 카나리 테스트의 도움을 받는다</b>는 것이었어요. 검증기와 리뷰는 설정 파일을 읽고 판단합니다. Type II는 미리 내다보기 어렵고, Type III는 원인이 설정 밖(코드)에 있어서, 설정 파일을 읽는 장치만으로는 잡기 어렵고 실제 트래픽 아래에서 돌려 봐야 드러날 가능성이 커요. 합치면 설정 관련 장애의 58%가 그쪽입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="30" y="34" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">설정 관련 고영향 장애의 유형 (Facebook, 3개월)</text>
+  <path d="M30 60 C 120 58, 210 61, 282 59 C 284 74, 283 88, 282 102 C 210 104, 120 101, 32 103 C 29 88, 30 74, 30 60 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="40" y="88" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">Type I 흔한 오류 42%</text>
+  <text x="300" y="78" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">오타, 범위 밖 값, 잘못된 클러스터</text>
+  <text x="300" y="100" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">파일을 읽으면 보인다: 검증기, 리뷰</text>
+  <path d="M30 130 C 110 128, 180 131, 246 129 C 248 144, 247 158, 246 172 C 180 174, 110 171, 32 173 C 29 158, 30 144, 30 130 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="40" y="158" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">Type II 미묘한 오류 36%</text>
+  <text x="300" y="148" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">부하, 장애 중에만, 나비 효과</text>
+  <text x="300" y="170" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">실제 트래픽에서 돌려야 보인다</text>
+  <path d="M30 200 C 80 198, 130 201, 186 199 C 188 214, 187 228, 186 242 C 130 244, 80 241, 32 243 C 29 228, 30 214, 30 200 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="40" y="228" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">Type III 22%</text>
+  <text x="300" y="218" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">설정은 맞고, 새 코드 경로의 버그가 깨어남</text>
+  <text x="300" y="240" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">설정 파일에는 원인이 없다</text>
+  <path d="M262 135 C 272 160, 272 210, 262 238" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="200" y="278" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">합쳐서 58%</text>
+  <text x="350" y="318" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">절반이 넘는 유형은 미리 내다보기 어렵거나 원인이 설정 밖에 있다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 설정 장애의 과반은 미리 내다보기 어렵거나 원인이 설정 밖에 있어, 돌려 봐야 드러나기 쉽다</div>
+
+<h3>논문에 실린 세 장면</h3>
+
+<p>숫자 옆에 사례도 셋 있어요. 각각 카나리가 무엇을 잡고 무엇을 놓치는지 보여 줍니다.</p>
+
+<p><b>첫째, 잡은 경우.</b> 한 엔지니어가 클라이언트 코드와 설정 스키마를 함께 바꿨어요. 코드가 그날 배포에 실릴 줄 알았는데 릴리스 브랜치가 먼저 잘려서 빠졌습니다. 닷새 뒤 새 스키마로 설정을 커밋했어요. 옛 코드는 새 스키마를 읽지 못합니다. 자동 카나리가 서버 20대에만 먼저 넣고 나머지 서버와 오류 로그를 비교하다가 로그가 급증하는 걸 보고 배포를 멈췄고, 장애를 막았어요.</p>
+
+<p><b>둘째, 사람이 무시한 경우.</b> 카나리가 어떤 설정 변경을 거부했어요. 일부 인스턴스가 죽었기 때문입니다. 엔지니어가 보기에 너무 사소한 변경이라 오탐이라고 판단하고 거부를 무시한 채 배포했고, 죽는 인스턴스가 늘어 곧바로 되돌렸어요. 설정은 맞았습니다. 그 설정이 새 코드 경로를 타게 했고, 거기 숨어 있던 경쟁 조건 버그가 깨어난 거예요. Type III의 전형입니다.</p>
+
+<p><b>셋째, 놓친 경우.</b> 설정 오류 하나가 모바일 요청을 드문 코드 경로로 보내 백엔드 저장소에서 데이터를 가져오게 했어요. 저장소에 부하가 몰려 지연이 크게 늘었는데, 카나리는 서버 몇 대에서만 돌았으니 부하 문제가 생길 만큼 크지 않았습니다. 사이트 전체에 퍼진 뒤에야 드러났어요. 이 일 뒤에 서버 수천 대 규모의 클러스터 단계를 카나리에 더했다고 합니다. 앞에서 본 2단계가 그 단계로 보여요(논문이 둘을 직접 잇지는 않습니다).</p>
+
+<p>세 장면을 합치면 카나리를 "이득이 있다, 없다"로 말하기보다 <b>몇 대에서, 무엇을 비교하느냐</b>로 말해야 한다는 게 보여요. 20대는 스키마 불일치와 크래시를 잡았고 부하 문제는 놓쳤습니다. 놓친 건 카나리를 버릴 이유가 아니라 단계를 하나 더할 이유였어요. 논문 저자들도 자동 카나리를 강화하는 일은 끝나지 않는 싸움이라고 적었습니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 카나리를 건너뛰는 길은 남겨 두되 좁게</div>
+  &bull; 카나리가 늘 값을 하는 건 아니에요. 장애 중에 기능을 끄는 킬 스위치는 10분을 기다릴 수 없습니다. Cloudflare도 단계적 배포로 바꾸기로 하면서 공격이 진행 중일 때 쓸 전역 긴급 배포 경로는 남겼어요<br>
+  &bull; 문제는 그 길이 평소에도 열려 있을 때입니다. 2019년 사고의 규칙 변경은 긴급 대응이 아니었는데 전역으로 나갔어요. 긴급 경로는 쓸 수 있는 사람과 상황을 정하고, 쓸 때마다 기록이 남게 합니다<br>
+  &bull; 트래픽이 아주 적은 서비스는 카나리 판정 자체가 흔들려요. 표본이 모자라면 판정 대신 "몇 대에 먼저 넣고 오류 로그만 비교"처럼 Facebook 첫 사례의 단순한 기준이 오히려 현실적입니다
+</div>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 설정을 배포로 다룬다는 것의 목록</h2>
+
+<p>"설정 변경도 배포다"를 말로만 하면 아무것도 바뀌지 않아요. Workbook은 설정 변경이 안전하려면 세 가지가 있어야 한다고 적습니다. 전부 아니면 전무가 아니라 <b>점진적으로</b> 넣을 수 있어야 하고, 위험하면 <b>되돌릴</b> 수 있어야 하고, 운영자가 시스템을 제어할 수 없게 되는 변경이면 <b>자동으로 되돌리거나</b> 적어도 진행을 멈춰야 한다(<a href="https://sre.google/workbook/configuration-design/">SRE Workbook, Configuration Design and Best Practices</a>). 방화벽 규칙을 잘못 넣어 자기 자신을 막아 버리는 경우가 세 번째의 예예요. 같은 장은 설정마다 주인이 분명해야 하고, 버전 관리를 해야 하며, 커밋한 것과 실제로 적용된 것을 둘 다 기록하라고도 합니다. 커밋했다고 곧바로 적용되는 건 아니니까요.</p>
+
+<p>되돌리기에는 조건이 하나 붙어요. 설정이 <b>밀폐</b>돼 있어야 합니다. 버전 관리 중인 설정이 네트워크 파일 시스템에 있는 데이터를 참조한다면, 옛 커밋으로 돌아가도 그 데이터는 이미 바뀌어 있어서 예전 상태로 돌아가지 않아요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 밀폐성 (hermeticity)</div>
+  설정을 언제 어디서 평가해도 같은 결과가 나오는 성질이에요. 바깥의 DNS, 최신 빌드 번호, 원격 파일처럼 시간이 지나면 바뀌는 것을 읽지 않아야 성립합니다. 이게 있어야 옛 버전으로 되돌렸을 때 정말 옛 상태가 돼요.
+</div>
+
+<p>Facebook 첫 사례에서 나온 교훈도 목록에 넣을 만해요. 코드와 설정 스키마를 함께 바꾸면 둘이 같은 순간에 서버에 닿지 않습니다. 논문은 보통 새 코드는 옛 스키마를 읽을 수 있지만 옛 코드는 새 스키마를 읽지 못한다고 적어요. 그러니 순서가 정해집니다. 새 스키마를 읽을 수 있는 코드가 전부 배포된 걸 확인한 뒤에 새 스키마의 설정을 넣어요. 정리하면 새 형식을 읽는 쪽을 먼저, 새 형식을 쓰는 쪽을 나중에 내보내는 순서예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 설정 저장소를 Git에 두고, 운영 반영은 머지로만 하게 해요. 깃옵스로 클러스터에 당겨 오는 방식은 배포 안전성 4편 <a href="https://dding-shark.tistory.com/622">"깃옵스는 배포를 밀지 않고 당긴다"</a>에 있어요<br>
+  &bull; 쿠버네티스에서 ConfigMap을 쓴다면 configMapGenerator의 해시 접미사를 켜 두거나 ConfigMap을 immutable로 두고 새 이름으로 만들어, 설정 변경이 롤링 업데이트를 거치게 해요<br>
+  &bull; 실행 중 갱신(@RefreshScope 같은)을 쓴다면 한 번에 방송하지 말고 목적지를 지정해 몇 대부터 넣어요. 그 사이 오류율과 지연을 옛 값의 인스턴스와 비교하는 단계를 스크립트나 배포 도구에 넣습니다<br>
+  &bull; 설정 변경도 배포 이벤트로 기록해 대시보드에 표시해요. 장애 때 "직전에 바뀐 것"을 찾을 때 코드 배포만 보이면 설정 변경은 늘 늦게 의심받습니다<br>
+  &bull; 재시도·타임아웃처럼 여러 서비스가 공통으로 쓰는 정책을 라이브러리로 실어 보낼지 사이드카 설정으로 둘지에 따라 이 변경이 재배포인지 설정 반영인지가 갈려요. 3편 <a href="#pc-03">"공통 기능은 실어 보내는 경로가 업그레이드 값을 정한다"</a>에서 다뤘고, 실습-1 <a href="#pc-07">"재시도 정책 하나를 바꾸면…"</a>에서 둘을 직접 바꿔 반영 시간과 버전이 섞이는 구간을 잽니다
+</div>
+
+<p>Facebook도 처음부터 이랬던 건 아니에요. 논문은 설정 변경에 대한 리뷰와 수동 테스트가 선택이던 시절에서 둘 다 필수인 쪽으로 옮겨 왔다고 적습니다. 다만 중요한 설정 몇 개를 빼면 바꿀 수 있는 사람을 제한하지 않았고, 엔지니어 각자의 판단에 맡기는 대신 자동 검증과 테스트를 안전망으로 깔았다고 해요. 설정을 배포로 다룬다는 게 설정 변경을 어렵게 만든다는 뜻은 아닙니다. 빨리 바꾸되 변경마다 같은 관문을 지나게 한다는 뜻이에요.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 선언형 설정에는 계산이 스며든다</h2>
+
+<p>설정을 코드처럼 리뷰하고 버전 관리하자는 말이 나오면, 이어서 "그럼 설정은 무엇으로 쓰나"가 문제가 됩니다. 쿠버네티스와 YAML 매니페스트 덕에 선언형 설정이 다시 주목받았어요. 원하는 상태를 데이터로 적어 두면 도구가 맞춰 주니, 정적 분석도 쉽고 자동으로 고치기도 쉽습니다. 그런데 써 보면 곧 같은 블록을 환경마다 복사하게 되고, 복사본이 서로 어긋나기 시작해요.</p>
+
+<p>Workbook은 이걸 첫 번째 함정으로 꼽습니다. 설정을 프로그래밍 언어 문제로 인식하지 못하는 것. 데이터 전용 형식으로 시작해도 프로그래밍 언어의 기능이 뒷문으로 스며들고, 결국 난해하고 복잡한 언어가 된다는 거예요. 예로 든 것이 VM 스키마에 붙는 count 속성(VM의 속성이 아니라 "여러 개 만들라"는 반복문)과, 식 대신 문자열 치환 규칙이 늘어나는 경우, 그리고 YAML에 Jinja 템플릿을 얹는 조합입니다. 각각은 좋은 도구지만 섞이면 사람도 도구도 분석하기 어려워진다고 해요(<a href="https://sre.google/workbook/configuration-specifics/">SRE Workbook, Configuration Specifics</a>).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 튜링 완전 (Turing complete)</div>
+  반복과 조건 분기로 어떤 계산이든 표현할 수 있는 언어의 성질이에요. 그 대가로 "이 설정 평가가 끝나기는 하는가"를 미리 판정할 수 없게 됩니다.
+</div>
+
+<p>XML 변환 언어인 XSLT가 이 흐름의 오래된 예예요. 템플릿을 입히는 선언형 언어로 출발했지만 튜링 완전하다는 증명이 나와 있어요. 그 증명을 쓴 Kepser는 커뮤니티에 튜링 완전하다는 주장은 여럿 있었지만 증명이 없었다며, μ-재귀 함수를 XSLT로 옮기는 방식으로 이를 보였습니다(<a href="https://www.pms.ifi.lmu.de/publikationen/diplomarbeiten/Sacha.Berger/literatur/COMPARING-XML-QLs/Kepser%20-%20A%20Proof%20of%20the%20Turing-completeness%20of%20XSLT%20and%20XQuery.pdf">Kepser, A Proof of the Turing-completeness of XSLT and XQuery</a>). Jsonnet은 처음부터 계산을 받아들인 쪽이에요. 설계 문서는 끝나지 않는 프로그램을 쓸 수 있으니 튜링 완전하고, 종료를 강제하면 푸는 문제보다 만드는 문제가 많다고 판단했다고 적습니다. 대신 부수 효과가 없는 순수 함수형으로 만들어 밀폐성을 지켰어요(<a href="https://jsonnet.org/articles/design.html">Jsonnet Design Rationale</a>). Facebook의 Configerator도 같은 길입니다. 설정을 Python과 Thrift로 쓰고 컴파일러가 JSON을 생성하며, 검증기도 그 단계에서 돌아요.</p>
+
+<p>그렇다고 선언형이 반드시 튜링 완전으로 끌려간다고 말하면 지나칩니다. 반례가 있어요. Kustomize는 "템플릿 없는, 구조화된 선언형 설정 변형"을 표방하고, 목표에 템플릿이나 DSL로 넘어가는 선을 넘지 않는다고 적어 둡니다(<a href="https://kubectl.docs.kubernetes.io/references/kustomize/glossary/">Kustomize Glossary</a>). 변수와 반복문 대신 기반(base) 매니페스트에 환경별 패치를 겹쳐요. 다만 Kustomize에도 탈출구는 있습니다. 컨테이너나 실행 파일로 KRM 함수(쿠버네티스 리소스 목록을 입력받아 고친 목록을 내놓는 프로그램)를 돌리는 플러그인인데, 전부 알파 단계라 <code>--enable-alpha-plugins</code> 플래그가 있어야 하고, 샌드박스 없이 돌아간다는 경고가 붙어 있어요(<a href="https://kubectl.docs.kubernetes.io/guides/extending_kustomize/">Kustomize, Extending Kustomize</a>). 계산이 필요해지는 압력은 Kustomize도 받았고, 그 압력을 형식 안이 아니라 형식 바깥의 명시적인 문으로 돌린 겁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 기반과 오버레이 (base, overlay)</div>
+  Kustomize에서 공통 매니페스트 묶음을 기반, 그걸 참조해 환경별로 일부만 바꾸는 묶음을 오버레이라고 해요. 기반은 자기를 참조하는 오버레이를 모릅니다. 바꾸는 방법은 변수 치환이 아니라 패치예요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">복사가 늘면 계산이 필요해진다. 그 계산을 어디에 두나</text>
+  <path d="M25 55 C 100 53, 160 56, 222 54 C 224 120, 223 190, 222 250 C 160 252, 100 249, 27 251 C 24 190, 25 120, 25 55 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="123" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">데이터 안에 몰래</text>
+  <text x="123" y="118" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">count 속성</text>
+  <text x="123" y="144" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">문자열 치환 규칙</text>
+  <text x="123" y="170" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">YAML + Jinja</text>
+  <text x="123" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">설계 안 된 언어가 생긴다</text>
+  <path d="M250 55 C 320 53, 390 56, 450 54 C 452 120, 451 190, 450 250 C 390 252, 320 249, 252 251 C 249 190, 250 120, 250 55 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="350" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5">설계된 언어에서 계산</text>
+  <text x="350" y="118" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">Jsonnet, Configerator</text>
+  <text x="350" y="144" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">평가 결과는 정적 JSON</text>
+  <text x="350" y="170" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">결과물을 리뷰, 분석</text>
+  <text x="350" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">밀폐성이 지켜지면 되돌릴 수 있다</text>
+  <path d="M478 55 C 550 53, 610 56, 675 54 C 677 120, 676 190, 675 250 C 610 252, 550 249, 480 251 C 477 190, 478 120, 478 55 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="576" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">계산 없이 패치</text>
+  <text x="576" y="118" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">Kustomize</text>
+  <text x="576" y="144" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">기반 + 오버레이</text>
+  <text x="576" y="170" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">탈출구: 알파 플러그인</text>
+  <text x="576" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">표현력의 한계를 받아들인다</text>
+  <text x="350" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">피할 것은 계산 자체가 아니라 데이터 형식에 몰래 섞인 계산이다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 계산을 어디에 두는지가 다를 뿐, 왼쪽만 분석과 되돌리기를 같이 잃는다</div>
+
+<p>그러니 실무의 질문은 "선언형이냐 명령형이냐"보다 <b>계산을 어디에 두고, 운영에 들어가는 건 무엇이냐</b>예요. Workbook의 권고가 이 질문에 답합니다. 시스템 인프라는 평범한 정적 데이터로 동작해야 하고, 그 위의 사람이 쓰는 층은 언어여도 되며, 설정을 먼저 평가한 다음 그 결과 데이터를 분석하라(<a href="https://sre.google/workbook/configuration-design/">Configuration Design</a>, <a href="https://sre.google/workbook/configuration-specifics/">Configuration Specifics</a>). 이렇게 나누면 리뷰어는 Jsonnet 코드와 함께 생성된 JSON의 차이를 보고, 카나리는 그 JSON을 몇 대에 먼저 넣습니다. 계산이 아무리 복잡해도 운영에 들어가는 변경은 데이터의 차이 하나가 돼요. Facebook 논문에서 원본 설정(raw config) 변경의 약 89%를 사람이 아니라 자동화 도구가 했다는 것도 같은 방향입니다. 사람은 설정을 만드는 코드를 쓰고, 운영에는 생성된 데이터가 들어가요.</p>
+
+<p>Workbook은 반대쪽 함정도 적어요. Python이나 Lua 같은 범용 스크립트 언어를 설정 언어로 쓰면 앞의 함정들은 피하지만, 로컬 시스템에 접근할 수 있어서 밀폐성을 지키려면 무거운 샌드박스가 필요해집니다. 그래서 HOCON, Dhall, Jsonnet 같은 기존 설정 DSL을 쓰라고 권하고, 필요 이상으로 강력해 보이면 사내 스타일 가이드로 기능을 줄이라고 해요. 표현력은 넉넉하게 두고, 운영에 들어가는 것은 데이터로 좁히는 방식입니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>재시작해야 반영되는 설정은 배포 도구의 안전장치를 그대로 얻지만, 실행 중에 바뀌는 설정은 따로 만들지 않으면 저장 한 번에 전체로 갑니다.</b> 하루 수천 번 설정을 바꾸는 Facebook에서 Configerator를 거치는 변경은 약 10분짜리 자동 카나리를 지났고, 설정 관련 장애의 58%는 미리 내다보기 어렵거나 원인이 설정 밖에 있는 유형이었어요. 카나리는 버릴 대상이 아니라 몇 대에서 무엇을 비교할지 다듬을 대상입니다.<br><br>
+  설정을 배포로 다룬다는 건 점진적 반영, 되돌리기, 밀폐성, 코드와 스키마의 순서를 갖추는 일이에요. 설정 언어에 계산이 스며드는 건 막기 어렵지만, 계산은 설계된 언어에 두고 운영에는 평가된 데이터만 들여보내면 리뷰와 카나리가 그 데이터를 봅니다. 위험은 변경의 크기가 아니라 그 변경이 지나는 길이 정해요.
+</div>
+
+</div>

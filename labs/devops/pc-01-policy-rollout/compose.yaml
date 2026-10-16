@@ -1,0 +1,62 @@
+# 플랫폼 실습-1: 재시도 정책 하나를 바꾸면 라이브러리는 몇 번 다시 뜨고 사이드카는 무엇이 바뀌나.
+#   lib-svc1..5   : 플랫폼 스타터(jar)의 PlatformHttp 로 backend 를 부른다. 정책은 jar 에 구워져 있다 (profile lib)
+#   dyn-svc1..5   : 같은 이미지, 정책 파일(dyn/svcN.properties)을 1초마다 읽는다 (profile dyn)
+#   sc-svc1..5    : 재시도 없는 클라이언트로 옆 Envoy(sc-envoyN)를 부른다. 정책은 Envoy 의 RDS 파일 (profile sidecar)
+# 주소는 고정 IP(198.18.37.0/24). 이름 조회는 재기동 때 흔들린다(트래픽 관리 실습-5 함정).
+networks:
+  lab:
+    ipam:
+      config: [{ subnet: 198.18.37.0/24 }]
+
+x-svc: &svc
+  mem_limit: 384m
+  environment: &svcenv
+    JAVA_TOOL_OPTIONS: -Xmx160m -XX:+UseSerialGC
+    LAB_DOWNSTREAM: http://198.18.37.80:8080
+
+x-envoy: &envoy
+  image: envoyproxy/envoy:${ENVOY_TAG:-v1.39.3}
+  command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--concurrency", "1"]
+  mem_limit: 128m
+
+services:
+  backend:
+    image: python:3.13-alpine
+    command: ["python", "-u", "/b/backend.py"]
+    environment: { FAIL_RATE: "${FAIL_RATE:-0.1}", DELAY_MS: "5" }
+    volumes: ["./backend:/b:ro"]
+    ports: ["37080:8080"]
+    networks: { lab: { ipv4_address: 198.18.37.80 } }
+
+  # ---- A: 라이브러리(정책이 jar 안에) ----
+  lib-svc1: { <<: *svc, image: "pc01/svc1:${SVC1_TAG:-1.0.0}", profiles: [lib], environment: { <<: *svcenv, LAB_SVC: svc1 }, ports: ["37001:8080"], networks: { lab: { ipv4_address: 198.18.37.11 } } }
+  lib-svc2: { <<: *svc, image: "pc01/svc2:${SVC2_TAG:-1.0.0}", profiles: [lib], environment: { <<: *svcenv, LAB_SVC: svc2 }, ports: ["37002:8080"], networks: { lab: { ipv4_address: 198.18.37.12 } } }
+  lib-svc3: { <<: *svc, image: "pc01/svc3:${SVC3_TAG:-1.0.0}", profiles: [lib], environment: { <<: *svcenv, LAB_SVC: svc3 }, ports: ["37003:8080"], networks: { lab: { ipv4_address: 198.18.37.13 } } }
+  lib-svc4: { <<: *svc, image: "pc01/svc4:${SVC4_TAG:-1.0.0}", profiles: [lib], environment: { <<: *svcenv, LAB_SVC: svc4 }, ports: ["37004:8080"], networks: { lab: { ipv4_address: 198.18.37.14 } } }
+  lib-svc5: { <<: *svc, image: "pc01/svc5:${SVC5_TAG:-1.0.0}", profiles: [lib], environment: { <<: *svcenv, LAB_SVC: svc5 }, ports: ["37005:8080"], networks: { lab: { ipv4_address: 198.18.37.15 } } }
+
+  # ---- C: 라이브러리 + 실행 중에 읽는 정책 파일 ----
+  dyn-svc1: { <<: *svc, image: "pc01/svc1:1.0.0", profiles: [dyn], environment: { <<: *svcenv, LAB_SVC: svc1, LAB_POLICY_FILE: /dyn/svc1.properties }, volumes: ["./state/dyn:/dyn:ro"], ports: ["37001:8080"], networks: { lab: { ipv4_address: 198.18.37.11 } } }
+  dyn-svc2: { <<: *svc, image: "pc01/svc2:1.0.0", profiles: [dyn], environment: { <<: *svcenv, LAB_SVC: svc2, LAB_POLICY_FILE: /dyn/svc2.properties }, volumes: ["./state/dyn:/dyn:ro"], ports: ["37002:8080"], networks: { lab: { ipv4_address: 198.18.37.12 } } }
+  dyn-svc3: { <<: *svc, image: "pc01/svc3:1.0.0", profiles: [dyn], environment: { <<: *svcenv, LAB_SVC: svc3, LAB_POLICY_FILE: /dyn/svc3.properties }, volumes: ["./state/dyn:/dyn:ro"], ports: ["37003:8080"], networks: { lab: { ipv4_address: 198.18.37.13 } } }
+  dyn-svc4: { <<: *svc, image: "pc01/svc4:1.0.0", profiles: [dyn], environment: { <<: *svcenv, LAB_SVC: svc4, LAB_POLICY_FILE: /dyn/svc4.properties }, volumes: ["./state/dyn:/dyn:ro"], ports: ["37004:8080"], networks: { lab: { ipv4_address: 198.18.37.14 } } }
+  dyn-svc5: { <<: *svc, image: "pc01/svc5:1.0.0", profiles: [dyn], environment: { <<: *svcenv, LAB_SVC: svc5, LAB_POLICY_FILE: /dyn/svc5.properties }, volumes: ["./state/dyn:/dyn:ro"], ports: ["37005:8080"], networks: { lab: { ipv4_address: 198.18.37.15 } } }
+
+  # ---- B: 사이드카. 서비스 컨테이너가 포트를 열고, Envoy 는 그 네트워크 이름공간에 들어간다 ----
+  sc-svc1: { <<: *svc, image: "pc01/svc1:1.0.0", profiles: [sidecar], environment: { <<: *svcenv, LAB_SVC: svc1, LAB_MODE: sidecar }, ports: ["37011:8080", "37021:15000"], networks: { lab: { ipv4_address: 198.18.37.21 } } }
+  sc-svc2: { <<: *svc, image: "pc01/svc2:1.0.0", profiles: [sidecar], environment: { <<: *svcenv, LAB_SVC: svc2, LAB_MODE: sidecar }, ports: ["37012:8080", "37022:15000"], networks: { lab: { ipv4_address: 198.18.37.22 } } }
+  sc-svc3: { <<: *svc, image: "pc01/svc3:1.0.0", profiles: [sidecar], environment: { <<: *svcenv, LAB_SVC: svc3, LAB_MODE: sidecar }, ports: ["37013:8080", "37023:15000"], networks: { lab: { ipv4_address: 198.18.37.23 } } }
+  sc-svc4: { <<: *svc, image: "pc01/svc4:1.0.0", profiles: [sidecar], environment: { <<: *svcenv, LAB_SVC: svc4, LAB_MODE: sidecar }, ports: ["37014:8080", "37024:15000"], networks: { lab: { ipv4_address: 198.18.37.24 } } }
+  sc-svc5: { <<: *svc, image: "pc01/svc5:1.0.0", profiles: [sidecar], environment: { <<: *svcenv, LAB_SVC: svc5, LAB_MODE: sidecar }, ports: ["37015:8080", "37025:15000"], networks: { lab: { ipv4_address: 198.18.37.25 } } }
+  sc-envoy1: { <<: *envoy, profiles: [sidecar], network_mode: "service:sc-svc1", volumes: ["./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro", "./state/envoy/svc1:/etc/envoy/dyn"] }
+  sc-envoy2: { <<: *envoy, profiles: [sidecar], network_mode: "service:sc-svc2", volumes: ["./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro", "./state/envoy/svc2:/etc/envoy/dyn"] }
+  sc-envoy3: { <<: *envoy, profiles: [sidecar], network_mode: "service:sc-svc3", volumes: ["./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro", "./state/envoy/svc3:/etc/envoy/dyn"] }
+  sc-envoy4: { <<: *envoy, profiles: [sidecar], network_mode: "service:sc-svc4", volumes: ["./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro", "./state/envoy/svc4:/etc/envoy/dyn"] }
+  sc-envoy5: { <<: *envoy, profiles: [sidecar], network_mode: "service:sc-svc5", volumes: ["./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro", "./state/envoy/svc5:/etc/envoy/dyn"] }
+
+  # 지연 비교용 부하(같은 네트워크 안에서)
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [k6]
+    volumes: ["./k6:/scripts:ro", "./out:/out"]
+    networks: [lab]

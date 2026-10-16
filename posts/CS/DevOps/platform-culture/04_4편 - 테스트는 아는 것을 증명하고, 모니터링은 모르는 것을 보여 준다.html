@@ -1,0 +1,329 @@
+<!-- lead: CI가 전부 초록이고 커버리지가 87%여도 프로덕션의 에러는 보이지 않아요. 플랫폼팀이 테스트 도구보다 모니터링을 먼저 깔아 주는 이유와, 커버리지·계약 테스트가 증명하는 것과 못 하는 것을 정리했어요. -->
+<!-- tags: 테스트 커버리지, 계약 테스트, Pact, 변이 테스트, 신뢰성 계층 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧭 플랫폼 엔지니어링, 4편</div>
+  1편. 경고는 아무도 읽지 않고, 고쳐 주는 도구는 쓰인다<br>
+  2편. SRE를 따로 둘지는 공통 문제를 맡을 사람이 있느냐가 정한다<br>
+  3편. 공통 기능은 실어 보내는 경로가 업그레이드 값을 정한다<br>
+  <b>4편. 테스트는 아는 것을 증명하고, 모니터링은 모르는 것을 보여 준다</b> &larr; 지금 이 글<br>
+  5편. 설정 변경도 배포다<br>
+  6편. 임시방편은 빚이지만, 갚을지는 남은 수명이 정한다<br>
+  실습-1. 재시도 값을 jar에 구우면 다섯 번 다시 뜨고, 사이드카에 두면 설정만 바뀐다<br>
+  실습-2. 복사해 붙인 코드가 바뀔 때 절반은 따로 고쳐지고, 놓친 한 벌은 오래 남는다
+</div>
+
+<p>릴리스 전날, CI 화면이 전부 초록색입니다. 단위 테스트 1,200개가 통과했고 커버리지 리포트는 87%를 가리켜요. 팀은 안심하고 배포합니다. 그리고 그 주에 플랫폼팀이 공통 모니터링을 처음 켜 줍니다. 대시보드를 연 순간, 요청 수백 건 중 몇 건이 꾸준히 500을 내고 있었다는 게 보여요. 배포 전부터 그랬습니다. 아무도 몰랐을 뿐이에요. (설명용으로 꾸민 장면이에요.)</p>
+
+<p>테스트가 틀린 걸까요? 아닙니다. 테스트는 자기가 확인하라고 들은 것을 정확히 확인했어요. 문제는 그 바깥에 있었습니다. 외부 결제사의 응답이 가끔 늦고, 커넥션 풀이 피크 때 바닥나고, 어떤 고객의 데이터에는 아무도 예상하지 못한 빈 문자열이 들어 있었어요. 테스트를 쓴 사람이 떠올리지 못한 일들입니다.</p>
+
+<p>이번 편은 플랫폼팀이 개발팀에게 무엇부터 깔아 줘야 하느냐는 질문에서 출발합니다. 흔히 나오는 답은 모니터링, 그다음 배포 파이프라인, 그다음 트래픽 관리예요. 그 목록에 테스트 자동화가 없다는 게 이 글의 주제입니다. 테스트가 덜 중요해서가 아니라, 테스트와 모니터링이 맡은 일이 다르기 때문이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 플랫폼팀은 왜 모니터링을 가장 먼저 깔아 주나? 신뢰성 계층에서 테스트는 어디에 있나?<br>
+  &bull; 테스트 자동화를 플랫폼 일 목록에서 빼도 되는 이유와, 빼면 안 되는 부분은?<br>
+  &bull; 커버리지 숫자는 무엇을 알려 주고 무엇을 알려 주지 못하나?<br>
+  &bull; 계약 테스트는 무엇을 대신하고, 무엇을 대신하지 못하나?<br>
+  &bull; 프로덕션과 같은 테스트 환경을 만들 수 없다면, 그 차이는 누가 메우나?
+</div>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 플랫폼팀이 가장 먼저 깔아 주는 것은 모니터링이다</h2>
+
+<p>플랫폼팀이 한 번에 다 만들 수는 없으니 순서가 필요합니다. 이 시리즈가 따르는 순서는 모니터링, 전달(배포 파이프라인), 트래픽 관리예요. 모니터링이 맨 앞인 이유는 두 가지입니다.</p>
+
+<p>첫째, <b>가장 싸요</b>. 스프링 부트 같은 프레임워크는 HTTP 요청 수, 지연, 에러, JVM 힙과 GC 지표를 이미 측정하고 있어서, 의존성 한두 개와 설정 몇 줄이면 지표가 나옵니다. 개발팀이 코드를 거의 고치지 않아도 되니 조직 간에 맞춰야 할 일이 적어요. 배포 방식을 바꾸거나 호출마다 재시도 정책을 넣는 일은 그렇지 않습니다.</p>
+
+<p>둘째, <b>다른 것들이 모니터링 위에 서요</b>. 카나리 배포는 새 버전과 옛 버전의 지표를 비교해야 판정할 수 있고(<a href="https://dding-shark.tistory.com/621">배포 안전성 3편</a>), 서킷 브레이커가 제대로 열리는지도 지표가 있어야 압니다. 지표가 없으면 다음 단계들이 제대로 동작하는지 확인할 방법이 없어요.</p>
+
+<p>Google SRE Book의 <a href="https://sre.google/sre-book/part-III-practices/">신뢰성 계층(Service Reliability Hierarchy)</a>에는 전달이나 트래픽 관리라는 층이 따로 없어서 이 순서 전체를 받쳐 주지는 않지만, 모니터링이 맨 앞이라는 점은 그 계층과도 맞습니다. 그림은 아래에서부터 모니터링, 장애 대응, 사후 분석과 근본 원인 분석, 테스트, 용량 계획, 개발, 제품 순으로 쌓여 있어요. 맨 아래가 모니터링인 이유를 그 글은 이렇게 적습니다. "Without monitoring, you have no way to tell whether the service is even working." 모니터링이 없으면 서비스가 동작하고 있는지조차 알 수 없다는 뜻이에요. 이 계층은 그 글의 설명대로 2013년 말부터 2014년 초까지 Mikey Dickerson을 포함한 Google SRE들이 미국 정부의 healthcare.gov 출시를 돕다가, 시스템 신뢰성을 높이는 법을 설명할 방법이 필요해서 명시적으로 정리했다고 해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <path d="M290 30 C 320 29, 350 31, 380 30 C 381 44, 380 54, 381 64 C 350 65, 320 63, 289 64 C 290 52, 289 42, 290 30 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="335" y="54" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">제품</text>
+  <path d="M265 70 C 310 69, 360 71, 405 70 C 406 84, 405 94, 406 104 C 360 105, 310 103, 264 104 C 265 92, 264 82, 265 70 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="335" y="94" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">개발</text>
+  <path d="M240 110 C 300 109, 370 111, 430 110 C 431 124, 430 134, 431 144 C 370 145, 300 143, 239 144 C 240 132, 239 122, 240 110 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="335" y="134" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">용량 계획</text>
+  <path d="M215 150 C 290 149, 380 151, 455 150 C 456 164, 455 174, 456 184 C 380 185, 290 183, 214 184 C 215 172, 214 162, 215 150 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+  <text x="335" y="174" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">테스트</text>
+  <path d="M190 190 C 280 189, 390 191, 480 190 C 481 204, 480 214, 481 224 C 390 225, 280 223, 189 224 C 190 212, 189 202, 190 190 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="335" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">사후 분석, 근본 원인 분석</text>
+  <path d="M165 230 C 270 229, 400 231, 505 230 C 506 244, 505 254, 506 264 C 400 265, 270 263, 164 264 C 165 252, 164 242, 165 230 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="335" y="254" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">장애 대응</text>
+  <path d="M140 270 C 260 268, 410 272, 530 270 C 531 286, 530 298, 531 312 C 410 314, 260 310, 139 312 C 140 298, 139 284, 140 270 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8"/>
+  <text x="335" y="298" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">모니터링 📟</text>
+  <path d="M560 290 C 585 260, 590 210, 575 180" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p4a)"/>
+  <text x="640" y="240" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">무엇이 깨지는지</text>
+  <text x="640" y="260" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">알고 나서야</text>
+  <text x="640" y="280" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">막을 수 있다</text>
+  <text x="30" y="300" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5">플랫폼 1순위</text>
+  <path d="M112 293 C 120 292, 128 292, 134 291" fill="none" stroke="#4a7fb5" stroke-width="2" marker-end="url(#p4a)"/>
+  <text x="30" y="178" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">이 글의 질문</text>
+  <path d="M112 172 C 150 170, 185 168, 208 167" fill="none" stroke="#e5a33c" stroke-width="2" marker-end="url(#p4a)"/>
+  <text x="350" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">테스트는 바닥이 아니라 가운데에 있다</text>
+  <text x="350" y="378" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">(Google SRE Book, Part III 신뢰성 계층을 옮겨 그림)</text>
+  <defs>
+    <marker id="p4a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 신뢰성 계층에서 테스트는 모니터링, 장애 대응, 사후 분석 위에 놓인다</div>
+
+<p>그림에서 볼 곳은 테스트의 자리예요. 테스트는 바닥이 아니라 넷째 층에 있습니다. 같은 글은 무엇이 잘못되는 경향이 있는지 이해한 다음에야 그것을 막는 단계로 간다고 설명해요. 무엇을 막을지는 아래 세 층이 알려 줍니다. 모니터링이 장애를 보여 주고, 장애 대응과 사후 분석이 원인을 찾아 주면, 그 원인을 다시 일으키지 않도록 테스트를 씁니다. 순서를 뒤집어 테스트부터 쌓으면 상상할 수 있는 실패만 막게 돼요.</p>
+
+<p>모니터링으로 무엇을 볼지는 <a href="https://dding-shark.tistory.com/577">SLO와 경고 3편</a>에서 자바 서비스 공통 지표 여섯 개로 정리했어요. 여기서는 그 분류에서 흔히 틀리는 곳 하나만 짚고 넘어갑니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: CPU 사용률과 힙 사용률은 포화도가 아니다</div>
+  &bull; 지연(latency)에 USE(사용률, 포화도, 에러)를 붙인 분류를 쓰면서, 표에서는 "CPU 사용률 80% 미만"과 "힙 사용률 80% 미만"을 포화도 칸에 넣는 경우를 종종 봅니다<br>
+  &bull; USE를 정리한 <a href="https://www.brendangregg.com/usemethod.html">Brendan Gregg의 정의</a>로는 사용률은 자원이 일하느라 바빴던 평균 시간이고, 포화도는 자원이 처리하지 못하고 쌓아 둔 추가 작업의 정도(대개 큐)예요. CPU의 포화도 예는 실행 대기열 길이이고, 사용률 백분율은 사용률입니다. 같은 글의 각주는 메모리처럼 용량으로 쓰는 자원에 대해 사용률을 자원 중 쓰인 비율로 보는 정의도 함께 적어요. 힙에 차지한 바이트를 사용률로 보는 근거가 이쪽입니다<br>
+  &bull; JVM으로 옮기면 힙에 차지한 바이트는 사용률, GC에 쓴 시간 비중이나 멈춤 시간은 포화도 쪽이에요. 이름에 "사용률"이 들어간 지표를 포화도 칸에 넣으면 경고를 거는 사람이 둘을 같은 신호로 오해합니다
+</div>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 테스트 자동화를 플랫폼 목록에서 뺀 이유와 빼면 안 되는 부분</h2>
+
+<p>플랫폼팀이 할 일 목록에서 테스트 자동화를 빼는 논리는 이래요. 단위 테스트(JUnit), 목과 스텁(Mockito), 실제 DB를 컨테이너로 띄우는 통합 테스트(Testcontainers), 서비스 사이 계약 테스트(Pact, Spring Cloud Contract)는 이미 오픈 소스로 잘 갖춰져 있습니다. 플랫폼팀이 사내 테스트 프레임워크를 새로 만들어도 이 도구들보다 나아질 여지는 적어요. 같은 시간을 아무도 대신 만들어 주지 않는 쪽(공통 지표, 배포 파이프라인)에 쓰는 편이 낫다는 판단입니다.</p>
+
+<p>여기까지는 동의합니다. 다만 이걸 "테스트는 플랫폼 관심사가 아니다"로 읽으면 곤란해요. <a href="https://dora.dev/capabilities/test-automation/">DORA의 테스트 자동화 항목</a>은 연구 결과로 테스트 자동화가 소프트웨어 안정성을 높이고, 팀의 번아웃과 배포의 고통을 줄인다고 적습니다. 같은 문서의 권고는 여럿인데, 그 가운데 두 가지가 플랫폼 일과 닿아요. 테스트는 모든 변경마다 파이프라인에서 돌아야 하고, 불안정한(flaky) 테스트는 용인하지 말아야 한다는 것입니다. 그리고 같은 문서가 흔한 함정의 첫 번째로 꼽는 것은 개발자가 테스트에 참여하지 않는 것이에요. 개발자가 자동 테스트를 직접 만들고 유지할 때 성과가 좋아지고, 다른 그룹이 테스트 자동화를 맡으면 문제가 생기기 쉽다고 적습니다. 플랫폼팀이 서비스의 테스트를 대신 써 주는 것은 오히려 이 함정에 가까워요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 불안정한 테스트 (flaky test)</div>
+  코드를 바꾸지 않았는데도 돌릴 때마다 통과와 실패가 바뀌는 테스트예요. 시간, 순서, 네트워크에 기대는 테스트가 주로 그렇습니다. 이런 테스트가 늘면 사람들이 빨간불을 "또 그거겠지" 하고 넘기기 시작해요.
+</div>
+
+<p>이 두 조건이 바로 플랫폼의 일입니다. 테스트 프레임워크는 오픈 소스가 맡지만, 테스트를 <b>모든 커밋에 돌려 주는 파이프라인</b>, 테스트 시간이 늘어도 기다리지 않게 나눠 돌리는 구성, 불안정한 테스트를 찾아내 격리하는 장치는 사내에서 누군가 만들어야 해요. 그래서 이 시리즈에서 테스트 자동화를 범위 밖에 둔다는 말은 정확히는 "테스트 도구를 만들지 않는다"이고, "테스트를 돌리는 길"은 전달(배포 파이프라인)의 일부로 다룹니다.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 커버리지 숫자는 실행된 줄을 셀 뿐이다</h2>
+
+<p>"커버리지 100%보다 좋은 모니터링을 고르겠다"는 말이 있어요. 말의 방향은 맞지만, 이유를 정확히 알아야 커버리지를 버리지 않고 제대로 쓸 수 있습니다. 먼저 작은 예를 볼게요.</p>
+
+<div class="obsv-code">static int discountPercent(int total) {
+    if (total &gt;= 100_000) return 10;
+    return 0;
+}
+
+@Test void bigOrder()   { assertEquals(10, discountPercent(150_000)); }
+@Test void smallOrder() { assertEquals(0,  discountPercent(5_000));   }
+
+// 줄 커버리지 100%, 분기 커버리지 100%</div>
+
+<p>두 테스트로 모든 줄과 두 분기를 다 지나갑니다. 커버리지 도구는 100%를 보여 줘요. 그런데 누가 실수로 <code>&gt;=</code>를 <code>&gt;</code>로 바꿔도 두 테스트는 그대로 통과합니다. 150,000원은 여전히 10%, 5,000원은 여전히 0%니까요. 정확히 10만 원인 주문, 그리고 환불처럼 음수가 들어오는 경우는 아무도 확인하지 않았어요.</p>
+
+<p>Google Testing Blog의 <a href="https://testing.googleblog.com/2020/08/code-coverage-best-practices.html">"Code Coverage Best Practices"(2020)</a>가 이 구분을 그대로 적습니다. 테스트가 빠져서 나쁜 코드가 나가는 경우는 두 가지예요. (a) 테스트가 어떤 코드 경로를 아예 지나가지 않은 경우, 이건 커버리지로 쉽게 찾습니다. (b) 커버리지가 있는 영역에서 특정 경계 조건을 확인하지 않은 경우, 이건 커버리지로 찾기 어렵거나 불가능해요. 그리고 이렇게 덧붙입니다. "Code coverage does not guarantee that the covered lines or branches have been tested correctly, it just guarantees that they have been executed by a test." 커버리지는 테스트가 그 줄을 실행했다는 것만 보장해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 코드 커버리지 (code coverage)</div>
+  테스트를 돌리는 동안 실행된 코드의 비율이에요. 줄 단위로 세면 줄 커버리지, if의 참과 거짓 양쪽을 다 지났는지 세면 분기 커버리지입니다. 실행했는지만 세고, 결과를 제대로 확인했는지는 세지 않아요.
+</div>
+
+<p>같은 글은 위 예의 빈틈을 찾는 더 나은 방법으로 변이 테스트를 꼽습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 변이 테스트 (mutation testing)</div>
+  코드를 일부러 조금 바꾼 사본(변이체)을 만들고, 기존 테스트가 그 변화를 잡아내는지 보는 방법이에요. <code>&gt;=</code>를 <code>&gt;</code>로 바꾼 변이체를 테스트가 통과시키면, 그 경계는 확인되지 않은 것입니다. 자바에서는 PIT 같은 도구가 이 일을 해요.
+</div>
+
+<h3>커버리지와 결함 검출력의 상관은 얼마나 약한가</h3>
+
+<p>"커버리지는 결함을 얼마나 잡는지와 상관이 약하다"는 말의 근거로 자주 인용되는 논문은 Inozemtseva와 Holmes의 <a href="https://cs.ubc.ca/~rtholmes/papers/icse_2014_inozemtseva.pdf">"Coverage Is Not Strongly Correlated with Test Suite Effectiveness"(ICSE 2014)</a>예요. 최대 72만 4천 줄짜리 자바 시스템 다섯 개에서 테스트 묶음 31,000개를 만들고, 변이 테스트로 결함 검출력을 쟀습니다. 결론은 <b>테스트 개수를 통제하면</b> 커버리지와 검출력의 상관이 낮거나 중간 정도였다는 것, 더 강한 커버리지 기준(분기 커버리지, 그리고 if 안의 조건 하나하나가 결과를 바꾸는지까지 보는 수정 조건/결정 커버리지)도 더 나은 통찰을 주지 않았다는 것이에요. 저자들은 커버리지가 덜 테스트된 부분을 찾는 데는 쓸모 있지만 품질 목표로 쓰면 안 된다고 정리합니다.</p>
+
+<p>그런데 이 결과를 "커버리지는 쓸모없다"로 넓히면 반대 증거에 걸립니다. 같은 해 같은 학회에 실린 Gopinath, Jensen, Groce의 <a href="https://www.cefns.nau.edu/~adg326/icse14.pdf">"Code Coverage for Suite Evaluation by Developers"</a>는 수많은 오픈 소스 프로젝트에서 프로젝트마다 테스트 묶음 하나씩을 비교했고, 이때는 줄 커버리지가 변이체를 잡는 비율을 가장 잘 예측했어요. 두 논문이 다른 질문을 던졌기 때문입니다. 한 프로그램 안에서 크기가 같은 묶음끼리 비교하면 상관이 약하고, 서로 다른 프로젝트를 놓고 비교하면 커버리지가 낮은 쪽이 대체로 검출력도 낮아요. 그리고 두 연구 모두 실제 결함이 아니라 인공적으로 심은 변이체로 검출력을 쟀다는 한계도 같이 기억해 둘 만합니다.</p>
+
+<p>그래서 실무 지침은 숫자를 버리지 않고 <b>바닥을 찾는 데</b> 씁니다. 앞의 Google 글은 이상적인 숫자는 없다고 전제한 뒤 일반 지침으로 60%를 "acceptable", 75%를 "commendable", 90%를 "exemplary"로 제시하고, 위에서 일괄로 내려보내는 목표보다 팀이 사업에 맞게 고르기를 권해요. 프로젝트 전체 목표를 90%보다 높게 잡는 건 대개 값을 못 하지만, 커밋 단위 변경분 커버리지 99%는 합리적이고 90%는 좋은 하한이라고도 적습니다. 그리고 반대쪽도 분명히 해요. 숫자가 높다고 품질이 보장되지는 않지만, <span class="obsv-mark">숫자가 낮으면 제품의 넓은 영역이 배포 때마다 전혀 자동 테스트를 받지 않는다는 건 보장됩니다</span>.</p>
+
+<p>Google이 이 숫자를 실제로 어떻게 쓰는지는 Ivanković 외의 <a href="https://research.google/pubs/code-coverage-at-google/">"Code Coverage at Google"(FSE 2019)</a>에 나와 있어요. 매일 10억 줄, 일곱 언어에 대해 커버리지를 계산하고, 결과를 코드 리뷰 화면에 띄웁니다. 개발자 3,000명에게 보낸 설문에 512명이 답했는데, 변경을 작성할 때 커버리지를 "Often" 이상으로 쓴다는 답이 45%, 리뷰할 때는 40%였어요. 쓰임새가 프로젝트 전체 숫자를 올리는 쪽이 아니라 <b>이번 변경에서 테스트가 안 닿은 줄을 리뷰어에게 보여 주는 쪽</b>이라는 점이 핵심입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; 프로젝트 전체 숫자에 문턱을 걸기보다 변경분(diff) 커버리지를 리뷰 화면에 띄워요. JaCoCo 리포트를 PR 코멘트로 붙여 주는 CI 단계 하나면 됩니다<br>
+  &bull; 문턱을 건다면 "올라가지는 못해도 내려가지는 않게"가 목표예요. 숫자를 채우려고 확인 없는 테스트를 복사해 붙이면 커버리지만 오르고 검출력은 그대로입니다<br>
+  &bull; 돈, 권한, 경계값처럼 틀리면 비싼 모듈에만 변이 테스트를 돌려요. 전체에 돌리면 시간이 너무 듭니다
+</div>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 계약 테스트는 E2E보다 싸지만, 모든 것을 대신하지는 않는다</h2>
+
+<p>마이크로서비스가 다섯 개에서 서른 개로 늘었다고 해 볼게요. 서비스 사이가 맞물리는지 확인하는 가장 직관적인 방법은 전부 띄워 놓고 사용자 흐름을 처음부터 끝까지 돌려 보는 엔드투엔드(E2E) 통합 테스트입니다. 서비스가 늘수록 이 방법은 비싸져요. 서른 개를 서로 맞는 버전으로 한 환경에 올려야 하고, 그중 하나만 느려도 전체가 빨갛게 됩니다. 실패하면 서른 개 중 어디가 원인인지부터 찾아야 하고요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 소비자 주도 계약 테스트 (consumer-driven contract test)</div>
+  API를 부르는 쪽(소비자)이 "나는 이런 요청을 보내고 이런 응답을 기대한다"를 계약 파일로 남기고, API를 제공하는 쪽이 그 파일을 받아 자기 혼자서 검증하는 테스트예요. 양쪽을 동시에 띄우지 않아도 됩니다.
+</div>
+
+<p><a href="https://docs.pact.io/">Pact 문서</a>의 설명이 이 비용 차이를 짚어요. 애플리케이션들이 함께 동작하는지 확인하는 기존 방법은 "expensive and brittle"한 통합 테스트였고, 계약 테스트는 각 애플리케이션을 따로 검증해서 전체를 먼저 배포하지 않고도 확인하게 해 준다는 것이에요. 소비자가 실제로 쓰는 부분만 계약에 들어가니, 아무도 안 쓰는 응답 필드는 제공자가 자유롭게 바꿀 수 있다는 장점도 있습니다. 소비자가 만든 계약 파일을 제공자가 받아 가려면 둘 사이에 계약을 모아 두는 저장소가 필요한데, Pact에서는 이걸 Pact Broker라고 부르고 어느 버전 조합이 검증을 통과했는지도 여기에 기록해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="p4b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="170" y="32" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">E2E: 전부 한 환경에 올린다</text>
+  <path d="M30 50 C 120 47, 220 52, 310 49 C 312 120, 311 190, 310 250 C 220 253, 120 249, 32 252 C 29 190, 30 120, 30 50 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <path d="M60 80 C 75 79, 90 81, 105 80 C 106 92, 105 100, 106 110 C 90 111, 75 109, 59 110 C 60 100, 59 90, 60 80 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="82" y="100" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">A</text>
+  <path d="M145 80 C 160 79, 175 81, 190 80 C 191 92, 190 100, 191 110 C 175 111, 160 109, 144 110 C 145 100, 144 90, 145 80 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="167" y="100" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">B</text>
+  <path d="M230 80 C 245 79, 260 81, 275 80 C 276 92, 275 100, 276 110 C 260 111, 245 109, 229 110 C 230 100, 229 90, 230 80 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="252" y="100" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">C</text>
+  <path d="M100 150 C 115 149, 130 151, 145 150 C 146 162, 145 170, 146 180 C 130 181, 115 179, 99 180 C 100 170, 99 160, 100 150 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="122" y="170" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">D</text>
+  <path d="M190 150 C 205 149, 220 151, 235 150 C 236 162, 235 170, 236 180 C 220 181, 205 179, 189 180 C 190 170, 189 160, 190 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="212" y="170" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">E 🐢</text>
+  <path d="M106 95 C 118 96, 130 95, 142 95" fill="none" stroke="#3d3a34" stroke-width="1.6" marker-end="url(#p4b)"/>
+  <path d="M191 95 C 203 96, 215 95, 227 95" fill="none" stroke="#3d3a34" stroke-width="1.6" marker-end="url(#p4b)"/>
+  <path d="M167 112 C 160 125, 140 135, 128 147" fill="none" stroke="#3d3a34" stroke-width="1.6" marker-end="url(#p4b)"/>
+  <path d="M252 112 C 245 125, 230 135, 220 147" fill="none" stroke="#3d3a34" stroke-width="1.6" marker-end="url(#p4b)"/>
+  <text x="170" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">E 하나가 느려도 흐름 전체가 빨간불</text>
+  <text x="170" y="238" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">서비스가 늘면 환경을 맞추는 일이 같이 는다</text>
+  <path d="M350 40 C 351 120, 349 200, 350 270" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="530" y="32" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">계약: 연결 하나씩, 따로 검증</text>
+  <path d="M390 70 C 410 69, 430 71, 450 70 C 451 82, 450 90, 451 100 C 430 101, 410 99, 389 100 C 390 90, 389 80, 390 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="420" y="90" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">A</text>
+  <path d="M470 85 C 495 84, 525 86, 550 85" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="510" y="76" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">A-B.json</text>
+  <path d="M570 70 C 590 69, 610 71, 630 70 C 631 82, 630 90, 631 100 C 610 101, 590 99, 569 100 C 570 90, 569 80, 570 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="600" y="90" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">B</text>
+  <path d="M390 130 C 410 129, 430 131, 450 130 C 451 142, 450 150, 451 160 C 430 161, 410 159, 389 160 C 390 150, 389 140, 390 130 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="420" y="150" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">C</text>
+  <path d="M470 145 C 495 144, 525 146, 550 145" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="510" y="136" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">C-E.json</text>
+  <path d="M570 130 C 590 129, 610 131, 630 130 C 631 142, 630 150, 631 160 C 610 161, 590 159, 569 160 C 570 150, 569 140, 570 130 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2"/>
+  <text x="600" y="150" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">E</text>
+  <text x="520" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">실패하면 어느 연결인지 바로 보인다</text>
+  <text x="520" y="223" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">한 번에 한쪽만 띄운다</text>
+  <path d="M380 245 C 450 243, 590 247, 660 244 C 662 262, 661 278, 660 294 C 590 297, 450 293, 382 296 C 379 278, 380 262, 380 245 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
+  <text x="520" y="266" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">못 보는 것: 제공자 내부 기능, 성능,</text>
+  <text x="520" y="287" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">소비자를 모르는 공개 API, 라이브러리 호환</text>
+  <text x="350" y="335" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">싸게 확인하는 것은 "모양이 맞는가"까지다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. E2E는 전체를 띄우고, 계약 테스트는 연결 하나씩 한쪽만 띄운다</div>
+
+<p>그렇다고 계약 테스트가 E2E와 다른 테스트를 다 흡수한다고 보면 지나칩니다. Pact 문서는 <a href="https://docs.pact.io/getting_started/what_is_pact_good_for">Pact가 맞지 않는 경우</a>를 따로 적어 두었어요. 반대편 팀이 Pact를 쓰지 않는 API, 소비자를 하나하나 식별할 수 없는 공개 API, 성능과 부하 테스트, 제공자 자체의 기능 테스트("that is what the provider's own tests should do"), 요청을 그대로 넘기기만 하는 API입니다. 계약 테스트가 확인하는 건 <b>요청과 응답의 모양이 서로 맞는가</b>예요. 응답의 값이 비즈니스적으로 맞는지, 피크 시간에 얼마나 느려지는지는 다른 테스트와 모니터링의 몫입니다.</p>
+
+<p>하나 더 구분할 게 있어요. 계약 테스트가 "다운스트림 테스트"까지 대신한다는 말을 가끔 듣습니다. 다운스트림 테스트는 공통 라이브러리에 커밋이 들어올 때마다 그 라이브러리에 직간접으로 의존하는 프로젝트를 전부 빌드하고 테스트해 보는 방식이에요. 여기서부터는 제 판단입니다. 둘은 확인하는 경계가 달라요. 계약 테스트는 네트워크를 사이에 둔 서비스 간 HTTP나 메시지의 모양을 보고, 다운스트림 테스트는 같은 프로세스 안에서 라이브러리의 메서드 시그니처, 동작, 전이 의존성이 바뀌었을 때 의존하는 쪽 코드가 깨지는지를 봅니다. 공통 스타터 jar의 버전을 올렸더니 어떤 서비스에서 전이 의존성 충돌로 기동이 안 되는 일은 계약 파일로는 잡히지 않아요. 공통 기능을 라이브러리로 실어 보낸다면(<a href="#pc-03">3편</a>) 의존 프로젝트를 다시 빌드해 보는 검사는 여전히 필요합니다. 계약 테스트가 줄여 주는 건 그중 서비스 사이 E2E 쪽이에요.</p>
+
+<p>실행 주기는 계약의 종류에 따라 달라요. Martin Fowler의 <a href="https://martinfowler.com/bliki/ContractTest.html">ContractTest</a>는 소비자 주도 계약과 결이 다른, 내가 쓰는 테스트 대역을 실제 외부 서비스에 대조해 보는 테스트를 말합니다. 그 글에는 이런 조언이 있어요. 외부 서비스를 흉내 내는 테스트 대역(test double)을 상대로 평소 테스트를 돌리고, 대역이 실제 서비스와 같은 결과를 내는지 확인하는 계약 테스트는 그 서비스가 바뀌는 주기에 맞춰 따로 돌리면 되며, 하루 한 번이면 충분한 경우가 많다고 해요. 계약 테스트가 실패하면 대역을, 그리고 아마 코드도 고쳐야 한다는 신호입니다. 이 "하루 한 번"은 남이 운영하는 외부 서비스를 상대로 한 이야기예요. 양쪽이 같은 조직에 있는 Pact식 계약은 <a href="https://docs.pact.io/pact_nirvana">Pact 문서</a>가 목표로 두는 대로 CI/CD 안에서 자동으로 검증하고, 단계가 올라가면 PR 파이프라인에 붙입니다.</p>
+
+<!-- ================= 5장 ================= -->
+<h2>5. 프로덕션과 같은 테스트 환경은 만들 수 없다</h2>
+
+<p>테스트를 아무리 늘려도 남는 빈틈이 있습니다. 테스트 환경과 프로덕션이 다르다는 점이에요. 데이터의 양과 모양, 동시 사용자 수, 외부 서비스의 응답 시간, 네트워크 경로, 설정 값, 배포 순간에 함께 돌던 다른 서비스의 버전까지 같게 맞출 수는 없습니다.</p>
+
+<p>Google SRE Book의 <a href="https://sre.google/sre-book/testing-reliability/">Testing for Reliability</a> 장은 이 사정을 "production is not hermetic"이라고 표현해요. 같은 장에서 테스트가 증명하는 것의 한계도 분명히 적습니다. "Passing a test or a series of tests doesn't necessarily prove reliability. However, tests that are failing generally prove the absence of reliability." 통과한 테스트는 신뢰성을 증명하지 못하지만, 실패한 테스트는 신뢰성이 없다는 걸 대개 증명한다는 뜻이에요. 테스트는 <b>우리가 떠올린 실패가 일어나지 않는다</b>는 걸 확인하는 도구라는 말입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 헤르메틱 (hermetic)</div>
+  외부 상태에 기대지 않고 같은 입력이면 어디서 돌려도 같은 결과가 나오는 성질이에요. 좋은 테스트는 헤르메틱하게 만들고, 프로덕션은 그 반대라서 테스트에서 통과한 것이 운영에서도 통과한다는 보장이 없습니다.
+</div>
+
+<p>Charity Majors는 <a href="https://increment.com/testing/i-test-in-production/">"I test in prod"(Increment, 2019)</a>에서 같은 이야기를 반대쪽에서 합니다. 배포 하나하나가 산출물, 환경, 인프라, 시각이 다시는 똑같이 재현되지 않는 조합이라는 것, 테스트가 다루는 것은 "known unknowns"이니 그쪽에 쓰던 시간의 일부를 "unknown unknowns" 쪽으로 옮겨야 한다는 것이에요. 그리고 하나만 고르라면 배포 전 테스트 전부보다 프로덕션에서 자기 코드를 지켜볼 수 있는 능력을 고르겠다고 말합니다. 같은 글에서 "Yes, you should test before and in prod"라고 못 박은 것도 함께 읽어야 해요. 테스트를 버리자는 말이 아닙니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="p4c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M40 50 C 130 47, 220 52, 300 49 C 302 90, 301 130, 300 170 C 220 173, 130 169, 42 172 C 39 130, 40 90, 40 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+  <text x="170" y="82" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#4a7fb5">테스트 ✅</text>
+  <text x="170" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">떠올린 실패가 안 일어나는가</text>
+  <text x="170" y="138" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">배포 전, 헤르메틱한 환경</text>
+  <text x="170" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">known unknowns</text>
+  <path d="M400 50 C 490 47, 580 52, 660 49 C 662 90, 661 130, 660 170 C 580 173, 490 169, 402 172 C 399 130, 400 90, 400 50 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6"/>
+  <text x="530" y="82" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#c07f18">모니터링 📟</text>
+  <text x="530" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">지금 실제로 무슨 일이 일어나는가</text>
+  <text x="530" y="138" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">배포 뒤, 프로덕션</text>
+  <text x="530" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">unknown unknowns</text>
+  <path d="M530 178 C 520 230, 420 262, 330 262" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p4c)"/>
+  <path d="M250 262 C 190 260, 175 230, 170 182" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#p4c)"/>
+  <path d="M255 245 C 270 244, 310 245, 325 245 C 326 258, 325 268, 326 280 C 310 281, 270 279, 254 280 C 255 268, 254 258, 255 245 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="290" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">회귀 테스트</text>
+  <text x="470" y="250" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">처음 본 장애</text>
+  <text x="70" y="230" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">이제 아는 실패</text>
+  <path d="M350 60 C 351 100, 349 140, 350 170" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+  <text x="350" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">배포</text>
+  <text x="350" y="315" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">모니터링이 찾은 실패가 다음 테스트가 된다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 테스트와 모니터링은 배포를 사이에 두고 서로 다른 질문에 답한다</div>
+
+<p>그림 3의 아래쪽 화살표가 이 글의 결론입니다. <span class="obsv-mark">모니터링이 처음 보는 장애를 찾으면, 그 장애는 "이제 아는 실패"가 되어 회귀 테스트로 들어가요.</span> 신뢰성 계층에서 테스트가 모니터링, 장애 대응, 사후 분석 위에 놓인 이유가 이 흐름입니다. 테스트 자동화가 모든 것을 다 알 필요는 없어요. 모르는 것은 모니터링이 맡고, 알게 된 것은 테스트가 맡으면 됩니다.</p>
+
+<p>둘 사이를 잇는 장치도 있어요. 프로덕션에서 일정 주기로 실제 요청을 보내 응답을 확인하는 프로브(합성 모니터링)는 운영 환경에서 도는 테스트입니다. SRE Book의 같은 장도 프로덕션 프로브를 테스트의 한 형태로 다뤄요. 카나리 배포(<a href="https://dding-shark.tistory.com/621">배포 안전성 3편</a>)는 새 버전을 일부 트래픽에만 내보내고 지표로 판정하니, 테스트 환경에서 재현할 수 없는 조건을 프로덕션에서 작게 시험하는 방법이고요. 일부러 장애를 일으켜 보는 카오스 실험은 <a href="https://dding-shark.tistory.com/630">장애 대응 5편</a>에서 다뤘어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 프로브 (probe, 합성 모니터링)</div>
+  사용자 대신 정해진 요청을 주기적으로 보내 응답 코드와 지연을 확인하는 감시 방식이에요. 실제 사용자가 적은 시간대에도 문제를 잡을 수 있고, 테스트 시나리오를 운영 환경에서 반복하는 효과가 있습니다.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "장애를 잘 복구하면 사용자가 더 신뢰한다"는 말은 반만 맞다</div>
+  &bull; 모니터링을 권하는 근거로 서비스 회복의 역설(service recovery paradox), 즉 장애를 겪고 잘 복구받은 사용자가 이전보다 서비스를 더 신뢰한다는 말이 자주 붙어요<br>
+  &bull; 이 주제의 연구들을 모은 메타 분석(de Matos, Henrique, Rossi, <a href="https://doi.org/10.1177/1094670507303012">Journal of Service Research, 2007</a>)은 효과가 만족도에서는 유의하게 양(+)이었지만, 재구매 의향, 입소문, 기업 이미지에서는 유의하지 않았다고 정리합니다<br>
+  &bull; 그러니 빨리 찾고 빨리 고치는 것은 피해를 줄이는 일이지, 장애를 신뢰로 바꾸는 장치로 기대하면 안 돼요. 그리고 이 연구는 호텔, 식당 같은 서비스업 대상이라 소프트웨어 장애에 그대로 옮길 수 있는지도 따로 확인해야 합니다
+</div>
+
+<!-- ================= 6장 ================= -->
+<h2>6. 그래서 플랫폼팀은 무엇을 깔아 주나</h2>
+
+<p>앞의 이야기를 플랫폼팀의 일로 옮기면 이렇게 정리돼요.</p>
+
+<div class="obsv-code">테스트 밖에서 보는 것                      이유
+공통 지표 (에러, 지연, GC, 힙, CPU, 파일 설명자)  가장 싸고, 다음 단계들이 그 위에 선다
+프로덕션 프로브, 카나리 판정               테스트 환경에서 못 만드는 조건을 본다
+
+테스트를 돌리는 길
+모든 커밋에 테스트를 돌리는 파이프라인       도구는 오픈 소스, 돌리는 길은 사내 몫
+변경분 커버리지를 리뷰 화면에             전체 숫자보다 "이번에 안 닿은 줄"이 쓸모 있다
+불안정한 테스트 감지와 격리               빨간불을 무시하는 습관을 막는다
+계약 테스트 브로커 (Pact Broker 등)        서비스 사이 E2E를 줄인다
+공통 라이브러리의 다운스트림 빌드           계약 테스트로 안 잡히는 경계
+
+만들지 않는 것
+사내 테스트 프레임워크                    JUnit, Mockito, Testcontainers, Pact로 충분하다
+프로젝트 전체 커버리지 100% 목표           비용만 들고 검출력은 보장하지 않는다
+서비스 대신 써 주는 테스트                 테스트는 그 서비스의 개발자가 쓴다</div>
+
+<p>첫 묶음은 테스트가 못 보는 곳을 테스트 밖에서 보는 일이고, 둘째 묶음은 개발자가 쓴 테스트가 매번 빠르고 믿을 만하게 돌도록 길을 닦는 일이에요. 둘 다 플랫폼이 깔아 주지만, 순서는 첫 묶음의 공통 지표가 먼저입니다. 무엇이 깨지는지 보이지 않는 상태에서는 어떤 테스트를 더 써야 할지도 알 수 없으니까요.</p>
+
+<p>서두의 팀으로 돌아가 보면, 87%라는 커버리지는 거짓말을 하지 않았어요. 테스트가 그만큼의 코드를 실행했다는 사실을 정확히 알려 줬습니다. 그 숫자에 "외부 결제사가 느려지면", "커넥션 풀이 바닥나면", "빈 문자열이 들어오면"이 들어 있지 않았을 뿐이에요. 모니터링이 그 셋을 보여 준 다음 날, 팀은 테스트를 세 개 더 씁니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>테스트는 우리가 떠올린 실패가 일어나지 않는다는 걸 확인하고, 모니터링은 프로덕션에서 실제로 무슨 일이 일어나는지 보여 줘요.</b> 그래서 플랫폼팀은 모니터링을 먼저 깔고, 테스트는 도구를 만들지 않는 대신 모든 커밋에 돌려 주는 길을 맡습니다.<br><br>
+  커버리지는 실행된 줄을 셀 뿐이라 품질 목표로는 약하지만, 낮은 숫자는 테스트가 닿지 않는 영역을 확실히 알려 줘요. 계약 테스트는 서비스 사이 E2E를 싸게 대신하지만 제공자 내부 기능, 성능, 라이브러리 호환은 보지 못합니다. 모니터링이 찾은 실패가 다음 테스트가 될 때, 둘은 서로의 빈자리를 메워요.
+</div>
+
+</div>

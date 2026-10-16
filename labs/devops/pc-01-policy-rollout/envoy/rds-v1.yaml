@@ -1,0 +1,17 @@
+# 정책 v1. 이 파일 내용이 사이드카의 재시도·타임아웃이다.
+version_info: "v1"
+resources:
+- "@type": type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+  name: backend_route
+  virtual_hosts:
+  - name: backend
+    domains: ["*"]
+    include_attempt_count_in_response: true
+    routes:
+    - match: { prefix: "/" }
+      route:
+        cluster: backend
+        timeout: 2s
+        # 재시도 없음, 요청 하나에 2초
+      response_headers_to_add:
+      - header: { key: x-policy, value: "v1" }

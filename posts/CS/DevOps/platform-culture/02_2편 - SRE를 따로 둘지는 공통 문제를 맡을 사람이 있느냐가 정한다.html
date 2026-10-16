@@ -1,0 +1,338 @@
+<!-- lead: 구글은 SRE를 따로 두고 넷플릭스는 만든 팀이 운영한다고들 해요. 그런데 넷플릭스에도 중앙 SRE 팀이 있습니다. 콘웨이 법칙에서 출발해 SRE를 따로 둘지 가르는 조건을 따져 봤어요. -->
+<!-- tags: SRE 조직, 콘웨이 법칙, 풀 사이클 개발자, 팀 토폴로지, 플랫폼 팀 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🧭 플랫폼 엔지니어링, 2편</div>
+  1편. 경고는 아무도 읽지 않고, 고쳐 주는 도구는 쓰인다<br>
+  <b>2편. SRE를 따로 둘지는 공통 문제를 맡을 사람이 있느냐가 정한다</b> &larr; 지금 이 글<br>
+  3편. 공통 기능은 실어 보내는 경로가 업그레이드 값을 정한다<br>
+  4편. 테스트는 아는 것을 증명하고, 모니터링은 모르는 것을 보여 준다<br>
+  5편. 설정 변경도 배포다<br>
+  6편. 임시방편은 빚이지만, 갚을지는 남은 수명이 정한다<br>
+  실습-1. 재시도 값을 jar에 구우면 다섯 번 다시 뜨고, 사이드카에 두면 설정만 바뀐다<br>
+  실습-2. 복사해 붙인 코드가 바뀔 때 절반은 따로 고쳐지고, 놓친 한 벌은 오래 남는다
+</div>
+
+<p>장애가 석 달 사이 세 번 났습니다. 회고 끝에 팀장이 묻습니다. "우리도 SRE 팀을 따로 만들어야 할까요?" 한 사람은 구글 SRE 책을 근거로 듭니다. 운영을 소프트웨어로 푸는 전담 조직이 있어야 한다고요. 다른 사람은 고개를 젓습니다. "넷플릭스는 SRE 없이 개발자가 직접 운영한다던데요."</p>
+
+<p>두 말 중 하나는 반쯤 틀렸어요. 넷플릭스에도 스스로를 "중앙 SRE 팀"이라고 부르는 조직이 있습니다. 그렇다고 넷플릭스가 구글과 같은 구조인 것도 아니에요. 두 회사가 실제로 다른 지점은 SRE가 있느냐 없느냐가 아니라 <b>평소에 호출기를 누가 드느냐</b>입니다. 그리고 그 차이를 무엇이 만들었는지가 이 글의 질문이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 조직도는 왜 시스템 모양에 그대로 드러나나? 팀을 나누는 방식은 몇 가지인가?<br>
+  &bull; 구글은 SRE를 어떻게 따로 두고, 어떤 서비스에는 두지 않나?<br>
+  &bull; 넷플릭스의 "만든 팀이 운영한다"는 무엇을 중앙에 남겨 두었나?<br>
+  &bull; 두 방식을 가르는 조건은 무엇일까? 제품이 닮았느냐는 설명은 어디까지 믿을 만한가?<br>
+  &bull; SRE는 데브옵스, 소프트웨어 엔지니어와 무엇이 같고 무엇이 다른가?
+</div>
+
+<!-- ================= 1장 ================= -->
+<h2>1. 조직도는 시스템 모양으로 새어 나온다</h2>
+
+<p>팀을 어떻게 나눌지가 왜 기술 문제일까요? 1968년 멜빈 콘웨이가 <a href="https://www.melconway.com/Home/Committees_Paper.html">How Do Committees Invent?</a>(Datamation, 1968년 4월)에서 이렇게 적었기 때문입니다. 시스템을 설계하는 조직은 자기 조직의 의사소통 구조를 본뜬 설계를 만들도록 제약을 받는다고요(원문: "constrained to produce designs which are copies of the communication structures of these organizations").</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 콘웨이 법칙 (Conway's law)</div>
+  시스템의 경계가 그 시스템을 만든 팀들의 경계를 따라 생긴다는 관찰이에요. 팀 사이에 대화가 적은 곳에는 인터페이스가 생기고, 한 팀 안에서 다 처리하는 곳은 한 덩어리가 되기 쉽습니다.
+</div>
+
+<p>이걸 팀 구성에 대 보면 흔히 세 가지 모양이 나옵니다(그림 1).</p>
+
+<p><b>첫째, 전문성으로 나눈 팀</b>이에요. 화면 팀, 백엔드 팀, DB 관리자, 네트워크 관리자가 각자 한 층을 맡습니다. 층마다 깊이 아는 사람이 모이니 그 층의 품질은 좋아요. 대신 새 요구 하나가 네 팀을 다 거쳐야 합니다. 콘웨이의 관찰대로라면 시스템도 네 층으로 갈라지고, 층 사이 인터페이스를 바꿀 때마다 회의가 열려요.</p>
+
+<p><b>둘째, 교차 기능 팀</b>입니다. 한 팀 안에 화면, 백엔드, DB, 운영을 하는 사람이 다 있어요. 요구가 팀 밖으로 나가지 않으니 빠르게 냅니다. 대신 팀이 셋이면 DB를 아는 사람도 셋, 배포 스크립트도 세 벌이 돼요. 같은 문제를 팀마다 따로 풀고, 그 답이 서로 달라집니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 교차 기능 팀 (cross-functional team)</div>
+  기능 하나를 처음부터 운영까지 끝내는 데 필요한 역할을 한 팀에 모은 구성이에요. 팀 사이에 넘겨줄 일이 적어서 빠르지만, 팀마다 같은 전문성을 따로 갖춰야 합니다.
+</div>
+
+<p><b>셋째, 플랫폼 팀과 서비스 팀</b>이에요. 둘째 모양에서 팀마다 중복되던 것(배포, 관측, DB 운영 도구)을 아래로 내려 한 팀이 맡고, 서비스 팀은 자기 제품에 고유한 일만 합니다. <a href="https://teamtopologies.com/key-concepts">Team Topologies</a>의 용어로는 업무 흐름에 맞춘 스트림 정렬 팀(stream-aligned team)과, 그 팀들이 쓰는 내부 제품을 만드는 플랫폼 팀이에요. 같은 자료는 플랫폼 팀이 복잡성을 덜어 스트림 정렬 팀을 빠르게 만든다고 설명합니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 315" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;"><defs><marker id="f1r" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="120" y="34" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">① 전문성으로 나눈 팀</text>
+<text x="350" y="34" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">② 교차 기능 팀</text>
+<text x="580" y="34" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">③ 플랫폼 + 서비스 팀</text>
+<path d="M28 58 C 88.7 57.3, 149.4 56.6, 212 58.3 C 210.7 69.9, 212.1 81.8, 211.7 94 C 149.4 92.2, 88.7 94.0, 27.1 93.9 C 26.7 81.8, 26.8 69.9, 28 58 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="83" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">UI·UX 팀</text>
+<path d="M28 104 C 88.7 103.7, 149.4 105.3, 212 103.2 C 211.2 115.9, 212.4 127.8, 212.9 140 C 149.4 140.3, 88.7 139.6, 29.0 139.1 C 29.1 127.8, 27.4 115.9, 28 104 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="129" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">백엔드 팀</text>
+<path d="M28 150 C 88.7 148.6, 149.4 148.5, 212 149.6 C 212.9 161.9, 211.0 173.8, 212.2 186 C 149.4 186.6, 88.7 185.5, 28.1 185.1 C 26.7 173.8, 27.1 161.9, 28 150 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="175" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">DB 관리자</text>
+<path d="M28 196 C 88.7 196.7, 149.4 195.7, 212 195.6 C 212.3 207.9, 211.9 219.8, 211.6 232 C 149.4 233.2, 88.7 232.8, 27.5 232.1 C 28.1 219.8, 29.1 207.9, 28 196 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="221" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">네트워크 관리자</text>
+<path d="M222 70 C 222.5 122.8, 221.6 175.6, 222 230" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#f1r)"/>
+<text x="120" y="268" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">요구 하나가 네 팀을 거친다</text>
+<text x="120" y="292" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">조율 비용이 요구마다 든다</text>
+<path d="M262 58 C 279.2 59.9, 296.3 56.5, 314 57.8 C 314.8 116.1, 313.0 174.2, 314.0 234 C 296.3 232.2, 279.2 234.7, 262.5 234.1 C 263.1 174.2, 261.4 116.1, 262 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="288" y="88" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">UI</text>
+<text x="288" y="128" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">BE</text>
+<text x="288" y="168" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">DB</text>
+<text x="288" y="208" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">NW</text>
+<path d="M322 58 C 339.2 58.8, 356.3 58.4, 374 58.2 C 373.9 116.1, 375.0 174.2, 374.9 234 C 356.3 233.9, 339.2 234.7, 321.1 234.4 C 322.4 174.2, 323.5 116.1, 322 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="348" y="88" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">UI</text>
+<text x="348" y="128" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">BE</text>
+<text x="348" y="168" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">DB</text>
+<text x="348" y="208" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">NW</text>
+<path d="M382 58 C 399.2 59.3, 416.3 57.1, 434 57.8 C 434.5 116.1, 432.6 174.2, 433.9 234 C 416.3 232.7, 399.2 232.5, 381.1 234.5 C 380.9 174.2, 381.2 116.1, 382 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="408" y="88" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">UI</text>
+<text x="408" y="128" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">BE</text>
+<text x="408" y="168" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">DB</text>
+<text x="408" y="208" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">NW</text>
+<text x="350" y="268" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">팀마다 빠르게 낸다</text>
+<text x="350" y="292" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">같은 전문성을 세 번 중복한다</text>
+<path d="M494 58 C 511.2 57.6, 528.3 59.5, 546 57.2 C 545.8 94.3, 546.1 130.6, 546.8 168 C 528.3 169.3, 511.2 169.5, 493.6 167.8 C 493.6 130.6, 495.2 94.3, 494 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="92" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">UI</text>
+<text x="520" y="132" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">BE</text>
+<path d="M554 58 C 571.2 59.8, 588.3 56.6, 606 57.4 C 605.2 94.3, 605.2 130.6, 606.0 168 C 588.3 168.4, 571.2 167.1, 553.0 167.8 C 553.6 130.6, 554.2 94.3, 554 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="92" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">UI</text>
+<text x="580" y="132" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">BE</text>
+<path d="M614 58 C 631.2 59.8, 648.3 58.8, 666 58.0 C 666.4 94.3, 666.5 130.6, 665.1 168 C 648.3 169.6, 631.2 169.1, 614.7 168.6 C 613.7 130.6, 613.7 94.3, 614 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="640" y="92" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">UI</text>
+<text x="640" y="132" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">BE</text>
+<path d="M490 182 C 550.1 180.4, 610.1 182.5, 672 181.1 C 670.7 199.2, 671.1 216.3, 671.3 234 C 610.1 233.4, 550.1 232.2, 489.0 233.3 C 488.8 216.3, 489.6 199.2, 490 182 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="581" y="206" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle">플랫폼 팀</text>
+<text x="581" y="226" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">배포·관측·DB 운영 도구</text>
+<text x="581" y="268" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">공통은 아래로, 고유한 건 위로</text>
+<text x="581" y="292" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">플랫폼이 팀을 고객으로 둔다</text>
+<path d="M240 50 C 239.1 132.5, 240.7 215.0, 240 300" fill="none" stroke="#d8cfba" stroke-width="2" stroke-linecap="round" stroke-dasharray="8 8"/>
+<path d="M468 50 C 468.2 132.5, 467.3 215.0, 468 300" fill="none" stroke="#d8cfba" stroke-width="2" stroke-linecap="round" stroke-dasharray="8 8"/>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 셋 다 비용이 있다. ①은 조율, ②는 중복, ③은 플랫폼을 제품처럼 만드는 수고</div>
+
+<p>셋째 모양이 공짜는 아닙니다. 플랫폼 팀이 만든 도구를 서비스 팀이 안 쓰면 중복은 그대로 남고, 플랫폼 팀이라는 층이 하나 더 생길 뿐이에요. 그래서 플랫폼 팀은 서비스 팀을 고객으로 대해야 한다는 말이 따라붙습니다. 고객은 확보해야 하는 대상이면서 마음대로 통제할 수 없는 상대예요. 이 시리즈 <a href="#pc-01">1편</a>의 "관문 대신 가드레일"이 이와 가까운 주제를 다룹니다.</p>
+
+<p>그러면 SRE는 이 그림 어디에 들어갈까요? ①처럼 운영을 따로 떼어 낸 층으로 둘 수도, ②처럼 팀마다 한 사람씩 넣을 수도, ③처럼 플랫폼 쪽에 둘 수도 있습니다. 구글과 넷플릭스는 이 중 서로 다른 자리를 골랐어요.</p>
+
+<!-- ================= 2장 ================= -->
+<h2>2. 구글은 SRE를 따로 두되, 개발자와 같은 줄에서 뽑는다</h2>
+
+<p>구글 SRE 책의 도입 장(<a href="https://sre.google/sre-book/introduction/">Google SRE Book, Introduction</a>)은 개발과 운영을 나눈 전통적 구조의 문제부터 짚어요. 장애는 대부분 변경에서 나오니, 변경을 원하는 개발팀과 막으려는 운영팀은 목표가 부딪칩니다. 그래서 둘이 자주 충돌하고, 서로에 대한 신뢰가 무너지는 것을 "병리적(pathology)"이라고까지 부릅니다. 같은 글에는 전통적인 운영 조직이 서비스 크기에 비례해(선형으로) 커진다는 지적도 있어요.</p>
+
+<p>구글의 답은 운영팀을 소프트웨어 엔지니어로 채우는 것이었어요. 같은 장의 유명한 문장이 "SRE is what happens when you ask a software engineer to design an operations team"입니다. 그 방침이 채용과 시간 배분에 구체적으로 적혀 있어요.</p>
+
+<ul>
+<li><b>같은 줄에서 뽑는다</b>: SRE의 50~60%는 일반 소프트웨어 엔지니어 채용 절차로 뽑은 사람이고, 나머지 40~50%는 그 기준에 거의 닿으면서 UNIX 내부나 네트워크(OSI 1~3계층)처럼 드문 기술을 가진 사람이에요.</li>
+<li><b>운영 일에 상한을 둔다</b>: SRE 전체의 운영 업무를 50%로 제한하고, 넘치면 넘친 일을 제품 개발팀으로 돌려보냅니다. 버그와 티켓을 개발 관리자에게 다시 배정하고, 개발자를 온콜 호출 순번에 다시 넣는 식이에요. 이 상한을 재는 법은 운영 자동화 1편 <a href="https://dding-shark.tistory.com/642">"수고의 적은 손이 아니라 선형 증가다"</a>에서 다뤘습니다.</li>
+<li><b>사람 수가 덜 늘게 한다</b>: 시스템을 운영하는 데 드는 SRE 수는 시스템 크기보다 느리게(sublinearly) 늘어난다고 적어요.</li>
+</ul>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: SRE (Site Reliability Engineering)</div>
+  서비스의 가용성, 지연, 변경 관리, 장애 대응 같은 운영 문제를 소프트웨어 엔지니어링으로 푸는 직무이자 그 방식이에요. 손으로 반복하던 운영을 코드로 바꾸고, 신뢰성 목표(SLO)와 에러 예산으로 개발 속도와 균형을 맞춥니다.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "로그 곡선"과 "5%"</div>
+  &bull; 운영 인원이 서비스 부하를 따라 로그 곡선으로 늘어야 한다는 설명을 볼 수 있는데, 원문 표현은 sublinear(선형보다 느리게)예요. 로그는 그중 한 가지 모양일 뿐이고, 구글 자료가 특정 곡선을 정하지는 않았습니다<br>
+  &bull; "운영 업무의 5% 정도를 개발팀과 나눈다"는 숫자도 자주 인용돼요. 2014년 SREcon 기조연설의 요지를 정리한 2차 자료(발표 요약 슬라이드와 블로그 글)에 나오지만, 원 발표 영상으로는 확인하지 못했어요. SRE Book 도입 장에서 확인되는 건 "넘친 운영 일을 개발팀으로 돌려보낸다"는 원칙까지입니다
+</div>
+
+<p>여기서 놓치기 쉬운 게 있어요. 구글에서도 <b>모든 서비스에 SRE가 붙지는 않습니다</b>. SRE 책의 <a href="https://sre.google/sre-book/evolving-sre-engagement-model/">The Evolving SRE Engagement Model</a> 장은 모든 구글 서비스가 SRE와 밀접하게 일하지는 않는다고 적어요. SRE는 늘 부족한 자원이고, 전담 지원을 받지 못하는 서비스는 문서와 자문을 받습니다. 그런 서비스는 결국 개발팀이 운영해요. 구글 안에도 그림 1의 ②에 가까운 서비스가 많다는 뜻입니다.</p>
+
+<p>같은 장에는 이 글의 질문에 바로 닿는 대목이 있어요. 서비스마다 소프트웨어 관행이 달라서 같은 운영 기능을 서비스마다 다르게 구현해야 했고, 서비스마다 기본으로 드는 고정 운영 비용이 있어 단순한 서비스도 인력을 요구했다는 겁니다. 마이크로서비스가 늘수록 이 부담이 커졌다고 해요. 구글이 찾은 방향은 <b>프레임워크와 SRE 플랫폼</b>이었습니다. 운영에서 검증된 코드를 프레임워크로 만들고, 서비스가 그걸 쓰면 설계 단계부터 운영 준비가 된 상태가 되게 하는 방식이에요. 서비스들이 같은 구현을 공유하니 설정 차이도 줄어듭니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: PRR (Production Readiness Review)</div>
+  SRE가 어떤 서비스의 운영을 맡기 전에, 그 서비스가 운영할 수 있는 상태인지 점검하는 검토예요. 구글 SRE 책의 같은 장은 지원 모델이 PRR에서 시작해, 설계 초기부터 참여하는 방식을 거쳐, 프레임워크와 플랫폼으로 넓어졌다고 설명합니다.
+</div>
+
+<p>정리하면 구글은 SRE를 별도 조직으로 두되, 그 조직이 맡는 서비스를 골라요. 그리고 맡는 서비스를 늘리는 방법으로 사람을 더 뽑는 대신 공통 코드를 늘렸습니다. <span class="obsv-mark">SRE를 따로 둔 회사도 결국 신뢰성을 공통 코드에 담는 쪽으로 움직였다</span>는 점이 3장에서 다시 쓰여요.</p>
+
+<!-- ================= 3장 ================= -->
+<h2>3. 넷플릭스는 만든 팀이 운영하지만, 중앙 SRE 팀이 있다</h2>
+
+<p>"넷플릭스에는 SRE가 없다"는 말의 출처를 따라가면 대개 2018년 넷플릭스 기술 블로그 글 "Full Cycle Developers at Netflix: Operate What You Build"가 나옵니다. Philip Fisher-Ogden, Greg Burrell, Dianne Marsh가 썼고, 스트리밍의 첫 관문 서비스를 맡은 Edge Engineering 팀의 경험이 바탕이에요(<a href="https://netflixtechblog.com/full-cycle-developers-at-netflix-a08c31f83249">원문</a>, 요약은 <a href="https://www.infoq.com/news/2018/06/netflix-full-cycle-developers/">InfoQ 2018년 6월 기사</a>). 글은 이 방식을 넷플릭스 안에서 "비교적 흔한(relatively common)" 접근 하나로 소개해요. 회사 전체의 규칙이라고 하지는 않습니다.</p>
+
+<p>그 글의 출발점은 1장의 ①과 같습니다. Edge Engineering에도 예전에는 운영 중심 팀과 SRE 전문가가 있어서 배포, 운영, 지원을 맡았다고 해요. 개발, 테스트, 배포, 운영이 역할별로 나뉘어 있으면 각 구간은 효율적이지만 수명주기 전체로는 비효율이 생긴다고 해요. 개발자와 운영 담당 사이에 지식이 오가면서 손실이 생기고, 문제 하나를 풀려면 몇 번씩 오가야 했다는 겁니다. 그래서 시스템을 만든 팀이 그 시스템을 운영하고 지원하게 했어요. 운영의 고통을 겪는 팀이 직접 설계와 코드를 바꿔 그 고통을 없앨 수 있으니, 피드백 고리가 짧아지고 동기가 맞춰진다는 논리입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 풀 사이클 개발자 (full cycle developer)</div>
+  설계, 개발, 테스트, 배포, 운영, 지원까지 자기 서비스의 전체 수명주기를 맡는 개발자예요. 넷플릭스 글은 이런 개발자가 소프트웨어 엔지니어, 테스트 엔지니어, SRE처럼 생각하고 움직인다고 설명합니다.
+</div>
+
+<p>여기까지만 읽으면 "SRE가 필요 없다"로 들리지만, 같은 글은 두 가지를 분명히 남겨 둬요.</p>
+
+<p>하나는 <b>중앙 팀</b>입니다. 클라우드 플랫폼, 성능·신뢰성 엔지니어링, 엔지니어링 도구 같은 중앙 팀이 공통 플랫폼과 도구, 이른바 Paved Road를 만들고, 서비스 팀은 그 위에서 운영합니다. 배포 도구 Spinnaker처럼 그중 일부는 오픈 소스로 공개됐어요. 그림 1의 ③입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Paved Road (포장된 길)</div>
+  중앙 팀이 미리 만들어 둔 표준 도구와 경로예요. 넷플릭스는 이 길을 강제하지 않고, 그 길을 쓰는 편이 안 쓰는 것보다 훨씬 나은 경험이 되게 만들어서 쓰도록 권한다고 적었어요.
+</div>
+
+<p>다른 하나는 <b>비용</b>이에요. 수명주기 전체를 맡으니 개발자에게 부담이 늘고 새 기술이 필요하며, 번아웃 위험이 있다고 적었어요. 모든 개발자가 이렇게 일하고 싶어 하지는 않으니, 넓이보다 깊은 전문성이 필요한 역할을 원하는 사람은 그런 자리를 찾도록 돕는다고 했고요. 다른 조직에 대해서는 대부분 조정이 필요할 것이라며, 필요한 만큼의 최소한의 복잡성만 들이라고 권합니다.</p>
+
+<p>그리고 중앙 SRE 팀이 실제로 있어요. 2018년 USENIX LISA에서 넷플릭스의 Dave Hahn이 한 발표 <a href="https://www.usenix.org/conference/lisa18/presentation/hahn">Incident Management at Netflix Velocity</a>의 소개문은 "The centralized SRE team, called CORE"라고 적고 있고, 발표자 소속을 Cloud Operations &amp; Reliability Engineering 조직의 시니어 SRE라고 밝힙니다. 발표 내용은 이 중앙 SRE 팀이 장애를 다루는 방식을 어떻게 바꿔 왔는가예요. 2015년 SREcon에서 넷플릭스의 Coburn Watson이 한 <a href="https://www.usenix.org/conference/srecon15/program/presentation/watson">발표 소개문</a>도 개별 서비스 팀의 운영 장벽을 낮추는 공유 서비스 팀이 있다고 적고 있어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 432" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;"><defs><marker id="f2r" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="30" y="34" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5" text-anchor="start">구글: 일부 서비스에 SRE 조직이 붙는다</text>
+<path d="M30 50 C 79.5 49.0, 129.0 49.4, 180 49.7 C 178.9 69.8, 181.0 89.6, 181.0 110 C 129.0 109.9, 79.5 109.9, 29.2 109.2 C 29.5 89.6, 29.3 69.8, 30 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="105" y="76" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">서비스 A 개발팀</text>
+<text x="105" y="98" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">기능·코드</text>
+<path d="M196 50 C 245.5 51.3, 295.0 48.6, 346 49.0 C 347.4 69.8, 346.1 89.6, 345.3 110 C 295.0 110.2, 245.5 108.1, 196.1 111.0 C 197.1 89.6, 196.6 69.8, 196 50 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="271" y="76" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">SRE 팀 📟</text>
+<text x="271" y="98" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">운영 50% 상한</text>
+<path d="M380 50 C 475.7 49.0, 571.4 49.5, 670 49.3 C 670.8 69.8, 670.1 89.6, 670.6 110 C 571.4 109.3, 475.7 108.9, 380.6 111.0 C 381.1 89.6, 380.9 69.8, 380 50 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8 8"/>
+<text x="525" y="76" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">서비스 B·C·D 개발팀 📟</text>
+<text x="525" y="98" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">SRE 없음: 문서·자문만 받는다</text>
+<path d="M196 118 C 191.3 127.3, 185.9 133.7, 180 140" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#f2r)"/>
+<text x="120" y="150" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">넘친 운영 일은 개발팀으로</text>
+<path d="M30 160 C 241.2 158.9, 452.4 160.1, 670 159.7 C 668.6 173.2, 668.6 186.4, 669.6 200 C 452.4 199.0, 241.2 200.8, 30.9 199.9 C 31.3 186.4, 31.5 173.2, 30 160 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="186" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">프레임워크·SRE 플랫폼: 운영 준비가 된 코드를 같이 쓴다</text>
+<path d="M20 222 C 238.7 222.0, 455.3 222.0, 680 222" fill="none" stroke="#d8cfba" stroke-width="2" stroke-linecap="round" stroke-dasharray="8 8"/>
+<text x="30" y="254" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="start">넷플릭스: 만든 팀이 운영하고, 중앙 팀이 받친다</text>
+<path d="M30 270 C 74.9 268.9, 119.8 268.9, 166 269.4 C 165.1 289.8, 166.4 309.6, 166.8 330 C 119.8 331.4, 74.9 329.9, 30.3 330.6 C 28.8 309.6, 30.5 289.8, 30 270 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="98" y="296" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">서비스 팀 📟</text>
+<text x="98" y="318" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">만들고 운영한다</text>
+<path d="M180 270 C 224.9 271.6, 269.8 271.1, 316 270.5 C 315.9 289.8, 315.0 309.6, 316.6 330 C 269.8 329.3, 224.9 331.2, 180.9 329.8 C 179.7 309.6, 181.3 289.8, 180 270 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="248" y="296" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">서비스 팀 📟</text>
+<text x="248" y="318" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">만들고 운영한다</text>
+<path d="M330 270 C 374.9 270.9, 419.8 268.7, 466 269.3 C 465.0 289.8, 467.2 309.6, 466.6 330 C 419.8 328.6, 374.9 331.3, 331.0 330.3 C 329.6 309.6, 330.1 289.8, 330 270 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="398" y="296" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">서비스 팀 📟</text>
+<text x="398" y="318" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">만들고 운영한다</text>
+<path d="M490 270 C 549.4 268.5, 608.8 268.1, 670 270.9 C 670.4 289.8, 670.1 309.6, 670.9 330 C 608.8 329.7, 549.4 331.5, 490.7 329.4 C 489.3 309.6, 489.4 289.8, 490 270 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="296" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">CORE (중앙 SRE)</text>
+<text x="580" y="318" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">장애 대비·대응 지원</text>
+<path d="M30 346 C 241.2 345.0, 452.4 346.3, 670 345.5 C 669.8 359.2, 668.9 372.4, 670.8 386 C 452.4 385.4, 241.2 385.8, 30.2 386.8 C 29.8 372.4, 31.3 359.2, 30 346 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="372" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">Paved Road: 클라우드 플랫폼·성능·도구 팀이 만든 공통 길</text>
+<text x="350" y="418" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">둘 다 중앙에 신뢰성 조직이 있다. 갈리는 곳은 호출기를 누가 드느냐다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 두 회사 모두 중앙에 신뢰성 조직과 공통 플랫폼이 있다. 평소 호출기를 드는 쪽이 다르다</div>
+
+<p>그러니 "넷플릭스에는 SRE 전담 인력이 없다"는 정확하지 않아요. 정확하게 말하면 <b>서비스마다 SRE를 붙이는 게 기본은 아니고, 서비스는 대개 만든 팀이 운영하며, 중앙 SRE 팀은 장애에 대비하고 대응하는 일을 돕는다. 공통 기반은 다른 중앙 팀들이 만든다</b>입니다. 넷플릭스 문화를 상징하는 "자유와 책임"도 이 구조와 맞물려 자주 언급되는데, 그 문화 문서가 처음 공개된 건 2009년 8월이에요(<a href="https://about.netflix.com/en/news/sharing-our-latest-culture-memo">Netflix, Sharing Our Latest Culture Memo</a>).</p>
+
+<p>그림 2를 다시 보면 두 회사는 생각보다 가깝습니다. 둘 다 중앙에 신뢰성 조직이 있고, 둘 다 공통 코드와 플랫폼으로 운영 부담을 줄입니다. 구글에도 개발팀이 직접 운영하는 서비스가 많고요. 진짜 차이는 <b>기본값</b>에 있어요. 구글은 중요한 서비스에 SRE 팀이 붙어 호출기를 드는 쪽이 기본이고, 넷플릭스는 만든 팀이 호출기를 드는 쪽이 기본입니다.</p>
+
+<!-- ================= 4장 ================= -->
+<h2>4. 무엇이 기본값을 갈랐나: 닮음은 담을 몫을, 인력은 운영 방식을 정한다</h2>
+
+<p>여기서부터는 공개 자료가 직접 답하지 않는 부분이라, 근거와 추론을 나눠서 적을게요.</p>
+
+<p>흔히 나오는 설명은 이렇습니다. 넷플릭스의 서비스는 대부분 같은 언어로 만든, 수평으로 늘리는 무상태 서비스라 서로 많이 닮았고, 그래서 운영 지식을 중앙 플랫폼에 모아 두기 좋았다. 반면 구글의 제품은 검색, 광고, 클라우드, 모바일처럼 서로 매우 달라서 제품마다 깊이 아는 SRE가 필요했다. 직관적인 설명이지만, 두 회사 중 어느 쪽도 공개 글에서 조직 구조를 고른 이유로 이걸 들지는 않았어요. 넷플릭스 서비스의 언어 구성 같은 수치도 제가 확인한 공개 자료에는 없었습니다.</p>
+
+<p>오히려 넷플릭스 글은 반대쪽에 가까운 말을 해요. 이 모델을 넷플릭스 밖에 적용하려면 조정이 필요하다면서, 개발팀들이 겪는 공통 문제(지속적 전달 파이프라인, 모니터링과 관측 같은 것)는 아마 비슷할 것이라고 적습니다. 그러고는 "many companies won't have the staffing to invest in centralized teams like at Netflix, nor will they need the complexity that Netflix's scale requires"라고 이어요(<a href="https://netflixtechblog.com/full-cycle-developers-at-netflix-a08c31f83249">Full Cycle Developers at Netflix</a>). 원저자는 닮음을 대부분의 회사에 있는 전제로 보고, 갈리는 조건을 <b>중앙 팀에 쓸 인력과 규모</b>로 본 셈입니다.</p>
+
+<p>그렇다고 닮음이 아무 일도 안 하는 건 아니에요. 닮음이 정하는 건 <b>무엇을 중앙에 담을 수 있느냐</b>입니다. 2장에서 본 구글 SRE 책 The Evolving SRE Engagement Model 장의 설명입니다. 서비스마다 관행이 달라서 같은 운영 기능을 서비스마다 다시 구현해야 했고, 그게 SRE 비용을 키웠다고 했어요. 거꾸로 읽으면 서비스들이 같은 구조를 공유할수록 운영 기능을 한 번 만들어 모두에게 줄 수 있다는 뜻입니다. 넷플릭스 글도 같은 기준을 써요. 새 도구가 필요해지면 중앙 팀이 그 필요가 여러 개발팀에 공통인지부터 따지고, 공통이면 함께 만들고, 너무 특정한 필요면 그 팀이 스스로 풀지 정하게 한다고 적었습니다. 운영 기능이 공통 코드에 많이 담길수록 서비스 팀이 직접 운영할 때 알아야 할 것이 줄어들어요.</p>
+
+<p>이 추론을 질문으로 바꾸면 이렇습니다.</p>
+
+<div class="obsv-code">질문                                       닮음 쪽이면           다름 쪽이면
+서비스들이 같은 언어·런타임·프레임워크인가?        공통 라이브러리 한 벌      언어마다 한 벌씩
+배포·관측 방식이 하나로 정해져 있나?             플랫폼이 기본값을 준다     서비스마다 따로 붙인다
+장애 유형이 서비스 사이에서 비슷한가?             절차서·자동화를 재사용     제품별 전문 지식이 필요
+상태(데이터)를 서비스가 직접 들고 있나?           무상태면 교체·재시작 쉬움   저장소 운영 전문성이 필요
+&rarr; 위에서 "닮음"이 많을수록 공통 플랫폼에 담을 수 있는 몫이 커진다 (추론)</div>
+
+<p>표의 마지막 줄이 추론이라는 건 숨기지 않을게요. 그리고 SRE를 따로 둘지, 만든 팀이 운영할지를 더 직접 가르는 조건은 따로 있습니다. 적어도 셋이에요.</p>
+
+<ul>
+<li><b>인력과 규모</b>: 앞의 넷플릭스 인용이 가장 직접적인 근거예요. 같은 글은 이 모델이 성공하려면 팀마다 빌드와 배포, 운영 문제, 지원 요청을 감당할 여유 인원이 있어야 하고, 인력과 우선순위와 중앙 팀과의 협력이 없으면 과부하와 번아웃 위험이 있다고 적었어요. SRE 워크북의 <a href="https://sre.google/workbook/how-sre-relates/">How SRE Relates to DevOps</a> 장도 구글 쪽에서 비슷한 말을 해요. 이 장은 구글에서 SRE와 제품 개발이 별도 조직이라고 적으면서, 지원을 끊는 것까지 포함한 구글의 모델은 큰 조직을 전제로 한다고 해요. 작은 회사에서도 데브옵스식 접근은 가능하고, 일하는 방식을 바꾸는 데 조직도가 꼭 필요하지는 않다고도 적습니다.</li>
+<li><b>문화</b>: 넷플릭스 글은 수명주기 전체를 맡는 일이 모든 개발자에게 맞지 않고 훈련이 필요하다고 했어요. 개발자가 호출기를 들 의지와 역량이 없는 조직이라면 제품이 아무리 닮아도 이 방식은 비쌉니다.</li>
+<li><b>채용</b>: 구글의 같은 줄 채용은 대부분이 소프트웨어 엔지니어인 회사에서 잘 작동하고, 시스템 관리자와 개발자가 섞인 조직에서는 적용하기가 훨씬 어렵다는 지적도 있어요.</li>
+</ul>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 326" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;"><defs><marker id="f3a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="f3o" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M50 150 C 248.0 148.0, 446.1 148.8, 650 150" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" marker-end="url(#f3a)"/>
+<text x="60" y="182" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="start">제품이 서로 다르다</text>
+<text x="60" y="204" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">언어·저장소·배포 방식이 제각각</text>
+<text x="640" y="182" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="end">제품이 닮았다</text>
+<text x="640" y="204" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="end">같은 언어·같은 런타임·같은 배포</text>
+<path d="M40 40 C 122.5 40.1, 205.0 38.1, 290 39.9 C 289.0 64.4, 288.5 88.8, 290.6 114 C 205.0 112.7, 122.5 113.9, 40.5 114.1 C 39.5 88.8, 40.1 64.4, 40 40 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="165" y="68" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">제품별로 깊이 아는 SRE</text>
+<text x="165" y="94" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">공통으로 담을 게 적다</text>
+<path d="M410 40 C 492.5 40.2, 575.0 41.1, 660 39.2 C 660.2 64.4, 659.2 88.8, 659.6 114 C 575.0 115.1, 492.5 114.0, 410.1 114.5 C 411.2 88.8, 409.8 64.4, 410 40 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="535" y="68" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">공통 플랫폼 + 만든 팀이 운영</text>
+<text x="535" y="94" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">신뢰성을 코드에 한 번 담는다</text>
+<path d="M165 118 C 165.2 125.9, 165.0 133.8, 165 142" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round"/>
+<path d="M535 118 C 535.0 125.9, 535.4 133.8, 535 142" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round"/>
+<path d="M240 226 C 312.6 225.8, 385.2 226.1, 460 226.0 C 461.3 243.2, 460.6 260.3, 460.8 278 C 385.2 279.8, 312.6 277.0, 240.1 278.9 C 241.0 260.3, 238.9 243.2, 240 226 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="1 7"/>
+<text x="350" y="250" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="middle">많은 조직은 가운데 어딘가</text>
+<text x="350" y="270" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">서비스마다 다르게 고른다</text>
+<path d="M350 222 C 349.2 200.2, 349.9 178.4, 350 156" fill="none" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-dasharray="8 8" marker-end="url(#f3o)"/>
+<text x="350" y="312" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">이 축은 담을 몫을 정한다. 운영 방식은 인력·규모가 더 직접 가른다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 제품이 닮을수록 공통 코드에 담을 몫이 커진다. SRE를 따로 둘지는 이 축 하나로 정해지지 않는다</div>
+
+<p>정리하면 <span class="obsv-mark">제품이 닮았을수록 플랫폼에 담을 몫이 커지고, 만든 팀이 운영할 수 있느냐는 그 플랫폼을 만들고 지킬 인력이 있느냐에 달려 있습니다</span>. 결정 하나가 아니라 서비스마다 다르게 고를 수도 있어요. 구글이 모든 서비스에 SRE를 붙이지 않듯, 장애 비용이 큰 몇 서비스에만 전담 SRE를 붙이고, 나머지는 공통 플랫폼 위에서 만든 팀이 운영하게 하는 식입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는</div>
+  &bull; "SRE 팀을 만들까?"보다 먼저 위 표의 네 질문에 서비스별로 답해 보세요. 닮음 쪽이 많은 서비스 묶음은 공통 플랫폼 후보예요<br>
+  &bull; 전담 SRE를 붙일 서비스는 서비스 수가 아니라 장애 영향으로 고릅니다. 다른 서비스와 구조가 다르고 장애 비용이 큰 곳이 먼저예요<br>
+  &bull; 만든 팀이 운영하게 하려면 그 팀에 배포, 장애, 지원 요청을 감당할 여유 인원부터 둡니다. 여유 없이 호출기만 넘기면 넷플릭스 글이 경고한 과부하로 갑니다<br>
+  &bull; 중앙 팀을 만들더라도 호출기를 통째로 넘겨받지 마세요. 구글도 넘친 운영 일은 개발팀으로 돌려보냅니다. 넘겨받기 전에 PRR처럼 "운영할 수 있는 상태인가"를 확인하는 단계를 둡니다<br>
+  &bull; 공통 기능을 서비스 팀에 어떻게 실어 보낼지(라이브러리, 사이드카, 런타임 주입)는 <a href="#pc-03">3편</a>에서, 플랫폼이 먼저 제공할 기능의 순서는 <a href="#pc-04">4편</a>에서 다뤄요
+</div>
+
+<!-- ================= 5장 ================= -->
+<h2>5. SRE는 데브옵스의 구현이고, 개발자와 같은 역량을 다르게 쓴다</h2>
+
+<p>SRE 팀을 둘지 말지 이야기하다 보면 "그럼 데브옵스 엔지니어와 뭐가 다른가요?"라는 질문이 꼭 나옵니다. SRE 워크북의 How SRE Relates to DevOps 장은 이 관계를 자바 문법으로 요약해요. <code>class SRE implements interface DevOps</code>. 데브옵스는 더 넓은 철학이자 문화이고, SRE는 그 철학의 일부를 구체적인 역할과 실천으로 구현한 것이라는 뜻입니다. 같은 장은 SRE가 "데브옵스 엔지니어" 같은 직함보다 직무의 구체적인 정의에 더 가깝다고 하고, 데브옵스는 엔지니어를 뽑는다고 바로 얻어지는 게 아니라 조직이 철학을 받아들여야 한다고 적어요("People sell DevOps, but you can't buy it", Andrew Clay Shafer).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: CALMS</div>
+  데브옵스의 핵심을 외우기 쉽게 묶은 약어예요. 문화(Culture), 자동화(Automation), 린(Lean), 측정(Measurement), 공유(Sharing)입니다. SRE 워크북은 이 다섯을 데브옵스의 요점으로 소개한 뒤, SRE의 원칙으로 SLO로 관리하기, 수고 줄이기, 개발자와 소유권 나누기 같은 것을 따로 듭니다.
+</div>
+
+<p>두 역할을 "데브옵스는 운영 중심, SRE는 개발 초기 집중(shift-left)"으로 나누는 설명도 볼 수 있는데, 이 구분을 받치는 공개 자료는 찾지 못했어요. 워크북이 실제로 긋는 선은 넓이입니다. 데브옵스는 조직 전체의 사일로를 허무는 데 초점을 두고 서비스 운영 방법은 자세히 말하지 않는 반면, SRE는 책임 범위가 좁게 정의돼 있고 서비스 중심이며 운영 방법에 대해 더 분명한 의견(에러 예산 같은)을 가진다고 해요.</p>
+
+<p>소프트웨어 엔지니어(SWE)와의 관계는 더 간단합니다. 구글의 같은 줄 채용이 그 답이에요. 핵심 역량은 같고, 그 역량을 쓰는 대상이 다릅니다. SWE가 코드로 사용자 기능을 만든다면 SRE는 같은 기술로 계측을 넣고, 손으로 하던 운영을 코드로 바꾸고, 장애를 덜 나게 하는 설계를 합니다. 같은 줄에서 뽑았으니 두 직무 사이를 오가는 것도 가능해요. 2장에서 넘친 운영 일을 개발팀으로 돌려보낼 수 있었던 것도 결국 개발자가 그 일을 할 수 있는 사람이기 때문입니다.</p>
+
+<p>이 관점으로 보면 넷플릭스의 풀 사이클 개발자는 "SRE가 없는" 구조가 아니라, <b>SRE의 역할을 서비스 팀 개발자에게 나눠 준</b> 구조예요. 넷플릭스 글이 그 개발자가 SRE처럼 생각한다고 적은 것도 같은 뜻입니다. 역할은 남아 있고, 그 역할을 맡는 사람이 바뀌었어요.</p>
+
+<!-- ================= 6장 ================= -->
+<h2>6. SRE의 원칙 목록은 이미 따로 다뤘다</h2>
+
+<p>SRE 팀을 만들면 그 팀이 따를 원칙 목록이 따라옵니다. 운영 확장성, 엔지니어링 시간 확보, 관측 가능성, 서비스 수준 목표, 사용자 관점 경고, 비난 없는 사후 분석, 단순성 같은 것들이에요. 이 블로그의 다른 시리즈에서 대부분을 다뤘으니 여기서는 연결만 해 둘게요. 단순성은 따로 다룬 글이 없어요.</p>
+
+<div class="obsv-code">원칙                           다룬 글
+운영 확장성 · 50% 상한 · 수고 측정     운영 자동화 1편 (dding-shark.tistory.com/642)
+사용자 관점 경고                    SLO와 경고 1편 (449), 장애 대응 2편 (627)
+비난 없는 사후 분석 · 장애 지표        장애 대응 4편 (629)
+관측: 서비스 공통 지표(에러·지연·포화도)  SLO와 경고 3편 (577)</div>
+
+<p>각 글로 가는 링크는 이렇습니다. <a href="https://dding-shark.tistory.com/642">운영 자동화 1편</a>, <a href="https://dding-shark.tistory.com/449">SLO와 경고 1편</a>, <a href="https://dding-shark.tistory.com/627">장애 대응 2편</a>, <a href="https://dding-shark.tistory.com/629">장애 대응 4편</a>, <a href="https://dding-shark.tistory.com/577">SLO와 경고 3편</a>.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 원칙 목록에 섞여 들어오는 것들</div>
+  &bull; 골든 시그널은 구글 SRE 책에서 지연, 트래픽, 에러, 포화도 넷이에요(<a href="https://sre.google/sre-book/monitoring-distributed-systems/">Monitoring Distributed Systems</a>). 여기에 가용성을 더한 다섯 신호나 그 머리글자로 만든 약어를 볼 수 있는데, 원문에 있는 분류는 아니고 공개된 표준 용어도 찾지 못했어요<br>
+  &bull; SRE의 성과를 MTTD, MTTR, MTBF로 평가한다는 설명도 흔해요. 장애 대응 4편에서 다뤘듯 장애 시간은 분산이 커서 평균 지표가 추세 판단에 잘 맞지 않는다는 분석(Davidovič, Incident Metrics in SRE)이 있으니, 평가 지표로 바로 쓰기 전에 그 글을 먼저 보세요
+</div>
+
+<p>원칙 목록보다 중요한 건 2장에서 본 장치 두 개예요. 운영 일에 상한을 두고, 넘치면 돌려보내는 것. 이 둘이 없으면 SRE 팀은 1장 그림의 ①, 즉 개발과 떨어진 운영팀으로 돌아갑니다. 이름만 SRE인 운영팀이에요.</p>
+
+<p>회고 자리의 질문으로 돌아가 볼게요. "SRE 팀을 따로 만들어야 할까요?"에는 먼저 이렇게 되물을 수 있습니다. 우리 서비스들은 서로 얼마나 닮았나? 그리고 공통 플랫폼을 만들고 지킬 사람, 서비스 팀이 호출기를 들 여유가 있나? 둘 다 그렇다면 공통 플랫폼 위에서 만든 팀이 운영하게 하는 편이 쌀 가능성이 높아요. 닮았어도 사람이 없다면 직접 만드는 대신 오픈 소스나 SaaS로 공통 부분을 채우라는 게 넷플릭스 글의 권고예요. 닮지 않은 몇 서비스에 장애 비용이 몰려 있다면 거기에 전담 SRE를 붙이고, 50% 상한과 돌려보내기를 함께 정합니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>구글은 SRE를 따로 두고 넷플릭스는 만든 팀이 운영하지만, 두 회사 모두 중앙에 신뢰성 조직과 공통 플랫폼이 있어요.</b> 넷플릭스에도 스스로 중앙 SRE 팀이라 부르는 CORE가 있고, 구글에도 SRE 없이 개발팀이 운영하는 서비스가 많습니다. 갈리는 곳은 평소 호출기를 누가 드느냐는 기본값이에요.<br><br>
+  그 기본값을 "제품이 얼마나 닮았나"로 설명하곤 하지만, 공개 자료가 받치는 건 절반이에요. 서비스가 닮을수록 신뢰성을 공통 코드에 한 번 담아 모두에게 줄 수 있는 몫이 커집니다. 그런데 넷플릭스 원저자는 개발팀의 공통 문제는 대개 비슷하다고 보고, 갈리는 조건으로 중앙 팀에 쓸 인력과 규모를 들었어요. SRE를 둘지는 조직도의 문제이기 전에, 공통 문제를 맡을 사람이 있느냐의 문제입니다.
+</div>
+
+</div>
