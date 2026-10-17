@@ -113,7 +113,7 @@ SELECT * FROM visit WHERE user_key='u-1' FOR UPDATE
 
 <p>→ 두 트랜잭션이 <code>uk_user_key</code> 의 같은 레코드('u-1', id 1)에 S 잠금을 쥔 채로, 같은 레코드의 X 잠금을 기다렸다는 뜻이에요. S 끼리는 같이 쥘 수 있지만 X 는 다른 쪽 S 가 풀려야 받을 수 있으니 둘 다 영원히 기다리게 됩니다. 세 바퀴 모두 <code>WE ROLL BACK TRANSACTION (2)</code> 였고, 실제로 1213 을 받은 세션의 접속 번호가 (2) 의 <code>MySQL thread id</code> 와 같았어요.</p>
 
-<p>여기서 가장 중요한 건 <b>S 잠금을 잡은 문장이 출력에 없다</b>는 점이에요. 두 트랜잭션 모두 SQL 줄에는 <code>SELECT … FOR UPDATE</code> 가 찍혔지만, FOR UPDATE 는 X 를 요청하는 문장입니다. S 는 그 앞의 <code>INSERT IGNORE</code> 가 중복 키를 만났을 때 잡은 거예요(이유는 <a href="#dl-01">1편</a>). STATUS 의 SQL 줄은 트랜잭션이 그 순간 실행 중이던 <b>문장 하나</b>일 뿐이고, 트랜잭션이 앞에서 실행한 문장들은 보여 주지 않습니다. 물론 SQL 줄의 문장이 HOLDS 의 잠금을 잡은 문장인 경우도 있어요. <code>UPDATE … WHERE id IN (1, 2)</code> 처럼 한 문장이 여러 행을 차례로 잠그다 막히면 쥔 잠금과 기다리는 잠금이 같은 문장에서 나옵니다. 그래서 "SQL 줄은 범인이 아니다"가 아니라 "SQL 줄이 범인이라는 보장이 없다"로 읽어야 해요. 매뉴얼의 교착 예시(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-example.html">17.7.5.1</a>)도 두 SQL 이 모두 UPDATE 인데, HOLDS 에 찍힌 S 잠금은 그 전에 실행한 <code>SELECT … FOR SHARE</code> 가 잡은 것이에요.</p>
+<p>여기서 가장 중요한 건 <b>S 잠금을 잡은 문장이 출력에 없다</b>는 점이에요. 두 트랜잭션 모두 SQL 줄에는 <code>SELECT … FOR UPDATE</code> 가 찍혔지만, FOR UPDATE 는 X 를 요청하는 문장입니다. S 는 그 앞의 <code>INSERT IGNORE</code> 가 중복 키를 만났을 때 잡은 거예요(이유는 <a href="https://dding-shark.tistory.com/674">1편</a>). STATUS 의 SQL 줄은 트랜잭션이 그 순간 실행 중이던 <b>문장 하나</b>일 뿐이고, 트랜잭션이 앞에서 실행한 문장들은 보여 주지 않습니다. 물론 SQL 줄의 문장이 HOLDS 의 잠금을 잡은 문장인 경우도 있어요. <code>UPDATE … WHERE id IN (1, 2)</code> 처럼 한 문장이 여러 행을 차례로 잠그다 막히면 쥔 잠금과 기다리는 잠금이 같은 문장에서 나옵니다. 그래서 "SQL 줄은 범인이 아니다"가 아니라 "SQL 줄이 범인이라는 보장이 없다"로 읽어야 해요. 매뉴얼의 교착 예시(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-example.html">17.7.5.1</a>)도 두 SQL 이 모두 UPDATE 인데, HOLDS 에 찍힌 S 잠금은 그 전에 실행한 <code>SELECT … FOR SHARE</code> 가 잡은 것이에요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -217,13 +217,13 @@ TRANSACTION 1949, ACTIVE 4 sec starting index read
 …
 … [Note] [MY-012469] [InnoDB] *** WE ROLL BACK TRANSACTION (2)</div>
 
-<p>→ 기본값에서는 <code>[MY-012468] … Transactions deadlock detected</code> 머리말, <code>*** (1) HOLDS THE LOCK(S):</code> 같은 소제목, <code>WE ROLL BACK</code> 희생자 줄과 시각이 빠지고 트랜잭션·잠금 본문만 남았다는 뜻이에요. 세 바퀴 모두 같았습니다. 머리말과 소제목은 Note 등급으로 찍히는데, <code>log_error_verbosity</code> 의 기본값 2 는 ERROR 와 WARNING 만 통과시키기 때문이에요(<a href="https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_log_error_verbosity">log_error_verbosity</a>, 3 이어야 INFORMATION 까지). 본문은 등급 필터를 거치지 않고 stderr 로 바로 쓰여서 남았어요. 소스로 확인한 경로는 <a href="#dl-04">4편</a>에 있습니다. 이 상태로는 어느 잠금이 쥔 것이고 어느 것이 기다린 것인지를 줄 끝 <code>waiting</code> 으로만 짐작해야 하고, 누가 희생됐는지와 언제 났는지는 알 수 없어요. 교착을 조사하는 동안에는 두 변수를 같이 켭니다. 3 은 다른 Note 도 모두 남기니 조사가 끝나면 되돌려요.</p>
+<p>→ 기본값에서는 <code>[MY-012468] … Transactions deadlock detected</code> 머리말, <code>*** (1) HOLDS THE LOCK(S):</code> 같은 소제목, <code>WE ROLL BACK</code> 희생자 줄과 시각이 빠지고 트랜잭션·잠금 본문만 남았다는 뜻이에요. 세 바퀴 모두 같았습니다. 머리말과 소제목은 Note 등급으로 찍히는데, <code>log_error_verbosity</code> 의 기본값 2 는 ERROR 와 WARNING 만 통과시키기 때문이에요(<a href="https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_log_error_verbosity">log_error_verbosity</a>, 3 이어야 INFORMATION 까지). 본문은 등급 필터를 거치지 않고 stderr 로 바로 쓰여서 남았어요. 소스로 확인한 경로는 <a href="https://dding-shark.tistory.com/677">4편</a>에 있습니다. 이 상태로는 어느 잠금이 쥔 것이고 어느 것이 기다린 것인지를 줄 끝 <code>waiting</code> 으로만 짐작해야 하고, 누가 희생됐는지와 언제 났는지는 알 수 없어요. 교착을 조사하는 동안에는 두 변수를 같이 켭니다. 3 은 다른 Note 도 모두 남기니 조사가 끝나면 되돌려요.</p>
 
 <div class="obsv-code">SET GLOBAL innodb_print_all_deadlocks = ON;   -- 모든 교착을 에러 로그로
 SET GLOBAL log_error_verbosity = 3;           -- 머리말, 소제목, 희생자 줄, 시각까지 남기려면
 -- 재시작 뒤에도 유지하려면 SET PERSIST 나 설정 파일에. 관리형 DB 는 파라미터 그룹에서 바꾼다</div>
 
-<p>교착이 몇 번 났는지 세는 것은 별개예요. <code>INFORMATION_SCHEMA.INNODB_METRICS</code> 의 <code>lock_deadlocks</code> 는 바퀴마다 정확히 2 씩 늘었습니다(교착 두 번). 같은 8.4.11 에서 <code>SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks'</code> 는 행이 하나도 나오지 않았어요. 카운터로 알람을 걸 때 어느 쪽을 읽는지는 <a href="#dl-04">4편</a>에서 다룹니다.</p>
+<p>교착이 몇 번 났는지 세는 것은 별개예요. <code>INFORMATION_SCHEMA.INNODB_METRICS</code> 의 <code>lock_deadlocks</code> 는 바퀴마다 정확히 2 씩 늘었습니다(교착 두 번). 같은 8.4.11 에서 <code>SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks'</code> 는 행이 하나도 나오지 않았어요. 카운터로 알람을 걸 때 어느 쪽을 읽는지는 <a href="https://dding-shark.tistory.com/677">4편</a>에서 다룹니다.</p>
 
 <h2>5. 교착 전 대기 상태는 data_locks 로 잡는다</h2>
 
@@ -343,7 +343,7 @@ WE ROLL BACK TRANSACTION (2)</div>
   <b>1. 출력의 SQL 이 지금 배포된 코드에 있는가.</b> STATUS 의 SQL 문자열을 운영에 떠 있는 빌드의 커밋에서 찾습니다. main 브랜치가 아니라 <b>배포된 아티팩트의 커밋</b>이에요. 컨테이너 이미지 태그, 빌드 정보 엔드포인트(Spring Boot 라면 git 정보를 넣어 둔 <code>/actuator/info</code>), 배포 이력 중 하나로 확인합니다. 그 커밋에 문장이 없다면 다른 서비스나 배치가 낸 문장이거나, 고친 코드가 아직 배포되지 않은 거예요. ORM 이 만든 SQL 이면 문자열이 코드에 그대로 없으니 테이블과 WHERE 컬럼으로 찾습니다.<br>
   <b>2. 잠금 종류.</b> HOLDS 가 <code>lock mode S</code> 계열이면 앞에서 S 를 잡은 문장(중복 검사를 하는 INSERT 와 INSERT IGNORE, FOR SHARE, 외래 키 검사)을 찾습니다. X 계열이면 UPDATE, DELETE, FOR UPDATE 예요. 갭이나 insert intention 이 보이면 범위 조건이나 없는 값을 잠근 문장을 의심해요.<br>
   <b>3. 인덱스.</b> <code>index PRIMARY</code> 인지 보조 인덱스(<code>uk_…</code>)인지 봅니다. 보조 유니크 인덱스면 그 컬럼으로 넣거나 찾는 문장이 범인 후보예요. 인덱스가 없는 조건으로 UPDATE 하면 훑은 레코드 전부가 잠겨 후보가 늘어납니다. 원래 쓰려던 인덱스인지 EXPLAIN 으로 확인해요.<br>
-  <b>4. 순서.</b> HOLDS 와 WAITING 의 레코드가 같으면 업그레이드형, 엇갈리면 순서형입니다. 앞의 것은 잠금을 처음부터 X 로 잡거나 S 를 잡지 않는 쪽으로, 뒤의 것은 두 경로가 같은 순서(예: PK 오름차순)로 잠그도록 고쳐요. 업그레이드형을 고치는 구체적인 방법은 <a href="#dl-06">6편</a>에 모았습니다. 이때 INSERT IGNORE 를 ON DUPLICATE KEY UPDATE 로 바꾸고 반환값으로 중복을 판정하면 <a href="#dl-02">2편</a>의 함정에 빠지니 주의하세요.<br>
+  <b>4. 순서.</b> HOLDS 와 WAITING 의 레코드가 같으면 업그레이드형, 엇갈리면 순서형입니다. 앞의 것은 잠금을 처음부터 X 로 잡거나 S 를 잡지 않는 쪽으로, 뒤의 것은 두 경로가 같은 순서(예: PK 오름차순)로 잠그도록 고쳐요. 업그레이드형을 고치는 구체적인 방법은 <a href="https://dding-shark.tistory.com/679">6편</a>에 모았습니다. 이때 INSERT IGNORE 를 ON DUPLICATE KEY UPDATE 로 바꾸고 반환값으로 중복을 판정하면 <a href="https://dding-shark.tistory.com/675">2편</a>의 함정에 빠지니 주의하세요.<br>
   <b>5. 잠금을 잡은 문장 확정.</b> STATUS 의 SQL 줄이 그 문장이라는 보장이 없으니 코드에서 같은 트랜잭션의 앞 문장을 찾거나, 재현 환경에서 <code>events_statements_history</code> 로 확인합니다.
 </div>
 
@@ -355,13 +355,13 @@ WE ROLL BACK TRANSACTION (2)</div>
 
 <p><b>"SQL 줄이 FOR UPDATE 니까 FOR UPDATE 를 빼면 된다."</b> A 에서 S 잠금은 FOR UPDATE 가 아니라 INSERT IGNORE 가 잡았어요. FOR UPDATE 를 빼도 바로 다음 문장인 <code>UPDATE … WHERE user_key = 'u-1'</code> 이 같은 유니크 인덱스 레코드에 X 를 요청합니다. 상대가 쥔 S 와 부딪히는 건 그대로예요. 고칠 곳은 X 를 요청하는 문장이 아니라 S 를 잡게 만든 흐름입니다.</p>
 
-<p><b>"격리 수준을 READ COMMITTED 로 내리면 된다."</b> 매뉴얼의 교착 개요(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks.html">17.7.5</a>)는 격리 수준이 바꾸는 것은 읽기 동작이고 교착은 쓰기 때문에 생기므로, 교착 가능성은 격리 수준의 영향을 받지 않는다고 적어요. 하지만 <a href="#dl-01">1편</a> 실측에서는 격리 수준에 따라 교착이 생기기도 하고 사라지기도 했습니다. 행이 이미 있을 때 대리 키 테이블은 RR 에서 대기로 끝나던 것이 RC 에서 교착이 됐고, 행이 없을 때 FOR UPDATE 를 먼저 하는 판은 RR 에서 세 바퀴 모두 교착, RC 에서 0번이었어요. 같은 장의 대처법(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html">17.7.5.3</a>)은 잠그는 읽기를 쓴다면 READ COMMITTED 를 검토하라고 권하는데, 갭 잠금이 줄어들기 때문으로 보여요. 다만 A 패턴의 중복 키 S 잠금은 RC 에서도 잡히니 RC 는 해법이 아닙니다. 1편에서도 RC 는 A 패턴을 없애지 못했어요.</p>
+<p><b>"격리 수준을 READ COMMITTED 로 내리면 된다."</b> 매뉴얼의 교착 개요(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks.html">17.7.5</a>)는 격리 수준이 바꾸는 것은 읽기 동작이고 교착은 쓰기 때문에 생기므로, 교착 가능성은 격리 수준의 영향을 받지 않는다고 적어요. 하지만 <a href="https://dding-shark.tistory.com/674">1편</a> 실측에서는 격리 수준에 따라 교착이 생기기도 하고 사라지기도 했습니다. 행이 이미 있을 때 대리 키 테이블은 RR 에서 대기로 끝나던 것이 RC 에서 교착이 됐고, 행이 없을 때 FOR UPDATE 를 먼저 하는 판은 RR 에서 세 바퀴 모두 교착, RC 에서 0번이었어요. 같은 장의 대처법(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html">17.7.5.3</a>)은 잠그는 읽기를 쓴다면 READ COMMITTED 를 검토하라고 권하는데, 갭 잠금이 줄어들기 때문으로 보여요. 다만 A 패턴의 중복 키 S 잠금은 RC 에서도 잡히니 RC 는 해법이 아닙니다. 1편에서도 RC 는 A 패턴을 없애지 못했어요.</p>
 
-<p><b>"교착은 재시도하면 끝이다."</b> 매뉴얼도 교착은 위험하지 않으니 다시 시도하라고 적어요. 다만 A 같은 패턴은 첫 방문이 동시에 들어올 때마다 납니다. <a href="#dl-01">1편</a> 실측에서 행이 없을 때 세 요청이면 키 구조와 격리 수준에 상관없이 열두 번 모두 교착이 났어요. 재시도는 증상을 흡수할 뿐이라, 같은 SQL 이 STATUS 에 반복해서 나온다면 체크리스트로 구조를 고칠 대상이에요.</p>
+<p><b>"교착은 재시도하면 끝이다."</b> 매뉴얼도 교착은 위험하지 않으니 다시 시도하라고 적어요. 다만 A 같은 패턴은 첫 방문이 동시에 들어올 때마다 납니다. <a href="https://dding-shark.tistory.com/674">1편</a> 실측에서 행이 없을 때 세 요청이면 키 구조와 격리 수준에 상관없이 열두 번 모두 교착이 났어요. 재시도는 증상을 흡수할 뿐이라, 같은 SQL 이 STATUS 에 반복해서 나온다면 체크리스트로 구조를 고칠 대상이에요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 희생자 (victim)</div>
-  InnoDB 가 교착을 풀려고 롤백하는 트랜잭션이에요. 매뉴얼은 삽입, 갱신, 삭제한 행 수로 크기를 재서 작은 쪽을 고르려 한다고 적어요. STATUS 의 <code>WE ROLL BACK TRANSACTION (N)</code> 이 그것이고, 그 트랜잭션의 세션이 1213 을 받습니다. 1213 을 받은 뒤 트랜잭션이 어디까지 되돌아가는지는 <a href="#dl-05">5편</a>에서 봐요.
+  InnoDB 가 교착을 풀려고 롤백하는 트랜잭션이에요. 매뉴얼은 삽입, 갱신, 삭제한 행 수로 크기를 재서 작은 쪽을 고르려 한다고 적어요. STATUS 의 <code>WE ROLL BACK TRANSACTION (N)</code> 이 그것이고, 그 트랜잭션의 세션이 1213 을 받습니다. 1213 을 받은 뒤 트랜잭션이 어디까지 되돌아가는지는 <a href="https://dding-shark.tistory.com/678">5편</a>에서 봐요.
 </div>
 
 <div class="obsv-fig">

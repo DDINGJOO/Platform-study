@@ -114,7 +114,7 @@ READ COMMITTED 에서 달라진 것
 
 <h2>3. 교착이 나는 두 패턴: 잠금을 올리거나, 빈 틈을 잠그거나</h2>
 
-<p>① 은 <a href="#dl-01">1편</a>에서 자세히 다뤘으니 짧게 짚겠습니다. 중복 키 때문에 <code>INSERT IGNORE</code> 가 행을 넣지 못하면 InnoDB 는 그 인덱스 레코드에 공유(S) 잠금을 겁니다. 이어지는 <code>FOR UPDATE</code> 는 같은 행에 배타(X) 잠금을 원해요. 중복을 맞은 요청이 둘 이상이면 서로 상대의 S 때문에 X 를 못 받습니다. 4건 중 3건이 중복이니, 교착 감지가 한 명을 롤백시켜도 남은 둘이 다시 같은 모양이 되어 한 번 더 롤백됩니다. 그래서 라운드마다 2건이에요.</p>
+<p>① 은 <a href="https://dding-shark.tistory.com/674">1편</a>에서 자세히 다뤘으니 짧게 짚겠습니다. 중복 키 때문에 <code>INSERT IGNORE</code> 가 행을 넣지 못하면 InnoDB 는 그 인덱스 레코드에 공유(S) 잠금을 겁니다. 이어지는 <code>FOR UPDATE</code> 는 같은 행에 배타(X) 잠금을 원해요. 중복을 맞은 요청이 둘 이상이면 서로 상대의 S 때문에 X 를 못 받습니다. 4건 중 3건이 중복이니, 교착 감지가 한 명을 롤백시켜도 남은 둘이 다시 같은 모양이 되어 한 번 더 롤백됩니다. 그래서 라운드마다 2건이에요.</p>
 
 <p>READ COMMITTED 로 내려도 ① 은 똑같이 180건이었습니다. MySQL 문서는 READ COMMITTED 에서 갭 잠금을 끄지만 "외래 키 제약 검사와 중복 키 검사에는 쓴다"고 적어 두었어요. ① 의 S 잠금은 바로 그 중복 키 검사에서 나옵니다.</p>
 
@@ -192,7 +192,7 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
 
 <p>②, ③, ④ 는 교착이 0 이었지만 같은 수준이 아니었어요.</p>
 
-<p><b>② ODKU 무변경은 판정이 깨집니다.</b> 360건이 전부 <code>SAVED</code> 였어요. MySQL 문서상 ODKU 의 영향 행 수는 새로 넣으면 1, 바꾸면 2, 같은 값이라 안 바뀌면 0 입니다. 그런데 Connector/J 는 기본값(<code>useAffectedRows=false</code>)에서 접속할 때 <code>CLIENT_FOUND_ROWS</code> 를 켜고, 그러면 무변경도 1 이 됩니다(<a href="#dl-02">2편</a>). <code>useAffectedRows=true</code> 로 바꾼 ②' 는 90/90 이었지만, 이 옵션은 연결 전체의 UPDATE 반환값 의미를 바꿉니다. Connector/J 문서도 "JDBC 규약에 맞지 않고, found rows 에 기대는 대부분의 애플리케이션을 깨뜨린다"고 적어 두었어요. 판정 하나 때문에 켜기에는 영향 범위가 넓습니다.</p>
+<p><b>② ODKU 무변경은 판정이 깨집니다.</b> 360건이 전부 <code>SAVED</code> 였어요. MySQL 문서상 ODKU 의 영향 행 수는 새로 넣으면 1, 바꾸면 2, 같은 값이라 안 바뀌면 0 입니다. 그런데 Connector/J 는 기본값(<code>useAffectedRows=false</code>)에서 접속할 때 <code>CLIENT_FOUND_ROWS</code> 를 켜고, 그러면 무변경도 1 이 됩니다(<a href="https://dding-shark.tistory.com/675">2편</a>). <code>useAffectedRows=true</code> 로 바꾼 ②' 는 90/90 이었지만, 이 옵션은 연결 전체의 UPDATE 반환값 의미를 바꿉니다. Connector/J 문서도 "JDBC 규약에 맞지 않고, found rows 에 기대는 대부분의 애플리케이션을 깨뜨린다"고 적어 두었어요. 판정 하나 때문에 켜기에는 영향 범위가 넓습니다.</p>
 
 <p><b>③ 은 가장 짧고 정확합니다.</b> 중복을 맞으면 S 잠금을 받지만 바로 롤백해서 놓기 때문에 그 잠금을 쥔 채 다른 잠금을 기다릴 일이 없어요. 대신 중복일 때마다 INSERT 를 시도하고 롤백합니다. 이미 있는 키로 들어오는 요청이 대부분인 경로라면(재방문, 재전송) 매번 1062 와 롤백을 치르는 셈이에요.</p>
 
@@ -262,7 +262,7 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
 
 <h2>5. 재시도는 트랜잭션 바깥에</h2>
 
-<p>MySQL 문서의 교착 대응 목록에는 "교착으로 실패하면 트랜잭션을 다시 낼 준비를 항상 해 두라"는 항목이 있습니다. 핵심은 <b>무엇을</b> 다시 내느냐예요. 1213 은 문장이 아니라 트랜잭션 전체를 롤백합니다(<a href="#dl-05">5편</a>). 그러니 재시도도 트랜잭션 전체를 처음부터 다시 해야 합니다. 메서드 안에서 실패한 문장만 다시 돌리면 앞 문장의 결과는 이미 사라진 채 남은 문장만 실행됩니다.</p>
+<p>MySQL 문서의 교착 대응 목록에는 "교착으로 실패하면 트랜잭션을 다시 낼 준비를 항상 해 두라"는 항목이 있습니다. 핵심은 <b>무엇을</b> 다시 내느냐예요. 1213 은 문장이 아니라 트랜잭션 전체를 롤백합니다(<a href="https://dding-shark.tistory.com/678">5편</a>). 그러니 재시도도 트랜잭션 전체를 처음부터 다시 해야 합니다. 메서드 안에서 실패한 문장만 다시 돌리면 앞 문장의 결과는 이미 사라진 채 남은 문장만 실행됩니다.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -335,7 +335,7 @@ public String failOnce(String key) { ... }
 
 <div class="obsv-callout">
   <div class="obsv-ct">⚠️ 주의: 재시도 조건은 공통 부모 예외로</div>
-  이 실습(Spring Framework 7.0.9, <code>JdbcTemplate</code>)에서 교착 실패는 <code>CannotAcquireLockException</code> 으로 올라왔습니다. 클래스패스 루트에 <code>sql-error-codes.xml</code> 을 두지 않으면 <code>SQLExceptionSubclassTranslator</code> 가 쓰이고, 이 번역기는 SQLSTATE 40001 을 <code>CannotAcquireLockException</code> 으로 바꾸기 때문이에요. 루트에 그 파일을 두면 deprecated 인 <code>DeadlockLoserDataAccessException</code> 이 오고, <code>EntityManager</code> 를 직접 쓰는 빈에서는 Spring 예외가 아닌 JPA 예외가 옵니다(<a href="#dl-05">5편</a> 실측). 그래서 재시도 조건은 두 Spring 예외의 공통 부모인 <code>PessimisticLockingFailureException</code> 으로 거는 편이 안전합니다.
+  이 실습(Spring Framework 7.0.9, <code>JdbcTemplate</code>)에서 교착 실패는 <code>CannotAcquireLockException</code> 으로 올라왔습니다. 클래스패스 루트에 <code>sql-error-codes.xml</code> 을 두지 않으면 <code>SQLExceptionSubclassTranslator</code> 가 쓰이고, 이 번역기는 SQLSTATE 40001 을 <code>CannotAcquireLockException</code> 으로 바꾸기 때문이에요. 루트에 그 파일을 두면 deprecated 인 <code>DeadlockLoserDataAccessException</code> 이 오고, <code>EntityManager</code> 를 직접 쓰는 빈에서는 Spring 예외가 아닌 JPA 예외가 옵니다(<a href="https://dding-shark.tistory.com/678">5편</a> 실측). 그래서 재시도 조건은 두 Spring 예외의 공통 부모인 <code>PessimisticLockingFailureException</code> 으로 거는 편이 안전합니다.
 </div>
 
 <div class="obsv-term">
@@ -364,7 +364,7 @@ public String failOnce(String key) { ... }
   &bull; 중복이 흔한 경로(재전송, 재방문)는 ④: 잠금 없는 조회 → 없으면 INSERT → 1062 면 롤백 후 새 트랜잭션에서 다시 읽어 같은 값인지 확인. 드문 경로는 ③ 으로 충분합니다<br>
   &bull; 저장/중복 판정에 ODKU 반환값을 쓰고 있다면 <code>useAffectedRows</code> 설정부터 확인하세요. 기본값에서는 무변경 중복도 1 입니다<br>
   &bull; 재시도는 트랜잭션 바깥에, <code>PessimisticLockingFailureException</code> 만, 지터를 넣어서. <code>@Retryable</code> 과 <code>@Transactional</code> 을 같은 메서드에 붙이면 Spring 7 에서는 재시도가 바깥입니다. 다만 프록시를 거치는 호출이어야 합니다<br>
-  &bull; 이 부모 예외는 1205(잠금 대기 시간 초과)도 잡습니다. 1205 를 덜 재시도하려면 원인 예외의 errorCode 로 거르는 <code>predicate</code> 를 쓰세요(<a href="#dl-05">5편</a>). <code>EntityManager</code> 를 직접 쓰는 경로라면 <code>jakarta.persistence.PessimisticLockException</code>, <code>LockTimeoutException</code> 은 이 부모의 자식이 아니니 따로 넣어야 합니다<br>
+  &bull; 이 부모 예외는 1205(잠금 대기 시간 초과)도 잡습니다. 1205 를 덜 재시도하려면 원인 예외의 errorCode 로 거르는 <code>predicate</code> 를 쓰세요(<a href="https://dding-shark.tistory.com/678">5편</a>). <code>EntityManager</code> 를 직접 쓰는 경로라면 <code>jakarta.persistence.PessimisticLockException</code>, <code>LockTimeoutException</code> 은 이 부모의 자식이 아니니 따로 넣어야 합니다<br>
   &bull; 교착을 공통 예외 핸들러가 4xx 로 바꾸고 있지 않은지 보세요. 클라이언트가 재시도하지 않는 이유가 됩니다<br>
   &bull; 시험은 "같은 키 N건 동시"로 쓰세요. 한 번씩 부르는 테스트로는 다섯 패턴이 모두 통과합니다
 </div>
