@@ -1,0 +1,19 @@
+# 실습용 MySQL 하나. 데이터는 전부 가짜이고, 내리면(down -v) 같이 사라진다.
+name: dl06
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: labroot
+      MYSQL_DATABASE: lab
+      MYSQL_USER: lab
+      MYSQL_PASSWORD: lab
+    ports:
+      - "127.0.0.1:39060:3306"
+    # 잠금 대기가 길어지면 실험이 멈춘 것처럼 보이므로 10초로 줄인다(기본 50초). 정상 대기는 1초 안쪽이다.
+    command: ["--innodb-lock-wait-timeout=10"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ulab", "-plab"]
+      interval: 2s
+      timeout: 3s
+      retries: 60

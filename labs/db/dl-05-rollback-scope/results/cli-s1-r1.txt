@@ -1,0 +1,54 @@
+### s1 server=mysql  rollback_on_timeout=0
+--- session B ---
+--------------
+SET SESSION innodb_lock_wait_timeout = 2
+--------------
+
+Query OK, 0 rows affected
+
+--------------
+BEGIN
+--------------
+
+Query OK, 0 rows affected
+
+--------------
+INSERT INTO note(who) VALUES ('B-before')
+--------------
+
+Query OK, 1 row affected
+
+--------------
+UPDATE item SET v = v + 1 WHERE id = 1
+--------------
+
+ERROR 1205 (HY000) at line 4: Lock wait timeout exceeded; try restarting transaction
+--------------
+SELECT COUNT(*) AS open_trx, IFNULL(MAX(trx_rows_modified),0) AS rows_modified FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID()
+--------------
+
++----------+---------------+
+| open_trx | rows_modified |
++----------+---------------+
+|        1 |             1 |
++----------+---------------+
+1 row in set
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected
+
+--------------
+SELECT who FROM note ORDER BY id
+--------------
+
++----------+
+| who      |
++----------+
+| B-before |
++----------+
+1 row in set
+
+Bye

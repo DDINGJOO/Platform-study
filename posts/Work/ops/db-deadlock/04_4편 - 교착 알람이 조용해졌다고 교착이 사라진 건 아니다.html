@@ -1,0 +1,368 @@
+<!-- ============================================================
+  MySQL 교착 4편: 교착 알람이 조용해졌다고 교착이 사라진 건 아니다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: lock_deadlocks, INNODB_METRICS, innodb_print_all_deadlocks, 교착 알람, 알람 설계 -->
+<!-- lead: 교착을 고친 뒤 알람이 멈췄는데 교착은 시간당 0.3건 남아 있었어요. MySQL 8.4 에서 교착을 세는 네 자리를 실측하고, "연속 N구간" 알람이 단발 교착을 숨기는 이유와 대안 규칙을 시뮬레이션으로 비교했어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔒 MySQL 교착 · 4편</div>
+  1편. INSERT IGNORE 다음 SELECT … FOR UPDATE가 교착을 만드는 이유<br>
+  2편. ON DUPLICATE KEY UPDATE 반환값으로 중복을 판정하면 안 된다<br>
+  3편. LATEST DETECTED DEADLOCK 읽는 법과 data_locks로 원인을 확정하는 순서<br>
+  <b>4편. 교착 알람이 조용해졌다고 교착이 사라진 건 아니다</b> &larr; 지금 이 글<br>
+  5편. 교착(1213)과 lock wait timeout(1205)은 롤백 범위가 다르다<br>
+  6편. 같은 요청이 동시에 두 번 올 때 없으면 넣기를 교착 없이 짜는 다섯 가지 방법<br>
+  7편. 동시성 테스트가 통과한 게 아니라 실행되지 않았을 때
+</div>
+
+<p>교착을 고치는 첫 수정을 배포하고 나서 알람이 멈췄습니다. 그런데 교착 수를 직접 세어 보니 숫자는 계속 오르고 있었어요. 시간당 약 8건이던 것이 약 0.3건으로 줄었을 뿐, 0이 된 게 아니었어요. 남은 교착은 같은 패턴이 다른 테이블에서 나는 것이었습니다(INSERT IGNORE 다음 그 행을 UPDATE 하는데, 두 행을 서로 반대 순서로 잠그는 경우).</p>
+
+<p>알람 규칙이 틀렸던 것도 아니에요. 그 규칙은 <b>짧은 구간에 교착이 있는 상태가 여러 구간 연속일 때만</b> 울렸고, 그 조건은 시간당 0.3건으로는 거의 채워지지 않습니다. 이 글은 두 질문에 답합니다. MySQL 8.4 에서 교착은 무엇으로 세는가, 그리고 그 숫자에 어떤 알람을 걸어야 "줄었지만 남아 있다"가 보이는가예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 8.4 에 <code>Innodb_deadlocks</code> 같은 상태 변수가 있나? 없으면 무엇을 보나?<br>
+  &bull; <code>innodb_print_all_deadlocks=ON</code> 만 켜면 에러 로그에 교착이 남나?<br>
+  &bull; 교착 감지를 끄면 카운터는 어떻게 되나?<br>
+  &bull; "연속 N구간" 규칙(예: 5분 × 3)은 시간당 몇 건부터 울리나? 대안 규칙은?<br>
+  &bull; 매뉴얼은 교착을 "다시 시도하면 되는 일"이라고 하는데, 얼마나 잦아야 문제인가?
+</div>
+
+<h2>1. 교착을 세는 네 자리, 8.4 에서 실측</h2>
+
+<p>교착 숫자를 얻을 수 있는 곳은 네 군데입니다. 서버 카운터(INNODB_METRICS), 상태 변수(SHOW GLOBAL STATUS), 에러 로그, 그리고 애플리케이션이 받은 1213 예외 수예요. 공식 이미지 <code>mysql:8.4</code>(실행 시 8.4.11)에 두 세션이 행 1, 2 를 서로 반대 순서로 잠그는 교착을 한 번씩 내면서 네 자리를 같이 찍었습니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: INNODB_METRICS</div>
+  InnoDB 내부 카운터 수백 개를 행으로 보여 주는 INFORMATION_SCHEMA 테이블이에요. 교착 수는 <code>NAME='lock_deadlocks'</code> 행의 <code>COUNT</code> 입니다. 조회하려면 PROCESS 권한이 필요해요.
+</div>
+
+<p>매뉴얼의 교착 예제도 이 행으로 교착 수를 보여 줍니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-example.html">An InnoDB Deadlock Example</a>). 카운터 목록 문서에는 <code>lock_deadlocks</code> 가 <code>enabled</code> 상태로 나오고(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-information-schema-metrics-table.html">InnoDB INFORMATION_SCHEMA Metrics Table</a>), 실습에서도 따로 켜지 않았는데 <code>STATUS = enabled</code> 였어요. 새 컨테이너에서 교착을 한 번 내고 찍은 화면입니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-04/probe.png" alt="새 컨테이너에서 deadlock_once.sh 로 교착 1건을 낸 뒤 probe.sh 를 실행한 화면. MySQL 8.4.11, lock_deadlocks 는 counter, enabled, COUNT 1. SHOW GLOBAL STATUS LIKE '%dead%' 는 빈 결과, performance_schema.global_status 의 dead 변수 0개, Innodb_row_lock_waits 2, innodb_print_all_deadlocks 기본값 0, log_error 는 stderr" style="max-width:100%">
+</div>
+<div class="obsv-figcap">그림 1. 8.4 의 교착 수는 INNODB_METRICS 한 곳에 있다. 상태 변수에는 이름에 dead 가 들어간 것이 없다</div>
+
+<p>→ <code>SHOW GLOBAL STATUS LIKE '%dead%'</code> 는 빈 결과였고, <code>performance_schema.global_status</code> 에서 이름에 <code>dead</code> 가 들어간 변수를 세어도 0개였어요. 8.4 서버 상태 변수 문서에도 deadlock 이라는 단어가 한 번도 나오지 않습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/server-status-variables.html">Server Status Variables</a>). 상태 변수만 긁는 모니터링을 쓰고 있다면 교착은 처음부터 보이지 않는 숫자예요. 비슷해 보이는 <code>Innodb_row_lock_waits</code> 는 교착 1건에 2가 올랐습니다. 두 세션이 모두 한 번씩 기다렸기 때문이에요. 대기 수는 교착 수가 아닙니다.</p>
+
+<h3>네 자리를 한 건씩 대조하면</h3>
+
+<p>같은 교착을 설정을 바꿔 가며 한 건씩 냈어요. 표의 숫자는 각 단계 전후의 누적값입니다(<code>results/steps.txt</code>). 새 컨테이너에서 한 번 더 돌린 <code>results/steps-r2.txt</code> 도 출발값만 0이고 늘어난 양은 같았어요.</p>
+
+<div class="obsv-code">단계                                         lock_deadlocks  lock_timeouts  에러 로그 머리말  에러 로그 본문        클라이언트 오류
+기본값(print_all_deadlocks=OFF)                  1 → 2             0              0               없음                 1213 한 번
+print_all_deadlocks=ON, log_error_verbosity=2    2 → 3             0              0               있음 (시각·제목 없이)  1213 한 번
+print_all_deadlocks=ON, log_error_verbosity=3    3 → 4             0              1               있음                 1213 한 번
+innodb_deadlock_detect=OFF, lock_wait_timeout=3  4 → 4             0 → 2          0               없음                 1205 두 번 (3.9초 뒤)
+
+머리말 = [Note] [MY-012468] ... Transactions deadlock detected 줄 수
+본문   = 줄 머리가 TRANSACTION, RECORD LOCKS 인 트랜잭션·잠금 덤프 (results/errlog-count.txt)</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: log_error_verbosity</div>
+  에러 로그에 어느 등급까지 남길지 정하는 서버 변수예요. 1 은 ERROR, 2 는 ERROR 와 WARNING, 3 은 INFORMATION(로그에 <code>[Note]</code> 로 찍히는 것)까지 남깁니다. 8.4 기본값은 2 예요.
+</div>
+
+<p>두 번째 줄이 이 실습에서 가장 의외였어요. <code>innodb_print_all_deadlocks</code> 를 켰는데 에러 로그가 반쪽만 남았습니다. 트랜잭션 두 개의 덤프(<code>TRANSACTION 1818, ACTIVE 1 sec</code>, 실행 중이던 <code>UPDATE</code>, <code>RECORD LOCKS ... index PRIMARY of table `lab`.`t` ... lock_mode X locks rec but not gap waiting</code>)는 찍혔는데, 그 앞에 와야 할 <code>[Note] [MY-012468] [InnoDB] Transactions deadlock detected, dumping detailed information.</code> 머리말, <code>*** (1) TRANSACTION:</code> 같은 소제목, 그리고 <code>*** WE ROLL BACK TRANSACTION (2)</code> 줄이 없었어요. 본문 줄에는 시각도 붙어 있지 않았습니다.</p>
+
+<p>이유는 소스에 있어요. MySQL 8.4 의 <code>storage/innobase/lock/lock0lock.cc</code> 에서 교착을 출력하는 <code>Deadlock_notifier</code> 는 두 경로로 씁니다. 머리말은 <code>start_print()</code> 의 <code>ib::info(ER_IB_MSG_643) &lt;&lt; "Transactions deadlock detected, dumping" ...</code>, 소제목과 희생자 줄은 <code>print(const char *msg)</code> 의 <code>ib::info(ER_IB_MSG_644) &lt;&lt; msg</code> 로 나가요. 반면 트랜잭션과 잠금 본문은 <code>if (srv_print_all_deadlocks) { trx_print_low(stderr, ...); }</code>, <code>lock_rec_print(stderr, lock);</code> 처럼 stderr 에 바로 씁니다(<a href="https://github.com/mysql/mysql-server/blob/8.4/storage/innobase/lock/lock0lock.cc">lock0lock.cc, 8.4 브랜치</a>). <code>ib::info</code> 는 INFORMATION 등급이라 기본값 <code>log_error_verbosity=2</code>(ERROR, WARNING 만 남김)의 필터에 걸리고, stderr 직접 출력은 그 필터를 거치지 않아요(<a href="https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_log_error_verbosity">log_error_verbosity</a>). 같은 문서는 <code>log_filter_internal</code> 컴포넌트를 끄면 <code>log_error_verbosity</code> 가 아무 효과가 없다고도 적습니다. 공식 이미지는 <code>log_error</code> 가 <code>stderr</code> 라 둘이 같은 <code>docker logs</code> 에 섞였어요.</p>
+
+<p>그래서 기본값에서 로그를 머리말(<code>MY-012468</code>)로 세면 0건이고, 본문은 남아도 언제 났는지와 어느 쪽이 롤백됐는지는 로그만으로 알 수 없습니다. 어느 테이블, 어느 인덱스, 어떤 잠금 모드였는지는 본문에 있어요. <code>innodb_print_all_deadlocks</code> 설명은 "에러 로그에 기록한다"고만 적고 이 차이는 말하지 않습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_print_all_deadlocks">innodb_print_all_deadlocks</a>). 로그로 교착을 세거나 시각과 희생자까지 남기려면 <code>log_error_verbosity=3</code> 을 같이 켜고, 교착 한 건을 내서 머리말까지 찍히는지 확인하세요. 13분 시계열(verbosity 3)에서는 교착 27건에 머리말 27개와 <code>WE ROLL BACK</code> 27줄이 남았습니다.</p>
+
+<p>마지막 줄은 반대 방향의 함정입니다. 교착 감지를 끄면 같은 교착이 교착으로 세어지지 않아요. 두 세션이 서로를 기다리다 둘 다 <code>innodb_lock_wait_timeout</code>(실습은 3초)을 넘겨 1205 를 받았고, <code>lock_deadlocks</code> 는 그대로, <code>lock_timeouts</code> 가 2 올랐습니다. 매뉴얼도 감지를 끄면 교착을 타임아웃으로 푼다고 적어요(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-detection.html">Deadlock Detection</a>). 고동시성 때문에 감지를 끈 서버라면 교착 대시보드가 0인 것은 아무 뜻이 없고, 봐야 할 숫자는 <code>lock_timeouts</code> 예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">교착 한 건이 네 자리에 남는 방식 (MySQL 8.4 실측)</text>
+  <path d="M26 54 C 110 51, 250 56, 336 53 C 339 100, 337 150, 338 196 C 250 199, 110 195, 28 197 C 25 150, 27 100, 26 54 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M362 54 C 450 51, 590 56, 674 53 C 677 100, 675 150, 676 196 C 590 199, 450 195, 364 197 C 361 150, 363 100, 362 54 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26 222 C 110 219, 250 224, 336 221 C 339 268, 337 318, 338 364 C 250 367, 110 363, 28 365 C 25 318, 27 268, 26 222 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M362 222 C 450 219, 590 224, 674 221 C 677 268, 675 318, 676 364 C 590 367, 450 363, 364 365 C 361 318, 363 268, 362 222 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="182" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2e6b41">📈 INNODB_METRICS</text>
+  <text x="182" y="108" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">lock_deadlocks COUNT</text>
+  <text x="182" y="136" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">교착 1건에 1, 기본으로 켜져 있다</text>
+  <text x="182" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">감지를 끄면 안 오른다</text>
+  <text x="182" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">재시작하면 0부터</text>
+  <text x="518" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f">🚫 SHOW GLOBAL STATUS</text>
+  <text x="518" y="108" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">LIKE '%dead%'</text>
+  <text x="518" y="136" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">8.4 에는 0행</text>
+  <text x="518" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">Innodb_row_lock_waits 는 대기 수</text>
+  <text x="518" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">교착 1건에 2가 올랐다</text>
+  <text x="182" y="252" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#c07f18">📜 에러 로그</text>
+  <text x="182" y="276" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">print_all_deadlocks=ON 일 때</text>
+  <text x="182" y="304" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">verbosity 2: 잠금 본문만, 시각·희생자 없음</text>
+  <text x="182" y="328" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">verbosity 3: 머리말·희생자까지</text>
+  <text x="182" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">어느 테이블·인덱스인지가 남는다</text>
+  <text x="518" y="252" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#4a7fb5">☕ 앱 예외</text>
+  <text x="518" y="276" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">ERROR 1213 (40001)</text>
+  <text x="518" y="304" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">희생자 한쪽만 받는다</text>
+  <text x="518" y="328" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">재시도 전 수와 후 수를 나눠 센다</text>
+  <text x="518" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">사용자 영향은 여기서만 보인다</text>
+  <text x="350" y="392" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 빈도는 카운터로, 원인은 로그로, 영향은 앱에서 센다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 같은 교착 한 건이라도 어디서 세느냐에 따라 0, 1, 2 가 된다</div>
+
+<h2>2. 카운터는 누적이다: 값이 아니라 증가량에 건다</h2>
+
+<p><code>lock_deadlocks</code> 는 서버가 뜬 뒤로 쌓인 수예요. "COUNT 가 100 이상이면 알람" 같은 규칙은 서버가 오래 떠 있을수록 언젠가 반드시 켜지고, 한 번 켜지면 꺼지지 않습니다. 알람은 <b>정해진 창 안에서 얼마나 늘었나</b>에 걸어야 해요. 이때 조심할 것이 둘 있습니다.</p>
+
+<p>첫째, 재시작하면 0부터 다시 셉니다. 실습에서 컨테이너를 재시작하자 <code>lock_deadlocks</code> 가 31 에서 0 으로 돌아갔어요. <code>SET GLOBAL</code> 로 켠 <code>innodb_print_all_deadlocks</code> 와 <code>log_error_verbosity</code> 도 0 과 2 로 돌아가 있었습니다. 그래서 "지금 값 − 창 시작 값"을 직접 계산하면 재시작한 창에서 음수가 나옵니다. Prometheus 의 <code>increase()</code>, <code>rate()</code> 는 카운터 리셋을 자동으로 보정하고, 창 끝까지 외삽하기 때문에 정수 카운터에서도 소수가 나올 수 있다고 문서에 적혀 있어요(<a href="https://prometheus.io/docs/prometheus/latest/querying/functions/">Prometheus query functions</a>). 직접 계산한다면 값이 줄어든 표본은 "그 표본 값만큼 늘었다"로 처리합니다. 실습의 <code>rules.py</code> 가 그렇게 해요.</p>
+
+<p>둘째, <code>innodb_monitor_reset</code> 으로는 COUNT 를 0으로 만들 수 없습니다. <code>SET GLOBAL innodb_monitor_reset='lock_deadlocks'</code> 를 실행하자 <code>COUNT_RESET</code> 만 4에서 0이 되고 <code>COUNT</code> 는 4 그대로였어요. 매뉴얼도 <code>_RESET</code> 열은 스톱워치의 랩 카운터로, COUNT 등은 켠 뒤 누적값으로 설명합니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-metrics-table.html">INNODB_METRICS Table</a>). 수집기가 <code>COUNT_RESET</code> 을 읽는다면 누군가 리셋하는 순간 리셋처럼 보이고, <code>COUNT</code> 를 읽는다면 리셋 명령은 수집에 영향이 없어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: mysqld_exporter</div>
+  MySQL 지표를 Prometheus 형식으로 내보내는 공식 익스포터예요. 소스(<code>collector/info_schema_innodb_metrics.go</code>)를 보면 INNODB_METRICS 의 <code>COUNT</code> 를 읽어 <code>mysql_info_schema_innodb_metrics_&lt;subsystem&gt;_&lt;name&gt;_total</code> 로 내보냅니다. 교착은 <code>mysql_info_schema_innodb_metrics_lock_lock_deadlocks_total</code> 이에요.
+</div>
+
+<p>여기에 함정이 하나 더 있어요. 그 수집기(<code>--collect.info_schema.innodb_metrics</code>)는 README 의 수집기 표에서 "Enabled by default" 표시가 없습니다(2026년 10월 main 브랜치 README, 최신 릴리스 v0.20.0). 기본으로 켜진 <code>collect.global_status</code> 는 SHOW GLOBAL STATUS 를 긁는데, 1절에서 본 대로 거기에는 교착이 없어요. 익스포터를 기본 설정으로 붙였다면 교착 지표가 아예 없을 수 있으니, 지표 이름으로 한 번 검색해 보세요. 이 부분은 문서와 소스로만 확인했고 실습에서 익스포터를 띄우지는 않았습니다.</p>
+
+<h2>3. "연속 N구간" 규칙이 단발 교착을 숨기는 이유</h2>
+
+<p>문제의 규칙은 일반형으로 "짧은 구간마다 교착 증가량을 보고, 교착이 있는 구간이 N번 연속이면 알람"입니다. 잠깐 튄 것에 깨우지 않으려고 흔히 붙이는 조건이에요. 구간 길이와 N 은 환경마다 다르니, 예를 들어 5분 × 3 으로 놓고 계산하면 결과가 분명해집니다. 이 글의 R1 과 시뮬레이션도 이 예시 값을 씁니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 포아송 도착 (Poisson arrival)</div>
+  사건이 서로 영향 없이 평균 비율 λ 로 무작위하게 일어난다고 보는 모형이에요. 길이 t 인 구간에 한 건도 없을 확률이 e^(−λt) 라서, 구간에 1건 이상일 확률을 바로 계산할 수 있습니다. 실제 교착은 트래픽을 따라 몰리기도 하니, 아래 숫자는 정확한 예측이 아니라 규모를 가늠하는 용도로 읽어 주세요.
+</div>
+
+<div class="obsv-code">교착이 서로 무관하게(포아송) 난다고 하면 5분 구간에 1건 이상일 확률 p = 1 − e^(−λ·5분)
+시간당 8건   : p = 1 − e^(−0.667) = 48.7%   → 3구간 연속 ≈ p³ = 11.5%   (5분마다 평가하니 자주 울린다)
+시간당 0.3건 : p = 1 − e^(−0.025) =  2.5%   → 3구간 연속 ≈ p³ = 0.0015% (한 달 8,640구간에 약 0.13번)</div>
+
+<p>시간당 0.3건은 하루 7건, 한 달 200건 남짓이에요. 그런데 이 건들은 서로 떨어져서 나기 때문에 한 구간을 채우고 나면 다음 두 구간은 대개 비어 있습니다. <span class="obsv-mark">연속 조건은 "교착이 얼마나 많나"가 아니라 "교착이 얼마나 붙어서 나나"를 묻는 규칙이에요.</span> 그래서 고친 뒤 남은 교착처럼 띄엄띄엄 나는 교착은 이 규칙에 설계상 보이지 않습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">예: 5분 구간에 1건 이상인 구간이 3번 연속이면 알람 (1시간)</text>
+  <text x="30" y="70" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">수정 전, 시간당 8건</text>
+  <path d="M80 82 C 95 81, 110 83, 124 82 C 125 95, 124 108, 125 120 C 110 121, 95 119, 81 120 C 80 108, 81 95, 80 82 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <path d="M128 82 C 143 81, 158 83, 172 82 C 173 95, 172 108, 173 120 C 158 121, 143 119, 129 120 C 128 108, 129 95, 128 82 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M176 82 C 191 81, 206 83, 220 82 C 221 95, 220 108, 221 120 C 206 121, 191 119, 177 120 C 176 108, 177 95, 176 82 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <path d="M224 82 C 239 81, 254 83, 268 82 C 269 95, 268 108, 269 120 C 254 121, 239 119, 225 120 C 224 108, 225 95, 224 82 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <path d="M272 82 C 287 81, 302 83, 316 82 C 317 95, 316 108, 317 120 C 302 121, 287 119, 273 120 C 272 108, 273 95, 272 82 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <path d="M320 82 C 335 81, 350 83, 364 82 C 365 95, 364 108, 365 120 C 350 121, 335 119, 321 120 C 320 108, 321 95, 320 82 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M368 82 C 383 81, 398 83, 412 82 C 413 95, 412 108, 413 120 C 398 121, 383 119, 369 120 C 368 108, 369 95, 368 82 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <path d="M416 82 C 431 81, 446 83, 460 82 C 461 95, 460 108, 461 120 C 446 121, 431 119, 417 120 C 416 108, 417 95, 416 82 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M464 82 C 479 81, 494 83, 508 82 C 509 95, 508 108, 509 120 C 494 121, 479 119, 465 120 C 464 108, 465 95, 464 82 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M512 82 C 527 81, 542 83, 556 82 C 557 95, 556 108, 557 120 C 542 121, 527 119, 513 120 C 512 108, 513 95, 512 82 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <path d="M560 82 C 575 81, 590 83, 604 82 C 605 95, 604 108, 605 120 C 590 121, 575 119, 561 120 C 560 108, 561 95, 560 82 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+  <path d="M608 82 C 623 81, 638 83, 652 82 C 653 95, 652 108, 653 120 C 638 121, 623 119, 609 120 C 608 108, 609 95, 608 82 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <text x="102" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1</text>
+  <text x="150" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#8a8272">0</text>
+  <text x="198" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">2</text>
+  <text x="246" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1</text>
+  <text x="294" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1</text>
+  <text x="342" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#8a8272">0</text>
+  <text x="390" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1</text>
+  <text x="438" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#8a8272">0</text>
+  <text x="486" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#8a8272">0</text>
+  <text x="534" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1</text>
+  <text x="582" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1</text>
+  <text x="630" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#8a8272">0</text>
+  <path d="M180 134 C 220 138, 260 138, 312 134" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="246" y="158" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">3연속 🔔 알람</text>
+  <text x="560" y="158" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">2연속에서 끊김</text>
+  <text x="30" y="208" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">수정 후, 시간당 0.3건</text>
+  <path d="M80 220 C 95 219, 110 221, 124 220 C 125 233, 124 246, 125 258 C 110 259, 95 257, 81 258 C 80 246, 81 233, 80 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M128 220 C 143 219, 158 221, 172 220 C 173 233, 172 246, 173 258 C 158 259, 143 257, 129 258 C 128 246, 129 233, 128 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M176 220 C 191 219, 206 221, 220 220 C 221 233, 220 246, 221 258 C 206 259, 191 257, 177 258 C 176 246, 177 233, 176 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M224 220 C 239 219, 254 221, 268 220 C 269 233, 268 246, 269 258 C 254 259, 239 257, 225 258 C 224 246, 225 233, 224 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M272 220 C 287 219, 302 221, 316 220 C 317 233, 316 246, 317 258 C 302 259, 287 257, 273 258 C 272 246, 273 233, 272 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M320 220 C 335 219, 350 221, 364 220 C 365 233, 364 246, 365 258 C 350 259, 335 257, 321 258 C 320 246, 321 233, 320 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M368 220 C 383 219, 398 221, 412 220 C 413 233, 412 246, 413 258 C 398 259, 383 257, 369 258 C 368 246, 369 233, 368 220 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+  <path d="M416 220 C 431 219, 446 221, 460 220 C 461 233, 460 246, 461 258 C 446 259, 431 257, 417 258 C 416 246, 417 233, 416 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M464 220 C 479 219, 494 221, 508 220 C 509 233, 508 246, 509 258 C 494 259, 479 257, 465 258 C 464 246, 465 233, 464 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M512 220 C 527 219, 542 221, 556 220 C 557 233, 556 246, 557 258 C 542 259, 527 257, 513 258 C 512 246, 513 233, 512 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M560 220 C 575 219, 590 221, 604 220 C 605 233, 604 246, 605 258 C 590 259, 575 257, 561 258 C 560 246, 561 233, 560 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <path d="M608 220 C 623 219, 638 221, 652 220 C 653 233, 652 246, 653 258 C 638 259, 623 257, 609 258 C 608 246, 609 233, 608 220 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6"/>
+  <text x="390" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1</text>
+  <text x="390" y="284" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">1연속, 다음 구간에서 0으로</text>
+  <text x="560" y="284" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">알람 없음, 하루 7건은 그대로</text>
+  <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 띄엄띄엄 나는 교착 한 건은 혼자서 3구간을 채울 수 없다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 연속 조건은 양이 아니라 붙어 있음을 본다. 위는 8건을 예로 든 배치다</div>
+
+<h3>실제 MySQL 에서 13분 동안 돌려 본 결과</h3>
+
+<p>계산만으로는 의심이 남아서, 실제 카운터에 같은 규칙을 걸었어요. 13분 동안 1초마다 <code>lock_deadlocks</code> 를 읽으면서, 시간 축을 1초 = 1분으로 줄였습니다(13분 실행이 13시간 분량). 앞 180초('3시간')는 시간당 8건 꼴로 도착 간격을 무작위로(seed 고정), 뒤 600초('10시간')는 200초마다 1건씩 교착을 냈어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-04/timeline-rules.png" alt="scripts/eval_timeline.py 실행 화면. 781개 표본, lock_deadlocks 증가 27(구간 A 24, 구간 B 3), 앱 1213 예외 27. R1 은 A 에서 1번, B 에서 0번이고 B 평가 120번 중 0번 켜짐. R2 는 A 2번, B 0번. R3 는 A 1번, B 0번, B 평가 120번 중 62번 켜짐. R4 는 A 1번, B 평가 10번 모두 켜짐" style="max-width:100%">
+</div>
+<div class="obsv-figcap">그림 4. 같은 카운터에 같은 규칙. 앞 구간에선 울리고 뒤 구간에선 교착이 있어도 조용하다</div>
+
+<p>→ 13분 동안 교착이 27건 났고(앞 24, 뒤 3), 세 자리가 정확히 맞았어요. <code>lock_deadlocks</code> 증가 27, 클라이언트가 받은 1213 27, 에러 로그의 교착 머리말 27(이때는 <code>log_error_verbosity=3</code>)입니다. 교착 감지가 켜져 있고 희생자가 한 명인 교착에서는 어느 자리로 세어도 같은 숫자가 나와요.</p>
+
+<p>규칙은 갈렸습니다. R1(5분 × 3 연속)은 앞 '3시간' 동안 24건에 한 번 울렸고, 뒤 '10시간'에는 평가 120번 중 한 번도 켜지지 않았어요. 뒤 구간에도 교착은 3건 있었습니다. 표의 R2~R4 는 다음 절에서 설명할 대안 규칙이에요. 6시간 창의 R3 가 뒤 구간 평가 120번 중 62번 켜져 있었던 건 창이 앞 구간의 교착을 아직 담고 있었기 때문이고, 그 창이 지나간 뒤로는 다시 켜지지 않았습니다. 24시간 창의 R4 만 뒤 구간 내내(10번 평가 모두) 켜져 있었어요.</p>
+
+<h2>4. 비율별로 돌려 보면: 알람 수 대 실제 교착 수</h2>
+
+<p>규칙 하나만으로는 설계를 고를 수 없어서 대안 규칙 셋을 같이 시뮬레이션했어요. MySQL 없이 1분 해상도 카운터 시계열을 포아송 도착으로 만들고(seed 20개 평균), 같은 <code>rules.py</code> 로 평가합니다. 알람 수는 꺼진 상태에서 켜진 상태로 바뀐 횟수로 세었어요. 켜진 채 이어지는 동안은 한 번입니다.</p>
+
+<div class="obsv-code">규칙
+R1 연속형  5분 창 증가 &gt;= 1 인 구간이 3번 연속          (5분마다 평가)
+R2 버스트  5분 창 증가 &gt;= 3                           (1분마다)
+R3 지속    6시간 창 증가 &gt;= 6, 즉 시간당 1건 이상이 지속  (5분마다)
+R4 존재    24시간 창 증가 &gt;= 1                         (1시간마다, 티켓용)
+
+7일 고정 비율. 칸 = 알람 수 (알람이 켜져 있던 시간 비율)
+건/시간  7일 교착 수   R1            R2            R3            R4
+0.1         16.4      0.0 (0%)      0.0 (0%)      0.0 (0%)      2.4 (88%)
+0.3         50.9      0.1 (0%)      0.0 (0%)      1.4 (1%)      1.0 (98%)
+1          172.9      0.9 (0%)      0.6 (0%)     23.8 (58%)     1.0 (99%)
+2          340.9      6.0 (0%)      3.8 (0%)      4.0 (96%)     1.0 (99%)
+4          669.0     32.5 (2%)     21.2 (0%)      1.0 (99%)     1.0 (99%)
+8         1345.2    120.2 (11%)   120.8 (3%)      1.0 (99%)     1.0 (99%)
+20        3342.2    205.8 (53%)   636.9 (23%)     1.0 (100%)    1.0 (99%)</div>
+
+<p>→ R1 은 일주일에 교착이 51건 난 시간당 0.3건에서 0.1번, 173건 난 시간당 1건에서도 0.9번 울렸어요. 시간당 8건에서는 일주일에 120번 울립니다. 이 규칙이 "8건에서는 시끄럽고 0.3건에서는 조용한" 이유가 표에 그대로 있어요. 반대로 R4 는 0.1건만 돼도 시간의 88% 동안 켜져 있습니다. 교착이 있다는 사실만 말하고 많은지는 말하지 않아요. R3 는 시간당 1건, 즉 임계와 실제 비율이 같은 곳에서 일주일에 24번 깜빡였습니다. 임계를 평소 비율 바로 위에 두면 알람이 켜졌다 꺼졌다를 반복해요.</p>
+
+<p>시간 순서가 있는 세 장면도 돌렸습니다. 변화 뒤 새 알람은 "변화 뒤 처음 꺼짐에서 켜짐으로 바뀐 때"예요. 이미 켜져 있던 알람이 이어지는 건 새 알람으로 치지 않았습니다.</p>
+
+<div class="obsv-code">S1 수정 전후: 2일 시간당 8건 → 28일 시간당 0.3건   (교착 평균: 전 386.4, 후 201.1)
+규칙       전 알람  후 알람  후 켜져 있던 비율
+R1           34.9     0.1        0%
+R2           35.6     0.1        0%
+R3            1.0     5.1        2%
+R4            1.0     0.3      100%
+
+S2 회귀: 3일 0.3건 → 4일 2건 (다른 테이블에 새 패턴이 생긴 경우)
+규칙       변화 뒤 새 알람 (seed 20개 중, 지연 중앙값)
+R1         20/20, 27.2시간
+R2         20/20, 29.8시간
+R3         20/20,  2.0시간
+R4         못 잡음 (원래 켜져 있었다)
+
+S3 버스트: 3일 0.3건 → 30분 동안 분당 1건 → 3일 0.3건
+R1         20/20, 14분         R2   20/20, 3분          R3   20/20, 5분          R4   못 잡음</div>
+
+<p>S1 이 처음 이야기와 같은 모양이에요. 수정 뒤 28일 동안 교착이 평균 201건 났는데 R1, R2 는 0.1번 울렸습니다. 이 기간에 "교착이 남아 있다"를 계속 말해 준 건 R4 하나였어요. S2 는 R4 의 약점입니다. 0.3건이 이미 켜 두었기 때문에 비율이 7배가 되어도 새로 알릴 것이 없어요. 여기서 2시간 만에 잡은 건 6시간 창의 R3 였고, R1 은 하루 넘게 걸렸습니다. S3 처럼 몰려서 나는 경우에는 R2 가 3분, R3 가 5분, R1 이 14분 만에 잡았어요. 연속 조건이 몰림에 맞춘 규칙인데도 단순한 버스트 임계보다 늦은 건, 세 구간을 다 지켜본 뒤에야 켜지기 때문입니다.</p>
+
+<h2>5. 알람을 세 겹으로 나눈다</h2>
+
+<p>표가 말하는 건 규칙 하나로 세 질문에 답할 수 없다는 거예요. "지금 몰려서 나나", "평소보다 많아졌나", "아직 남아 있나"는 창 길이가 다릅니다. 그래서 질문마다 규칙을 따로 두고 받는 쪽도 다르게 했어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">질문마다 창 길이가 다르다</text>
+  <path d="M26 50 C 200 47, 500 52, 674 49 C 677 70, 675 92, 676 112 C 500 115, 200 111, 28 113 C 25 92, 27 70, 26 50 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26 128 C 200 125, 500 130, 674 127 C 677 148, 675 170, 676 190 C 500 193, 200 189, 28 191 C 25 170, 27 148, 26 128 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26 206 C 200 203, 500 208, 674 205 C 677 226, 675 248, 676 268 C 500 271, 200 267, 28 269 C 25 248, 27 226, 26 206 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="44" y="78" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">🔥 지금 몰려서 나나</text>
+  <text x="44" y="102" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">5분 창 증가 &gt;= 3  /  재시도 소진 예외 &gt; 0</text>
+  <text x="656" y="78" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">사람을 깨운다</text>
+  <text x="656" y="102" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">S3 를 3분에</text>
+  <text x="44" y="156" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#c07f18">📈 평소보다 많아졌나</text>
+  <text x="44" y="180" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">6시간 창 증가 &gt;= 6, 또는 기준선의 몇 배</text>
+  <text x="656" y="156" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">업무 시간 알림</text>
+  <text x="656" y="180" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">S2 를 2시간에</text>
+  <text x="44" y="234" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">📌 아직 남아 있나</text>
+  <text x="44" y="258" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">24시간 창 증가 &gt;= 1  (또는 일간 건수 보고)</text>
+  <text x="656" y="234" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">티켓, 대시보드</text>
+  <text x="656" y="258" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">S1 의 201건을 계속</text>
+  <text x="350" y="310" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 짧은 창은 높은 임계로, 긴 창은 낮은 임계로 묻는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 버스트, 증가, 존재를 따로 묻는다. 받는 사람과 시간대도 따로다</div>
+
+<p>"평소보다 많아졌나"의 임계는 고정값보다 기준선 대비가 낫습니다. R3 처럼 시간당 1건 고정이면 평소가 1건인 서비스에서는 계속 깜빡이고, 평소가 0.1건인 서비스에서는 10배가 되어도 조용해요. 지난주 같은 시간대의 증가량과 비교해 몇 배 이상일 때로 잡고, 0 근처에서 배수가 의미 없어지지 않도록 최소 건수(예: 6시간에 3건 이상)를 같이 둡니다. Prometheus 와 mysqld_exporter 를 쓴다면 세 규칙은 이런 모양이 됩니다.</p>
+
+<div class="obsv-code"># D = mysql_info_schema_innodb_metrics_lock_lock_deadlocks_total  (2절)
+
+# 몰림: 5분에 3건 이상. 사람을 깨운다
+increase(D[5m]) &gt; 2.5
+
+# 증가: 6시간 증가량이 지난주 같은 시간대의 3배를 넘고, 최소 3건 이상
+increase(D[6h]) &gt; 3 * increase(D[6h] offset 7d)
+  and increase(D[6h]) &gt; 2.5
+
+# 존재: 24시간에 1건이라도. 티켓이나 일간 보고로 보낸다
+increase(D[24h]) &gt; 0</div>
+
+<p>임계를 3 대신 2.5 로 쓴 건 <code>increase()</code> 가 창 끝까지 외삽해서 정수 카운터에서도 2.9 같은 값을 낼 수 있기 때문이에요. 그리고 알람 규칙의 <code>for:</code> 절은 "조건이 그 시간 동안 매 평가마다 참이어야 켠다"는 뜻이라 3절의 연속 조건과 같은 일을 합니다. 몰림 규칙에 붙이면 S3 같은 짧은 몰림을 늦게 잡아요. 존재 규칙은 24시간 창이 이미 한 건을 하루 동안 붙잡아 두기 때문에 <code>for:</code> 를 붙여도 늦어질 뿐 숨겨지지는 않지만, 붙일 이유도 없습니다. 연속 조건이 필요한 건 깜빡임을 줄이고 싶은 증가 규칙 정도예요. 증가 규칙의 <code>offset 7d</code> 는 정확히 7일 전 한 시점의 6시간 증가량이고, 수집을 시작한 지 7일이 안 됐으면 빈 결과라서 그 규칙은 울리지 않습니다.</p>
+
+<p>"아직 남아 있나"는 깨우는 알람이 아니라 기록이에요. 수정을 배포했으면 이 숫자가 0이 되어야 끝난 겁니다. 이 시리즈의 사례에서는 수정 PR 이 머지된 뒤에도 운영 빌드가 수정 전 커밋이었던 적이 있었어요. 그때는 알람이 계속 울려서 드러났지만, "머지했다"가 아니라 "배포 뒤 24시간 증가량"으로 반영을 확인하는 습관이 있었다면 더 빨리 알았을 겁니다. 그리고 1차 수정이 실제로 배포된 뒤 조용해진 알람이 가린 것이 다른 테이블의 같은 패턴이었어요.</p>
+
+<h2>6. 얼마나 잦아야 문제인가</h2>
+
+<p>매뉴얼은 교착을 위험하게 보지 않아요. "교착은 트랜잭션 데이터베이스의 고전적인 문제지만, 어떤 트랜잭션을 아예 실행할 수 없을 만큼 잦지 않으면 위험하지 않다"고 하고, "교착으로 실패하면 언제든 다시 실행할 준비를 하라. 그냥 다시 시도하면 된다"고도 적습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html">How to Minimize and Handle Deadlocks</a>). <code>innodb_print_all_deadlocks</code> 설명에도 가끔 나는 교착은 반드시 문제는 아니라고 나와요. 그렇다면 시간당 0.3건은 알람이 꺼져 있는 게 맞는 상태일 수도 있습니다.</p>
+
+<p>저는 이 관점이 맞되 조건이 붙는다고 봐요. "다시 시도하면 된다"가 성립하려면 앱이 실제로 다시 시도하고, 그 재시도가 성공해야 합니다. 사례에서 같은 본문 4건을 동시에 재전송하는 시험을 했더니 360건 중 195건이 실패했어요. 교착이 사용자에게 그대로 실패로 나간 거예요. 게다가 응답 코드는 500 이 아니라 400 이었습니다. 공통 예외 핸들러가 처리하지 못한 예외를 400 으로 응답했기 때문이에요. 5xx 비율에 걸린 알람으로도 보이지 않았다는 뜻입니다. 그래서 판단 기준을 이렇게 잡았어요.</p>
+
+<div class="obsv-code">질문                                      보는 숫자                                  판단
+재시도로 덮이고 있나                      재시도 뒤에도 남은 교착 예외 수            0 이 아니면 바로 문제 (사용자가 실패를 받았다)
+얼마나 자주 재시도가 필요한가             교착 수 / 같은 종류 트랜잭션 수           비율로 본다. 건수는 트래픽을 따라 오른다
+같은 교착인가, 새 교착인가                에러 로그의 테이블·인덱스                 새 쌍이 나오면 버그 후보 (3편의 순서로 원인 확정)
+고친 게 반영됐나                          배포 뒤 24시간 증가량                      0 이어야 끝. 줄기만 했으면 남은 패턴을 찾는다</div>
+
+<p>첫 줄이 가장 중요해요. DB 카운터는 재시도가 성공했는지 모릅니다. 교착 1건에 1이 오를 뿐이에요. 사용자가 실패를 받았는지는 앱이 재시도를 다 쓰고도 실패한 수로만 알 수 있으니, 앱 지표를 "시도마다의 잠금 충돌"과 "재시도 소진 뒤 실패"로 나눠 세세요. 깨우는 알람은 뒤의 것에 걸고, DB 카운터는 빈도와 추세를 보는 데 씁니다. Spring 에서 spring-retry 의 <code>org.springframework.retry.support.RetryTemplate</code> 을 쓴다면 대략 이런 자리에서 둘을 나눠 셀 수 있어요. Spring Framework 7 코어에 새로 들어온 <code>org.springframework.core.retry.RetryTemplate</code> 은 이름은 같지만 메서드 모양이 달라서 이 코드 그대로는 맞지 않습니다. <code>PessimisticLockingFailureException</code> 은 교착(1213)뿐 아니라 잠금 대기 초과(1205)가 번역된 예외도 받을 수 있어요. 둘이 어떤 예외로 오고 롤백 범위가 어떻게 다른지는 5편에서 다룹니다.</p>
+
+<div class="obsv-code">// 재시도 한 번마다: 교착 또는 잠금 대기 초과가 났다 (1213 만 따로 세면 DB 의 lock_deadlocks 와 비교할 수 있다)
+// 재시도를 다 쓴 뒤: 사용자가 실패를 받았다 (이 숫자에 깨우는 알람을 건다)
+try {
+    return retryTemplate.execute(ctx -&gt; {
+        try {
+            return service.saveOnce(request);          // @Transactional 경계 하나
+        } catch (PessimisticLockingFailureException e) {
+            registry.counter("db.lock.conflict", "stage", "attempt").increment();
+            throw e;
+        }
+    });
+} catch (PessimisticLockingFailureException e) {
+    registry.counter("db.lock.conflict", "stage", "exhausted").increment();
+    throw e;   // 공통 예외 핸들러가 이걸 몇 번 코드로 내보내는지도 확인한다
+}</div>
+
+<p>두 숫자를 같이 보면 교착 대응이 어디까지 됐는지가 보여요. attempt 중 1213 만 센 값이 DB 의 <code>lock_deadlocks</code> 증가량보다 훨씬 적으면 교착이 다른 경로(배치, 다른 서비스)에서도 나고 있다는 뜻이고, exhausted 가 0이 아니면 재시도 횟수나 간격이 모자라거나 재시도로 풀리지 않는 교착이라는 뜻입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 내 환경에서 확인할 것</div>
+  &bull; 교착 지표가 실제로 수집되고 있는지 확인하세요. 상태 변수만 긁는 수집기라면 교착은 없습니다. INNODB_METRICS 수집이 꺼져 있지 않은지, 계정에 PROCESS 권한이 있는지도 봅니다<br>
+  &bull; 교착 감지를 끈 서버라면 <code>lock_deadlocks</code> 가 아니라 <code>lock_timeouts</code> 와 1205 를 봅니다<br>
+  &bull; 로그로 원인과 시각, 희생자를 남기려면 <code>innodb_print_all_deadlocks=ON</code> 과 <code>log_error_verbosity=3</code> 을 함께 켜고, 교착 한 건을 내서 <code>MY-012468</code> 머리말까지 찍히는지 확인합니다. <code>SET GLOBAL</code> 은 재시작하면 사라지니 설정 파일이나 <code>SET PERSIST</code> 로 남깁니다<br>
+  &bull; 누적값에 임계를 건 규칙이 있다면 증가량으로 바꾸고, 재시작해서 값이 줄어든 창을 어떻게 처리하는지 확인합니다<br>
+  &bull; "N구간 연속" 조건이 붙은 교착 알람이 있다면 시간당 몇 건부터 울리는지 계산해 보고, 긴 창의 존재 확인(티켓)을 따로 둡니다<br>
+  &bull; 앱 지표를 시도별 1213 과 재시도 소진 뒤 실패로 나누고, 그 실패가 몇 번 상태 코드로 나가는지 확인합니다
+</div>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/db/dl-04-deadlock-alerting
+./scripts/run_all.sh                 # MySQL 8.4(127.0.0.1:39040), 단계 대조 + 13분 시계열 + 재시작, 약 15분
+python3 scripts/eval_timeline.py     # 실제 카운터에 규칙 적용
+python3 scripts/simulate.py          # MySQL 없이 비율별, 장면별 시뮬레이션 (seed 고정)
+docker compose down -v</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>MySQL 8.4 의 교착 수는 INNODB_METRICS 의 <code>lock_deadlocks</code> 에 있고, 상태 변수에는 없습니다. <code>innodb_print_all_deadlocks</code> 만 켜면 에러 로그에 잠금 본문만 시각 없이 남고 머리말과 희생자 줄은 빠졌어요. 그것까지 남기려면 <code>log_error_verbosity=3</code> 이 같이 있어야 합니다.</b><br><br>
+  "연속 N구간" 규칙을 5분 × 3 으로 놓으면 일주일에 교착이 51건 나는 시간당 0.3건에서 0.1번 울렸고, 수정 뒤 28일 동안 201건이 난 장면에서도 0.1번이었습니다. 연속 조건은 교착의 양이 아니라 몰림을 보기 때문이에요. 몰림은 짧은 창, 증가는 기준선 대비 긴 창, 남아 있음은 24시간 창으로 따로 묻고, 사람을 깨우는 일은 재시도로도 덮지 못한 실패에 맡깁니다.<br><br>
+  알람이 조용하다는 건 규칙의 조건이 채워지지 않았다는 뜻이고, 교착이 0이라는 뜻은 아니에요.
+</div>
+
+</div>

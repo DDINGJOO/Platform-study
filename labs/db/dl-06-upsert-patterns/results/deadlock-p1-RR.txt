@@ -1,0 +1,38 @@
+deadlock pattern=p1 iso=RR key=k150 (seed rows k100 k200 k300)
+  A> INSERT IGNORE INTO visit(user_key, payload, inserted_by) VALUES ('k150','v1','A')
+      => ok affected=1
+  B> INSERT IGNORE INTO visit(user_key, payload, inserted_by) VALUES ('k150','v1','B')
+      => (waiting)
+  C> INSERT IGNORE INTO visit(user_key, payload, inserted_by) VALUES ('k150','v1','C')
+      => (waiting)
+  -- data_locks: A inserted, B and C wait on the duplicate
+     A  TABLE  -            IX                       GRANTED  -
+     A  RECORD uk_user_key  X,REC_NOT_GAP            GRANTED  'k150', 4
+     B  TABLE  -            IX                       GRANTED  -
+     B  RECORD uk_user_key  S                        WAITING  'k150', 4
+     C  TABLE  -            IX                       GRANTED  -
+     C  RECORD uk_user_key  S                        WAITING  'k150', 4
+  A> SELECT id FROM visit WHERE user_key='k150' FOR UPDATE
+      => ok rows=1
+  A> COMMIT
+      => ok
+  -- data_locks: A committed, B and C got their duplicate locks
+     B  TABLE  -            IX                       GRANTED  -
+     B  RECORD PRIMARY      X                        GRANTED  supremum pseudo-record
+     B  RECORD uk_user_key  S                        GRANTED  'k150', 4
+     C  TABLE  -            IX                       GRANTED  -
+     C  RECORD PRIMARY      X                        GRANTED  supremum pseudo-record
+     C  RECORD uk_user_key  S                        GRANTED  'k150', 4
+  B> SELECT id FROM visit WHERE user_key='k150' FOR UPDATE
+      => (waiting)
+  -- data_locks: B asks for X on the row
+     B  TABLE  -            IX                       GRANTED  -
+     B  RECORD PRIMARY      X                        GRANTED  supremum pseudo-record
+     B  RECORD uk_user_key  S                        GRANTED  'k150', 4
+     B  RECORD uk_user_key  X,REC_NOT_GAP            WAITING  'k150', 4
+     C  TABLE  -            IX                       GRANTED  -
+     C  RECORD PRIMARY      X                        GRANTED  supremum pseudo-record
+     C  RECORD uk_user_key  S                        GRANTED  'k150', 4
+  C> SELECT id FROM visit WHERE user_key='k150' FOR UPDATE
+      => ERROR 1213 Deadlock found when trying to get lock; try restarting transaction
+  rows for key: [A]

@@ -1,0 +1,75 @@
+// 동시성 테스트가 "통과"가 아니라 "실행되지 않음"으로 끝나는 경우를 재현한다.
+//   ./gradlew test -PtcVersion=1.19.8     Testcontainers 버전을 바꿔 본다 (기본 2.0.5)
+//   ./gradlew test -Pimpl=fixed           교착 재현 테스트가 고친 코드를 쓰게 한다 (기본 buggy)
+//   ./gradlew test -PnoSkip               skip 이 하나라도 있으면 빌드를 실패시킨다
+plugins {
+    id 'java'
+}
+
+repositories { mavenCentral() }
+
+def tcVersion = (findProperty('tcVersion') ?: '2.0.5') as String
+// Testcontainers 2.x 는 모듈 이름에 testcontainers- 접두사가 붙었다
+def tcJunit = tcVersion.startsWith('1.') ? "org.testcontainers:junit-jupiter:${tcVersion}"
+                                         : "org.testcontainers:testcontainers-junit-jupiter:${tcVersion}"
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.12.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation "org.testcontainers:testcontainers:${tcVersion}"
+    testImplementation tcJunit
+    testRuntimeOnly 'com.mysql:mysql-connector-j:9.7.0'
+    testRuntimeOnly 'com.h2database:h2:2.4.240'
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.17'
+}
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    systemProperty 'lab.impl', (findProperty('impl') ?: 'buggy')
+    systemProperty 'lab.tcVersion', tcVersion
+    // -Pdeactivate='org.testcontainers.*' 면 JUnit 의 조건 평가를 꺼서 skip 대신 실패하게 한다
+    // -PapiVersion=1.44 면 docker-java 가 쓰는 API 버전을 직접 정한다 (옛 Testcontainers 우회 확인용)
+    if (findProperty('apiVersion')) systemProperty 'api.version', findProperty('apiVersion')
+    if (findProperty('deactivate')) systemProperty 'junit.jupiter.conditions.deactivate', findProperty('deactivate')
+    // 결과를 매번 새로 보려고 캐시를 쓰지 않는다
+    outputs.upToDateWhen { false }
+    testLogging {
+        events 'passed', 'skipped', 'failed', 'standard_out'
+        exceptionFormat = 'short'
+        showStandardStreams = true
+    }
+}
+
+// ── skip 0 검사 ─────────────────────────────────────────────
+// JUnit XML(build/test-results/test/*.xml) 의 skipped 를 합쳐 0 이 아니면 실패.
+// test 가 실패해도 돌도록 finalizedBy 로 붙이고, -PnoSkip 일 때만 켠다.
+def resultsDir = layout.buildDirectory.dir('test-results/test')
+def checkNoSkipped = tasks.register('checkNoSkipped') {
+    group = 'verification'
+    description = 'JUnit XML 의 skipped 합계가 0 이 아니면 빌드를 실패시킨다'
+    inputs.dir(resultsDir).optional()
+    doLast {
+        // 멀티 모듈이면 통합 테스트가 있는 모듈의 test 에만 붙인다. 테스트가 없는 모듈은 결과 디렉터리가 없다
+        def dir = resultsDir.get().asFile
+        def files = dir.isDirectory() ? dir.listFiles({ f -> f.name.endsWith('.xml') } as FileFilter) : null
+        if (files == null) throw new GradleException("테스트 결과 디렉터리가 없다: ${dir}")
+        int tests = 0, skipped = 0
+        def names = []
+        files.each { f ->
+            def suite = new groovy.xml.XmlSlurper().parse(f)
+            tests += (suite['@tests'].text() ?: '0') as int
+            int s = (suite['@skipped'].text() ?: '0') as int
+            skipped += s
+            if (s > 0) names << "${suite['@name'].text()} (${s})"
+        }
+        println "checkNoSkipped: tests=${tests} skipped=${skipped}"
+        if (tests == 0) throw new GradleException('테스트가 하나도 실행되지 않았다')
+        if (skipped > 0) throw new GradleException("skip 된 테스트가 ${skipped}개 있다: ${names.join(', ')}")
+    }
+}
+if (hasProperty('noSkip')) {
+    tasks.named('test') { finalizedBy checkNoSkipped }
+}

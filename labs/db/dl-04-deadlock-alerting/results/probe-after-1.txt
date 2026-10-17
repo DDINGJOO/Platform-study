@@ -1,0 +1,36 @@
+B ERROR 1213 (40001) at line 1: Deadlock found when trying to get lock; try restarting transaction
+B exit
+A exit
+== SELECT VERSION(), 관련 설정
++---------+-----------------+---------------------+-------------------+-----------+
+| version | deadlock_detect | print_all_deadlocks | lock_wait_timeout | log_error |
++---------+-----------------+---------------------+-------------------+-----------+
+| 8.4.11  |               1 |                   0 |                50 | stderr    |
++---------+-----------------+---------------------+-------------------+-----------+
+== INNODB_METRICS 의 lock 서브시스템 중 deadlock/timeout
++-------------------------------+----------------+---------+-------+-------------+
+| NAME                          | TYPE           | STATUS  | COUNT | COUNT_RESET |
++-------------------------------+----------------+---------+-------+-------------+
+| lock_deadlocks                | counter        | enabled |     1 |           1 |
+| lock_deadlock_false_positives | counter        | enabled |     0 |           0 |
+| lock_deadlock_rounds          | counter        | enabled |     5 |           5 |
+| lock_row_lock_waits           | status_counter | enabled |     2 |           2 |
+| lock_timeouts                 | counter        | enabled |     0 |           0 |
++-------------------------------+----------------+---------+-------+-------------+
+== SHOW GLOBAL STATUS LIKE '%dead%'
+== SHOW GLOBAL STATUS LIKE 'Innodb_row_lock%'
++-------------------------------+-------+
+| Variable_name                 | Value |
++-------------------------------+-------+
+| Innodb_row_lock_current_waits | 0     |
+| Innodb_row_lock_time          | 213   |
+| Innodb_row_lock_time_avg      | 106   |
+| Innodb_row_lock_time_max      | 213   |
+| Innodb_row_lock_waits         | 2     |
++-------------------------------+-------+
+== performance_schema.global_status 에서 이름에 dead 가 들어간 변수 수
++--------+
+| n_dead |
++--------+
+|      0 |
++--------+

@@ -1,0 +1,135 @@
+== [REPEATABLE READ] ODKU 새 행
+   INSERT INTO lk VALUES (25,'d',1) ON DUPLICATE KEY UPDATE v=v+1
++-----------+
+| row_count |
++-----------+
+|         1 |
++-----------+
++------------+-----------+-----------+-------------+-----------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE | LOCK_STATUS | LOCK_DATA |
++------------+-----------+-----------+-------------+-----------+
+| NULL       | TABLE     | IX        | GRANTED     | NULL      |
++------------+-----------+-----------+-------------+-----------+
+== [REPEATABLE READ] ODKU PK 중복(id=20)
+   INSERT INTO lk VALUES (20,'x',1) ON DUPLICATE KEY UPDATE v=v+1
++-----------+
+| row_count |
++-----------+
+|         2 |
++-----------+
++------------+-----------+---------------+-------------+-----------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE     | LOCK_STATUS | LOCK_DATA |
++------------+-----------+---------------+-------------+-----------+
+| NULL       | TABLE     | IX            | GRANTED     | NULL      |
+| PRIMARY    | RECORD    | X,REC_NOT_GAP | GRANTED     | 20        |
++------------+-----------+---------------+-------------+-----------+
+== [REPEATABLE READ] ODKU 보조 유니크 중복('c')
+   INSERT INTO lk VALUES (99,'c',1) ON DUPLICATE KEY UPDATE v=v+1
++-----------+
+| row_count |
++-----------+
+|         2 |
++-----------+
++------------+-----------+---------------+-------------+------------------------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE     | LOCK_STATUS | LOCK_DATA              |
++------------+-----------+---------------+-------------+------------------------+
+| NULL       | TABLE     | IX            | GRANTED     | NULL                   |
+| PRIMARY    | RECORD    | X,REC_NOT_GAP | GRANTED     | 20                     |
+| PRIMARY    | RECORD    | X             | GRANTED     | supremum pseudo-record |
+| uk_code    | RECORD    | X             | GRANTED     | 'c', 20                |
++------------+-----------+---------------+-------------+------------------------+
+== [REPEATABLE READ] ODKU 보조 유니크 중복, v=v
+   INSERT INTO lk VALUES (99,'c',1) ON DUPLICATE KEY UPDATE v=v
++-----------+
+| row_count |
++-----------+
+|         0 |
++-----------+
++------------+-----------+---------------+-------------+------------------------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE     | LOCK_STATUS | LOCK_DATA              |
++------------+-----------+---------------+-------------+------------------------+
+| NULL       | TABLE     | IX            | GRANTED     | NULL                   |
+| PRIMARY    | RECORD    | X,REC_NOT_GAP | GRANTED     | 20                     |
+| PRIMARY    | RECORD    | X             | GRANTED     | supremum pseudo-record |
+| uk_code    | RECORD    | X             | GRANTED     | 'c', 20                |
++------------+-----------+---------------+-------------+------------------------+
+== [REPEATABLE READ] INSERT IGNORE 보조 유니크 중복
+   INSERT IGNORE INTO lk VALUES (99,'c',1)
++-----------+
+| row_count |
++-----------+
+|         0 |
++-----------+
++------------+-----------+-----------+-------------+------------------------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE | LOCK_STATUS | LOCK_DATA              |
++------------+-----------+-----------+-------------+------------------------+
+| NULL       | TABLE     | IX        | GRANTED     | NULL                   |
+| PRIMARY    | RECORD    | X         | GRANTED     | supremum pseudo-record |
+| uk_code    | RECORD    | S         | GRANTED     | 'c', 20                |
++------------+-----------+-----------+-------------+------------------------+
+== [READ COMMITTED] ODKU 새 행
+   INSERT INTO lk VALUES (25,'d',1) ON DUPLICATE KEY UPDATE v=v+1
++-----------+
+| row_count |
++-----------+
+|         1 |
++-----------+
++------------+-----------+-----------+-------------+-----------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE | LOCK_STATUS | LOCK_DATA |
++------------+-----------+-----------+-------------+-----------+
+| NULL       | TABLE     | IX        | GRANTED     | NULL      |
++------------+-----------+-----------+-------------+-----------+
+== [READ COMMITTED] ODKU PK 중복(id=20)
+   INSERT INTO lk VALUES (20,'x',1) ON DUPLICATE KEY UPDATE v=v+1
++-----------+
+| row_count |
++-----------+
+|         2 |
++-----------+
++------------+-----------+---------------+-------------+-----------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE     | LOCK_STATUS | LOCK_DATA |
++------------+-----------+---------------+-------------+-----------+
+| NULL       | TABLE     | IX            | GRANTED     | NULL      |
+| PRIMARY    | RECORD    | X,REC_NOT_GAP | GRANTED     | 20        |
++------------+-----------+---------------+-------------+-----------+
+== [READ COMMITTED] ODKU 보조 유니크 중복('c')
+   INSERT INTO lk VALUES (99,'c',1) ON DUPLICATE KEY UPDATE v=v+1
++-----------+
+| row_count |
++-----------+
+|         2 |
++-----------+
++------------+-----------+---------------+-------------+-----------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE     | LOCK_STATUS | LOCK_DATA |
++------------+-----------+---------------+-------------+-----------+
+| NULL       | TABLE     | IX            | GRANTED     | NULL      |
+| PRIMARY    | RECORD    | X,REC_NOT_GAP | GRANTED     | 20        |
+| uk_code    | RECORD    | X             | GRANTED     | 'c', 20   |
++------------+-----------+---------------+-------------+-----------+
+== [READ COMMITTED] ODKU 보조 유니크 중복, v=v
+   INSERT INTO lk VALUES (99,'c',1) ON DUPLICATE KEY UPDATE v=v
++-----------+
+| row_count |
++-----------+
+|         0 |
++-----------+
++------------+-----------+---------------+-------------+-----------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE     | LOCK_STATUS | LOCK_DATA |
++------------+-----------+---------------+-------------+-----------+
+| NULL       | TABLE     | IX            | GRANTED     | NULL      |
+| PRIMARY    | RECORD    | X,REC_NOT_GAP | GRANTED     | 20        |
+| uk_code    | RECORD    | X             | GRANTED     | 'c', 20   |
++------------+-----------+---------------+-------------+-----------+
+== [READ COMMITTED] INSERT IGNORE 보조 유니크 중복
+   INSERT IGNORE INTO lk VALUES (99,'c',1)
++-----------+
+| row_count |
++-----------+
+|         0 |
++-----------+
++------------+-----------+-----------+-------------+-----------+
+| INDEX_NAME | LOCK_TYPE | LOCK_MODE | LOCK_STATUS | LOCK_DATA |
++------------+-----------+-----------+-------------+-----------+
+| NULL       | TABLE     | IX        | GRANTED     | NULL      |
+| uk_code    | RECORD    | S         | GRANTED     | 'c', 20   |
++------------+-----------+-----------+-------------+-----------+

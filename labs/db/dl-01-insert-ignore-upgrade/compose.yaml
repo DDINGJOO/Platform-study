@@ -1,0 +1,17 @@
+# 실습용 MySQL 8.4 하나. 컨테이너를 내리면(down -v) 데이터도 같이 사라진다.
+name: dl01
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: labroot
+      MYSQL_DATABASE: lab
+    ports:
+      - "127.0.0.1:39010:3306"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-plabroot"]
+      interval: 2s
+      timeout: 3s
+      retries: 60

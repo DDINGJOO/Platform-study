@@ -1,0 +1,103 @@
+### exists-2s / RR / first_visit
+# 행이 이미 있다. 두 세션이 INSERT IGNORE 후 같은 행을 SELECT ... FOR UPDATE
+# 미리 넣은 행: member_id=[1]
+
+[01] S1> BEGIN;
+     S1 | BEGIN
+     S1 | Query OK, 0 rows affected (0.01 sec)
+
+[02] S2> BEGIN;
+     S2 | BEGIN
+     S2 | Query OK, 0 rows affected (0.00 sec)
+
+[03] S1> INSERT IGNORE INTO first_visit (member_id) VALUES (1);
+     S1 | INSERT IGNORE INTO first_visit (member_id) VALUES (1)
+     S1 | Query OK, 0 rows affected, 1 warning (0.00 sec)
+     data_locks:
+       +------+-----------+------+---------+------------------------+
+       | sess | idx       | mode | status  | data                   |
+       +------+-----------+------+---------+------------------------+
+       | S1   | PRIMARY   | X    | GRANTED | supremum pseudo-record |
+       | S1   | uk_member | S    | GRANTED | 1, 1                   |
+       +------+-----------+------+---------+------------------------+
+
+[04] S2> INSERT IGNORE INTO first_visit (member_id) VALUES (1);
+     S2 | (아직 끝나지 않음: 잠금 대기)
+     data_locks:
+       +------+-----------+--------------------+---------+------------------------+
+       | sess | idx       | mode               | status  | data                   |
+       +------+-----------+--------------------+---------+------------------------+
+       | S1   | PRIMARY   | X                  | GRANTED | supremum pseudo-record |
+       | S1   | uk_member | S                  | GRANTED | 1, 1                   |
+       | S2   | PRIMARY   | X,INSERT_INTENTION | WAITING | supremum pseudo-record |
+       +------+-----------+--------------------+---------+------------------------+
+
+[05] S1> SELECT member_id, visit_count FROM first_visit WHERE member_id = 1 FOR UPDATE;
+     S1 | SELECT member_id, visit_count FROM first_visit WHERE member_id = 1 FOR UPDATE
+     S1 | +-----------+-------------+
+     S1 | | member_id | visit_count |
+     S1 | +-----------+-------------+
+     S1 | |         1 |           1 |
+     S1 | +-----------+-------------+
+     S1 | 1 row in set (0.00 sec)
+     data_locks:
+       +------+-----------+--------------------+---------+------------------------+
+       | sess | idx       | mode               | status  | data                   |
+       +------+-----------+--------------------+---------+------------------------+
+       | S1   | PRIMARY   | X                  | GRANTED | supremum pseudo-record |
+       | S1   | PRIMARY   | X,REC_NOT_GAP      | GRANTED | 1                      |
+       | S1   | uk_member | S                  | GRANTED | 1, 1                   |
+       | S1   | uk_member | X,REC_NOT_GAP      | GRANTED | 1, 1                   |
+       | S2   | PRIMARY   | X,INSERT_INTENTION | WAITING | supremum pseudo-record |
+       +------+-----------+--------------------+---------+------------------------+
+
+[06] S2> SELECT member_id, visit_count FROM first_visit WHERE member_id = 1 FOR UPDATE;
+     S2 | (아직 끝나지 않음: 잠금 대기)
+     data_locks:
+       +------+-----------+--------------------+---------+------------------------+
+       | sess | idx       | mode               | status  | data                   |
+       +------+-----------+--------------------+---------+------------------------+
+       | S1   | PRIMARY   | X                  | GRANTED | supremum pseudo-record |
+       | S1   | PRIMARY   | X,REC_NOT_GAP      | GRANTED | 1                      |
+       | S1   | uk_member | S                  | GRANTED | 1, 1                   |
+       | S1   | uk_member | X,REC_NOT_GAP      | GRANTED | 1, 1                   |
+       | S2   | PRIMARY   | X,INSERT_INTENTION | WAITING | supremum pseudo-record |
+       +------+-----------+--------------------+---------+------------------------+
+
+[07] S1> COMMIT;
+     S1 | COMMIT
+     S1 | Query OK, 0 rows affected (0.00 sec)
+     S2 | INSERT IGNORE INTO first_visit (member_id) VALUES (1)
+     S2 | Query OK, 0 rows affected, 1 warning (3.41 sec)
+     S2 | SELECT member_id, visit_count FROM first_visit WHERE member_id = 1 FOR UPDATE
+     S2 | +-----------+-------------+
+     S2 | | member_id | visit_count |
+     S2 | +-----------+-------------+
+     S2 | |         1 |           1 |
+     S2 | +-----------+-------------+
+     S2 | 1 row in set (0.00 sec)
+     data_locks:
+       +------+-----------+--------------------+---------+------------------------+
+       | sess | idx       | mode               | status  | data                   |
+       +------+-----------+--------------------+---------+------------------------+
+       | S2   | PRIMARY   | X                  | GRANTED | supremum pseudo-record |
+       | S2   | PRIMARY   | X,INSERT_INTENTION | GRANTED | supremum pseudo-record |
+       | S2   | PRIMARY   | X,REC_NOT_GAP      | GRANTED | 1                      |
+       | S2   | uk_member | S                  | GRANTED | 1, 1                   |
+       | S2   | uk_member | X,REC_NOT_GAP      | GRANTED | 1, 1                   |
+       +------+-----------+--------------------+---------+------------------------+
+
+[08] S2> COMMIT;
+     S2 | COMMIT
+     S2 | Query OK, 0 rows affected (0.00 sec)
+     data_locks:
+       (레코드 잠금 없음)
+
+최종 행:
++----+-----------+-------------+
+| id | member_id | visit_count |
++----+-----------+-------------+
+|  1 |         1 |           1 |
++----+-----------+-------------+
+
+RESULT exists-2s RR first_visit 1213=없음 lock_deadlocks+=0 rows=1

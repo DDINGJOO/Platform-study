@@ -1,0 +1,404 @@
+<!-- ============================================================
+  MySQL 교착 5편: 교착(1213)과 lock wait timeout(1205)은 롤백 범위가 다르다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: ERROR 1205, ERROR 1213, Lock wait timeout exceeded, innodb_rollback_on_timeout, CannotAcquireLockException, DeadlockLoserDataAccessException -->
+<!-- lead: MySQL 1205(lock wait timeout)는 기본값에서 그 문장만 롤백해서, 그대로 COMMIT 하면 앞 문장이 커밋돼요. 1213 과의 롤백 범위 차이, innodb_rollback_on_timeout, 교착 감지 OFF, Spring 이 두 에러를 주는 예외 타입을 MySQL 8.4 에서 실측했어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔒 MySQL 교착 · 5편</div>
+  1편. INSERT IGNORE 다음 SELECT … FOR UPDATE가 교착을 만드는 이유<br>
+  2편. ON DUPLICATE KEY UPDATE 반환값으로 중복을 판정하면 안 된다<br>
+  3편. LATEST DETECTED DEADLOCK 읽는 법과 data_locks로 원인을 확정하는 순서<br>
+  4편. 교착 알람이 조용해졌다고 교착이 사라진 건 아니다<br>
+  <b>5편. 교착(1213)과 lock wait timeout(1205)은 롤백 범위가 다르다</b> &larr; 지금 이 글<br>
+  6편. 같은 요청이 동시에 두 번 올 때 없으면 넣기를 교착 없이 짜는 다섯 가지 방법<br>
+  7편. 동시성 테스트가 통과한 게 아니라 실행되지 않았을 때
+</div>
+
+<p>두 에러 메시지는 끝이 똑같아요. <code>Deadlock found when trying to get lock; try restarting transaction</code> 과 <code>Lock wait timeout exceeded; try restarting transaction</code>. 둘 다 "트랜잭션을 다시 시작하라"고 하니 같은 방식으로 처리해도 될 것 같습니다. 그런데 mysql 클라이언트에서 1205 를 받은 직후 <code>COMMIT</code> 을 쳐 보면 <b>성공</b>합니다. 그리고 에러 전에 넣은 행이 테이블에 그대로 남아 있어요.</p>
+
+<p>1213 은 트랜잭션 전체를 되돌리고, 1205 는 기본값에서 그 문장 하나만 되돌립니다. 이 차이는 Spring 으로 올라오면 더 흐려져요. 실측해 보니 JdbcTemplate 과 JPA 저장소에서는 두 에러가 <b>같은 예외 타입</b>으로 도착했고, EntityManager 를 직접 쓰는 빈에서는 Spring 예외가 아닌 타입으로 도착했습니다. 이 글은 MySQL 8.4 와 Spring Boot 4.1.1 로 두 에러의 롤백 범위와 예외 타입을 재고, 무엇을 재시도할지와 어떤 HTTP 응답으로 돌려줄지를 정리합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  &bull; 1205 를 받은 트랜잭션은 아직 열려 있나? 그 상태로 COMMIT 하면 무엇이 남나?<br>
+  &bull; <code>innodb_rollback_on_timeout</code> 을 켜면 무엇이 바뀌고, 왜 운영 중에 켤 수 없나?<br>
+  &bull; 교착 감지를 끄면 교착은 어떤 에러로 보이나?<br>
+  &bull; Spring 은 1213 과 1205 를 각각 어떤 예외로 주나? <code>DeadlockLoserDataAccessException</code> 은 아직 오나?<br>
+  &bull; 어떤 경우에 무엇을 재시도하고, 어떤 상태 코드로 응답하나?
+</div>
+
+<h2>1. 1205 뒤에 COMMIT 하면 앞 문장이 커밋된다</h2>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: lock wait timeout (ERROR 1205)</div>
+  다른 트랜잭션이 쥔 행 잠금을 기다리다가 <code>innodb_lock_wait_timeout</code>(기본 50초)을 넘기면 나는 에러예요. 기다리던 문장이 실패합니다. 교착과 달리 순환이 없어도 납니다. 상대가 그냥 오래 쥐고 있기만 해도 나요.
+</div>
+
+<p>재현은 세션 두 개면 됩니다. 세션 A 가 <code>item</code> 1번 행을 UPDATE 하고 5초 동안 쥐고 있어요. 세션 B 는 기다림을 2초로 줄이고, 트랜잭션 안에서 <code>note</code> 에 한 줄을 넣은 뒤 같은 1번 행을 UPDATE 합니다. 실습 저장소의 <code>scripts/cli.sh s1</code> 이 이 순서를 돌려요.</p>
+
+<div class="obsv-code">-- 세션 B
+SET SESSION innodb_lock_wait_timeout = 2;
+BEGIN;
+INSERT INTO note(who) VALUES ('B-before');     -- 앞 문장
+UPDATE item SET v = v + 1 WHERE id = 1;        -- A 가 쥐고 있는 행
+SELECT COUNT(*) AS open_trx, MAX(trx_rows_modified) AS rows_modified
+  FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID();
+COMMIT;
+SELECT who FROM note;</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-05/1205-commit.png" alt="scripts/cli.sh s1 실행 화면. UPDATE 가 ERROR 1205 로 실패한 뒤 innodb_trx 에 open_trx 1, rows_modified 1 이 보이고, COMMIT 이 성공한 뒤 note 테이블에 B-before 한 행이 남아 있다" style="max-width:100%">
+</div>
+<div class="obsv-figcap">그림 1. 1205 직후에도 트랜잭션은 열려 있고, COMMIT 하면 앞 문장이 커밋된다</div>
+
+<p>→ UPDATE 는 2초 뒤 <code>ERROR 1205 (HY000)</code> 로 실패했어요. 그런데 바로 다음 조회에서 이 세션의 트랜잭션이 <code>open_trx = 1</code>, <code>rows_modified = 1</code> 로 살아 있었습니다. 1이 바로 앞의 INSERT 예요. 이어서 COMMIT 은 아무 경고 없이 성공했고, <code>note</code> 에는 <code>B-before</code> 가 남았습니다. 세 바퀴 돌려 세 번 모두 같았어요.</p>
+
+<p>매뉴얼에 그대로 적혀 있는 동작입니다. <a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html">innodb_lock_wait_timeout 설명</a>은 "When a lock wait timeout occurs, the current statement is rolled back (not the entire transaction)" 이라고 해요. <a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-error-handling.html">InnoDB Error Handling</a> 은 한 걸음 더 나가서, 기본값이면 그 문장을 재시도하라고 하고 "Locks are not released in a rollback of a single SQL statement" 라고 적습니다. 문장 하나만 되돌릴 때는 그 트랜잭션이 이미 잡은 잠금이 풀리지 않는다는 뜻이에요. 이 마지막 문장이 3장에서 문제를 만듭니다.</p>
+
+<p><span class="obsv-mark">에러 메시지가 "restarting transaction" 이라고 해도, 1205 를 받은 트랜잭션을 끝내는 건 서버가 아니라 여러분 코드의 몫입니다.</span> 잡아서 로그만 남기고 다음 줄로 넘어가는 코드라면 실패한 UPDATE 하나만 빠진 채 나머지가 커밋돼요.</p>
+
+<p>이런 코드는 생각보다 흔해요. "통계 행 갱신은 실패해도 본 작업은 살린다"며 부가 UPDATE 만 try/catch 로 감싸 두는 경우가 대표적입니다. 교착이었다면 서버가 이미 본 작업까지 되돌린 뒤라 살릴 것이 없고, timeout 이었다면 본 작업은 살아남지만 그동안 그 트랜잭션은 다른 요청이 기다리는 잠금을 계속 쥐고 있어요. 어느 쪽이든 "부가 작업만 실패했다"는 가정은 맞지 않습니다.</p>
+
+<h2>2. 트랜잭션 전체를 되돌리려면 서버를 다시 띄워야 한다</h2>
+
+<p>문장 단위가 싫으면 <code>innodb_rollback_on_timeout</code> 을 켜면 됩니다. 켜면 timeout 이 트랜잭션 전체를 되돌려요. 문제는 이 변수가 동적이 아니라는 점입니다. 실행 중인 서버에서 켜 보면 이렇게 거절돼요.</p>
+
+<div class="obsv-code">mysql&gt; SET GLOBAL innodb_rollback_on_timeout = ON;
+ERROR 1238 (HY000): Variable 'innodb_rollback_on_timeout' is a read only variable</div>
+
+<p>→ 매뉴얼 표에도 <code>Dynamic: No</code>, 기본값 OFF 로 나와 있어요. 설정 파일이나 시작 옵션(<code>--innodb-rollback-on-timeout</code>)에 넣고 재시작해야 합니다. 관리형 DB 라면 파라미터 그룹을 바꾸고 재부팅하는 일이 되니, 운영 중인 서버에 바로 넣을 수 있는 대책은 아니에요.</p>
+
+<p>실습에서는 이 옵션으로 띄운 서버를 하나 더 두고 같은 순서를 돌렸습니다(<code>s3</code>). 1205 직후 <code>open_trx = 0</code> 이었고, COMMIT 을 쳐도 <code>note</code> 는 비어 있었어요. 트랜잭션이 이미 닫혀서 COMMIT 이 할 일이 없었던 거예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 460" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="d5a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">세션 B: INSERT 한 줄 → 잠긴 행 UPDATE (에러) → 그다음</text>
+  <text x="30" y="66" text-anchor="start" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">① 1205 · 기본값</text>
+  <path d="M40 78 C 102 78, 163 79, 216 79 C 218 98, 217 117, 217 134 C 163 132, 102 134, 41 134 C 42 117, 38 98, 40 78 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="100" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">INSERT B-before</text>
+  <text x="128" y="125" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">살아 있다</text>
+  <path d="M220 106 C 232 105, 244 106, 256 106" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#d5a1)"/>
+  <path d="M262 78 C 324 76, 385 77, 438 78 C 440 98, 439 117, 437 134 C 385 135, 324 133, 262 133 C 260 117, 263 98, 262 78 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="100" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">UPDATE 에러</text>
+  <text x="350" y="125" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">이 문장만 취소</text>
+  <path d="M442 106 C 453 105, 468 107, 478 106" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#d5a1)"/>
+  <path d="M484 78 C 546 77, 607 80, 660 78 C 661 98, 659 117, 661 134 C 607 135, 546 136, 485 134 C 483 117, 483 98, 484 78 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="572" y="100" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">COMMIT</text>
+  <text x="572" y="125" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">B-before 커밋</text>
+  <text x="350" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">트랜잭션이 열린 채 남는다 (open_trx=1), 잠금도 그대로</text>
+  <text x="30" y="186" text-anchor="start" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">② 1205 · innodb_rollback_on_timeout=ON</text>
+  <path d="M40 198 C 102 197, 163 196, 216 198 C 216 218, 214 237, 216 254 C 163 253, 102 253, 41 254 C 39 237, 40 218, 40 198 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">INSERT B-before</text>
+  <text x="128" y="245" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">같이 취소</text>
+  <path d="M220 226 C 233 224, 246 224, 256 226" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#d5a1)"/>
+  <path d="M262 198 C 324 199, 385 199, 438 197 C 439 218, 437 237, 438 254 C 385 252, 324 252, 261 255 C 261 237, 263 218, 262 198 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">UPDATE 에러</text>
+  <text x="350" y="245" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">전체 롤백</text>
+  <path d="M442 226 C 456 228, 465 225, 478 226" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#d5a1)"/>
+  <path d="M484 198 C 546 198, 607 199, 660 197 C 661 218, 661 237, 661 254 C 607 252, 546 256, 483 254 C 484 237, 486 218, 484 198 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="572" y="220" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">COMMIT</text>
+  <text x="572" y="245" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">남는 것 없음</text>
+  <text x="350" y="280" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">트랜잭션이 닫힌다 (open_trx=0). 서버 시작 옵션이라 재시작 필요</text>
+  <text x="30" y="306" text-anchor="start" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">③ 1213 · 교착 희생자</text>
+  <path d="M40 318 C 102 317, 163 320, 216 318 C 215 338, 215 357, 215 374 C 163 372, 102 373, 40 375 C 39 357, 38 338, 40 318 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="340" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">INSERT B-before</text>
+  <text x="128" y="365" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">같이 취소</text>
+  <path d="M220 346 C 234 346, 243 345, 256 346" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#d5a1)"/>
+  <path d="M262 318 C 324 318, 385 319, 438 318 C 438 338, 436 357, 439 374 C 385 372, 324 374, 263 373 C 263 357, 264 338, 262 318 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="340" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">UPDATE 에러</text>
+  <text x="350" y="365" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">전체 롤백</text>
+  <path d="M442 346 C 454 347, 464 346, 478 346" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#d5a1)"/>
+  <path d="M484 318 C 546 317, 607 319, 660 318 C 660 338, 662 357, 661 374 C 607 376, 546 374, 484 374 C 484 357, 483 338, 484 318 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="572" y="340" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">INSERT B-after</text>
+  <text x="572" y="365" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">autocommit 로 커밋</text>
+  <text x="350" y="400" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">트랜잭션이 닫힌다. 그 뒤 문장은 트랜잭션 밖에서 바로 커밋된다</text>
+  <text x="350" y="442" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 같은 "try restarting transaction" 이어도 남는 것이 다르다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 같은 "try restarting transaction" 이어도 에러 뒤에 남는 것이 셋 다 다르다</div>
+
+<p>그림 2 의 ③ 이 1213 입니다. 교착 희생자로 뽑힌 세션도 <code>open_trx = 0</code> 이었어요. 앞의 INSERT 까지 전부 되돌아갔습니다(<code>s4</code>). 여기에도 함정이 하나 있어요. 그 세션은 이제 트랜잭션 밖에 있으니, 같은 연결에서 다음 문장을 실행하면 <code>autocommit</code> 으로 바로 커밋됩니다. 실습에서 1213 직후 <code>INSERT ... 'B-after'</code> 를 하고 <code>ROLLBACK</code> 했는데 <code>B-after</code> 는 남았어요. 앞부분은 사라지고 뒷부분만 커밋된 셈입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: autocommit</div>
+  MySQL 연결의 기본 모드예요. <code>BEGIN</code> 없이 실행한 문장은 각각 그 자리에서 커밋됩니다. autocommit 을 켠 채 <code>BEGIN</code> 으로 트랜잭션을 연 세션은, 교착으로 트랜잭션이 끝나면 다시 이 모드로 돌아가요. Spring 처럼 autocommit 을 꺼 둔 연결이면 다음 문장이 새 트랜잭션을 엽니다(5장).
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 내 서버가 어느 쪽인지부터 확인</div>
+  설정 두 개를 먼저 봅니다. 관리형 DB 는 파라미터 그룹의 값이 기본값과 다를 수 있으니 접속해서 직접 읽는 편이 확실해요.
+</div>
+
+<div class="obsv-code">SELECT @@innodb_rollback_on_timeout, @@innodb_deadlock_detect, @@innodb_lock_wait_timeout;
+
+-- 1205 를 받고도 끝나지 않은 트랜잭션: 잠금을 쥔 채 쿼리 없이 머무는 세션
+SELECT t.trx_mysql_thread_id, t.trx_started, t.trx_rows_modified, p.command, p.time
+  FROM information_schema.innodb_trx t
+  JOIN performance_schema.processlist p ON p.id = t.trx_mysql_thread_id
+ WHERE p.command = 'Sleep' AND p.time &gt; 10;</div>
+
+<p>→ 두 번째 쿼리는 트랜잭션은 열려 있는데 연결이 쉬고 있는 세션을 찾아요. 1205 를 잡아서 로그만 남긴 뒤 연결을 쥔 채 다른 일을 오래 하는 코드가 있거나, 반납할 때 롤백하지 않는 커넥션 풀을 쓰면 이런 세션이 남고, 그 세션이 쥔 잠금 때문에 다른 요청이 또 1205 를 받습니다. 1205 가 꼬리를 물고 늘어날 때 먼저 볼 곳이에요. 누가 누구를 막고 있는지는 <a href="#dl-03">3편</a>의 <code>sys.innodb_lock_waits</code> 로 이어서 봅니다.</p>
+
+<h2>3. 교착 감지를 끄면 교착이 1205 로 보인다</h2>
+
+<p>트래픽이 몰리는 서버에서는 교착 감지 비용을 줄이려고 <code>innodb_deadlock_detect</code> 를 끄기도 해요. 매뉴얼은 감지가 켜져 있으면(기본값) timeout 이 교착에 적용되지 않는다고 적습니다. InnoDB 가 교착을 바로 찾아 한쪽을 되돌리기 때문이에요. 반대로 끄면 "InnoDB relies on innodb_lock_wait_timeout for transaction rollback when a deadlock occurs" 라고 해요. 그런데 1장에서 본 대로 timeout 은 기본값에서 트랜잭션이 아니라 문장을 되돌립니다. 이 두 문장을 같이 읽으면 결과가 궁금해져서 돌려 봤어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 교착 감지와 희생자</div>
+  교착(deadlock)은 두 트랜잭션이 서로가 쥔 잠금을 기다리는 순환이에요. 기다려도 풀리지 않습니다. InnoDB 는 잠금을 기다리기 시작할 때 순환을 검사하고, 찾으면 넣고 고치고 지운 행이 적은 쪽을 희생자로 골라 트랜잭션 전체를 되돌려요. 희생자가 받는 에러가 1213 입니다.
+</div>
+
+<p>A 는 1번 행, B 는 2번 행을 잡은 뒤 서로 상대 행을 요청하게 했어요(A 는 <code>note</code> 3줄을 먼저 넣어 더 무겁게). 감지가 켜져 있을 때는 B 가 요청한 순간 1213 을 받았고 <code>lock_deadlocks</code> 카운터가 1 올랐습니다. 감지를 끄고 <code>innodb_lock_wait_timeout = 3</code> 으로 돌린 결과가 그림 3 이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 408" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="d5a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">교착 감지 OFF, lock_wait_timeout=3, 기본값 (s7)</text>
+  <path d="M110 236 C 293 235, 477 238, 667 236" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" marker-end="url(#d5a2)"/>
+  <path d="M110 231 C 111 234, 109 238, 110 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="110" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">0s</text>
+  <path d="M168 231 C 169 234, 167 238, 168 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="168" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">1s</text>
+  <path d="M226 231 C 227 234, 225 238, 226 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="226" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">2s</text>
+  <path d="M284 231 C 285 234, 283 238, 284 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="284" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">3s</text>
+  <path d="M342 231 C 343 234, 341 238, 342 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="342" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">4s</text>
+  <path d="M400 231 C 401 234, 399 238, 400 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="400" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">5s</text>
+  <path d="M458 231 C 459 234, 457 238, 458 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="458" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">6s</text>
+  <path d="M516 231 C 517 234, 515 238, 516 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="516" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">7s</text>
+  <path d="M574 231 C 575 234, 573 238, 574 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="574" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">8s</text>
+  <path d="M632 231 C 633 234, 631 238, 632 241" stroke="#8a8272" stroke-width="1.4" fill="none"/>
+  <text x="632" y="258" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">9s</text>
+  <text x="50" y="95" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#4a7fb5">A</text>
+  <text x="50" y="180" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#4a7fb5">B</text>
+  <path d="M110 70 C 293 72, 475 71, 632 70 C 631 85, 630 99, 632 112 C 475 113, 293 113, 110 113 C 111 99, 111 85, 110 70 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M226 74 C 287 75, 348 75, 400 74 C 401 86, 399 98, 400 108 C 348 109, 287 109, 226 109 C 227 98, 226 86, 226 74 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="168" y="97" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">1번 잠금</text>
+  <text x="313.0" y="97" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">2번 기다림</text>
+  <text x="400" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">1205 (문장만)</text>
+  <text x="516" y="97" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">1번은 계속 쥔다</text>
+  <path d="M168 155 C 276 153, 383 155, 475 155 C 476 170, 475 184, 476 197 C 383 198, 276 198, 168 197 C 169 184, 169 170, 168 155 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M284 159 C 345 158, 406 160, 458 160 C 459 171, 460 183, 459 193 C 406 193, 345 193, 283 194 C 286 183, 284 171, 284 159 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="226" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">2번 잠금</text>
+  <text x="371.0" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">1번 기다림</text>
+  <text x="458" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">1205</text>
+  <text x="562.4" y="172" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">B 는 바로 COMMIT</text>
+  <text x="562.4" y="194" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">2번 UPDATE 만 커밋</text>
+  <path d="M400 114 C 418 127, 435 138, 452 152" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-dasharray="1 6" stroke-linecap="round"/>
+  <text x="350" y="296" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">1213 은 한 번도 나지 않는다. lock_deadlocks 도 그대로</text>
+  <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">A 가 1205 직후 COMMIT 하면 (s5): B 가 진행, A 는 두 번째 UPDATE 만 빠진 채 커밋</text>
+  <text x="350" y="354" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">rollback_on_timeout=ON 이면 (s6): A 전체 롤백, B 진행</text>
+  <text x="350" y="390" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 감지를 끄면 교착은 1205 로 보이고, 기본값에서는 잠금이 풀리지 않는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 감지를 끄면 순환이 있어도 1213 이 아니라 1205 가 난다</div>
+
+<p>→ 먼저 기다린 A 가 5초쯤에 1205 를 받았어요. 1213 은 한 번도 나지 않았고 <code>lock_deadlocks</code> 도 그대로였습니다. 그다음은 A 가 에러 뒤에 무엇을 하느냐에 따라 갈렸어요. 세 바퀴 모두 같은 결과였습니다.</p>
+
+<div class="obsv-code">시나리오                                  A 가 1205 뒤에           결과
+s5  감지 OFF, 기본값                       바로 COMMIT              B 진행. A 는 두 번째 UPDATE 만 빠진 채
+                                                                   note 3줄 + 1번 UPDATE 가 커밋 (item 1=2, 2=1)
+s7  감지 OFF, 기본값                       4초 더 머문 뒤 ROLLBACK  A 가 1번을 계속 쥐어서 B 도 6초쯤 1205
+                                                                   B 는 바로 COMMIT 해서 note 1줄 + 2번 UPDATE 만
+                                                                   커밋 (item 1=0, 2=1). 끝나기까지 약 9초
+s6  감지 OFF, rollback_on_timeout=ON       (이미 전체 롤백)         A 의 잠금이 풀려 B 진행 (item 1=1, 2=1)</div>
+
+<p>s7 이 매뉴얼의 "문장 롤백은 잠금을 풀지 않는다"가 실제로 보이는 장면이에요. A 는 1205 를 받고도 1번 행을 계속 쥐고 있어서 B 도 결국 timeout 이 났습니다. 그리고 B 는 1205 뒤에 COMMIT 했고, 그 COMMIT 은 성공했어요. 1번 UPDATE 만 빠진 B 의 반쪽이 커밋된 거예요. s5 의 A 와 같은 모양이 상대 쪽에서도 난 셈입니다. 교착 하나가 두 트랜잭션을 둘 다 반쪽으로 만들 수 있다는 뜻이에요. 그러니 <span class="obsv-mark">교착 감지를 끌 계획이라면 <code>innodb_rollback_on_timeout</code> 을 함께 켜거나, 애플리케이션이 1205 를 받는 즉시 트랜잭션 전체를 롤백하게 만들어야</span> 해요. 그리고 교착 수를 <code>lock_deadlocks</code> 나 에러 로그로 세고 있었다면, 감지를 끈 순간 그 숫자는 더 이상 늘지 않습니다(s5·s7 에서 9 그대로였어요). 교착은 1205, 즉 <code>lock_timeouts</code> 쪽으로 옮겨 가요(<a href="#dl-04">4편</a>에서 다룬 "조용해진 알람"과 같은 종류의 착시입니다).</p>
+
+<h2>4. Spring 은 두 에러를 어떤 예외로 넘겨주나</h2>
+
+<p>이제 애플리케이션 쪽입니다. 작은 Spring Boot 프로젝트(Gradle wrapper 포함)로 같은 1213 과 1205 를 네 가지 경로에서 받아 예외 타입을 찍었어요. 버전은 Spring Framework 7.0.9, Hibernate ORM 7.4.5.Final, Connector/J 9.7.0, MySQL 8.4.11 입니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 예외 변환 (exception translation)</div>
+  드라이버가 던진 <code>SQLException</code> 을 Spring 의 <code>DataAccessException</code> 계층으로 바꿔 주는 단계예요. 그래야 DB 마다 다른 에러 코드를 몰라도 <code>catch</code> 할 수 있습니다. 바꾸는 주체가 JdbcTemplate, Hibernate, 저장소 프록시로 경로마다 달라요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-05/exception-types.png" alt="scripts/app.sh 39050 throw 를 jdbc, repo, commit, em 네 경로에서 1213 으로 실행한 화면. jdbc, repo, commit 은 org.springframework.dao.CannotAcquireLockException, em 은 jakarta.persistence.PessimisticLockException 이고 원인은 모두 MySQLTransactionRollbackException SQLState 40001 errorCode 1213" style="max-width:100%">
+</div>
+<div class="obsv-figcap">그림 4. 같은 1213 이 세 경로에서는 CannotAcquireLockException, EntityManager 직접 경로에서는 JPA 예외로 온다</div>
+
+<p>여섯 줄로 줄이면 이렇습니다(<code>results/summary.txt</code>).</p>
+
+<div class="obsv-code">경로                                          1213                                1205
+JdbcTemplate (기본)                           CannotAcquireLockException          CannotAcquireLockException
+JdbcTemplate + 클래스패스 루트 sql-error-codes.xml   DeadlockLoserDataAccessException    CannotAcquireLockException
+Spring Data 저장소 saveAndFlush               CannotAcquireLockException          CannotAcquireLockException
+커밋 시점 flush (JpaTransactionManager)        CannotAcquireLockException          CannotAcquireLockException
+@Repository 가 아닌 빈의 EntityManager.flush   jakarta.persistence.PessimisticLockException   jakarta.persistence.LockTimeoutException
+드라이버 원인 (전부 공통)                      MySQLTransactionRollbackException   MySQLTransactionRollbackException
+                                              SQLState 40001, errorCode 1213      SQLState 40001, errorCode 1205</div>
+
+<p>→ 눈여겨볼 곳이 세 군데예요.</p>
+
+<p><b>첫째, <code>DeadlockLoserDataAccessException</code> 은 기본 설정에서 오지 않았습니다.</b> 이 클래스는 6.0.3 부터 deprecated 이고(<a href="https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/dao/DeadlockLoserDataAccessException.html">javadoc</a>은 <code>PessimisticLockingFailureException</code>/<code>CannotAcquireLockException</code> 을 대신 쓰라고 해요), 지금도 Spring 이 기본으로 들고 있는 <a href="https://github.com/spring-projects/spring-framework/blob/v7.0.9/spring-jdbc/src/main/resources/org/springframework/jdbc/support/sql-error-codes.xml">sql-error-codes.xml</a> 의 MySQL 항목에는 <code>deadlockLoserCodes = 149,1213</code>, <code>cannotAcquireLockCodes = 1205,3572</code> 가 있습니다. 하지만 7.0.9 의 <a href="https://github.com/spring-projects/spring-framework/blob/v7.0.9/spring-jdbc/src/main/java/org/springframework/jdbc/support/JdbcAccessor.java">JdbcAccessor</a> 는 클래스패스 루트에 <code>sql-error-codes.xml</code> 이 있기만 하면 기본 코드표 기반 번역기(<code>SQLErrorCodeSQLExceptionTranslator</code>, 기본 파일을 읽고 사용자 파일로 덮어씁니다)를 고르고, 없으면 <code>SQLExceptionSubclassTranslator</code> 를 씁니다. 실습에서 찍은 기본 번역기도 이 클래스였어요. 이 번역기는 드라이버 예외가 <code>SQLTransactionRollbackException</code> 이고 SQLState 가 <code>40001</code> 이면 <code>CannotAcquireLockException</code> 을 만듭니다. 파일을 루트에 얹어 다시 돌렸을 때만 1213 이 <code>DeadlockLoserDataAccessException</code> 으로 왔어요. 그러니 Spring 6.0 이상에서, 번역기를 따로 지정하지 않았고(Spring Boot 는 <code>SQLExceptionTranslator</code> 빈이 하나 있으면 JdbcTemplate 에 꽂아요) 루트 파일도 없다면, 이 타입을 <code>catch</code> 하는 코드는 아무것도 잡지 못합니다. Spring 5.3 의 JdbcAccessor 는 DataSource 가 있으면 코드표 기반 번역기를 썼고 이 선택이 6.0 에서 바뀌었어요. <b>Spring Boot 2 에서 3 으로 올리면서 이 <code>catch</code> 블록이 조용히 죽었을 수 있습니다.</b></p>
+
+<p><b>둘째, 1205 도 SQLState 40001 로 왔습니다.</b> 서버는 1205 를 <code>HY000</code> 으로 보내지만(그림 1), Connector/J 9.7.0 은 1205 에도 <code>MySQLTransactionRollbackException</code> 에 SQLState <code>40001</code> 을 붙였어요. 그래서 SQLState 로 갈래를 나누는 번역기는 두 에러를 구분하지 못하고, JdbcTemplate 기본 경로에서는 둘이 같은 타입이 됩니다. Hibernate 쪽은 <a href="https://github.com/hibernate/hibernate-orm/blob/7.4.5/hibernate-core/src/main/java/org/hibernate/dialect/MySQLDialect.java">MySQLDialect</a> 가 에러 코드 1205 를 <code>LockTimeoutException</code> 으로 먼저 잡고, 1213 은 SQLState 40001 을 보고 <code>LockAcquisitionException</code> 으로 만들어서 원인 타입은 서로 달랐어요. 하지만 앞의 것이 뒤의 것을 상속하고, Spring 의 <a href="https://github.com/spring-projects/spring-framework/blob/v7.0.9/spring-orm/src/main/java/org/springframework/orm/jpa/hibernate/HibernateExceptionTranslator.java">HibernateExceptionTranslator</a> 가 <code>LockAcquisitionException</code> 을 <code>CannotAcquireLockException</code> 으로 바꾸므로 바깥에서는 다시 같은 타입이 돼요. <span class="obsv-mark">1213 인지 1205 인지 알아야 한다면 예외 타입이 아니라 원인 사슬의 <code>SQLException.getErrorCode()</code> 를 봐야</span> 합니다.</p>
+
+<p><b>셋째, EntityManager 를 직접 쓰는 평범한 빈에서는 Spring 예외가 아니었습니다.</b> 예외 변환은 Spring Data 저장소나 <code>@Repository</code> 빈의 프록시, 그리고 커밋을 처리하는 트랜잭션 매니저에서 일어나요. 서비스 빈에서 <code>em.flush()</code> 를 직접 부르면 그 어느 것도 거치지 않아서 <code>jakarta.persistence.PessimisticLockException</code> 이나 <code>LockTimeoutException</code> 이 그대로 나옵니다. 둘 다 <code>PessimisticLockingFailureException</code> 의 자식이 아니에요.</p>
+
+<h2>5. 잡고 계속 가면: JDBC 는 반쪽 커밋, JPA 는 커밋 실패</h2>
+
+<p>트랜잭션 안에서 잠금 실패를 잡고 다음 일을 계속하는 코드도 돌려 봤어요. 잠금 앞에 <code>B-before</code>, 잡은 뒤에 <code>B-after</code> 를 넣고 커밋하는 순서입니다.</p>
+
+<div class="obsv-code">경로 / 에러          잡은 뒤 커밋          남은 note
+JdbcTemplate 1205    성공                  B-before, B-after       (실패한 UPDATE 만 빠짐)
+JdbcTemplate 1213    성공                  B-after                 (앞부분은 사라지고 뒷부분만)
+JPA 저장소 1205      UnexpectedRollbackException   없음
+JPA 저장소 1213      UnexpectedRollbackException   없음</div>
+
+<p>→ JdbcTemplate 의 1213 줄이 2장의 autocommit 함정과 같은 모양이에요. 트랜잭션을 시작할 때 연결의 autocommit 이 꺼졌기 때문에, 서버가 트랜잭션을 끝낸 뒤의 INSERT 는 새 트랜잭션을 열었고 Spring 의 커밋이 그걸 커밋했습니다. Spring 은 자기가 처음 연 트랜잭션이 이미 없다는 걸 몰랐어요. JPA 저장소 쪽은 반대로 커밋 자체가 <code>Transaction silently rolled back because it has been marked as rollback-only</code> 로 실패했습니다. 실측으로 확인한 것은 이 결과뿐이에요. 원인은 Spring 의 트랜잭션 참여 규칙(REQUIRED)으로 설명됩니다. Spring Data 저장소 메서드는 그 자체가 <code>@Transactional</code> 이라, 예외가 저장소 메서드 밖으로 나가면 참여 중인 바깥 트랜잭션에 rollback-only 표시가 남아요. JdbcTemplate 은 트랜잭션 프록시가 아니라서 표시를 남기지 않습니다. 다만 Hibernate 가 예외가 난 트랜잭션에 스스로 롤백 표시를 하는 경로도 같은 결과를 낼 수 있어서, 어느 쪽이 표시했는지는 이 실습으로 가리지 않았어요. 데이터는 안전했지만 바깥으로 나온 예외가 잠금 예외가 아니라 <code>UnexpectedRollbackException</code> 이라서, 잠금 실패용 처리를 비켜 갑니다.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: rollback-only</div>
+  트랜잭션에 "커밋하지 말고 롤백할 것"이라고 표시해 두는 상태예요. 바깥에서 커밋을 시도하면 롤백한 뒤 <code>UnexpectedRollbackException</code> 을 던져요.
+</div>
+
+<p>그러니 규칙은 하나예요. <b>잠금 예외는 트랜잭션 안에서 잡지 않고, 트랜잭션 경계 바깥에서 받습니다.</b></p>
+
+<h2>6. 무엇을 재시도하고 어떻게 응답하나</h2>
+
+<p>매뉴얼은 1213 이면 트랜잭션 전체를, 1205 면 기본값에서는 그 문장을 다시 하라고 해요. 하지만 Spring 의 선언적 트랜잭션에서는 예외가 <code>@Transactional</code> 경계를 지나는 순간 트랜잭션이 롤백되므로, 문장만 다시 할 기회는 사실상 없습니다. 아래는 이 실측을 바탕으로 한 제 권고예요. 재시도 횟수는 예시값이니 각자의 지연 예산에 맞추세요.</p>
+
+<div class="obsv-code">받은 것                     서버에 남은 상태                  할 일
+1213                        트랜잭션 없음 (전체 롤백)         경계 바깥에서 트랜잭션 전체 재시도 (2~3회, 지터)
+1205, 기본값                트랜잭션 열림, 잠금 유지          즉시 롤백. 재시도는 전체로, 횟수는 더 적게
+                                                              (상대가 긴 트랜잭션이면 다시 기다리다 또 실패)
+1205, rollback_on_timeout   트랜잭션 없음                     1213 과 같다
+1205, 교착 감지 OFF         교착일 수 있음, 잠금 유지         즉시 롤백 후 전체 재시도. 롤백이 늦으면 상대도 1205
+트랜잭션 안에서 잡음         JDBC: 반쪽 커밋 / JPA: 커밋 실패  하지 않는다</div>
+
+<p>1205 를 1213 보다 덜 재시도하라고 적은 데는 이유가 있어요. 교착은 두 트랜잭션이 서로를 막은 우연한 순서라서, 희생자가 물러나면 상대는 곧 끝나고 재시도는 대개 바로 성공합니다. 1205 는 상대가 기다림 한도보다 오래 잠금을 쥐고 있었다는 뜻이에요. 그 상대가 배치 작업이나 느린 외부 호출을 품은 긴 트랜잭션이라면, 같은 요청을 다시 보내도 같은 행 앞에서 같은 시간만큼 기다리다 또 실패합니다. 재시도를 늘리기보다 그 긴 트랜잭션을 찾는 쪽이 먼저예요. 기본 50초를 그대로 두면 요청 스레드가 50초씩 묶이니, 요청 경로라면 세션 단위로 기다림을 짧게 잡는 것도 검토할 만합니다.</p>
+
+<p>전체 재시도가 안전하려면 트랜잭션 안에 되돌릴 수 없는 일(외부 API 호출, 메시지 발행)이 없어야 해요. 그리고 재시도 루프는 반드시 트랜잭션 바깥에 둡니다. 이미 열린 트랜잭션 안에서 <code>TransactionTemplate</code> 을 다시 부르면 기본 전파(REQUIRED)라 새 트랜잭션이 아니라 같은 트랜잭션에 합류해요.</p>
+
+<div class="obsv-code">// 트랜잭션 바깥(서비스 진입점)에서 부른다
+public &lt;T&gt; T withLockRetry(Supplier&lt;T&gt; work) {
+    for (int attempt = 1; ; attempt++) {
+        try {
+            return tx.execute(status -&gt; work.get());   // 매번 새 트랜잭션
+        } catch (RuntimeException e) {
+            Integer code = mysqlErrorCode(e);           // 원인 사슬에서 SQLException.getErrorCode()
+            boolean retryable = code != null &amp;&amp; (code == 1213 || code == 1205);
+            if (!retryable || attempt == (code == 1213 ? 3 : 2)) throw e;
+            sleep(50L * attempt + ThreadLocalRandom.current().nextLong(50));
+        }
+    }
+}
+
+static Integer mysqlErrorCode(Throwable e) {
+    for (Throwable t = e; t != null; t = t.getCause())
+        if (t instanceof SQLException s &amp;&amp; s.getErrorCode() != 0) return s.getErrorCode();
+    return null;
+}</div>
+
+<p>→ 예외 타입 대신 에러 코드를 본 이유는 4장의 표 때문이에요. 경로마다 타입은 넷으로 갈렸지만(Spring 예외 둘, JPA 예외 둘) 원인 사슬의 에러 코드는 다섯 경로 모두 같았습니다. 그리고 <code>UnexpectedRollbackException</code> 에는 원인 사슬이 없으니 5장의 "잡지 않는다" 규칙을 먼저 지켜야 이 판단이 성립해요.</p>
+
+<h3>공통 예외 핸들러가 교착을 400 으로 덮는다</h3>
+
+<p>제 회사 API 에서 같은 본문을 네 번씩 동시에 다시 보내는 시험을 했을 때 360건 중 195건이 실패했어요. 원인은 <a href="#dl-01">1편</a>과 같은 계열의 교착이었는데, 응답 코드는 500 이 아니라 400 이었습니다. 공통 예외 핸들러가 따로 처리하지 않은 예외를 전부 400 으로 응답하고 있었거든요. 400 은 "요청이 잘못됐다"는 뜻이라 클라이언트는 재시도하지 않고, 5xx 비율을 보는 알람에도 잡히지 않습니다. 서버의 동시성 문제가 클라이언트 탓으로 기록된 거예요.</p>
+
+<p>잠금 실패는 같은 요청을 잠시 뒤 다시 보내면 성공할 수 있는 서버 쪽 일시 상태예요. 제 권고는 재시도를 다 쓴 뒤 503 에 <code>Retry-After</code> 를 붙이거나 409 로 돌려주는 것입니다. 400 처럼 클라이언트 잘못으로 읽히는 코드는 피하세요. 그리고 아래 그림 5 에서 초록 상자 밖에 있는 JPA 예외 둘까지 같이 받아야 합니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 386" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">같은 1213 / 1205 가 Spring 에서 도착하는 곳</text>
+  <path d="M30 52 C 254 53, 478 52, 670 52 C 670 100, 670 149, 671 190 C 478 191, 254 191, 29 189 C 30 149, 31 100, 30 52 Z" fill="#f4f9f2" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="15" fill="#2e6b41">PessimisticLockingFailureException</text>
+  <path d="M52 96 C 154 95, 255 97, 342 96 C 340 123, 342 151, 341 174 C 255 172, 154 173, 52 173 C 51 151, 50 123, 52 96 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="197" y="120" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">CannotAcquireLockException</text>
+  <text x="197" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">JdbcTemplate 기본: 1213, 1205</text>
+  <text x="197" y="166" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5">JPA 저장소 · 커밋: 1213, 1205</text>
+  <path d="M360 96 C 461 96, 562 96, 648 96 C 648 123, 647 151, 649 174 C 562 172, 461 174, 360 174 C 358 151, 361 123, 360 96 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="504" y="120" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">DeadlockLoserDataAccessException</text>
+  <text x="504" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">sql-error-codes.xml 둘 때만: 1213</text>
+  <text x="504" y="166" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">6.0.3 부터 deprecated</text>
+  <path d="M30 214 C 135 213, 240 212, 330 214 C 328 244, 330 274, 330 300 C 240 300, 135 302, 31 300 C 31 274, 31 244, 30 214 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="180" y="238" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">jakarta.persistence.</text>
+  <text x="180" y="256" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">PessimisticLockException / LockTimeoutException</text>
+  <text x="180" y="286" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">@Repository 아닌 빈의 EntityManager</text>
+  <path d="M370 214 C 475 213, 580 213, 670 214 C 670 244, 672 274, 671 300 C 580 300, 475 299, 371 299 C 368 274, 370 244, 370 214 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="520" y="238" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">UnexpectedRollbackException</text>
+  <text x="520" y="264" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">JPA 에서 잡고 계속 진행한 뒤</text>
+  <text x="520" y="286" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">커밋할 때</text>
+  <text x="350" y="334" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">초록 상자 밖 = PessimisticLockingFailureException 핸들러가 못 잡는다</text>
+  <text x="350" y="368" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 잠금 실패 처리는 부모 타입 하나로 끝나지 않는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 잠금 실패 처리는 PessimisticLockingFailureException 하나로 끝나지 않는다</div>
+
+<div class="obsv-code">@RestControllerAdvice
+@Order(Ordered.HIGHEST_PRECEDENCE)   // Exception 을 잡는 공통 핸들러보다 먼저
+class LockFailureAdvice {
+    @ExceptionHandler({
+        PessimisticLockingFailureException.class,               // JdbcTemplate, 저장소, 커밋
+        jakarta.persistence.PessimisticLockException.class,      // EntityManager 직접 (1213)
+        jakarta.persistence.LockTimeoutException.class           // EntityManager 직접 (1205)
+    })
+    ResponseEntity&lt;ProblemDetail&gt; lockFailure(Exception e) {
+        ProblemDetail body = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        body.setDetail("잠시 후 다시 시도해 주세요");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, "1").body(body);
+    }
+}</div>
+
+<p>→ <code>UnexpectedRollbackException</code> 은 일부러 넣지 않았어요. 잠금 말고도 원인이 많은 예외라서, 이걸 503 으로 덮으면 다른 버그가 가려집니다. 이 예외가 보이면 핸들러가 아니라 트랜잭션 안에서 예외를 삼키는 코드를 고쳐야 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 내 코드에서 바꿀 것</div>
+  &bull; <code>catch (DeadlockLoserDataAccessException e)</code> 를 찾으세요. Spring 6.0 이상에서 번역기를 따로 지정하지 않았고 클래스패스 루트에 <code>sql-error-codes.xml</code> 도 없으면 이 블록은 실행되지 않습니다(Boot 2 에서 3 으로 올린 프로젝트라면 특히). <code>PessimisticLockingFailureException</code> 으로 바꾸세요<br>
+  &bull; <code>@Transactional</code> 메서드 안에서 잠금 예외를 <code>catch</code> 하고 계속 진행하는 곳을 찾으세요. JdbcTemplate 이면 반쪽 커밋, JPA 면 <code>UnexpectedRollbackException</code> 이 됩니다<br>
+  &bull; 1213 과 1205 를 나눠 처리해야 하면 예외 타입이 아니라 원인의 에러 코드로 나누세요. Connector/J 는 1205 에도 SQLState 40001 을 붙여 줍니다(9.7.0 에서 확인, 다른 드라이버는 확인하지 않았어요)<br>
+  &bull; 공통 예외 핸들러에서 잠금 실패가 어떤 상태 코드로 나가는지 직접 확인하세요. EntityManager 를 직접 쓰는 빈이 있다면 JPA 예외 두 개도 같이 받으세요<br>
+  &bull; <code>innodb_deadlock_detect</code> 를 끄려면 <code>innodb_rollback_on_timeout</code> 을 함께 켜는 재시작을 계획에 넣고, 교착 지표를 1205 쪽에서도 보세요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>1213 은 트랜잭션 전체를 되돌리고, 1205 는 기본값에서 그 문장만 되돌립니다. 1205 를 받은 트랜잭션은 열린 채 잠금을 쥐고 있고, 그대로 COMMIT 하면 앞 문장이 커밋돼요.</b><br><br>
+  <code>innodb_rollback_on_timeout</code> 은 재시작해야 켜지고, 교착 감지를 끄면 교착이 1205 로 바뀌어 기본값에서는 양쪽이 다 timeout 날 때까지 잠금이 풀리지 않았어요. Spring 에서는 JdbcTemplate 기본, 저장소, 커밋 경로 모두 두 에러를 <code>CannotAcquireLockException</code> 으로 줬고, deprecated 인 <code>DeadlockLoserDataAccessException</code> 은 <code>sql-error-codes.xml</code> 을 직접 둘 때만 왔습니다. EntityManager 를 직접 쓰면 Spring 예외가 아닌 JPA 예외가 왔어요.<br><br>
+  "try restarting transaction" 은 같은 문장이지만, 무엇을 다시 시작할지는 에러 코드와 서버 설정을 보고 코드가 정해야 합니다.
+</div>
+
+</div>

@@ -1,0 +1,28 @@
+dl-07 실행 요약 (2026-10-17, Docker Desktop 4.78.0 / Engine 29.5.3, API 1.54, 최소 API 1.40)
+Gradle 9.8.1, Java 25.0.3, JUnit 5.12.2, MySQL 8.4 (mysql:8.4), H2 2.4.240, Connector/J 9.7.0
+FirstVisitScenario: 라운드마다 새 키, 스레드 3개를 CountDownLatch 로 동시 출발, 30 라운드
+
+a-skip-dockerhost        test=FAILED   build=FAILED     impl=buggy rounds=30 threads=3 ok=60 failed=30 errors={40001/1213=30}
+a-strict-dockerhost      test=FAILED   build=FAILED     impl=buggy rounds=30 threads=3 ok=60 failed=30 errors={40001/1213=30}
+b-deactivate-1.19.8      test=FAILED   build=FAILED     
+b-noskip-1.19.8          test=SKIPPED  build=FAILED     
+c-buggy-r1               test=FAILED   build=FAILED     impl=buggy rounds=30 threads=3 ok=60 failed=30 errors={40001/1213=30}
+c-buggy-r2               test=FAILED   build=FAILED     impl=buggy rounds=30 threads=3 ok=60 failed=30 errors={40001/1213=30}
+c-buggy-r3               test=FAILED   build=FAILED     impl=buggy rounds=30 threads=3 ok=60 failed=30 errors={40001/1213=30}
+c-fixed-r1               test=PASSED   build=SUCCESSFUL impl=fixed rounds=30 threads=3 ok=90 failed=0 errors={}
+c-fixed-r2               test=PASSED   build=SUCCESSFUL impl=fixed rounds=30 threads=3 ok=90 failed=0 errors={}
+c-fixed-r3               test=PASSED   build=SUCCESSFUL impl=fixed rounds=30 threads=3 ok=90 failed=0 errors={}
+h2-buggy                 test=PASSED   build=SUCCESSFUL impl=buggy rounds=30 threads=3 ok=90 failed=0 errors={}
+h2-probe                 test=PASSED   build=SUCCESSFUL 
+v-skip-1.19.8-api144     test=FAILED   build=FAILED     impl=buggy rounds=30 threads=3 ok=60 failed=30 errors={40001/1213=30}
+v-skip-1.19.8            test=SKIPPED  build=SUCCESSFUL 
+v-skip-1.21.3            test=SKIPPED  build=SUCCESSFUL 
+v-skip-1.21.4            test=FAILED   build=FAILED     impl=buggy rounds=30 threads=3 ok=60 failed=30 errors={40001/1213=30}
+v-skip-2.0.5             test=FAILED   build=FAILED     impl=buggy rounds=30 threads=3 ok=60 failed=30 errors={40001/1213=30}
+v-strict-1.19.8          test=FAILED   build=FAILED     
+
+Docker API 직접 호출 (curl --unix-socket /var/run/docker.sock http://localhost/vX/version)
+  v1.32 400   v1.39 400   v1.40 200   v1.44 200
+(원출력 results/curl-api-versions.txt)
+Testcontainers 1.19.8 의 DockerClientProviderStrategy 는 API 버전을 따로 정하지 않으면 VERSION_1_32 로 둔다
+(태그 1.19.8 소스 409-410행, 2.0.0·2.0.1 도 같은 코드. 1.21.4·2.0.5 는 1.44 를 먼저 쓴다)

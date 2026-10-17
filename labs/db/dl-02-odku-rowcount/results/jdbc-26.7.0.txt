@@ -1,0 +1,35 @@
+# mode=Connector/J 기본값 driver=MySQL Connector/J mysql-connector-j-26.7.0 (Revision: 559f62df01d4f618440da174ff45ba87f7b3b2a8) server=8.4.11
+case update   ROW_COUNT() warnings   ROW_COUNT()² 설명
+C01  1        1           0          1           INSERT IGNORE 새 행
+C02  0        0           1062       -1          INSERT IGNORE 중복
+C03  1        1           1265       -1          INSERT IGNORE 새 행, note 길이 초과(잘려 들어감)
+C04  ERR 1062 -           SQLIntegrityConstraintViolationException -           일반 INSERT 중복
+C05  1        1           0          1           ODKU 새 행
+C06  1        1           0          1           ODKU 중복, v=v (무변경)
+C07  1        1           0          1           ODKU 중복, 같은 값 대입 (무변경)
+C08  2        2           0          2           ODKU 중복, 값 변경
+C09  2        2           0          2           ODKU 중복, hits=hits+1 (항상 변경)
+C10  2        2           0          2           ODKU 두 행: 중복 무변경 + 새 행
+C11  1        1           0          1           UPDATE 같은 값
+C12  1        1           0          1           UPDATE 다른 값
+C13  0        0           0          0           UPDATE 없는 행
+# snapshot REPEATABLE READ  INSERT IGNORE=0  잠금없는 SELECT=0행  FOR SHARE=1행
+# snapshot READ COMMITTED   INSERT IGNORE=0  잠금없는 SELECT=1행  FOR SHARE=1행
+
+# mode=useAffectedRows=true driver=MySQL Connector/J mysql-connector-j-26.7.0 (Revision: 559f62df01d4f618440da174ff45ba87f7b3b2a8) server=8.4.11
+case update   ROW_COUNT() warnings   ROW_COUNT()² 설명
+C01  1        1           0          1           INSERT IGNORE 새 행
+C02  0        0           1062       -1          INSERT IGNORE 중복
+C03  1        1           1265       -1          INSERT IGNORE 새 행, note 길이 초과(잘려 들어감)
+C04  ERR 1062 -           SQLIntegrityConstraintViolationException -           일반 INSERT 중복
+C05  1        1           0          1           ODKU 새 행
+C06  0        0           0          0           ODKU 중복, v=v (무변경)
+C07  0        0           0          0           ODKU 중복, 같은 값 대입 (무변경)
+C08  2        2           0          2           ODKU 중복, 값 변경
+C09  2        2           0          2           ODKU 중복, hits=hits+1 (항상 변경)
+C10  1        1           0          1           ODKU 두 행: 중복 무변경 + 새 행
+C11  0        0           0          0           UPDATE 같은 값
+C12  1        1           0          1           UPDATE 다른 값
+C13  0        0           0          0           UPDATE 없는 행
+# snapshot REPEATABLE READ  INSERT IGNORE=0  잠금없는 SELECT=0행  FOR SHARE=1행
+# snapshot READ COMMITTED   INSERT IGNORE=0  잠금없는 SELECT=1행  FOR SHARE=1행

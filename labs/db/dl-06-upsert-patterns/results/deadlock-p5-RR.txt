@@ -1,0 +1,30 @@
+deadlock pattern=p5 iso=RR key=k150 (seed rows k100 k200 k300)
+  A> SELECT id FROM visit WHERE user_key='k150' FOR UPDATE
+      => ok rows=0
+  B> SELECT id FROM visit WHERE user_key='k150' FOR UPDATE
+      => ok rows=0
+  -- data_locks: both locked a row that does not exist
+     A  TABLE  -            IX                       GRANTED  -
+     A  RECORD uk_user_key  X,GAP                    GRANTED  'k200', 2
+     B  TABLE  -            IX                       GRANTED  -
+     B  RECORD uk_user_key  X,GAP                    GRANTED  'k200', 2
+  A> INSERT INTO visit(user_key, payload, inserted_by) VALUES ('k150','v1','A')
+      => (waiting)
+  -- data_locks: A tries to insert
+     A  TABLE  -            IX                       GRANTED  -
+     A  RECORD uk_user_key  X,GAP                    GRANTED  'k200', 2
+     A  RECORD uk_user_key  X,GAP,INSERT_INTENTION   WAITING  'k200', 2
+     B  TABLE  -            IX                       GRANTED  -
+     B  RECORD uk_user_key  X,GAP                    GRANTED  'k200', 2
+  B> INSERT INTO visit(user_key, payload, inserted_by) VALUES ('k150','v1','B')
+      => ERROR 1213 Deadlock found when trying to get lock; try restarting transaction
+  -- data_locks: after B's insert
+     A  TABLE  -            IX                       GRANTED  -
+     A  RECORD uk_user_key  X,GAP                    GRANTED  'k150', 4
+     A  RECORD uk_user_key  X,GAP,INSERT_INTENTION   GRANTED  'k200', 2
+     A  RECORD uk_user_key  X,GAP                    GRANTED  'k200', 2
+  A> COMMIT
+      => ok
+  B> COMMIT
+      => ok
+  rows for key: [A]

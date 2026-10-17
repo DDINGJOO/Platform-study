@@ -1,0 +1,17 @@
+DROP TABLE IF EXISTS item;
+CREATE TABLE item (
+  id   BIGINT PRIMARY KEY AUTO_INCREMENT,
+  code VARCHAR(20) NOT NULL,
+  v    INT NOT NULL,
+  hits INT NOT NULL DEFAULT 0,
+  note VARCHAR(5) NULL,
+  UNIQUE KEY uk_code (code)
+);
+DROP TABLE IF EXISTS lk;
+CREATE TABLE lk (
+  id   INT PRIMARY KEY,
+  code VARCHAR(10) NOT NULL,
+  v    INT NOT NULL,
+  UNIQUE KEY uk_code (code)
+);
+INSERT INTO lk VALUES (10,'a',1),(20,'c',1),(30,'e',1);

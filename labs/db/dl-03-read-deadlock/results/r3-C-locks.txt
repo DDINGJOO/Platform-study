@@ -1,0 +1,91 @@
+## C data_locks
++------+------+------------+-------+-------------+--------+------------------------+---------+----------+
+| thr  | trx  | owner_conn | tbl   | idx         | type   | mode                   | status  | data     |
++------+------+------------+-------+-------------+--------+------------------------+---------+----------+
+|  267 | 2062 |        227 | visit | NULL        | TABLE  | IS                     | GRANTED | NULL     |
+|  267 | 2062 |        227 | acct  | NULL        | TABLE  | IX                     | GRANTED | NULL     |
+|  267 | 2062 |        227 | acct  | PRIMARY     | RECORD | X,REC_NOT_GAP          | GRANTED | 1        |
+|  267 | 2062 |        227 | visit | PRIMARY     | RECORD | S,REC_NOT_GAP          | GRANTED | 1        |
+|  267 | 2062 |        227 | acct  | PRIMARY     | RECORD | X,GAP                  | GRANTED | 10       |
+|  267 | 2062 |        227 | acct  | PRIMARY     | RECORD | X                      | GRANTED | 2        |
+|  267 | 2062 |        227 | visit | uk_user_key | RECORD | S,REC_NOT_GAP          | GRANTED | 'u-1', 1 |
+|  268 | 2063 |        228 | acct  | NULL        | TABLE  | IX                     | GRANTED | NULL     |
+|  268 | 2063 |        228 | acct  | PRIMARY     | RECORD | X,GAP,INSERT_INTENTION | WAITING | 10       |
++------+------+------------+-------+-------------+--------+------------------------+---------+----------+
+## C STATUS TRANSACTIONS (innodb_status_output_locks=ON)
+TRANSACTIONS
+------------
+Trx id counter 2064
+Purge done for trx's n:o < 2062 undo n:o < 0 state: running but idle
+History list length 14
+LIST OF TRANSACTIONS FOR EACH SESSION:
+---TRANSACTION {읽기전용 번호}, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION {읽기전용 번호}, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION {읽기전용 번호}, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION 2063, ACTIVE 1 sec inserting
+mysql tables in use 1, locked 1
+LOCK WAIT 2 lock struct(s), heap size 1128, 1 row lock(s)
+MySQL thread id 228, OS thread handle {핸들}, query id 977 localhost root update
+INSERT INTO acct VALUES (6, 0)
+------- TRX HAS BEEN WAITING 1 SEC FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 11 page no 4 n bits 72 index PRIMARY of table `lab`.`acct` trx id 2063 lock_mode X locks gap before rec insert intention waiting
+Record lock, heap no 4 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 8000000a; asc     ;;
+ 1: len 6; hex {생략}; asc       ;;
+ 2: len 7; hex {생략}; asc       *;;
+ 3: len 4; hex {생략}; asc    d;;
+
+------------------
+TABLE LOCK table `lab`.`acct` trx id 2063 lock mode IX
+RECORD LOCKS space id 11 page no 4 n bits 72 index PRIMARY of table `lab`.`acct` trx id 2063 lock_mode X locks gap before rec insert intention waiting
+Record lock, heap no 4 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 8000000a; asc     ;;
+ 1: len 6; hex {생략}; asc       ;;
+ 2: len 7; hex {생략}; asc       *;;
+ 3: len 4; hex {생략}; asc    d;;
+
+---TRANSACTION 2062, ACTIVE 2 sec
+7 lock struct(s), heap size 1128, 5 row lock(s)
+MySQL thread id 227, OS thread handle {핸들}, query id 973 localhost root User sleep
+SELECT SLEEP(3)
+TABLE LOCK table `lab`.`visit` trx id 2062 lock mode IS
+TABLE LOCK table `lab`.`acct` trx id 2062 lock mode IX
+RECORD LOCKS space id 11 page no 4 n bits 72 index PRIMARY of table `lab`.`acct` trx id 2062 lock_mode X locks gap before rec
+Record lock, heap no 4 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 8000000a; asc     ;;
+ 1: len 6; hex {생략}; asc       ;;
+ 2: len 7; hex {생략}; asc       *;;
+ 3: len 4; hex {생략}; asc    d;;
+
+RECORD LOCKS space id 11 page no 4 n bits 72 index PRIMARY of table `lab`.`acct` trx id 2062 lock_mode X locks rec but not gap
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex {생략}; asc     ;;
+ 1: len 6; hex {생략}; asc       ;;
+ 2: len 7; hex {생략}; asc       Q;;
+ 3: len 4; hex 8000005a; asc    Z;;
+
+RECORD LOCKS space id 11 page no 4 n bits 72 index PRIMARY of table `lab`.`acct` trx id 2062 lock_mode X
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex {생략}; asc     ;;
+ 1: len 6; hex {생략}; asc       ;;
+ 2: len 7; hex {생략}; asc       t;;
+ 3: len 4; hex 8000006e; asc    n;;
+
+RECORD LOCKS space id 10 page no 5 n bits 72 index uk_user_key of table `lab`.`visit` trx id 2062 lock mode S locks rec but not gap
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 2; compact format; info bits 0
+ 0: len 3; hex 752d31; asc u-1;;
+ 1: len 8; hex {생략}; asc         ;;
+
+RECORD LOCKS space id 10 page no 4 n bits 72 index PRIMARY of table `lab`.`visit` trx id 2062 lock mode S locks rec but not gap
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 8; hex {생략}; asc         ;;
+ 1: len 6; hex {생략}; asc       ;;
+ 2: len 7; hex {생략}; asc     B Q;;
+ 3: len 3; hex 752d31; asc u-1;;
+ 4: len 4; hex {생략}; asc     ;;
+
+--------
+FILE I/O

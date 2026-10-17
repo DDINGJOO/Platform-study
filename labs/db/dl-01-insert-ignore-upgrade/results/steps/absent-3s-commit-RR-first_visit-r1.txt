@@ -1,0 +1,113 @@
+### absent-3s-commit / RR / first_visit
+# 행이 없다. 세 세션이 INSERT IGNORE, 먼저 넣은 S1 이 COMMIT, 나머지가 SELECT ... FOR UPDATE
+# 미리 넣은 행: member_id=없음
+
+[01] S1> BEGIN;
+     S1 | BEGIN
+     S1 | Query OK, 0 rows affected (0.00 sec)
+
+[02] S2> BEGIN;
+     S2 | BEGIN
+     S2 | Query OK, 0 rows affected (0.00 sec)
+
+[03] S3> BEGIN;
+     S3 | BEGIN
+     S3 | Query OK, 0 rows affected (0.00 sec)
+
+[04] S1> INSERT IGNORE INTO first_visit (member_id) VALUES (1);
+     S1 | INSERT IGNORE INTO first_visit (member_id) VALUES (1)
+     S1 | Query OK, 1 row affected (0.00 sec)
+     data_locks:
+       (레코드 잠금 없음)
+
+[05] S2> INSERT IGNORE INTO first_visit (member_id) VALUES (1);
+     S2 | (아직 끝나지 않음: 잠금 대기)
+     data_locks:
+       +------+-----------+---------------+---------+------+
+       | sess | idx       | mode          | status  | data |
+       +------+-----------+---------------+---------+------+
+       | S1   | uk_member | X,REC_NOT_GAP | GRANTED | 1, 1 |
+       | S2   | uk_member | S             | WAITING | 1, 1 |
+       +------+-----------+---------------+---------+------+
+
+[06] S3> INSERT IGNORE INTO first_visit (member_id) VALUES (1);
+     S3 | (아직 끝나지 않음: 잠금 대기)
+     data_locks:
+       +------+-----------+---------------+---------+------+
+       | sess | idx       | mode          | status  | data |
+       +------+-----------+---------------+---------+------+
+       | S1   | uk_member | X,REC_NOT_GAP | GRANTED | 1, 1 |
+       | S2   | uk_member | S             | WAITING | 1, 1 |
+       | S3   | uk_member | S             | WAITING | 1, 1 |
+       +------+-----------+---------------+---------+------+
+
+[07] S1> COMMIT;
+     S1 | COMMIT
+     S1 | Query OK, 0 rows affected (0.00 sec)
+     S2 | INSERT IGNORE INTO first_visit (member_id) VALUES (1)
+     S2 | Query OK, 0 rows affected, 1 warning (2.28 sec)
+     S3 | INSERT IGNORE INTO first_visit (member_id) VALUES (1)
+     S3 | Query OK, 0 rows affected, 1 warning (1.13 sec)
+     data_locks:
+       +------+-----------+------+---------+------------------------+
+       | sess | idx       | mode | status  | data                   |
+       +------+-----------+------+---------+------------------------+
+       | S2   | PRIMARY   | X    | GRANTED | supremum pseudo-record |
+       | S2   | uk_member | S    | GRANTED | 1, 1                   |
+       | S3   | PRIMARY   | X    | GRANTED | supremum pseudo-record |
+       | S3   | uk_member | S    | GRANTED | 1, 1                   |
+       +------+-----------+------+---------+------------------------+
+
+[08] S2> SELECT member_id, visit_count FROM first_visit WHERE member_id = 1 FOR UPDATE;
+     S2 | (아직 끝나지 않음: 잠금 대기)
+     data_locks:
+       +------+-----------+---------------+---------+------------------------+
+       | sess | idx       | mode          | status  | data                   |
+       +------+-----------+---------------+---------+------------------------+
+       | S2   | PRIMARY   | X             | GRANTED | supremum pseudo-record |
+       | S2   | uk_member | S             | GRANTED | 1, 1                   |
+       | S2   | uk_member | X,REC_NOT_GAP | WAITING | 1, 1                   |
+       | S3   | PRIMARY   | X             | GRANTED | supremum pseudo-record |
+       | S3   | uk_member | S             | GRANTED | 1, 1                   |
+       +------+-----------+---------------+---------+------------------------+
+
+[09] S3> SELECT member_id, visit_count FROM first_visit WHERE member_id = 1 FOR UPDATE;
+     S2 | SELECT member_id, visit_count FROM first_visit WHERE member_id = 1 FOR UPDATE
+     S2 | +-----------+-------------+
+     S2 | | member_id | visit_count |
+     S2 | +-----------+-------------+
+     S2 | |         1 |           1 |
+     S2 | +-----------+-------------+
+     S2 | 1 row in set (1.12 sec)
+     S3 | SELECT member_id, visit_count FROM first_visit WHERE member_id = 1 FOR UPDATE
+     S3 | ERROR 1213 (40001) at line 5: Deadlock found when trying to get lock; try restarting transaction
+     data_locks:
+       +------+-----------+---------------+---------+------------------------+
+       | sess | idx       | mode          | status  | data                   |
+       +------+-----------+---------------+---------+------------------------+
+       | S2   | PRIMARY   | X             | GRANTED | supremum pseudo-record |
+       | S2   | PRIMARY   | X,REC_NOT_GAP | GRANTED | 1                      |
+       | S2   | uk_member | S             | GRANTED | 1, 1                   |
+       | S2   | uk_member | X,REC_NOT_GAP | GRANTED | 1, 1                   |
+       +------+-----------+---------------+---------+------------------------+
+
+[10] S2> COMMIT;
+     S2 | COMMIT
+     S2 | Query OK, 0 rows affected (0.00 sec)
+     data_locks:
+       (레코드 잠금 없음)
+
+[11] S3> COMMIT;
+     S3 | COMMIT
+     S3 | Query OK, 0 rows affected (0.00 sec)
+     data_locks:
+       (레코드 잠금 없음)
+
+최종 행:
++----+-----------+-------------+
+| id | member_id | visit_count |
++----+-----------+-------------+
+|  1 |         1 |           1 |
++----+-----------+-------------+
+
+RESULT absent-3s-commit RR first_visit 1213=S3@09 lock_deadlocks+=1 rows=1

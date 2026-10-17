@@ -1,0 +1,14 @@
+# 각 줄: 번호|설명|문장. 매 문장 전에 item 을 (id=1, code='a', v=1, hits=0) 한 행으로 되돌린다
+C01|INSERT IGNORE 새 행|INSERT IGNORE INTO item(code,v) VALUES('b',1)
+C02|INSERT IGNORE 중복|INSERT IGNORE INTO item(code,v) VALUES('a',1)
+C03|INSERT IGNORE 새 행, note 길이 초과(잘려 들어감)|INSERT IGNORE INTO item(code,v,note) VALUES('c',1,'toolong')
+C04|일반 INSERT 중복|INSERT INTO item(code,v) VALUES('a',1)
+C05|ODKU 새 행|INSERT INTO item(code,v) VALUES('b',1) AS n ON DUPLICATE KEY UPDATE v=n.v
+C06|ODKU 중복, v=v (무변경)|INSERT INTO item(code,v) VALUES('a',9) ON DUPLICATE KEY UPDATE v=v
+C07|ODKU 중복, 같은 값 대입 (무변경)|INSERT INTO item(code,v) VALUES('a',1) AS n ON DUPLICATE KEY UPDATE v=n.v
+C08|ODKU 중복, 값 변경|INSERT INTO item(code,v) VALUES('a',2) AS n ON DUPLICATE KEY UPDATE v=n.v
+C09|ODKU 중복, hits=hits+1 (항상 변경)|INSERT INTO item(code,v) VALUES('a',1) ON DUPLICATE KEY UPDATE hits=hits+1
+C10|ODKU 두 행: 중복 무변경 + 새 행|INSERT INTO item(code,v) VALUES('a',1),('b',1) AS n ON DUPLICATE KEY UPDATE v=n.v
+C11|UPDATE 같은 값|UPDATE item SET v=1 WHERE code='a'
+C12|UPDATE 다른 값|UPDATE item SET v=2 WHERE code='a'
+C13|UPDATE 없는 행|UPDATE item SET v=2 WHERE code='zz'

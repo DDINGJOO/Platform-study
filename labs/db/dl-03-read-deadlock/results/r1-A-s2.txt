@@ -1,0 +1,64 @@
+ERROR 1213 (40001) at line 5: Deadlock found when trying to get lock; try restarting transaction
+--------------
+SELECT CONNECTION_ID() AS conn, PS_CURRENT_THREAD_ID() AS thr
+--------------
+
++------+------+
+| conn | thr  |
++------+------+
+|  128 |  168 |
++------+------+
+1 row in set
+
+--------------
+BEGIN
+--------------
+
+Query OK, 0 rows affected
+
+--------------
+INSERT IGNORE INTO visit (user_key) VALUES ('u-1')
+--------------
+
+Query OK, 0 rows affected, 1 warning
+
+--------------
+SELECT NOW(6) AS after_insert_ignore
+--------------
+
++----------------------------+
+| after_insert_ignore        |
++----------------------------+
+| 2026-10-17 13:20:33.397527 |
++----------------------------+
+1 row in set
+
+--------------
+SELECT * FROM visit WHERE user_key='u-1' FOR UPDATE
+--------------
+
+--------------
+UPDATE visit SET cnt = cnt + 1 WHERE user_key='u-1'
+--------------
+
+Query OK, 1 row affected
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected
+
+--------------
+SELECT NOW(6) AS done
+--------------
+
++----------------------------+
+| done                       |
++----------------------------+
+| 2026-10-17 13:20:33.406826 |
++----------------------------+
+1 row in set
+
+Bye

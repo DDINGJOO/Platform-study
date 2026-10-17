@@ -1,0 +1,131 @@
+### s4 deadlock detect=1
++----------------+-------+
+| name           | count |
++----------------+-------+
+| lock_deadlocks |     8 |
++----------------+-------+
+--- session B ---
+--------------
+BEGIN
+--------------
+
+Query OK, 0 rows affected
+
+--------------
+INSERT INTO note(who) VALUES ('B-before')
+--------------
+
+Query OK, 1 row affected
+
+--------------
+UPDATE item SET v = v + 1 WHERE id = 2
+--------------
+
+Query OK, 1 row affected
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT SLEEP(2) AS b_wait
+--------------
+
++--------+
+| b_wait |
++--------+
+|      0 |
++--------+
+1 row in set
+
+--------------
+UPDATE item SET v = v + 1 WHERE id = 1
+--------------
+
+ERROR 1213 (40001) at line 5: Deadlock found when trying to get lock; try restarting transaction
+--------------
+SELECT COUNT(*) AS open_trx, IFNULL(MAX(trx_rows_modified),0) AS rows_modified FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID()
+--------------
+
++----------+---------------+
+| open_trx | rows_modified |
++----------+---------------+
+|        0 |             0 |
++----------+---------------+
+1 row in set
+
+--------------
+INSERT INTO note(who) VALUES ('B-after')
+--------------
+
+Query OK, 1 row affected
+
+--------------
+ROLLBACK
+--------------
+
+Query OK, 0 rows affected
+
+--------------
+SELECT who FROM note ORDER BY id
+--------------
+
++----------+
+| who      |
++----------+
+| A-before |
+| A-before |
+| A-before |
+| B-after  |
++----------+
+4 rows in set
+
+Bye
+--- session A ---
+--------------
+BEGIN
+--------------
+
+Query OK, 0 rows affected
+
+--------------
+INSERT INTO note(who) VALUES ('A-before'),('A-before'),('A-before')
+--------------
+
+Query OK, 3 rows affected
+Records: 3  Duplicates: 0  Warnings: 0
+
+--------------
+UPDATE item SET v = v + 1 WHERE id = 1
+--------------
+
+Query OK, 1 row affected
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT SLEEP(2) AS a_wait
+--------------
+
++--------+
+| a_wait |
++--------+
+|      0 |
++--------+
+1 row in set
+
+--------------
+UPDATE item SET v = v + 1 WHERE id = 2
+--------------
+
+Query OK, 1 row affected
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected
+
+Bye
++----------------+-------+
+| name           | count |
++----------------+-------+
+| lock_deadlocks |     9 |
++----------------+-------+

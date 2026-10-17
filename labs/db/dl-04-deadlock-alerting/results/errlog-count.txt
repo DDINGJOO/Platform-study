@@ -1,0 +1,17 @@
+# 에러 로그(docker logs) 집계. 머리말 = [Note] [MY-012468] 줄, 본문 = 줄 머리가 TRANSACTION / RECORD LOCKS 인 줄(시각 없이 stderr 로 바로 찍힌다)
+mysqld.log: verbosity=2 구간(첫 머리말 전): TRANSACTION 본문 2, RECORD LOCKS 본문 4, WE ROLL BACK 0, 머리말 0
+mysqld.log: 전체: TRANSACTION 본문 58, 머리말 28, WE ROLL BACK 28
+mysqld-r2.log: verbosity=2 구간(첫 머리말 전): TRANSACTION 본문 2, RECORD LOCKS 본문 4, WE ROLL BACK 0, 머리말 0
+mysqld-r2.log: 전체: TRANSACTION 본문 4, 머리말 1, WE ROLL BACK 1
+
+# verbosity=2 에서 남은 본문 (mysqld-r2.log, 첫 교착 직후, 레코드 덤프 줄 생략)
+TRANSACTION 1818, ACTIVE 1 sec starting index read
+LOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1
+UPDATE t SET v=v+1 WHERE id=2
+RECORD LOCKS space id 2 page no 4 n bits 72 index PRIMARY of table `lab`.`t` trx id 1818 lock_mode X locks rec but not gap
+RECORD LOCKS space id 2 page no 4 n bits 72 index PRIMARY of table `lab`.`t` trx id 1818 lock_mode X locks rec but not gap waiting
+TRANSACTION 1819, ACTIVE 1 sec starting index read
+LOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1
+UPDATE t SET v=v+1 WHERE id=1
+RECORD LOCKS space id 2 page no 4 n bits 72 index PRIMARY of table `lab`.`t` trx id 1819 lock_mode X locks rec but not gap
+RECORD LOCKS space id 2 page no 4 n bits 72 index PRIMARY of table `lab`.`t` trx id 1819 lock_mode X locks rec but not gap waiting

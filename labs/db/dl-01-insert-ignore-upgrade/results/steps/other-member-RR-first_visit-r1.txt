@@ -1,0 +1,61 @@
+### other-member / RR / first_visit
+# 곁가지: 행이 있다. S1 의 중복 INSERT IGNORE 가 끝나기 전에 S2 가 다른 회원(member_id=2)을 넣는다
+# 미리 넣은 행: member_id=[1]
+
+[01] S1> BEGIN;
+     S1 | BEGIN
+     S1 | Query OK, 0 rows affected (0.00 sec)
+
+[02] S2> BEGIN;
+     S2 | BEGIN
+     S2 | Query OK, 0 rows affected (0.00 sec)
+
+[03] S1> INSERT IGNORE INTO first_visit (member_id) VALUES (1);
+     S1 | INSERT IGNORE INTO first_visit (member_id) VALUES (1)
+     S1 | Query OK, 0 rows affected, 1 warning (0.00 sec)
+     data_locks:
+       +------+-----------+------+---------+------------------------+
+       | sess | idx       | mode | status  | data                   |
+       +------+-----------+------+---------+------------------------+
+       | S1   | PRIMARY   | X    | GRANTED | supremum pseudo-record |
+       | S1   | uk_member | S    | GRANTED | 1, 1                   |
+       +------+-----------+------+---------+------------------------+
+
+[04] S2> INSERT IGNORE INTO first_visit (member_id) VALUES (2);
+     S2 | (아직 끝나지 않음: 잠금 대기)
+     data_locks:
+       +------+-----------+--------------------+---------+------------------------+
+       | sess | idx       | mode               | status  | data                   |
+       +------+-----------+--------------------+---------+------------------------+
+       | S1   | PRIMARY   | X                  | GRANTED | supremum pseudo-record |
+       | S1   | uk_member | S                  | GRANTED | 1, 1                   |
+       | S2   | PRIMARY   | X,INSERT_INTENTION | WAITING | supremum pseudo-record |
+       +------+-----------+--------------------+---------+------------------------+
+
+[05] S1> COMMIT;
+     S1 | COMMIT
+     S1 | Query OK, 0 rows affected (0.00 sec)
+     S2 | INSERT IGNORE INTO first_visit (member_id) VALUES (2)
+     S2 | Query OK, 1 row affected (1.12 sec)
+     data_locks:
+       +------+---------+--------------------+---------+------------------------+
+       | sess | idx     | mode               | status  | data                   |
+       +------+---------+--------------------+---------+------------------------+
+       | S2   | PRIMARY | X,INSERT_INTENTION | GRANTED | supremum pseudo-record |
+       +------+---------+--------------------+---------+------------------------+
+
+[06] S2> COMMIT;
+     S2 | COMMIT
+     S2 | Query OK, 0 rows affected (0.01 sec)
+     data_locks:
+       (레코드 잠금 없음)
+
+최종 행:
++----+-----------+-------------+
+| id | member_id | visit_count |
++----+-----------+-------------+
+|  1 |         1 |           1 |
+|  3 |         2 |           1 |
++----+-----------+-------------+
+
+RESULT other-member RR first_visit 1213=없음 lock_deadlocks+=0 rows=2

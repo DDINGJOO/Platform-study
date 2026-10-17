@@ -1,0 +1,30 @@
+# 실습용 MySQL 두 대. 데이터는 전부 가짜이고 down -v 로 같이 사라진다.
+#  mysql      : 기본값 (innodb_rollback_on_timeout=OFF)
+#  mysql-rbt  : 시작 옵션으로 innodb_rollback_on_timeout=ON (동적 변수가 아니라서 실행 중에는 못 바꾼다)
+name: dl05
+services:
+  mysql:
+    image: mysql:8.4
+    environment: &env
+      MYSQL_ROOT_PASSWORD: labroot
+      MYSQL_DATABASE: lab
+      MYSQL_USER: lab
+      MYSQL_PASSWORD: lab
+    ports:
+      - "127.0.0.1:39050:3306"
+    volumes:
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck: &hc
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ulab", "-plab"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+  mysql-rbt:
+    image: mysql:8.4
+    environment: *env
+    ports:
+      - "127.0.0.1:39051:3306"
+    volumes:
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    command: ["--innodb-rollback-on-timeout=ON"]
+    healthcheck: *hc

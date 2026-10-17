@@ -1,0 +1,32 @@
+dl-05 요약 (세 바퀴 모두 같은 결과. 원자료 out/, 대표 1바퀴는 results/*-r1.txt)
+버전: MySQL 8.4.11, Connector/J 9.7.0, Spring Framework 7.0.9, Hibernate ORM 7.4.5.Final, Java 25.0.3
+
+[mysql CLI]  B = 앞에 INSERT 1건을 하고 잠긴 행을 UPDATE 하는 세션
+s1 1205 기본값          : 에러 뒤 open_trx=1 rows_modified=1, COMMIT 성공, B-before 남음
+s2 SET GLOBAL innodb_rollback_on_timeout=ON : ERROR 1238 read only variable
+s3 1205 rollback_on_timeout=ON : 에러 뒤 open_trx=0, COMMIT 해도 note 비어 있음
+s4 1213                 : B 가 희생자(가벼운 쪽), open_trx=0, 이어서 INSERT B-after 후 ROLLBACK 했는데 B-after 남음(autocommit)
+                          lock_deadlocks +1
+s5 교착감지 OFF, 기본값, timeout=3 : A 가 1205(open_trx=1, rows_modified=4) 후 COMMIT → B 진행. 결과 item 1=2, 2=1
+                          (A 의 두 번째 UPDATE 만 빠진 채 A 의 나머지가 커밋됨). 약 5초. lock_deadlocks 변화 없음
+s6 교착감지 OFF, rollback_on_timeout=ON : A 가 1205 로 전체 롤백 → B 진행. note 에 B-before 만, item 1=1, 2=1. 약 5초
+s7 교착감지 OFF, 기본값, A 가 1205 뒤 4초 머묾 : B 도 1205. 둘 다 트랜잭션 열린 채. 약 9초
+
+[Spring Boot]  (holder/교착 상대가 있는 상태에서 B 가 받은 예외)
+JdbcTemplate 기본 translator = SQLExceptionSubclassTranslator
+  jdbc   1213 → CannotAcquireLockException  (cause MySQLTransactionRollbackException, SQLState 40001, errorCode 1213)
+  jdbc   1205 → CannotAcquireLockException  (SQLState 40001, errorCode 1205)
+sql-error-codes.xml 을 클래스패스 루트에 두면 translator = SQLErrorCodeSQLExceptionTranslator
+  jdbc   1213 → DeadlockLoserDataAccessException (@Deprecated since 6.0.3)
+  jdbc   1205 → CannotAcquireLockException
+JPA (Spring Data 저장소 saveAndFlush)
+  repo   1213 → CannotAcquireLockException (cause hibernate LockAcquisitionException)
+  repo   1205 → CannotAcquireLockException (cause hibernate LockTimeoutException)
+  commit 1213/1205 (커밋 때 flush) → 위와 같음
+  em     1213 → jakarta.persistence.PessimisticLockException  (Spring 예외 아님)
+  em     1205 → jakarta.persistence.LockTimeoutException      (Spring 예외 아님)
+트랜잭션 안에서 잡고 계속 진행
+  jdbc 1213 → 커밋 성공, note = [A-before x3, B-after]  (B-before 사라지고 B-after 만 커밋)
+  jdbc 1205 → 커밋 성공, note = [B-before, B-after]     (실패한 UPDATE 만 빠진 채 커밋)
+  repo 1213/1205 → UnexpectedRollbackException(rollback-only), B 의 것 아무것도 안 남음
+lock_deadlocks(INNODB_METRICS): 1213 이 날 때마다 +1, 교착 감지 OFF 의 s5·s7 에서는 변화 없음

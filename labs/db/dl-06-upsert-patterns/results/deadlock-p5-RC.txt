@@ -1,0 +1,24 @@
+deadlock pattern=p5 iso=RC key=k150 (seed rows k100 k200 k300)
+  A> SELECT id FROM visit WHERE user_key='k150' FOR UPDATE
+      => ok rows=0
+  B> SELECT id FROM visit WHERE user_key='k150' FOR UPDATE
+      => ok rows=0
+  -- data_locks: both locked a row that does not exist
+     A  TABLE  -            IX                       GRANTED  -
+     B  TABLE  -            IX                       GRANTED  -
+  A> INSERT INTO visit(user_key, payload, inserted_by) VALUES ('k150','v1','A')
+      => ok affected=1
+  -- data_locks: A tries to insert
+     A  TABLE  -            IX                       GRANTED  -
+     B  TABLE  -            IX                       GRANTED  -
+  B> INSERT INTO visit(user_key, payload, inserted_by) VALUES ('k150','v1','B')
+      => (waiting)
+  -- data_locks: after B's insert
+     A  TABLE  -            IX                       GRANTED  -
+     A  RECORD uk_user_key  X,REC_NOT_GAP            GRANTED  'k150', 4
+     B  TABLE  -            IX                       GRANTED  -
+     B  RECORD uk_user_key  S                        WAITING  'k150', 4
+  A> COMMIT
+      => ok
+  B   (earlier statement finished) => ERROR 1062 Duplicate entry 'k150' for key 'visit.uk_user_key'
+  rows for key: [A]

@@ -1,0 +1,38 @@
+== r1
+  1213 받은 세션    A: A-s2   B: B-s2
+  WE ROLL BACK      A: (2)   B: (2)
+  lock_deadlocks    시작 4 -> 끝 6   SHOW STATUS 'Innodb_deadlocks' 행 있음: False
+  A 직후 STATUS 에 visit: True   B 직후 STATUS 에 visit: False  (덮어써졌으면 False)
+  에러 로그 TRANSACTION 블록 5개, 'deadlock detected' 1회, 'WE ROLL BACK' 1회, '(1) HOLDS' 1회
+  A 표기: ['lock mode S', 'lock_mode X locks rec but not gap waiting']
+  B 표기: ['lock_mode X locks rec but not gap', 'lock_mode X locks rec but not gap waiting']
+  A THREAD_ID 기준 조인 (req_thr, blk_thr): [('167', '167'), ('168', '167')]
+  A 트랜잭션 기준 조인 (req_conn, blk_conn): [('127', '126'), ('128', '126')]
+  A 막는 쪽 이력에 INSERT IGNORE: True
+  B 막는 쪽 이력에 'WHERE id = 2': True
+== r2
+  1213 받은 세션    A: A-s2   B: B-s2
+  WE ROLL BACK      A: (2)   B: (2)
+  lock_deadlocks    시작 6 -> 끝 8   SHOW STATUS 'Innodb_deadlocks' 행 있음: False
+  A 직후 STATUS 에 visit: True   B 직후 STATUS 에 visit: False  (덮어써졌으면 False)
+  에러 로그 TRANSACTION 블록 5개, 'deadlock detected' 1회, 'WE ROLL BACK' 1회, '(1) HOLDS' 1회
+  A 표기: ['lock mode S', 'lock_mode X locks rec but not gap waiting']
+  B 표기: ['lock_mode X locks rec but not gap', 'lock_mode X locks rec but not gap waiting']
+  A THREAD_ID 기준 조인 (req_thr, blk_thr): [('206', '206'), ('207', '206')]
+  A 트랜잭션 기준 조인 (req_conn, blk_conn): [('166', '164'), ('167', '164')]
+  A 막는 쪽 이력에 INSERT IGNORE: True
+  B 막는 쪽 이력에 'WHERE id = 2': True
+== r3
+  1213 받은 세션    A: A-s2   B: B-s2
+  WE ROLL BACK      A: (2)   B: (2)
+  lock_deadlocks    시작 8 -> 끝 10   SHOW STATUS 'Innodb_deadlocks' 행 있음: False
+  A 직후 STATUS 에 visit: True   B 직후 STATUS 에 visit: False  (덮어써졌으면 False)
+  에러 로그 TRANSACTION 블록 5개, 'deadlock detected' 1회, 'WE ROLL BACK' 1회, '(1) HOLDS' 1회
+  A 표기: ['lock mode S', 'lock_mode X locks rec but not gap waiting']
+  B 표기: ['lock_mode X locks rec but not gap', 'lock_mode X locks rec but not gap waiting']
+  A THREAD_ID 기준 조인 (req_thr, blk_thr): [('244', '244'), ('245', '244')]
+  A 트랜잭션 기준 조인 (req_conn, blk_conn): [('204', '203'), ('205', '203')]
+  A 막는 쪽 이력에 INSERT IGNORE: True
+  B 막는 쪽 이력에 'WHERE id = 2': True
+== C (마지막 바퀴) data_locks LOCK_MODE: ['S,REC_NOT_GAP', 'X', 'X,GAP', 'X,GAP,INSERT_INTENTION', 'X,REC_NOT_GAP']
+   STATUS 표기: ['lock mode IS', 'lock mode IX', 'lock mode S locks rec but not gap', 'lock_mode X', 'lock_mode X locks gap before rec', 'lock_mode X locks gap before rec insert intention waiting', 'lock_mode X locks rec but not gap']

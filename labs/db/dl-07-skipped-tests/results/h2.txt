@@ -1,0 +1,21 @@
+$ ./gradlew test --tests lab.H2MysqlModeTest -Pimpl=buggy
+    [H2 MODE=MySQL] impl=buggy rounds=30 threads=3 ok=90 failed=0 errors={} wrongCounts=0
+H2MysqlModeTest > 첫_방문_동시_요청_3개가_전부_성공한다() PASSED
+BUILD SUCCESSFUL in 696ms
+
+$ ./gradlew test --tests lab.H2LockProbeTest   (세 세션: A 미커밋 삽입, B·C 대기, 둘 다 FOR UPDATE)
+      +   2ms A INSERT IGNORE -> 1
+      +   3ms B INSERT IGNORE 시작
+      +   3ms C INSERT IGNORE 시작
+      +1007ms A SELECT ... FOR UPDATE, UPDATE, COMMIT
+      +1030ms C INSERT IGNORE -> 0
+      +1031ms B INSERT IGNORE -> 0
+      +1031ms B SELECT ... FOR UPDATE 시작
+      +1031ms C SELECT ... FOR UPDATE 시작
+      +1032ms B SELECT ... FOR UPDATE, UPDATE 끝
+      +1032ms B COMMIT
+      +1033ms C SELECT ... FOR UPDATE, UPDATE 끝
+      +1033ms C COMMIT
+      +1035ms 최종 cnt = 3
+H2LockProbeTest > probe() PASSED
+BUILD SUCCESSFUL in 1s

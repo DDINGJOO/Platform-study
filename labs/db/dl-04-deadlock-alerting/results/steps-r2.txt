@@ -1,0 +1,42 @@
+== step1 기본값(print_all_deadlocks=OFF)에서 교착 1건
+before: lock_deadlocks=0 lock_timeouts=0  errlog=0
+B ERROR 1213 (40001) at line 1: Deadlock found when trying to get lock; try restarting transaction
+B exit
+A exit
+after : lock_deadlocks=1 lock_timeouts=0  errlog=0
+
+== step2 SET GLOBAL innodb_print_all_deadlocks=ON (log_error_verbosity=2) 에서 교착 1건
+B ERROR 1213 (40001) at line 1: Deadlock found when trying to get lock; try restarting transaction
+B exit
+A exit
+after : lock_deadlocks=2 lock_timeouts=0  errlog=0
+
+== step3 SET GLOBAL log_error_verbosity=3 에서 교착 1건
+B ERROR 1213 (40001) at line 1: Deadlock found when trying to get lock; try restarting transaction
+B exit
+A exit
+after : lock_deadlocks=3 lock_timeouts=0  errlog=1
+
+== step4 SET GLOBAL innodb_monitor_reset='lock_deadlocks'
++----------------+-------+-------------+
+| NAME           | COUNT | COUNT_RESET |
++----------------+-------+-------------+
+| lock_deadlocks |     3 |           3 |
++----------------+-------+-------------+
++----------------+-------+-------------+
+| NAME           | COUNT | COUNT_RESET |
++----------------+-------+-------------+
+| lock_deadlocks |     3 |           0 |
++----------------+-------+-------------+
+
+== step5 innodb_deadlock_detect=OFF, innodb_lock_wait_timeout=3 에서 같은 교착
+before: lock_deadlocks=3 lock_timeouts=0  errlog=1
+A ERROR 1205 (HY000) at line 1: Lock wait timeout exceeded; try restarting transaction
+B ERROR 1205 (HY000) at line 1: Lock wait timeout exceeded; try restarting transaction
+B exit
+A exit
+
+real	0m3.883s
+user	0m0.031s
+sys	0m0.033s
+after : lock_deadlocks=3 lock_timeouts=2  errlog=1
