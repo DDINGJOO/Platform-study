@@ -1,0 +1,42 @@
+== rollback-wrong
+  [db] rows=300000
+  [start] WARN  started label=v0 port=38081 read=plain encryptOnWrite=false
+  [start] WARN  started label=v0 port=38082 read=plain encryptOnWrite=false
+  [phase] 0-v0
+  [phase] 1-roll-v0-to-v1
+  [start] WARN  started label=v1 port=38083 read=lenient encryptOnWrite=false
+  [start] WARN  started label=v1 port=38081 read=lenient encryptOnWrite=false
+  [phase] 3-roll-v1-to-v2
+  [start] INFO  started label=v2 port=38082 read=lenient encryptOnWrite=true
+  [start] INFO  started label=v2 port=38083 read=lenient encryptOnWrite=true
+  [phase] 5-fill
+  [fill] done scanned=300000 written=298674 conflict=2 skippedShape=0 pages=300 elapsed=7.8s
+  [phase] 6-v2
+  [counts] plain_shape=0 not_cipher=0 not_cipher_ne_empty=0 nulls=300 total=300000
+  [phase] R2-restore
+  [restore] done scanned=300000 written=299700 conflict=0 skippedShape=0 pages=300 elapsed=7.7s
+  [phase] R3-verify
+  [after restore] cipher_rows=663
+  [phase] R4-roll-to-v0
+  [start] WARN  started label=v0 port=38081 read=plain encryptOnWrite=false
+  [start] WARN  started label=v0 port=38082 read=plain encryptOnWrite=false
+  [phase] R5-v0
+  [end] cipher_rows=1130
+  [load]
+    phase                        total      ok  fail mismatch   p99ms    maxms
+    0-v0                          1726    1726     0        0       8      164
+    1-roll-v0-to-v1               5822    5822     0        0       7      126
+    3-roll-v1-to-v2               5725    5725     0        0       8      114
+    5-fill                        2684    2684     0        0       3       10
+    6-v2                          1023    1023     0        0       5        8
+    R2-restore                    3513    3513     0        0       5       19
+    R3-verify                       64      64     0        0       2        2
+    R4-roll-to-v0                 5755    5552     0      203       6      134
+    R5-v0                         2585    2565     0       20       4       18
+    TOTAL                        28897   28674     0      223
+    not-ok by phase/version/op:
+      R4-roll-to-v0              v0      get       mismatch       4
+      R4-roll-to-v0              v0      list      mismatch      19
+      R4-roll-to-v0              v0      readback  mismatch     180
+      R5-v0                      v0      get       mismatch       5
+      R5-v0                      v0      list      mismatch      15

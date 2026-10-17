@@ -1,0 +1,97 @@
+### P1 DTO 를 통째로 로깅
+INFO  app - 가입 요청 SignupExclude(name=김가짜, phone=010-0000-0000, channel=web)
+INFO  app - 가입 요청(record) SignupRecord[name=김가짜, rrn=000000-9876543, phone=010-0000-0000, channel=web]
+### P2 예외 메시지에 값을 실음
+WARN  app - 요청 거부
+java.lang.IllegalArgumentException: 주민번호 형식이 아닙니다: 000000 9876543
+	at lab.Validators.leakyRrn(Validators.java:13)
+	at lab.Lab.main(Lab.java:59)
+### P3 원인 예외와 DB 유니크 제약 위반 메시지
+ERROR app - 가입 실패
+java.lang.IllegalStateException: 회원 저장 실패
+	at lab.repo.LeakyMemberRepo.insert(LeakyMemberRepo.java:22)
+	at lab.Lab.main(Lab.java:68)
+Caused by: org.h2.jdbc.JdbcSQLIntegrityConstraintViolationException: Unique index or primary key violation: "PUBLIC.UK_MEMBER_PHONE_INDEX_8 ON PUBLIC.MEMBER(PHONE NULLS FIRST) VALUES ( /* 1 */ '010-0000-0000' )"; SQL statement:
+INSERT INTO member (rrn_enc, phone) VALUES (?, ?) [23505-232]
+	at org.h2.message.DbException.getJdbcSQLException(DbException.java:520)
+	at org.h2.message.DbException.getJdbcSQLException(DbException.java:489)
+	at org.h2.message.DbException.get(DbException.java:223)
+	at org.h2.message.DbException.get(DbException.java:199)
+	at org.h2.index.Index.getDuplicateKeyException(Index.java:523)
+	at org.h2.mvstore.db.MVSecondaryIndex.checkUnique(MVSecondaryIndex.java:223)
+	at org.h2.mvstore.db.MVSecondaryIndex.add(MVSecondaryIndex.java:184)
+	at org.h2.mvstore.db.MVTable.addRow(MVTable.java:517)
+	at org.h2.command.dml.Insert.insertRows(Insert.java:174)
+	at org.h2.command.dml.Insert.update(Insert.java:135)
+	at org.h2.command.CommandContainer.executeUpdateWithGeneratedKeys(CommandContainer.java:212)
+	at org.h2.command.CommandContainer.update(CommandContainer.java:133)
+	at org.h2.command.Command.executeUpdate(Command.java:304)
+	at org.h2.command.Command.executeUpdate(Command.java:248)
+	at org.h2.jdbc.JdbcPreparedStatement.executeUpdateInternal(JdbcPreparedStatement.java:213)
+	at org.h2.jdbc.JdbcPreparedStatement.executeUpdate(JdbcPreparedStatement.java:172)
+	at lab.repo.LeakyMemberRepo.insert(LeakyMemberRepo.java:19)
+	... 1 common frames omitted
+ERROR app - 가입 실패
+java.lang.IllegalStateException: 회원 저장 실패
+	at lab.repo.LeakyMemberRepo.insert(LeakyMemberRepo.java:22)
+	at lab.Lab.main(Lab.java:70)
+Caused by: org.h2.jdbc.JdbcSQLIntegrityConstraintViolationException: Unique index or primary key violation: "PUBLIC.UK_MEMBER_RRN_INDEX_8 ON PUBLIC.MEMBER(RRN_ENC NULLS FIRST) VALUES ( /* 1 */ 'LABENC:cTL62nFlW3O/fM+aqb/+nspymGtA/pt30CkR/7txvhWGVgt3kSI3vf4K' )"; SQL statement:
+INSERT INTO member (rrn_enc, phone) VALUES (?, ?) [23505-232]
+	at org.h2.message.DbException.getJdbcSQLException(DbException.java:520)
+	at org.h2.message.DbException.getJdbcSQLException(DbException.java:489)
+	at org.h2.message.DbException.get(DbException.java:223)
+	at org.h2.message.DbException.get(DbException.java:199)
+	at org.h2.index.Index.getDuplicateKeyException(Index.java:523)
+	at org.h2.mvstore.db.MVSecondaryIndex.checkUnique(MVSecondaryIndex.java:223)
+	at org.h2.mvstore.db.MVSecondaryIndex.add(MVSecondaryIndex.java:184)
+	at org.h2.mvstore.db.MVTable.addRow(MVTable.java:517)
+	at org.h2.command.dml.Insert.insertRows(Insert.java:174)
+	at org.h2.command.dml.Insert.update(Insert.java:135)
+	at org.h2.command.CommandContainer.executeUpdateWithGeneratedKeys(CommandContainer.java:212)
+	at org.h2.command.CommandContainer.update(CommandContainer.java:133)
+	at org.h2.command.Command.executeUpdate(Command.java:304)
+	at org.h2.command.Command.executeUpdate(Command.java:248)
+	at org.h2.jdbc.JdbcPreparedStatement.executeUpdateInternal(JdbcPreparedStatement.java:213)
+	at org.h2.jdbc.JdbcPreparedStatement.executeUpdate(JdbcPreparedStatement.java:172)
+	at lab.repo.LeakyMemberRepo.insert(LeakyMemberRepo.java:19)
+	... 1 common frames omitted
+### P4 HTTP 클라이언트의 요청·응답 덤프
+DEBUG headers - http-outgoing-0 >> POST /verify HTTP/1.1
+DEBUG headers - http-outgoing-0 >> Accept-Encoding: gzip, deflate, x-gzip
+DEBUG headers - http-outgoing-0 >> Host: 127.0.0.1:38070
+DEBUG headers - http-outgoing-0 >> Content-Length: 67
+DEBUG headers - http-outgoing-0 >> Content-Type: application/json; charset=UTF-8
+DEBUG headers - http-outgoing-0 >> Connection: keep-alive
+DEBUG headers - http-outgoing-0 >> User-Agent: Apache-HttpClient/5.6.5 (Java/25.0.3)
+DEBUG wire - http-outgoing-0 >> "POST /verify HTTP/1.1[\r][\n]"
+DEBUG wire - http-outgoing-0 >> "Accept-Encoding: gzip, deflate, x-gzip[\r][\n]"
+DEBUG wire - http-outgoing-0 >> "Host: 127.0.0.1:38070[\r][\n]"
+DEBUG wire - http-outgoing-0 >> "Content-Length: 67[\r][\n]"
+DEBUG wire - http-outgoing-0 >> "Content-Type: application/json; charset=UTF-8[\r][\n]"
+DEBUG wire - http-outgoing-0 >> "Connection: keep-alive[\r][\n]"
+DEBUG wire - http-outgoing-0 >> "User-Agent: Apache-HttpClient/5.6.5 (Java/25.0.3)[\r][\n]"
+DEBUG wire - http-outgoing-0 >> "[\r][\n]"
+DEBUG wire - http-outgoing-0 >> "{"name":"[0xffffffea][0xffffffb9][0xffffff80][0xffffffea][0xffffffb0][0xffffff80][0xffffffec][0xffffffa7][0xffffff9c]","rrn":"000000-9876543","phone":"010-0000-0000"}"
+DEBUG wire - http-outgoing-0 << "HTTP/1.1 200 OK[\r][\n]"
+DEBUG wire - http-outgoing-0 << "Date: Sat, 17 Oct 2026 10:35:50 GMT[\r][\n]"
+DEBUG wire - http-outgoing-0 << "Content-type: application/json[\r][\n]"
+DEBUG wire - http-outgoing-0 << "Content-length: 42[\r][\n]"
+DEBUG wire - http-outgoing-0 << "[\r][\n]"
+DEBUG wire - http-outgoing-0 << "{"result":"MATCH","phone":"010-0000-0000"}"
+DEBUG headers - http-outgoing-0 << HTTP/1.1 200 OK
+DEBUG headers - http-outgoing-0 << Date: Sat, 17 Oct 2026 10:35:50 GMT
+DEBUG headers - http-outgoing-0 << Content-type: application/json
+DEBUG headers - http-outgoing-0 << Content-length: 42
+INFO  app - 본인확인 응답 수신 length=42
+### P5 마스킹 정규식이 놓치는 입력
+INFO  app - 검색 q=000000-9876543
+INFO  app - 검색 q=000000 9876543
+INFO  app - 검색 q=000000–9876543
+INFO  app - 검색 q=００００００-９８７６５４３
+INFO  app - 검색 q=0000009876543
+INFO  app - 검색 q=뒷자리 9876543
+INFO  app - 검색 q=010 0000 0000
+INFO  app - 검색 q=010.0000.0000
+INFO  app - 검색 q=011-000-0000
+INFO  app - 검색 q=/search?q=010%200000%200000
+### END

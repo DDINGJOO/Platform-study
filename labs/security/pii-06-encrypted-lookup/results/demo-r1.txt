@@ -1,0 +1,16 @@
+# out/demo-trace-r1.txt 발췌. 로그 앞머리(시각·PID)를 지우고, select 의 컬럼 목록을 c1_0.* 로 줄였다
+rows=50000  target=000000-0002500  (정답 5행: 전 행 복호화로 센 값)
+  SQL   select c1_0.* from claim c1_0 where c1_0.ssn_det=?
+  bind  ? <- [AU1lkL4ycmRumFw+/b7ZZyWQKVd9z5oBuFoUUCS5tSEXv+U=]
+① repo.findBySsnDet("000000-0002500")      -> 5행
+  SQL   select c1_0.* from claim c1_0 where c1_0.ssn_gcm=?
+  bind  ? <- [ASwJgucQ9kl7xWWQ+xns9Lo9KTKT+sUN0Poy3248YCAJ+I4C8Y9/ACQ2qg==]
+② repo.findBySsnGcm("000000-0002500")      -> 0행
+  SQL   select c1_0.* from claim c1_0
+② repo.findAll() 후 앱에서 filter   -> 5행 (전 행 50000개 복호화, 310ms)
+  SQL   select c1_0.* from claim c1_0 where c1_0.ssn_bidx=?
+  bind  ? <- [fe73cb36738e7e33c8a4b87d1501645caa027d1757d5f89b85003f72c00a1b93]
+③ repo.findBySsnBidx(bidx(ssn))   -> 5행
+  SQL   select c1_0.* from claim c1_0 where c1_0.ssn_det like ? escape '\\'
+  bind  ? <- [AU1lkL4eedoGgcUAxc/DMwPTDbsuszYhnLRE+KqJMdJ8Aw==]
+LIKE: repo.findBySsnDetStartingWith("000000-00025") -> 0행 (평문 기준 정답 707행)

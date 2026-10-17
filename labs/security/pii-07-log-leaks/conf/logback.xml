@@ -1,0 +1,40 @@
+<configuration>
+  <statusListener class="ch.qos.logback.core.status.NopStatusListener"/>
+  <!--
+    시스템 속성으로 고른다.
+      -Dmask=NONE | MSG_NAIVE | FULL_NAIVE | FULL_WIDE   어떤 패턴의 콘솔 appender 를 쓸지
+      -Dwire=DEBUG | INFO                                HttpClient 5 wire/headers 로거 수준
+      -Dturbo=false | true                               @Pii 인자 TurboFilter
+  -->
+  <turboFilter class="lab.guard.PiiArgTurboFilter">
+    <enabled>${turbo:-false}</enabled>
+  </turboFilter>
+
+  <!-- 마스킹 없음 -->
+  <appender name="NONE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder><pattern>%-5level %logger{0} - %msg%n</pattern></encoder>
+  </appender>
+
+  <!-- 흔한 정규식을 %msg 에만 건다. 예외는 PatternLayout 이 자동으로 붙이는 %ex 로 따로 찍힌다 -->
+  <appender name="MSG_NAIVE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder><pattern>%-5level %logger{0} - %replace(%replace(%msg){'\d{6}-\d{7}', '[주민번호]'}){'010-\d{4}-\d{4}', '[전화]'}%n</pattern></encoder>
+  </appender>
+
+  <!-- 같은 정규식을 메시지와 예외(원인 체인 포함)에 함께 건다. 1.5.18 은 %replace 안의 %ex 를 예외 변환어로 인정해 자동 %ex 를 붙이지 않는다.
+       %nopex 는 "예외는 이미 위에서 그렸다"는 의도를 적어 두는 안전장치다 -->
+  <appender name="FULL_NAIVE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder><pattern>%-5level %logger{0} - %replace(%replace(%msg%n%ex){'\d{6}-\d{7}', '[주민번호]'}){'010-\d{4}-\d{4}', '[전화]'}%nopex</pattern></encoder>
+  </appender>
+
+  <!-- 정규식을 넓힌다: 유니코드 숫자(전각 포함), 공백·점·여러 대시 구분자, 구분자 없음 -->
+  <appender name="FULL_WIDE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder><pattern>%-5level %logger{0} - %replace(%replace(%msg%n%ex){'(?U)\d{6}[\s‐-―−－-]?\d{7}', '[주민번호]'}){'(?U)01\d[\s.‐-―−－-]?\d{3,4}[\s.‐-―−－-]?\d{4}', '[전화]'}%nopex</pattern></encoder>
+  </appender>
+
+  <logger name="org.apache.hc.client5.http.wire" level="${wire:-DEBUG}"/>
+  <logger name="org.apache.hc.client5.http.headers" level="${wire:-DEBUG}"/>
+
+  <root level="INFO">
+    <appender-ref ref="${mask:-NONE}"/>
+  </root>
+</configuration>

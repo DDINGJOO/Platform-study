@@ -1,0 +1,355 @@
+<!-- ============================================================
+  개인정보 암호화 9편: 마스킹과 암호화는 무엇을 되돌릴 수 있느냐로 고른다
+  tistory-sketch-post 스타일 · 단일 HTML
+============================================================ -->
+<!-- tags: 마스킹, AES-GCM, HMAC 토큰화, 안전성 확보조치 기준, 키 교체 -->
+<!-- lead: 개인정보 컬럼을 마스킹할지, AES-GCM 으로 암호화할지, HMAC 토큰으로 바꿀지 고민될 때 보는 기준이에요. 같은 가짜 계좌번호 여섯 행으로 되돌리기, 등치 조회, 키 교체 결과를 재 봤습니다. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">🔐 개인정보 암호화 · 9편</div>
+  1편. 설정은 켜 두었고 그 파일은 읽히지 않았다<br>
+  2편. 암호화에 실패하면 평문으로 저장하기로 했다<br>
+  3편. 등치 조회가 남아 있어 랜덤 IV 를 쓸 수 없었다<br>
+  4편. 컬럼이 아니라 문장을 암호화했다<br>
+  5편. 관리자 코멘트가 암호문처럼 보였다<br>
+  6편. 암호화한 컬럼을 WHERE로 찾는 세 가지 방법과 각각의 대가<br>
+  7편. 개인정보가 로그로 새는 다섯 경로와 막는 법<br>
+  8편. 운영 중인 테이블을 무중단으로 암호화 전환하는 순서<br>
+  <b>9편. 마스킹과 암호화는 무엇을 되돌릴 수 있느냐로 고른다</b> &larr; 지금 이 글
+</div>
+
+<p>관리 화면에 계좌번호가 <code>999-**-****01</code> 로 보입니다. 사용자가 "끝자리 01 맞아요" 라고 하면 확인은 그걸로 끝나요. 그런데 그 번호로 실제 이체를 해야 하는 업무가 생기면 별표 뒤의 숫자가 필요합니다. 별표를 화면에 그릴 때 쳤다면 숫자는 DB 에 남아 있어요. 별표를 저장할 때 쳤다면 그 숫자는 이미 어디에도 없습니다.</p>
+
+<p>개인정보 컬럼을 보호하라는 요청을 받으면 보통 세 가지가 후보로 오릅니다. 마스킹, 암호화, 그리고 키 있는 해시(HMAC)로 바꾼 토큰이에요. 셋은 강도 순서로 줄 세울 수 있는 것이 아니라 <b>무엇을 되돌릴 수 있게 남기느냐</b>가 서로 다릅니다. 이 글은 같은 가짜 계좌번호 여섯 행에 세 방식을 실제로 적용해 그 차이를 숫자로 보고, 고르는 기준을 정리해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이 글에서 다룰 것</div>
+  &bull; 표시용 마스킹과 저장용 마스킹은 무엇이 다른가?<br>
+  &bull; 같은 값이 같은 출력이 되면 무엇을 얻고 무엇이 드러나나?<br>
+  &bull; 키를 잃으면, 키가 새면 각 방식에서 무슨 일이 생기나?<br>
+  &bull; 「개인정보의 안전성 확보조치 기준」은 어떤 항목에 암호화를 요구하나?<br>
+  &bull; 내 컬럼에는 무엇을 고르나? (판단 순서와 체크리스트)
+</div>
+
+<h2>1. 네 방식은 원문을 어디에 남기나</h2>
+
+<p>마스킹을 하나로 묶어 부르면 판단이 꼬입니다. 별표를 언제 치느냐에 따라 원문이 살아남는지가 정반대로 갈리거든요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 표시용 마스킹 / 저장용 마스킹</div>
+  표시용 마스킹은 원문(또는 암호문)을 그대로 저장해 두고, 화면·응답·로그로 내보낼 때만 일부를 가리는 방식이에요. 저장용 마스킹은 가린 값을 저장하고 원문을 버립니다. 앞쪽은 권한만 있으면 원문을 다시 볼 수 있고, 뒤쪽은 누구도 볼 수 없어요.
+</div>
+
+<p>암호화는 키가 있으면 원문으로 돌아오는 방식입니다. 여기서는 AES-GCM 을 기준으로 삼았어요. 행마다 새 IV 를 뽑기 때문에 같은 값도 매번 다른 암호문이 되고, IV·본문·태그 바이트나 함께 인증한 값(이 실습에서는 AAD 로 넣은 키 ID)을 바꾸면 복호화가 실패로 끝납니다. OWASP Cryptographic Storage Cheat Sheet 는 인증 모드를 쓸 수 있으면 항상 쓰고, 그중 GCM 과 CCM 을 먼저 고르라고 적어요(<a href="https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html">OWASP Cryptographic Storage</a>).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: AES-GCM (인증 암호화)</div>
+  AES 블록 암호를 GCM 모드로 쓰는 방식이에요. 암호문 끝에 위조 검사용 태그가 붙어서, 키가 틀렸거나 값이 바뀌었으면 엉뚱한 평문 대신 예외를 던집니다. 같은 키로 IV 가 한 번이라도 겹치면 안전성이 무너지므로 IV 를 매번 새로 뽑아야 해요.
+</div>
+
+<p>NIST SP 800-38D 는 이 조건을 "같은 IV 와 같은 키로 서로 다른 입력을 암호화할 확률이 2<sup>-32</sup> 를 넘으면 안 된다" 로 적고, 실무에서는 이 요구가 키를 비밀로 지키는 것과 거의 같은 만큼 중요하다고 덧붙입니다(<a href="https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf">NIST SP 800-38D, 8절</a>). 그래서 같은 값이 같은 암호문이 되게 하려고 GCM 의 IV 를 고정하는 것은 선택지가 아닙니다. 등치 조회가 꼭 필요할 때의 방법은 <a href="#pii-06">6편</a>에서 따로 다뤄요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: HMAC 토큰 (키 있는 해시)</div>
+  비밀 키와 값을 함께 해시해서 고정 길이 토큰을 만드는 방식이에요. 같은 키, 같은 값이면 항상 같은 토큰이 나와서 등치 조회 열로 쓸 수 있습니다. 복호화 연산은 없어요. 원문을 아는 쪽이 다시 계산해 비교만 할 수 있습니다.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr9a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="30" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">입력</text>
+  <text x="250" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">💾 DB 에 남는 것</text>
+  <text x="500" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">🖥️ 화면에 나가는 것</text>
+
+  <path d="M24 150 C 70 148, 120 151, 160 149 C 162 170, 161 190, 160 212 C 120 214, 70 211, 26 213 C 22 190, 24 170, 24 150 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="40" y="176" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">999-00-</text>
+  <text x="40" y="196" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">000001</text>
+
+  <path d="M166 170 C 190 120, 210 80, 236 66" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9a)"/>
+  <path d="M166 178 C 195 160, 215 140, 236 136" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9a)"/>
+  <path d="M166 186 C 195 200, 215 210, 236 210" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9a)"/>
+  <path d="M166 194 C 190 240, 210 270, 236 284" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9a)"/>
+
+  <path d="M244 46 C 320 44, 400 47, 462 45 C 464 64, 463 78, 462 92 C 400 94, 320 91, 246 93 C 242 78, 244 62, 244 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="256" y="66" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">표시용 마스킹: 원문(또는 암호문)</text>
+  <text x="256" y="86" font-family="Menlo, monospace" font-size="11" fill="#8a8272">권한자는 원문을 다시 본다</text>
+
+  <path d="M244 118 C 320 116, 400 119, 462 117 C 464 136, 463 150, 462 164 C 400 166, 320 163, 246 165 C 242 150, 244 134, 244 118 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="256" y="138" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">저장용 마스킹: 999-**-****01</text>
+  <text x="256" y="158" font-family="Menlo, monospace" font-size="11" fill="#8a8272">가린 숫자는 어디에도 없다</text>
+
+  <path d="M244 190 C 320 188, 400 191, 462 189 C 464 208, 463 222, 462 236 C 400 238, 320 235, 246 237 C 242 222, 244 206, 244 190 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="256" y="210" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d6591">AES-GCM: 암호문 (매번 다름)</text>
+  <text x="256" y="230" font-family="Menlo, monospace" font-size="11" fill="#8a8272">키가 있으면 원문으로 돌아온다</text>
+
+  <path d="M244 262 C 320 260, 400 263, 462 261 C 464 280, 463 294, 462 308 C 400 310, 320 307, 246 309 C 242 294, 244 278, 244 262 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="256" y="282" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">HMAC: 토큰 (같은 값은 같은 토큰)</text>
+  <text x="256" y="302" font-family="Menlo, monospace" font-size="11" fill="#8a8272">되돌릴 수 없고, 찾을 수는 있다</text>
+
+  <path d="M468 70 C 480 70, 488 70, 496 70" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9a)"/>
+  <text x="502" y="66" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">권한에 따라 원문 / 별표</text>
+  <path d="M468 142 C 480 142, 488 142, 496 142" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9a)"/>
+  <text x="502" y="138" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">누구에게나 별표</text>
+  <path d="M468 214 C 480 214, 488 214, 496 214" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9a)"/>
+  <text x="502" y="210" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">복호화 뒤 원문 / 별표</text>
+  <path d="M468 286 C 480 286, 488 286, 496 286" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9a)"/>
+  <text x="502" y="282" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">보여 줄 원문이 없다</text>
+
+  <text x="60" y="345" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 표시용 마스킹은 저장 방식이 아니라 출구에 거는 장치다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 계좌번호가 네 방식에서 DB 와 화면에 남기는 것</div>
+
+<p>그림에서 표시용 마스킹만 성격이 다릅니다. 나머지 셋은 "무엇을 저장하나" 의 답이고, 표시용 마스킹은 "무엇을 내보내나" 의 답이에요. 그래서 실제 설계는 대개 둘을 겹칩니다. 저장은 AES-GCM 으로 하고, 출구에서 표시용 마스킹을 거는 식이에요. <span class="obsv-mark">고를 것은 저장 방식이고, 표시용 마스킹은 그 위에 얹는 출구 규칙입니다.</span></p>
+
+<h2>2. 실습: 같은 여섯 행에 세 방식을 적용했다</h2>
+
+<p>입력은 가짜 계좌번호 세 개를 섞은 여섯 행입니다. A 가 세 번, B 가 두 번, C 가 한 번이에요. C 는 일부러 A 와 끝 여섯 자리가 같게 골랐습니다. 마스킹은 앞 세 자리와 끝 두 자리만 남기고, AES-GCM 은 AES-256 에 행마다 새 96비트 IV, HMAC 은 HMAC-SHA256 입니다. 키는 실습용 문자열에서 만든 고정 키이고, 암호문 앞의 <code>lab9$k1$</code> 도 이 실습에서만 쓰는 표시예요.</p>
+
+<div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
+cd Platform-study/labs/security/pii-09-mask-vs-encrypt
+java src/MaskVsEncrypt.java       # JDK 11 이상, 외부 라이브러리 없음</div>
+
+<p>OpenJDK 25.0.3 에서 돌렸고, 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/security/pii-09-mask-vs-encrypt">labs/security/pii-09-mask-vs-encrypt</a> 에 있습니다. 세 번 돌렸고, AES-GCM 암호문 줄(IV 가 매번 달라서 실행마다 다릅니다)을 뺀 나머지 출력은 세 번 모두 같았어요. 아래 캡처 두 장은 그 세 번과 별도로 다시 돌려 같은 숫자가 나온 실행의 화면이고, 출력 앞부분([1]~[4], 1~27줄)과 뒷부분([5]~[7], 28~48줄)을 나눠 찍었습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/security/pii-encryption/images/lab-09/compare.png" alt="java src/MaskVsEncrypt.java 실행 화면 앞부분. 원문으로 되돌린 행 마스킹 0, AES-GCM 6. 서로 다른 출력 마스킹 2, GCM 6, HMAC 3. A 를 등치로 찾으면 마스킹 1,3,4,5행, GCM 없음, HMAC 1,3,5행" style="max-width:100%">
+</div>
+<div class="obsv-figcap">그림 2. (출력 1~27줄) 되돌리기, 같은 값의 출력, 등치 조회를 한 화면에서 비교했다</div>
+
+<p>숫자를 하나씩 읽어 볼게요.</p>
+
+<div class="obsv-code">                      저장용 마스킹   AES-GCM    HMAC
+원문으로 되돌린 행        0/6          6/6       (복호화 없음)
+서로 다른 출력 (입력 3)    2            6          3
+WHERE = f(A) (정답 1,3,5)  1,3,4,5      없음       1,3,5
+가장 많이 나온 출력의 빈도  4            1          3</div>
+
+<p><b>저장용 마스킹</b>은 되돌리지 못하는 것만이 문제가 아니었어요. 서로 다른 입력 세 개가 출력 두 개로 줄었습니다. A 와 C 가 같은 <code>999-**-****01</code> 이 됐거든요. 그래서 마스킹한 값으로 A 를 찾으면 C 가 있는 4행까지 걸립니다. 마스킹 값은 식별자가 아니에요. 이 열을 조회 키나 중복 판정에 쓰면 엉뚱한 사람의 행이 섞입니다.</p>
+
+<p><b>AES-GCM</b>은 여섯 행이 모두 다른 암호문이 됐어요. 같은 A 세 번도 서로 다릅니다. 그래서 암호문만 본 사람은 몇 행이 같은 계좌인지 알 수 없고(최다 빈도 1), 같은 이유로 <code>WHERE 암호문 = 새로 암호화한 A</code> 는 아무것도 찾지 못해요. 대신 키가 있으면 6행 전부가 원문으로 돌아왔습니다.</p>
+
+<p><b>HMAC</b>은 정확히 원문의 구조를 따라갑니다. 출력이 세 개이고 A 를 찾으면 1,3,5행만 걸려요. 등치 조회가 되는 대신, 토큰만 본 사람도 "이 토큰이 세 번 나온다" 는 사실을 압니다. 원문을 몰라도 같은 사람의 행끼리 묶을 수 있다는 뜻이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 등치 조회와 빈도 노출은 같은 성질입니다</div>
+  같은 값이 같은 출력이 되어야 <code>WHERE</code> 로 찾을 수 있고, 같은 값이 같은 출력이 되면 몇 번 나왔는지가 드러나요. 둘 중 하나만 갖는 방식은 없습니다. 그래서 HMAC 토큰 열을 둘지는 "그 컬럼을 값으로 찾는 조회가 정말 있나" 를 먼저 확인하고 정하세요. 등치 조회가 남아 랜덤 IV 를 쓸 수 없었던 이야기는 3편에 있습니다(<a href="https://dding-shark.tistory.com/570">3편</a>).
+</div>
+
+<h3>부분 검색과 정렬은 셋 다 잘 안 됩니다</h3>
+
+<p>"끝 네 자리로 찾기", "이름 앞글자로 찾기", "번호순 정렬" 은 세 방식 어느 쪽도 그대로는 못 해요. AES-GCM 과 HMAC 의 출력은 원문의 앞뒤 순서나 부분을 전혀 담지 않고, 저장용 마스킹은 남긴 자리로만 찾을 수 있는데 그마저 위에서 본 대로 겹칩니다. 부분 검색이 꼭 필요하면 "끝 네 자리" 같은 조각을 별도 열로 따로 저장하게 되는데, 그 조각은 경우의 수가 1만 개뿐이에요. 조각 하나를 HMAC 으로 바꿔도 아래 3절의 키 유출 문제가 그대로 커집니다. 정렬은 대상 행을 먼저 다른 조건으로 좁힌 뒤, 애플리케이션에서 복호화해서 하는 수밖에 없어요.</p>
+
+<h2>3. 키를 잃을 때와 키가 샐 때</h2>
+
+<p>암호화와 HMAC 의 보호는 전부 키에서 나옵니다. 그러니 키에 생길 수 있는 두 사고, 잃어버리는 것과 새어 나가는 것을 따로 봐야 해요. 실습의 마지막 부분이 키를 k1 에서 k2 로 바꾼 결과입니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/security/pii-encryption/images/lab-09/rotate.png" alt="실행 화면 뒷부분. k2 로 기존 AES-GCM 행 복호화 실패 6/6, 옛 키로 풀어 재암호화 후 6/6 성공. k2 HMAC 토큰으로 기존 행 조회 없음, 암호문을 풀어 재계산 후 1,3,5행. 문장 정규식 마스킹은 이름을 놓친다. 저장 길이 마스킹 13자, AES-GCM 64자, HMAC 44자" style="max-width:100%">
+</div>
+<div class="obsv-figcap">그림 3. (출력 28~48줄) 키를 바꾸면 GCM 은 다시 암호화해야 하고, HMAC 은 원문이 있어야 다시 계산된다</div>
+
+<p>AES-GCM 행 여섯 개를 k2 로 풀면 6/6 이 <code>AEADBadTagException</code> 으로 실패합니다. 키가 틀리면 태그 검증에서 걸리니 틀린 평문이 조용히 나오지는 않아요. 저장할 때 앞에 붙여 둔 키 ID(<code>k1</code>)로 옛 키를 골라 풀고 k2 로 다시 암호화하자 6/6 이 k2 로 복호화됐습니다. OWASP 도 키를 바꾼 뒤 기존 데이터는 새 키로 다시 암호화하는 쪽을 먼저 권하고, 그게 어려우면 항목마다 쓴 키의 ID 를 표시해 두라고 적어요(<a href="https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html">OWASP Cryptographic Storage, Key Lifetimes and Rotation</a>). 반대로 말하면 <b>옛 키는 마지막 행을 다시 암호화할 때까지 버리면 안 됩니다.</b> OWASP 는 은퇴한 키도 옛 백업을 풀 수 있도록 한동안 보관하라고 적어요. 그 키로 암호화된 백업이 보존 기간 안에 남아 있다면 키도 그때까지 있어야 합니다. 이 순서를 운영 중에 지키는 방법은 <a href="#pii-08">8편</a>의 전환 순서와 같아요.</p>
+
+<p>HMAC 은 다른 방식으로 곤란해집니다. k2 로 계산한 A 의 토큰으로 기존 행을 찾으면 아무것도 걸리지 않아요. 기존 토큰은 k1 으로 만든 것이니까요. 토큰을 k2 로 다시 계산하려면 원문이 있어야 하는데, 토큰에서 원문을 꺼낼 방법은 없습니다. 실습에서는 같은 행의 AES-GCM 열을 풀어 원문을 얻고 다시 계산했고, 그제야 1,3,5행이 찾아졌어요. <span class="obsv-mark">HMAC 토큰만 저장한 컬럼은 원문이 다시 들어오기 전까지 키를 바꿀 수 없습니다.</span> 사용자가 같은 값을 다시 입력할 때마다 새 키로 바꿔 쓰는 점진 교체는 가능해요. OWASP Password Storage Cheat Sheet 도 같은 구조를 적어요. pepper 는 사용자의 비밀번호를 모르면 바꿀 수 없어서 이전 pepper 로 보호된 사용자에게 비밀번호를 다시 정하게 해야 하고, 작업 계수를 올릴 때는 사용자가 다음에 인증할 때 다시 해시하라고 합니다. 어느 쪽이든 원문이 다시 들어와야 바뀝니다. 다만 그 값이 다시 들어오지 않는 행은 끝까지 옛 키에 묶여요. 한 번에 바꿔야 할 가능성이 있다면 원문을 얻을 경로(암호문 열)를 함께 두어야 합니다.</p>
+
+<p>키가 새는 쪽은 실습으로 재지 않았습니다. 원리만 공개 자료로 적을게요.</p>
+
+<p>키 없는 해시(SHA-256 한 번)는 누구나 같은 계산을 할 수 있습니다. ENISA 의 가명처리 보고서는 해시 함수가 무결성에는 도움이 되지만 가명처리 기법으로는 대입(brute force)과 사전 공격에 약하다고 보고, 식별자의 경우의 수가 작으면 대입이 "trivially feasible" 하다고 적어요. 반면 MAC(HMAC)은 키가 노출되지 않는 한 되돌리기가 불가능해서 견고한 기법으로 분류합니다(<a href="https://www.enisa.europa.eu/sites/default/files/publications/Guidelines%20on%20shaping%20technology%20according%20to%20GDPR%20provisions.pdf">ENISA, Pseudonymisation techniques and best practices, 2019, 4.4.1절·5.1.3~5.1.4절</a>). 계좌번호, 전화번호, 주민등록번호는 자릿수와 형식이 정해진 값이라 경우의 수가 작은 쪽에 속해요. OWASP Password Storage Cheat Sheet 도 SHA-256 같은 빠른 해시는 공격자가 짧은 시간에 아주 많은 추측을 해 볼 수 있게 한다고 경고하고, DB 와 따로 보관하는 비밀값(pepper)을 HMAC 의 키로 쓰는 구성을 소개합니다(<a href="https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html">OWASP Password Storage</a>).</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 솔트와 페퍼 (salt, pepper)</div>
+  솔트는 값마다 다르게 붙이는 공개 난수예요. 미리 계산해 둔 표를 무력화하지만, 행마다 달라서 같은 값이 같은 출력이 되지 않으니 등치 조회 열로는 못 씁니다. 페퍼는 DB 밖에 따로 두는 비밀값이고, HMAC 의 키가 바로 이 자리예요.
+</div>
+
+<p>여기서 HMAC 의 한계도 같이 나옵니다. HMAC 이 키 없는 해시보다 안전한 이유는 키 하나뿐이에요. <b>키가 새면 HMAC 토큰은 키 없는 해시와 같은 처지가 됩니다.</b> 경우의 수가 작은 식별번호라면 그 키로 후보를 계산해 보는 일을 막을 것이 없어요. 그래서 HMAC 키는 암호화 키와 같은 수준으로 보관하고, 분석용 사본을 만드는 사람이 그 키에 닿지 못하게 해야 합니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <text x="200" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">🔑 키를 잃으면</text>
+  <text x="460" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">🔓 키가 새면</text>
+  <path d="M30 44 C 250 42, 480 45, 672 43" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+
+  <text x="30" y="82" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d6591">AES-GCM</text>
+  <path d="M168 58 C 260 56, 340 59, 412 57 C 414 76, 413 92, 412 106 C 340 108, 260 105, 170 107 C 166 92, 168 74, 168 58 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="180" y="80" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">원문을 영영 못 읽는다</text>
+  <text x="180" y="98" font-family="Menlo, monospace" font-size="11" fill="#8a8272">실습: k2 로 6/6 복호화 실패</text>
+  <path d="M424 58 C 520 56, 600 59, 668 57 C 670 76, 669 92, 668 106 C 600 108, 520 105, 426 107 C 422 92, 424 74, 424 58 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="436" y="80" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">암호문 전부가 평문과 같다</text>
+  <text x="436" y="98" font-family="Menlo, monospace" font-size="11" fill="#8a8272">새 키로 다시 암호화해야 한다</text>
+
+  <text x="30" y="152" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">HMAC</text>
+  <path d="M168 128 C 260 126, 340 129, 412 127 C 414 146, 413 162, 412 176 C 340 178, 260 175, 170 177 C 166 162, 168 144, 168 128 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="180" y="150" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">새 값으로 기존 행을 못 찾는다</text>
+  <text x="180" y="168" font-family="Menlo, monospace" font-size="11" fill="#8a8272">원문이 없으면 재계산 불가</text>
+  <path d="M424 128 C 520 126, 600 129, 668 127 C 670 146, 669 162, 668 176 C 600 178, 520 175, 426 177 C 422 162, 424 144, 424 128 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="436" y="150" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">키 없는 해시와 같아진다</text>
+  <text x="436" y="168" font-family="Menlo, monospace" font-size="11" fill="#8a8272">작은 입력 공간은 대입에 열린다</text>
+
+  <text x="30" y="222" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">저장용 마스킹</text>
+  <path d="M168 198 C 260 196, 340 199, 412 197 C 414 216, 413 232, 412 246 C 340 248, 260 245, 170 247 C 166 232, 168 214, 168 198 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="180" y="220" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">잃을 키가 없다</text>
+  <text x="180" y="238" font-family="Menlo, monospace" font-size="11" fill="#8a8272">되살릴 원문도 처음부터 없다</text>
+  <path d="M424 198 C 520 196, 600 199, 668 197 C 670 216, 669 232, 668 246 C 600 248, 520 245, 426 247 C 422 232, 424 214, 424 198 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="436" y="220" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">샐 키가 없다</text>
+  <text x="436" y="238" font-family="Menlo, monospace" font-size="11" fill="#8a8272">남긴 자리만큼은 원래 보인다</text>
+
+  <text x="60" y="284" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 되돌릴 수 있게 남긴 만큼, 키 사고 두 가지를 다 떠안는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 키를 잃는 사고와 키가 새는 사고는 방식마다 결과가 다르다</div>
+
+<h2>4. 고시는 어떤 항목에 암호화를 요구하나</h2>
+
+<p>법적 요구는 개인정보보호위원회 고시 「개인정보의 안전성 확보조치 기준」 제7조에 있습니다. 2026-10-17 에 국가법령정보센터에서 확인한 현행본은 개인정보보호위원회고시 제2026-9호(2026. 7. 1. 시행)이고, 이 글과 관련된 항은 이렇게 적혀 있어요(<a href="https://www.law.go.kr/%ED%96%89%EC%A0%95%EA%B7%9C%EC%B9%99/%EA%B0%9C%EC%9D%B8%EC%A0%95%EB%B3%B4%EC%9D%98%20%EC%95%88%EC%A0%84%EC%84%B1%20%ED%99%95%EB%B3%B4%EC%A1%B0%EC%B9%98%20%EA%B8%B0%EC%A4%80">국가법령정보센터</a>).</p>
+
+<div class="obsv-code">제7조(개인정보의 암호화)
+① 개인정보처리자는 비밀번호, 생체인식정보 등 인증정보를 저장 또는 정보통신망을 통하여
+   송ㆍ수신하는 경우에 이를 안전한 암호 알고리즘으로 암호화하여야 한다. 다만, 비밀번호를
+   저장하는 경우에는 복호화되지 아니하도록 일방향 암호화하여 저장하여야 한다.
+② 개인정보처리자는 다음 각 호의 해당하는 이용자의 개인정보에 대해서는 안전한 암호
+   알고리즘으로 암호화하여 저장하여야 한다.
+   1. 주민등록번호  2. 여권번호  3. 운전면허번호  4. 외국인등록번호
+   5. 신용카드번호  6. 계좌번호  7. 생체인식정보
+③ 개인정보처리자는 이용자가 아닌 정보주체의 개인정보를 다음 각 호와 같이 저장하는
+   경우에는 암호화하여야 한다.
+   1. 인터넷망 구간 및 인터넷망 구간과 내부망의 중간 지점(DMZ : Demilitarized Zone)에 고유식별정보를 저장하는 경우
+   2. 내부망에 고유식별정보를 저장하는 경우(다만, 주민등록번호 외의 고유식별정보를 저장하는
+      경우에는 (...) 암호화의 적용여부 및 적용범위를 정하여 시행할 수 있다)</div>
+
+<p>읽을 때 걸리는 지점이 셋 있어요.</p>
+
+<p>첫째, ②와 ③은 대상이 다릅니다. ②의 "이용자" 는 같은 고시 제2조에서 정보통신망법상 정보통신서비스 제공자의 서비스를 이용하는 자로 정의돼요. 그 경우에는 계좌번호와 신용카드번호까지 저장 시 암호화 대상입니다. 이용자가 아닌 정보주체에 대한 ③은 고유식별정보를 기준으로 하고, 주민등록번호 외의 고유식별정보를 내부망에 저장하는 경우에는 적용 여부와 범위를 정할 수 있게 열어 둡니다. 근거는 영향평가 대상 공공기관이면 그 영향평가 결과, 그 밖에는 암호화를 적용하지 않을 때의 위험도 분석 결과예요. 내 서비스가 어느 쪽에 해당하는지는 고시 문언만으로 정하기 어려운 경우가 있으니, 개인정보위가 공개한 이 기준의 안내서(해설서)와 법무 검토로 확인하세요.</p>
+
+<p>둘째, ①의 일방향 암호화는 비밀번호에 대한 요구입니다. 원문을 되돌릴 필요가 없고 되돌려서도 안 되는 값이라 이렇게 정했어요. 계좌번호를 HMAC 토큰으로만 저장하는 것이 ②의 "암호화하여 저장" 을 채우는지는 고시가 직접 말하지 않습니다. 저는 이 판단을 문언에서 끌어내지 못했고, 실무에서는 앞 절의 이유(키 교체에 원문이 필요하다)로 어차피 암호문 열을 같이 두게 됩니다.</p>
+
+<p>셋째, 마스킹은 제7조가 아니라 제12조 ① 쪽에 가까워요. "개인정보의 출력시(인쇄, 화면표시, 파일생성 등) 용도를 특정하여야 하며, 용도에 따라 출력 항목을 최소화하여야 한다." 표시용 마스킹은 이 출력 최소화를 구현하는 흔한 방법이지만, 저장 시 암호화를 대신하지는 않습니다.</p>
+
+<h2>5. 내 컬럼에는 무엇을 고르나</h2>
+
+<p>지금까지 본 것을 질문 순서로 묶으면 그림 5가 됩니다. 처음 질문이 가장 무거워요. 업무상 원문을 되돌려야 하는가, 다시 말해 그 값으로 실제로 무언가를 하는 사람(송금, 본인 확인, 법정 제출)이 있는가입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="arr9c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M200 20 C 300 18, 400 21, 500 19 C 502 40, 501 56, 500 72 C 400 74, 300 71, 202 73 C 198 56, 200 38, 200 20 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+  <text x="218" y="44" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">① 업무상 원문을 되돌려야 하나?</text>
+  <text x="218" y="64" font-family="Menlo, monospace" font-size="11" fill="#8a8272">송금, 본인 확인, 원래 문장 표시</text>
+
+  <path d="M260 78 C 220 100, 180 116, 150 132" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9c)"/>
+  <text x="176" y="104" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">아니오</text>
+  <path d="M440 78 C 480 100, 520 116, 550 132" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9c)"/>
+  <text x="500" y="104" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">예</text>
+
+  <path d="M30 138 C 120 136, 220 139, 300 137 C 302 166, 301 186, 300 208 C 220 210, 120 207, 32 209 C 28 186, 30 162, 30 138 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="44" y="162" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">원문을 저장하지 않는다</text>
+  <text x="44" y="184" font-family="Menlo, monospace" font-size="11" fill="#8a8272">필요한 조각만 저장용 마스킹으로</text>
+  <text x="44" y="200" font-family="Menlo, monospace" font-size="11" fill="#8a8272">(식별·조회 키로는 쓰지 않는다)</text>
+
+  <path d="M400 138 C 490 136, 590 139, 670 137 C 672 166, 671 186, 670 208 C 590 210, 490 207, 402 209 C 398 186, 400 162, 400 138 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="414" y="162" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d6591">AES-GCM 으로 저장 + 키 ID</text>
+  <text x="414" y="184" font-family="Menlo, monospace" font-size="11" fill="#8a8272">출구마다 표시용 마스킹</text>
+  <text x="414" y="200" font-family="Menlo, monospace" font-size="11" fill="#8a8272">(권한자만 원문)</text>
+
+  <path d="M165 214 C 165 240, 165 256, 165 272" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9c)"/>
+  <path d="M535 214 C 535 240, 535 256, 535 272" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#arr9c)"/>
+  <text x="200" y="248" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">② 그 값으로 등치 조회·중복 판정을 하나?</text>
+
+  <path d="M30 278 C 120 276, 220 279, 300 277 C 302 300, 301 318, 300 336 C 220 338, 120 335, 32 337 C 28 318, 30 298, 30 278 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="44" y="302" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">예: HMAC 토큰 열</text>
+  <text x="44" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272">키 교체 때 원문이 없다는 점을 받아들일 때만</text>
+
+  <path d="M400 278 C 490 276, 590 279, 670 277 C 672 300, 671 318, 670 336 C 590 338, 490 335, 402 337 C 398 318, 400 298, 400 278 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+  <text x="414" y="302" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">예: HMAC 토큰 열을 옆에</text>
+  <text x="414" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272">키 교체 때 암호문을 풀어 재계산</text>
+
+  <text x="40" y="378" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 토큰 열은 조회가 있을 때만 붙인다. 붙이는 순간 빈도가 드러난다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 첫 질문은 "되돌려야 하나" 이고, 조회 필요는 그다음에 토큰 열을 붙일지만 정한다</div>
+
+<h3>사례: 이력 문장 속 계좌번호를 문장째 암호화했다</h3>
+
+<p><a href="https://dding-shark.tistory.com/571">4편</a>의 대상은 업무 이력 문구였습니다. 사람 이름과 계좌번호가 한 문장 안에 들어 있었고, 그 문장은 어드민 화면의 이력 탭에 그대로 출력돼요. 4편은 그 컬럼을 통째로 암호화하지 않고 특정 문구만 골라 문장 전체를 암호화했습니다. 같은 컬럼을 조건으로 쓰는 조회 두 곳이 통째 암호화로 깨지기 때문이었어요. 암호화한 문장은 읽을 때 복호화되어, 이력 화면과 같은 조회로 원래 문장이 그대로 나오는 것까지 확인했습니다. 원문이 화면에 그대로 나가는 자리이니, 그림 5로 옮기면 첫 질문에 "예" 인 경우에 해당합니다.</p>
+
+<p>실습의 [6]은 이름과 번호가 섞인 가짜 메모 한 줄로 마스킹과 문장째 암호화를 비교합니다. 계좌번호 형식을 찾는 정규식으로 문장을 마스킹하면 계좌번호는 가려지지만 <code>홍길동</code> 은 패턴에 없으니 그대로 남습니다. 자유 문장에서 개인정보를 골라 가리려면 그 위치를 먼저 정확히 찾아야 하는데, 정규식은 형식이 정해진 값만 찾아요. 문장째 암호화하면 무엇이 어디 있는지 몰라도 문장 전체가 보호되고, 권한자 화면에서는 복호화한 원문을, 다른 화면에서는 복호화 뒤 표시용 마스킹을 건 문장을 보여 줄 수 있습니다. 대가도 숫자로 나왔어요. 원문 38자(UTF-8 70바이트) 문장이 암호문으로 140자가 됐습니다. 계좌번호 13자는 AES-GCM 으로 64자, HMAC 으로 44자였어요. 컬럼 길이를 이만큼 늘려야 합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 문장째 암호화에도 대가가 있었습니다</div>
+  &bull; 같은 컬럼을 조건으로 쓰는 조회가 있으면 암호화 범위를 좁혀야 하고, 그러면 한 컬럼에 평문과 암호문이 섞입니다(<a href="https://dding-shark.tistory.com/571">4편</a>)<br>
+  &bull; 읽는 쪽이 값의 생김새로 암호문을 가리면, 사람이 쓴 글이 우연히 그 생김새로 시작할 때 복호화가 실패합니다(<a href="https://dding-shark.tistory.com/572">5편</a>)
+</div>
+
+<h3>노출 지점마다 다시 묻기</h3>
+
+<p>저장 방식을 정해도 값은 여러 출구로 나갑니다. 출구마다 무엇이 보이는지 한 번씩 확인하세요.</p>
+
+<div class="obsv-code">출구          AES-GCM 저장일 때 보이는 것             해야 할 일
+화면·API 응답  복호화한 원문                            역할별 표시용 마스킹, 출력 항목 최소화
+로그           코드가 찍는 그대로                       원문·복호화 값을 찍지 않는다 (7편)
+백업           암호문                                   키를 백업과 같은 곳에 두지 않는다
+분석 사본      암호문 또는 HMAC 토큰                    분석가가 키에 닿지 않게. 토큰은 빈도와 연결이 보인다</div>
+
+<p>로그와 분석 사본에서는 HMAC 토큰도 조심해야 해요. 토큰은 원문은 아니지만 같은 사람의 기록끼리 이어 붙일 수 있는 값입니다. 로그로 새는 경로는 <a href="#pii-07">7편</a>에서 따로 다뤄요.</p>
+
+<p>코드로 옮기면 저장은 두 열, 출구는 한 함수가 됩니다. 아래는 계좌번호 하나를 기준으로 한 모양이에요.</p>
+
+<div class="obsv-code">-- 저장: 원문은 암호문 열에만, 조회가 있을 때만 토큰 열
+account_enc    VARCHAR(80)   -- {표시}${키ID}$Base64(IV || 암호문 || 태그), 13자 계좌번호 기준 64자
+account_hmac   CHAR(44)      -- HMAC-SHA256 Base64. 등치 조회가 없으면 이 열을 만들지 않는다
+-- 저장용 마스킹 열은 따로 두지 않는다. 화면에 필요한 별표는 출구에서 만든다
+
+// 출구: 응답 DTO 를 만들 때 역할로 갈라 표시용 마스킹
+String accountForView(String plain, Role role) {
+    return role.canSeeAccount() ? plain : mask(plain);   // mask 는 앞 3자리, 끝 2자리만 남김
+}</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 고르기 전 체크리스트</div>
+  &bull; 이 값을 원문으로 되돌려 쓰는 업무가 있나? 없으면 원문을 저장하지 않는다<br>
+  &bull; 있다면 AES-GCM 같은 인증 암호화로, 행마다 새 IV, 저장값에 키 ID<br>
+  &bull; 이 값으로 <code>WHERE</code> 를 거는 조회가 실제로 있나? 있을 때만 HMAC 토큰 열. 키 없는 해시는 쓰지 않는다<br>
+  &bull; HMAC 키를 바꿀 때 원문을 어디서 얻을지 정했나?<br>
+  &bull; 옛 키는 마지막 행을 다시 암호화하고, 그 키로 암호화된 백업의 보존 기간이 끝날 때까지 남겨 두나?<br>
+  &bull; 화면·API·로그·백업·분석 사본마다 누가 무엇을 보나? 표시용 마스킹은 그 출구에 걸었나?<br>
+  &bull; 마스킹 값을 식별자나 조회 키로 쓰는 코드는 없나?<br>
+  &bull; 이 항목이 고시 제7조 ②·③의 대상인지 해설서와 법무로 확인했나?
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>저장용 마스킹은 아무것도 되돌릴 수 없고, AES-GCM 은 키가 있으면 전부 되돌리고, HMAC 은 되돌리지 못하는 대신 찾을 수 있습니다.</b> 같은 여섯 행으로 재 보니 서로 다른 출력이 2, 6, 3개였고, A 를 찾으면 마스킹은 남의 행까지 1,3,4,5행을, HMAC 은 정확히 1,3,5행을 돌려줬어요.<br><br>
+  키 사고는 되돌릴 수 있게 남긴 만큼 커집니다. GCM 은 키를 잃으면 원문을 영영 못 읽고, HMAC 은 원문이 다시 들어오기 전까지 키를 바꾸기 어려우며, 키가 새면 키 없는 해시와 같아져요. 표시용 마스킹은 저장 방식이 아니라 출구마다 거는 규칙입니다.<br><br>
+  <b>고르는 순서는 "얼마나 세게 감출까" 가 아니라 "누가 원문을 다시 써야 하나" 부터입니다.</b>
+</div>
+
+</div>

@@ -1,0 +1,39 @@
+pii-06 실행 요약 (2026-10-17, 본 실행 세 바퀴. 그 전 1만 행 점검 실행 두 번은 코드 수정 전이라 버렸다: 회전이 행마다 커밋해 1만 행에 7.1초가 걸렸다)
+환경: MySQL 8.4(Docker 29.5.3, Docker Desktop), Spring Boot 4.1.1 / Hibernate ORM 7.4.5.Final, Spring Data JPA 4.1.1, MySQL Connector/J 9.7.0, Tink 1.23.0, Java 25.0.3, Apple M5 Pro
+조회 대상: 사람 수의 한가운데 번호(정답 10k=4행, 50k=5행, 100k=5행). 반복 200회(전 행 스캔은 5회), 앞 20회(스캔은 5회) 예열
+
+조회 시간 p50 ms (세 바퀴 최소~최대)
+                         10,000행        50,000행         100,000행
+① findBySsnDet           0.77~0.87       0.76~0.78        0.69~0.76      (정답 행 수 그대로)
+② findBySsnGcm           0.46~0.51       0.45~0.55        0.45~0.59      (항상 0행)
+② findAll+앱 filter      27.78~28.89     126.72~134.04    266.86~290.77
+② JDBC 한 컬럼+복호화     10.99~11.68     53.44~55.38      111.26~115.49
+③ findBySsnBidx          0.44~0.47       0.45             0.45~0.75
+③' bidx12+복호화 확인     0.37~0.39       0.40~0.47        0.42~0.54      (후보 50k: 37/14/22행, 100k: 5/16/32행, 진짜는 5행)
+
+EXPLAIN (세 바퀴 같음)
+① ssn_det = ?   type=ref key=idx_det
+② ssn_gcm = ?   type=ref key=idx_gcm rows=1  -> 인덱스는 타는데 0행
+② 전 행        type=ALL rows=9,744~98,696(통계 추정치)
+③ ssn_bidx = ?  type=ref key=idx_bidx
+
+빈도 (50,000행, 세 바퀴)
+평문 정답      distinct 4,996  top5 719 297 214 183 150
+ssn_det       distinct 4,996  top5 719 297 214 183 150   (세 바퀴 같음)
+ssn_bidx      distinct 4,996  top5 719 297 214 183 150   (세 바퀴 같음)
+ssn_bidx12    distinct 2,865 / 2,901 / 2,889, top1 727 / 730 / 719
+ssn_gcm       distinct 50,000 top5 1 1 1 1 1
+
+LIKE: findBySsnDetStartingWith("000000-00025") -> 0행 (평문 기준 707행), 세 바퀴 같음.
+      Hibernate 가 "000000-00025%" 전체를 컨버터로 암호화해 바인딩했다(results/demo-r1.txt)
+
+키 회전 (50,000행, 1,000행씩 커밋)
+                                  r1     r2     r3
+① 결정적 키 전부 다시 쓰기          1.6s   2.0s   1.8s
+② GCM 키 전부 다시 쓰기             1.7s   2.0s   1.8s   (전 행 복호화 두 번 포함, README 참고)
+③ 인덱스 키 전부 다시 쓰기          1.9s   2.2s   2.0s
+절반 옮긴 시점 조회(세 바퀴 같음): ① 새 키 3/5행, 옛 키 2행, IN(새,옛) 5행
+                                 ③ 새 키 HMAC 3/5행, 옛 키 HMAC 2행
+                                 ② 전 행 복호화 성공(키 번호로 키 선택), 조회에 영향 없음
+
+IV 고정 GCM: 암호문1 XOR 암호문2 == 평문1 XOR 평문2, 평문1을 알면 평문2 복원(results/ivreuse.txt)

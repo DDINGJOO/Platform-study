@@ -1,0 +1,27 @@
+# out/bench-50000-r1.txt 와 out/freq-r1.txt 를 이어 붙였다(CSV 줄 제외)
+rows=50000 target=000000-0002500 truth=5 iters=200 (scan iters=5)
+EXPLAIN
+  ① det =        type=ref   key=idx_det    rows=5       Extra=null
+  ② gcm =        type=ref   key=idx_gcm    rows=1       Extra=null
+  ② full scan    type=ALL   key=null       rows=49421   Extra=null
+  ③ bidx =       type=ref   key=idx_bidx   rows=5       Extra=Using index condition
+  ③' bidx12 =    type=ref   key=idx_bidx12 rows=37      Extra=null
+TIME (ms, p50 / p95, 결과 행)
+  ① findBySsnDet             0.77 /     1.15   5행
+  ② findBySsnGcm             0.55 /     0.86   0행
+  ② findAll+filter         129.02 /   133.93   5행
+  ② JDBC 한 컬럼+복호화           53.51 /    55.15   5행
+  ③ findBySsnBidx            0.45 /     0.77   5행
+  ③' bidx12+복호화 확인           0.47 /     0.83   5행
+  (③' 후보 37행 중 진짜 5행)
+
+$ java -jar lookup.jar freq
+rows=50000
+  평문(정답, 키로 복호화)             distinct=4996   top5=[719, 297, 214, 183, 150]
+  ssn_det (키 없이 SQL 만)       distinct=4996   top5=[719, 297, 214, 183, 150]
+  ssn_bidx (키 없이 SQL 만)      distinct=4996   top5=[719, 297, 214, 183, 150]
+  ssn_bidx12 (키 없이 SQL 만)    distinct=2865   top5=[727, 314, 214, 183, 166]
+  ssn_gcm (키 없이 SQL 만)       distinct=50000  top5=[1, 1, 1, 1, 1]
+
+가장 많은 ssn_det 값: AU1lkL4U9/Mu4sRK... (719행)
+  같은 행들의 ssn_gcm 앞 16자: [AXGxTAuQMsqEGXQG..., ARRA4j9qWB8VVC1u..., AVdoDZ9VYuSy6GdN...]
