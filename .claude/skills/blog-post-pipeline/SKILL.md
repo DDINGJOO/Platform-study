@@ -299,6 +299,32 @@ done
 놓친 3건을 추가로 찾았다. 그러니 수정 담당에게도 "범위 밖에서 발견한 것은 플래그하라"
 고 열어둔다.
 
+## 📸 실행 화면 캡처 (실습 글 옵션)
+
+PR 에 실행 결과 스크린샷을 붙이듯, 실습 글의 핵심 결과 1~2개는 **실제로 돌린 터미널 화면**을
+이미지로 넣을 수 있다. `<pre>` 로 옮겨 적은 출력보다 "진짜 돌렸다"는 증거가 분명하다.
+2026-10-17 부터 새 실습 글에 적용한다(이미 감사를 마친 옛 글에는 소급하지 않는다).
+
+```bash
+V=~/.local/share/tistory-uploader/venv/bin/python
+A=.claude/skills/blog-post-pipeline/assets/term-shot.py
+$V $A --run "python3 scripts/analyze.py lib-3" --cwd labs/<실습> --lines 1-40 \
+      -o posts/<시리즈>/images/lab-NN/analyze.png                       # 명령을 실제로 돌려 찍는다
+$V $A --from labs/<실습>/out/e2.txt --cmd "scripts/run_all.sh e2" \
+      --source labs/<실습>/out/e2.txt -o ...                              # 저장된 출력을 찍는다
+```
+
+- **찍기 전에 텍스트로 마스킹 검사를 한다.** 이미지가 되면 mask-check 와 pre-commit 훅이 글자를
+  못 읽는다. 사설 IP·계정 ID·조직 목록이 걸리면 찍지 않고 멈춘다(`.mask-allow` 는 그대로 적용).
+  걸리면 출력에서 값을 자리표시자로 바꾼 파일을 만들어 `--from` 으로 찍는다.
+- 바닥글에 찍은 시각과 실습 디렉터리(또는 `--source` 원자료 경로)가 들어간다. 감사자가 대조하는 단서다.
+- `--run` 은 그 자리에서 다시 돌리므로, **Docker 스택이 필요한 명령은 실행 중에(잠금을 잡은 동안) 찍는다.**
+  나중에 찍으려면 실행 때 출력을 `out/` 에 저장해 두고 `--from` 으로 찍는다.
+- 글에는 jsDelivr 주소로 건다: `<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/<시리즈>/images/lab-NN/<파일>.png" alt="…" style="max-width:100%">`.
+  alt 에 무엇을 실행한 화면인지와 핵심 숫자를 쓴다. 이미지는 main 에 먼저 푸시되어야 글이 깨지지 않는다.
+- 캡처는 본문을 대신하지 않는다. 글이 인용하는 숫자는 본문에도 텍스트로 쓴다(검색·감사·접근성).
+- **감사 항목에 추가**: 캡처 속 숫자가 본문·원자료와 같은지, 캡처가 버린 실행의 화면이 아닌지.
+
 ## 마무리 검증 (매 라운드 후)
 
 ```python
