@@ -1,0 +1,265 @@
+<!-- lead: Counter를 여러 번 증가시켰는데 백엔드에는 구간별 숫자만 보인다면, 측정·집계·수집을 나누어 볼 필요가 있어요. OpenTelemetry Java의 Reader와 저장소를 따라가고 Micrometer·Prometheus의 역할과 비교했어요. -->
+<!-- tags: MetricReader, 메트릭 집계, Temporality, Micrometer, Prometheus -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap" style="overflow-wrap:anywhere;">
+<div class="obsv-series">
+  <div class="obsv-st">📚 OpenTelemetry 구조와 설계 읽기</div>
+  3편. 전송이 밀리면 스팬은 어디서 사라질까<br>
+  4편. 샘플링하면 무엇이 남고 무엇이 빠질까<br>
+  <b>5편. 메트릭은 어디서 집계되고 누가 가져갈까</b> &larr; 지금 이 글
+</div>
+
+<p>주문이 완료될 때마다 Counter를 1씩 올리는 앱을 가정해 볼게요. 주문은 다섯 번 처리했는데 백엔드에는 숫자 5인 데이터 한 점이 보여요. 다음 수집 때는 4가 보일 수도, 9가 보일 수도 있습니다. 어느 쪽이 잘못된 것인지는 숫자만으로 판단하기 어려워요. 개별 호출을 어떻게 합쳤고, 그 값이 어느 시간 구간을 뜻하는지 알아야 합니다.</p>
+<p>메트릭 라이브러리를 “숫자를 보내는 도구”로만 보면 이 차이를 놓치기 쉬워요. 이번에는 <b>앱이 값을 기록하는 시점, SDK가 집계하는 방식, 수집을 시작하는 주체, 저장 서버가 값을 해석하는 방식</b>을 나누어 볼게요. OTel Java <code>v1.67.0</code>의 소스를 읽고 Micrometer·Prometheus와 비교합니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이번에 확인할 질문</div>
+  &bull; Counter.add()는 매번 네트워크로 값을 보내나요?<br>
+  &bull; View와 Reader를 바꾸면 왜 저장해야 하는 상태도 달라지나요?<br>
+  &bull; 누적값은 수집이 한 번 실패해도 언제나 복구할 수 있나요?<br>
+  &bull; Micrometer와 Prometheus는 OTel의 어느 부분과 비교해야 하나요?
+</div>
+
+<h2>1. 기록한 측정값과 전송한 데이터 점은 달라요</h2>
+<p>먼저 앱의 한 번의 호출부터 봐요. OTel API로 Counter를 만들고 <code>add(1, attributes)</code>를 호출하면, 특정 속성 조합에 증가량 하나를 기록합니다. 이것이 곧바로 HTTP 요청 하나를 발생시킨다는 뜻은 아니에요. 이 글의 예제는 역할을 설명하는 코드이며 완성된 실행 프로그램은 아닙니다.</p>
+<div class="obsv-code">// meter는 SDK에 연결되어 있다고 가정해요.
+LongCounter completed = meter.counterBuilder("orders.completed").build();
+Attributes attrs = Attributes.of(AttributeKey.stringKey("region"), "test");
+
+completed.add(1, attrs);
+completed.add(1, attrs);
+completed.add(3, attrs);
+// 합계 집계라면 이 조합의 증가량 합은 5예요.
+// 세 호출의 개별 발생 시각이 모두 전송된다는 뜻은 아니에요.</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 측정값 (Measurement)</div>
+  계측 도구에 한 번 기록한 값이에요. SDK는 여러 측정값을 합계나 분포로 처리해서 전송할 데이터 점을 만들 수 있습니다.
+</div>
+<p>실제 구현인 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/SdkLongCounter.java#L42-L74">SdkLongCounter.add()</a>는 증가량을 검사한 다음 <code>storage.recordLong()</code>을 호출해요. 이 메서드에서 네트워크 exporter를 호출하지는 않습니다. Counter는 음수 증가량을 받는 도구가 아니고, 이 버전의 구현은 음수이면 경고 후 기록하지 않아요. 증감하는 현재 값을 표현할 때 Counter의 증가량 API에 음수를 넣어 맞추는 것은 적절하지 않습니다.</p>
+<p>합계 집계의 내부까지 내려가면 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/aggregator/LongSumAggregator.java#L102-L135">LongSumAggregator.Handle</a>이 <code>LongAdder</code>에 값을 더해요. 수집할 때는 누적 유지 여부에 따라 <code>sum()</code> 또는 <code>sumThenReset()</code>으로 읽을 수 있게 되어 있습니다. 이 경로에서 중요한 상태는 측정 호출을 나열한 목록이 아니라 합계예요. 내부 클래스의 구현을 읽은 것이며 앱 코드에서 이 클래스를 직접 사용하자는 뜻은 아닙니다.</p>
+<p>따라서 합계 5만 남았다면 <code>1, 1, 3</code>과 <code>2, 3</code>을 나중에 구별할 수 없어요. 이는 여기서 가정한 합계 집계의 정보 한계입니다. 요청별 시각과 순서가 필요하면 그 목적에 맞는 로그·트레이스·이벤트 저장을 따로 검토해야 해요. 메트릭 집계를 이벤트 원장으로 읽으면 수집이 정상이어도 기대한 정보가 없을 수 있습니다.</p>
+<p>또한 모든 메트릭이 “더하기”는 아니에요. 요청 수의 증가량, 현재 대기 작업 수, 요청 지연 시간은 질문부터 다릅니다. 현재 값을 읽는 Gauge와 값의 분포를 기록하는 Histogram을 Counter와 같은 데이터로 가정하면 이후의 누적·차분 설명도 틀어져요. 아래의 5와 9 예시는 <b>같은 속성 조합의 동기 Counter를 합계로 집계하는 경우</b>로 한정합니다.</p>
+
+<h2>2. View는 집계 뒤의 표시 설정만이 아니에요</h2>
+<p>어떤 값을 합칠지는 앱의 속성에도 달려 있어요. 같은 주문 수라도 <code>region=test</code>와 <code>region=other</code>를 구별해서 기록하면 각각의 집계 상태가 필요합니다. 이때 모든 속성을 유지할지, 어떤 집계를 사용할지 정하는 설정이 View예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 집계 (Aggregation)</div>
+  여러 측정값을 합계·마지막 값·구간별 개수 등의 형태로 처리하는 방법이에요. 무엇을 보존하고 무엇을 나중에 알 수 없게 되는지를 결정합니다.
+</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 뷰 (View)</div>
+  선택한 계측 도구에서 어떤 메트릭 스트림을 만들지 정하는 SDK 설정이에요. 집계 방식과 유지할 속성 등을 바꿀 수 있으며 대시보드 화면 설정과는 다릅니다.
+</div>
+<p>호출 순서를 확인해 보면 “일단 다 저장한 뒤 View로 출력만 바꾼다”는 이해와 차이가 있어요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/InstrumentBuilder.java#L67-L71">InstrumentBuilder</a>는 동기 도구를 만들 때 descriptor를 만들고 저장소를 등록한 다음, 그 저장소를 도구에 전달합니다. 이어지는 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/SdkMeter.java#L281-L312">SdkMeter의 등록 코드</a>는 Reader별로 해당 도구에 맞는 View를 찾고 저장소를 만들어요. Drop 집계로 설정된 View는 이 경로에서 제외합니다.</p>
+<div class="obsv-code">// 고정 소스에서 확인한 호출 관계를 간추린 것이에요.
+instrument builder의 build()
+  → InstrumentBuilder.buildSynchronousInstrument()
+  → SdkMeter.registerSynchronousMetricStorage()
+  → 각 Reader에 대해 맞는 View를 찾고 저장소 등록
+  → 저장소가 연결된 Counter 생성
+
+Counter.add()
+  → storage.recordLong()
+  → 유지할 속성으로 집계 상태를 찾아 값 기록</div>
+<p>속성 필터가 상태를 찾기 전에 실행되는지도 확인했어요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/CumulativeSynchronousMetricStorage.java#L96-L120">CumulativeSynchronousMetricStorage</a>는 먼저 <code>attributesFilter.apply()</code>를 적용하고, 그 결과로 기존 집계 handle을 찾습니다. <code>user.id</code>를 제외하고 <code>region</code>만 유지하도록 설정했다면 같은 region의 여러 사용자가 같은 조합으로 집계될 수 있어요. 이 코드는 cumulative 동기 저장소에 대한 관찰이며 모든 저장소가 같은 내부 구조라는 주장은 아닙니다.</p>
+<p>이 선택에는 분명한 이득과 비용이 있어요. 가정한 주문 수의 목적이 지역별 처리량이라면, 사용자별 상태를 유지하지 않아 집계 조합 수를 줄일 수 있습니다. 반대로 이후에 “특정 사용자가 몇 번 주문했는가”를 이 집계에서 다시 묻는 것은 불가능해져요. <span class="obsv-mark">집계 전에 제거한 차원을 백엔드 쿼리로 복원할 수는 없어요.</span> 먼저 답하고 싶은 질문을 정해야 View가 단순한 최적화가 아닌 데이터 설계라는 점도 이해됩니다.</p>
+<p>고정 소스의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/SdkMeterProviderBuilder.java#L119-L149">Provider builder</a>는 View의 attribute filter와 cardinality limit을 보관하고, Reader는 별도로 등록해요. 이 설정 경계 덕분에 라이브러리의 측정 호출을 그대로 두고 운영 측이 집계 정책을 선택할 수 있다고 해석할 수 있습니다. 다만 View 한 개를 설정했다고 로그·트레이스·exemplar 등 다른 경로의 민감정보까지 모두 제거되는 것은 아니에요.</p>
+
+<h2>3. Reader가 읽는 방식은 집계 상태에도 영향을 줘요</h2>
+<p>이제 “누가 수집을 시작하는가”를 봐요. 이름만 보면 MetricReader는 완성된 데이터를 읽기만 할 것 같지만, Java 인터페이스는 시간 구간과 기본 집계 선택 기능도 함께 가집니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 메트릭 리더 (MetricReader)</div>
+  SDK에서 메트릭을 수집하고 수집 생명주기를 다루는 구성 요소예요. Java에서는 도구 종류별 temporality(측정값을 어느 시간 구간으로 집계할지 정하는 방식)와 기본 aggregation의 선택에도 관여합니다.
+</div>
+<div class="obsv-fig">
+  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/05/metric-reader.png" alt="MetricReader.java 24행부터 42행. temporality 및 기본 aggregation selector 상속, collection 등록 메서드가 보인다." style="width:100%;height:auto;border-radius:8px;">
+</div>
+<div class="obsv-figcap">코드 1. MetricReader가 수집과 집계 선택의 계약을 정의해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/export/MetricReader.java#L24-L42">원문 24~42행</a></div>
+<p>캡처에서 Reader는 <code>AggregationTemporalitySelector</code>와 <code>DefaultAggregationSelector</code>를 상속해요. Provider가 전달한 <code>CollectionRegistration</code>을 등록하고, 구현이 그 객체의 <code>collectAllMetrics()</code>를 호출합니다. 그래서 도구 이름과 측정 호출이 같아도 어떤 Reader에 연결했느냐에 따라 출력되는 시간 의미와 기본 집계가 달라질 수 있어요.</p>
+<p>실제로 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/DefaultSynchronousMetricStorage.java#L65-L85">DefaultSynchronousMetricStorage.create()</a>는 Reader의 temporality 선택 결과에 따라 cumulative(시작 시점부터 누적) 저장소와 delta(직전 수집 이후 구간) 저장소 중 하나를 만듭니다. 내보내기 직전에 temporality 정보만 덧붙이는 처리가 아니에요. 상태를 유지하고 수집 구간을 끝내는 방식이 달라집니다.</p>
+<p>Provider 쪽 연결도 따라갔어요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/SdkMeterProvider.java#L67-L104">SdkMeterProvider 생성자</a>는 각 Reader를 등록 정보와 연결하고, Reader마다 SDK 메트릭을 생산할 객체를 넣어 <code>register()</code>를 호출합니다. 등록한 Reader가 하나도 없으면 이 버전의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/SdkMeterProvider.java#L120-L129">meterBuilder()</a>는 no-op MeterBuilder를 반환해요. SDK 객체를 만들었다는 사실만으로 내보낼 경로나 기록 상태가 모두 구성되는 것은 아닙니다.</p>
+<p>Reader를 두 개 등록하면 한쪽이 읽은 delta를 다른 쪽에서 빼앗는지도 궁금했어요. <a href="https://opentelemetry.io/docs/specs/otel/metrics/sdk/#metricreader">공식 SDK 사양</a>은 여러 Reader를 지원하고, 한 Reader의 수집이 다른 Reader의 수집 상태에 영향을 주지 않아야 한다고 설명합니다. 고정 Java 소스에서도 앞서 본 Reader별 저장소 등록과 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/SdkMeter.java#L367-L385">MultiWritableMetricStorage</a>의 반복 기록 경로를 확인할 수 있어요. 하나의 측정이 여러 저장소에 기록됩니다.</p>
+<p>이 독립성은 무료라는 뜻은 아니에요. 이 구현은 Reader와 View에 맞는 저장소를 만들고 기록 경로를 늘리므로, Reader를 추가할 때 상태·집계 작업·출력량의 증가를 검토해야 합니다. 집계 조합 수와 Histogram 구성에도 비용이 달라져요. “Reader가 두 개면 메모리가 정확히 두 배”라는 수치는 이 코드만으로 말할 수 없고, 이 글에서는 실측하지 않았습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 565" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="metrics05-flow-title metrics05-flow-desc" style="width:100%;max-width:700px;height:auto;">
+  <title id="metrics05-flow-title">OTel 측정에서 두 가지 수집 경로로 나뉘는 관계</title>
+  <desc id="metrics05-flow-desc">앱이 측정하고 View가 집계를 구성한다. Reader마다 SDK 집계 상태가 있다. 왼쪽은 PeriodicMetricReader가 exporter를 거쳐 전송한다. 오른쪽은 Prometheus Reader가 서버의 scrape 요청에 응답한다.</desc>
+  <defs><marker id="metrics05-flow-arrow" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M1 1 Q4 4 1 7 L8 4 Z" fill="#3d3a34"/></marker></defs>
+  <g fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M147 25 Q350 22 553 26 L555 83 Q350 87 145 82 Z" fill="#fffdf7"/>
+    <path d="M350 87 Q347 102 350 116" marker-end="url(#metrics05-flow-arrow)"/>
+    <path d="M192 126 Q351 122 509 126 L511 197 Q350 200 189 196 Z" fill="#fdf3dd"/>
+    <path d="M287 201 Q279 224 184 249" marker-end="url(#metrics05-flow-arrow)"/>
+    <path d="M414 201 Q424 225 520 249" marker-end="url(#metrics05-flow-arrow)"/>
+    <path d="M31 260 Q181 256 326 261 L329 350 Q181 354 29 349 Z" fill="#f1f5fa"/>
+    <path d="M373 260 Q520 256 669 261 L671 350 Q521 354 371 349 Z" fill="#f1f5fa"/>
+    <path d="M179 356 Q175 382 178 409" marker-end="url(#metrics05-flow-arrow)"/>
+    <path d="M32 420 Q180 416 327 420 L329 502 Q180 506 29 501 Z" fill="#fffdf7"/>
+    <path d="M375 420 Q522 417 669 421 L670 502 Q521 507 372 502 Z" fill="#fffdf7"/>
+    <path d="M445 413 Q440 386 445 359" marker-end="url(#metrics05-flow-arrow)"/>
+    <path d="M594 359 Q600 385 594 411" marker-end="url(#metrics05-flow-arrow)"/>
+  </g>
+  <g fill="#3d3a34" font-family="'Nanum Pen Script',cursive" text-anchor="middle">
+    <text x="350" y="63" font-size="25">앱의 Counter.add / Histogram.record</text>
+    <text x="350" y="157" font-size="25">View로 집계·유지할 속성 구성</text>
+    <text x="350" y="183" font-size="20">측정 원본 전체를 저장하는 과정은 아니에요</text>
+    <text x="179" y="291" font-size="24">Reader A의 SDK 집계 상태</text>
+    <text x="179" y="324" font-size="25">PeriodicMetricReader</text>
+    <text x="521" y="291" font-size="24">Reader B의 SDK 집계 상태</text>
+    <text x="521" y="324" font-size="25">PrometheusMetricReader</text>
+    <text x="215" y="393" font-size="20">수집·전송</text>
+    <text x="414" y="390" font-size="19">요청</text>
+    <text x="628" y="390" font-size="19">응답</text>
+    <text x="179" y="451" font-size="25">MetricExporter → 수신 대상</text>
+    <text x="179" y="480" font-size="21">백엔드 또는 Collector</text>
+    <text x="521" y="452" font-size="26">Prometheus 서버</text>
+    <text x="521" y="480" font-size="22">scrape 시작·시계열 저장·질의</text>
+    <text x="350" y="545" font-size="22" fill="#8a8272">개념도예요. Reader별 집계와 전송 방향을 구별해요.</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. OTel에도 주기 전송과 scrape 응답 경로가 모두 있어요. Reader 두 개가 같은 delta 상태를 서로 소비하는 구조는 아닙니다.</div>
+
+<h2>4. 주기 수집과 전송 성공은 별개의 문제예요</h2>
+<p>PeriodicMetricReader는 등록되면 주기 실행을 시작합니다. 고정 소스의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/export/PeriodicMetricReader.java#L161-L197">register()와 start()</a>를 보면 수집 등록 객체를 보관하고, scheduler에 정해진 간격의 실행을 등록해요. 앱의 Counter가 매번 네트워크를 호출하는 대신 기록과 주기 전송이 분리되어 있는 거예요.</p>
+<p>하지만 Reader와 Exporter가 완전히 무관하지는 않습니다. 이 Reader는 도구 종류별 temporality와 기본 aggregation의 선택을 연결된 Exporter에 위임해요. 백엔드가 기대하는 데이터 형식이 SDK의 수집 구성에 영향을 주는 경로입니다.</p>
+<div class="obsv-fig">
+  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/05/periodic-reader.png" alt="PeriodicMetricReader.java 86행부터 94행. temporality와 기본 aggregation 선택을 exporter의 메서드에 위임한다." style="width:100%;height:auto;border-radius:8px;">
+</div>
+<div class="obsv-figcap">코드 2. PeriodicMetricReader는 집계 구간 선택을 Exporter에 위임해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/export/PeriodicMetricReader.java#L86-L94">원문 86~94행</a></div>
+<p>주기 실행의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/export/PeriodicMetricReader.java#L267-L309">doRun()</a>도 읽어 봤어요. 먼저 원자적 상태로 다른 export가 진행 중인지 확인하고, 가능할 때 <code>collectAllMetrics()</code>를 호출합니다. 결과가 비어 있지 않으면 export로 넘기고, 완료 콜백에서 다음 실행을 허용해요. 이미 전송 중이면 이 회차를 겹쳐 실행하지 않습니다.</p>
+<p>이 차이 때문에 두 실패 상황을 구분해야 해요. 하나는 전송이 오래 걸려 <b>새 수집 자체를 건너뛴 경우</b>이고, 다른 하나는 <b>수집은 끝났지만 그 결과의 전송이 실패한 경우</b>입니다. 동기 Counter가 계속 쌓이고 있다면 다음 수집이 더 넓은 구간을 담을 수 있어요. 반면 이미 delta 수집을 끝낸 결과를 보내지 못했다면, 다음 delta가 이전 구간을 자동으로 다시 포함한다고 기대해서는 안 됩니다. 실패한 payload를 재시도하는지는 Exporter·전송 계층의 정책까지 봐야 해요.</p>
+<p>이 함수만으로 무손실이나 영속 재전송을 주장할 수는 없어요. 특히 이 버전은 exporter가 반환한 실패를 경고로 남기는 경로와 Reader 자체의 실행 결과 처리가 분리되어 있습니다. 단순히 flush 호출의 완료만 보고 백엔드에 저장되었다고 결론 내리지 않는 편이 안전해요. 여기서 다룬 것은 수집·전송 경계이고, 각 exporter의 모든 재시도 정책을 검증한 것은 아닙니다.</p>
+<p>수집 시점에만 값을 읽는 비동기 도구도 따로 생각해야 합니다. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/SdkMeter.java#L136-L166">SdkMeter.collectAll()</a>는 비동기 callback을 호출한 후 저장소를 수집해요. 이 코드의 수집 lock과 callback 경로를 보면 callback에 느린 외부 조회나 파괴적인 읽기를 넣기 전에 여러 Reader의 호출도 고려해야 합니다. 예를 들어 “읽으면 0으로 초기화되는 업무 카운터”를 callback에서 소비하면 Reader 하나가 읽은 뒤 다른 Reader에는 다른 값이 보일 수 있어요. Reader의 집계 독립성과 앱이 제공하는 callback의 올바른 동작은 별개의 책임입니다.</p>
+
+<h2>5. Delta와 cumulative는 같은 숫자를 다르게 읽어요</h2>
+<p>앞의 5와 9를 이제 시간과 함께 놓아 봐요. 측정이 시작된 시점을 T0라고 하고, T1까지 증가량 <code>1, 1, 3</code>을 기록한 다음, T2까지 <code>4</code>를 더했다고 가정할게요. 아래 수치는 개념을 설명하기 위한 계산이며 실행 로그가 아닙니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 시간 집계 방식 (Aggregation temporality)</div>
+  집계값이 어떤 시간 구간을 뜻하는지 나타내요. Delta는 이어지는 각 구간을, cumulative는 같은 시작점을 기준으로 한 누적 구간을 표현합니다.
+</div>
+<table style="width:100%;border-collapse:collapse;margin:0 0 22px;font-size:15px;">
+  <thead><tr style="background:#fdf3dd;"><th style="padding:10px;border:1px solid #d8cfba;">수집 시점</th><th style="padding:10px;border:1px solid #d8cfba;">Delta의 구간과 값</th><th style="padding:10px;border:1px solid #d8cfba;">Cumulative의 구간과 값</th></tr></thead>
+  <tbody><tr><td style="padding:10px;border:1px solid #d8cfba;">T1</td><td style="padding:10px;border:1px solid #d8cfba;">(T0, T1] = 5</td><td style="padding:10px;border:1px solid #d8cfba;">(T0, T1] = 5</td></tr><tr><td style="padding:10px;border:1px solid #d8cfba;">T2</td><td style="padding:10px;border:1px solid #d8cfba;">(T1, T2] = 4</td><td style="padding:10px;border:1px solid #d8cfba;">(T0, T2] = 9</td></tr></tbody>
+</table>
+<p><a href="https://opentelemetry.io/docs/specs/otel/metrics/data-model/#temporality">공식 데이터 모델</a>은 delta와 cumulative를 이 시간 구간으로 구분합니다. 같은 주문이 중복 처리된 것이 아니라 집계값의 의미가 다른 거예요. 표의 cumulative 5와 9를 그대로 더해서 주문이 14건이라고 하면 처음 다섯 건을 다시 셉니다. 반대로 delta 4를 전체 누적 주문 수라고 읽으면 앞 구간을 빠뜨려요.</p>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 355" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="metrics05-time-title metrics05-time-desc" style="width:100%;max-width:700px;height:auto;">
+  <title id="metrics05-time-title">동일한 증가량을 delta와 cumulative 구간으로 표현한 차이</title>
+  <desc id="metrics05-time-desc">시간축 T0부터 T1까지 증가량 5, T1부터 T2까지 증가량 4가 있다. Delta는 두 구간을 각각 5와 4로 표현한다. Cumulative의 두 번째 구간은 T0부터 T2까지라 값이 9다.</desc>
+  <defs><marker id="metrics05-time-arrow" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M1 1 Q4 4 1 7 L8 4 Z" fill="#3d3a34"/></marker></defs>
+  <g fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M151 62 Q391 59 659 63" marker-end="url(#metrics05-time-arrow)"/>
+    <path d="M181 54 Q179 62 181 72 M405 54 Q403 62 405 72 M631 54 Q629 62 631 72"/>
+    <path d="M182 123 Q291 120 401 124 L402 167 Q292 171 181 167 Z" fill="#f1f5fa" stroke="#6b8fb8"/>
+    <path d="M407 123 Q519 120 628 124 L629 168 Q517 171 406 167 Z" fill="#f1f5fa" stroke="#6b8fb8"/>
+    <path d="M182 215 Q293 211 401 215 L402 254 Q291 258 181 254 Z" fill="#fdf3dd" stroke="#e5a33c"/>
+    <path d="M182 279 Q404 275 628 279 L629 320 Q403 325 181 319 Z" fill="#fdf3dd" stroke="#e5a33c"/>
+  </g>
+  <g fill="#3d3a34" font-family="'Nanum Pen Script',cursive" text-anchor="middle">
+    <text x="181" y="39" font-size="25">T0</text><text x="405" y="39" font-size="25">T1</text><text x="631" y="39" font-size="25">T2</text>
+    <text x="292" y="101" font-size="20">증가량 합 5</text><text x="518" y="101" font-size="20">증가량 합 4</text>
+    <text x="74" y="152" font-size="27">Delta</text><text x="292" y="153" font-size="25">5</text><text x="518" y="153" font-size="25">4</text>
+    <text x="80" y="259" font-size="26">Cumulative</text><text x="292" y="243" font-size="25">5</text><text x="405" y="308" font-size="25">9</text>
+  </g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 값뿐 아니라 시작점이 달라요. Cumulative의 두 구간은 겹치므로 단순히 더하면 안 됩니다.</div>
+<p>고정 Java 구현에서는 앞서 본 cumulative 저장소가 수집할 때 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/CumulativeSynchronousMetricStorage.java#L123-L149">handle 생성 시각을 시작점으로 사용하고 reset=false로 집계</a>합니다. 이 경로의 시작점은 단순히 JVM 기동 시각이라고 단정할 수 없어요. 해당 시계열의 첫 측정으로 handle이 만들어진 시점과 관계가 있습니다. 실제 데이터 점의 시작 시각을 확인해야 하는 이유예요.</p>
+<p>속성 상태의 수명에도 차이가 있어요. 이 버전의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/CumulativeSynchronousMetricStorage.java#L61-L65">cumulative 저장소 주석</a>은 handle이 도구 수명 동안 안정적으로 유지되고 map을 교체하지 않는다고 설명합니다. 반면 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/DeltaSynchronousMetricStorage.java#L216-L280">delta 저장소의 collect()</a>는 다음 구간을 위한 holder를 교체하고, 메모리 모드에 따라 map·handle을 재사용하는 경로를 구분해요. 논리적으로 새 구간을 시작하는 것과 실제 메모리 객체를 전부 해제하는 것은 다릅니다.</p>
+<p>따라서 delta가 “상태가 전혀 없다”는 뜻은 아니에요. 현재 구간의 속성별 집계 상태는 필요하고, 한 구간 안에서도 새로운 조합이 많으면 비용이 커질 수 있습니다. Cumulative 역시 한 번의 수집에서 같은 속성만 사용한다고 해서 장기간 등장한 조합의 유지 비용이 없어지는 것은 아니에요. 어떤 시간 범위의 상태를 누가 유지하는지까지 비교해야 한다는 것이 이 구현을 읽고 얻은 해석입니다.</p>
+<h3>전송 실패와 프로세스 재시작을 함께 생각해요</h3>
+<p>설명용 가정에서 T1의 cumulative 5를 전송하지 못했지만, 프로세스와 집계 상태가 유지되어 T2의 9는 도착했다고 해 볼게요. 수신자는 더 넓은 구간의 총량을 여전히 얻을 수 있어요. 다만 앞 구간에 정확히 언제 증가했는지까지 복원하는 것은 아닙니다. T2의 값도 도착하기 전에 프로세스가 종료되어 상태가 사라지면, 아직 전달하지 못한 증가량을 나중 값이 포함해 줄 수 없어요.</p>
+<p>반면 T1의 delta 5를 수집한 뒤 전송에 실패했고 재시도도 없었다면, T2의 delta 4가 T1 구간을 되살려 주지는 않습니다. 대신 delta 값을 누적으로 바꿔 저장하려는 수신 측이 시계열별 합산 상태를 유지해야 해요. Cumulative를 delta로 바꾸려는 쪽은 이전 값과 재시작 판단 정보가 필요합니다. <a href="https://opentelemetry.io/docs/specs/otel/metrics/data-model/#resets-and-gaps">reset과 gap에 대한 데이터 모델 설명</a>을 보면 형식 변환이 단순 필드명 변경으로 끝나지 않는다는 점을 확인할 수 있어요.</p>
+<p>재시작 후 9가 2로 바뀌었다고 주문 증가량이 -7이라고 계산해서도 안 돼요. 단조 증가 Counter의 새 시작점인지, 시계열의 생산자가 달라졌는지부터 확인해야 합니다. Prometheus의 <a href="https://prometheus.io/docs/prometheus/latest/querying/functions/#rate">rate() 설명</a>도 Counter reset을 처리하고 범위의 표본으로 초당 증가율을 추정한다고 설명해요. 이 동작이 수집 전에 사라진 모든 증가량까지 복구한다는 뜻은 아닙니다.</p>
+<p>수집 간격과 쿼리 구간도 나누어 봐야 해요. 예를 들어 10초마다 수집한 값을 5분 구간의 rate로 질의하는 것은 서로 다른 설정입니다. 단순히 화면을 1초 간격으로 새로 그려도 기록되지 않은 1초 단위 정보가 생기지는 않아요. Gauge가 두 수집 사이에서 잠깐 치솟았다가 내려오면 현재 값 읽기만으로 그 최고점을 놓칠 수 있습니다. Counter의 증가량 보존과 순간값의 관측 해상도를 동일한 실패 문제로 다루지 않는 편이 좋아요.</p>
+
+<h2>6. Micrometer와 Prometheus는 같은 계층이 아니에요</h2>
+<p>이 흐름을 알고 나면 다른 도구와 비교할 지점도 더 명확해져요. Micrometer의 <a href="https://docs.micrometer.io/micrometer/reference/concepts/registry.html">MeterRegistry</a>는 meter를 만들고 보관하는 중심 객체이고, 대상 모니터링 시스템별 구현이 있습니다. <code>SimpleMeterRegistry</code>는 메모리에 값을 보관하지만 밖으로 내보내지는 않아요. 여러 Registry로 기록을 전달하는 <code>CompositeMeterRegistry</code>도 있으므로, “Micrometer는 한 백엔드에만 고정된다”는 비교는 맞지 않습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 미터 레지스트리 (MeterRegistry)</div>
+  Micrometer에서 계측 도구를 생성하고 관리하는 객체예요. 실제 집계·노출·전송 특성은 선택한 Registry 구현과 설정에 달려 있습니다.
+</div>
+<p>Prometheus 조합에서는 <code>PrometheusMeterRegistry.scrape()</code>가 현재 노출할 데이터를 문자열로 만들고, 앱이 그 결과를 HTTP endpoint로 제공해요. Prometheus 서버는 그 endpoint를 주기적으로 요청하고 시계열을 저장합니다. <a href="https://docs.micrometer.io/micrometer/reference/implementations/prometheus.html#_configuring">Micrometer 공식 설정 문서</a>도 Registry 생성 외에 HTTP 노출이 필요하다고 구분해요. Spring Boot Actuator가 관련 구성을 제공하는 환경과 일반 Java 앱에서 Registry만 생성한 경우를 섞으면 안 됩니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 스크레이프 (Scrape)</div>
+  수집기가 대상의 메트릭 endpoint를 요청해 값을 가져오는 방식이에요. 호출 방향을 뜻하며 값이 delta인지 cumulative인지를 그 말만으로 결정하지는 않습니다.
+</div>
+<div class="obsv-code">// 구성 요소의 책임을 보여 주는 흐름이에요.
+앱의 Micrometer Counter.increment()
+  → PrometheusMeterRegistry가 연결한 meter 상태 갱신
+  → HTTP handler가 registry.scrape() 결과를 응답
+  → Prometheus 서버가 주기적으로 요청
+  → 서버의 시계열 저장과 쿼리
+
+// OTel을 써도 pull 구성이 가능해요.
+OTel Counter.add()
+  → SDK 집계
+  → PrometheusMetricReader.collect()
+  → 등록된 Prometheus 노출 경로의 scrape 응답</div>
+<p>OTel 쪽의 근거도 명확해요. 고정 소스의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/exporters/prometheus/src/main/java/io/opentelemetry/exporter/prometheus/PrometheusMetricReader.java#L19-L78">PrometheusMetricReader</a>는 OTel MetricReader이면서 Prometheus MultiCollector입니다. 이 구현은 cumulative를 선택하고, Prometheus가 collect를 호출하면 SDK 수집 결과를 변환합니다. 역으로 Micrometer의 <a href="https://docs.micrometer.io/micrometer/reference/implementations/otlp.html">OTLP Registry</a>도 지정한 간격으로 메트릭을 HTTP 전송할 수 있어요. 따라서 <b>OTel은 push, Micrometer는 pull</b>이라는 표로 두 생태계를 나누는 것은 부정확합니다.</p>
+<table style="width:100%;border-collapse:collapse;margin:0 0 22px;font-size:14.5px;">
+  <thead><tr style="background:#fdf3dd;"><th style="padding:10px;border:1px solid #d8cfba;">비교할 책임</th><th style="padding:10px;border:1px solid #d8cfba;">OTel Java에서 보는 지점</th><th style="padding:10px;border:1px solid #d8cfba;">Micrometer + Prometheus 조합</th></tr></thead>
+  <tbody><tr><td style="padding:10px;border:1px solid #d8cfba;">앱의 측정 호출</td><td style="padding:10px;border:1px solid #d8cfba;">Meter와 Instrument API</td><td style="padding:10px;border:1px solid #d8cfba;">Registry에서 얻은 Counter·Timer 등</td></tr><tr><td style="padding:10px;border:1px solid #d8cfba;">앱 안의 상태와 출력 정책</td><td style="padding:10px;border:1px solid #d8cfba;">View·집계 저장소·Reader별 정책</td><td style="padding:10px;border:1px solid #d8cfba;">Registry 구현과 meter 설정</td></tr><tr><td style="padding:10px;border:1px solid #d8cfba;">scrape 데이터 제공</td><td style="padding:10px;border:1px solid #d8cfba;">Prometheus Reader와 노출 구성</td><td style="padding:10px;border:1px solid #d8cfba;">Prometheus Registry와 HTTP endpoint</td></tr><tr><td style="padding:10px;border:1px solid #d8cfba;">저장·시간 범위 질의</td><td style="padding:10px;border:1px solid #d8cfba;">별도 백엔드가 담당</td><td style="padding:10px;border:1px solid #d8cfba;">Prometheus 서버가 담당</td></tr></tbody>
+</table>
+<p>이 표는 클래스가 일대일 대체된다는 뜻은 아니에요. 책임을 맞춰 비교하기 위한 정리입니다. 이미 Spring의 meter와 Prometheus 대시보드를 운영하고 있다면, OTel로 이름을 바꾸는 것만으로 얻는 이득부터 가정할 필요는 없어요. 필요한 수집 경로와 통합 요구를 먼저 확인하면 됩니다. 반대로 여러 언어의 앱에서 OTel의 데이터 모델과 OTLP 전송을 함께 쓰려는 환경이라면 SDK 정책을 통일할 이점이 있을 수 있어요. 둘 다 기존 계측·대시보드의 이름, 단위, 속성, Histogram 설정을 대조하는 작업은 남습니다.</p>
+<p>Prometheus 서버 자체는 OTel SDK의 동급 대체품이 아닙니다. <a href="https://prometheus.io/docs/concepts/data_model/">Prometheus 데이터 모델</a>은 이름과 label 조합으로 식별하는 시계열을 저장해요. SDK를 바꾸는 일과 수집 서버·저장소를 바꾸는 일은 별개의 변경입니다. 같은 비즈니스 동작을 두 API에서 각각 계측하고 백엔드에서 둘을 함께 더하면 중복 집계가 될 수도 있으므로, 전환 중에는 어느 경로가 기준인지도 정해야 해요.</p>
+
+<h2>7. 지연 시간은 Histogram의 호환성까지 봐야 해요</h2>
+<p>요청 수보다 지연 시간은 설정의 의미가 더 잘 드러나요. 같은 요청을 관측해도 합계와 개수만 남기면 평균을 구할 수 있지만, 느린 요청이 얼마나 있었는지는 충분히 설명하지 못합니다. p95는 지연 시간을 작은 순서로 정렬했을 때 95% 지점에 해당하는 값이에요. 이 값을 알고 싶다면 분포 정보를 어떤 형태로 보관할지부터 정해야 해요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 히스토그램 (Histogram)</div>
+  측정값을 구간별 개수 등으로 표현한 분포 정보예요. 개별 요청을 모두 저장하지 않고 분포를 계산할 수 있지만 구간과 해상도에 따른 한계가 있습니다.
+</div>
+<p>가정한 서비스에서 인스턴스 A와 B가 각각 p95만 내보냈다고 해 볼게요. 두 p95의 평균은 전체 서비스 p95가 아닙니다. 두 인스턴스의 요청 수와 분포가 다를 수 있고, 숫자 두 개만으로 전체 순서를 재구성할 수 없기 때문이에요. <a href="https://docs.micrometer.io/micrometer/reference/concepts/histogram-quantiles.html">Micrometer의 Histogram·percentile 설명</a>도 client-side percentile은 tag 차원을 넘어 합칠 수 없지만, 지원하는 시스템에서 Histogram을 이용하면 분포를 합쳐 percentile을 추정할 수 있다고 구분합니다.</p>
+<p>이 차이는 API 취향이 아니라 남기는 정보의 차이예요. 예를 들어 “300ms 이내에 끝난 요청 비율”이라는 명확한 질문이 있다면 그 경계를 표현할 수 있는 구간을 검토할 수 있어요. 반면 이미 대략적인 p95 값 하나만 보냈다면, 나중에 임의의 다른 임계값 비율을 정확히 계산할 정보가 없을 수 있습니다. 백엔드가 Histogram을 지원한다는 사실과 원하는 경계의 정확도를 확보했다는 사실도 같지는 않아요.</p>
+<p>Prometheus의 <a href="https://prometheus.io/docs/practices/histograms/">Histogram과 summary 문서</a>는 classic Histogram과 native Histogram, 미리 계산한 quantile의 차이를 설명해요. Classic Histogram에서는 구간별 누적 개수가 여러 시계열로 노출되고, 분포를 합산하려면 비교 가능한 구간을 맞춰야 합니다. 지원하는 Histogram 형태에 따라 질의와 저장 방식도 달라져요. “두 Histogram을 더하면 된다”보다 <b>단위·경계·시간 의미·생산자 식별이 맞는가</b>를 먼저 묻는 편이 정확합니다.</p>
+<p>OTel View에서도 explicit bucket과 exponential bucket 등의 집계를 선택할 수 있지만, SDK가 만들 수 있는 형식과 실제 exporter·변환 경로·저장 서버가 처리할 수 있는 형식은 모두 확인해야 해요. 여기서는 특정 버전 조합의 native Histogram 전송을 실행 검증하지 않았으므로 지원 여부를 일괄 보장하지 않습니다. exporter를 바꾼 뒤 Histogram이 원하는 형식으로 남는지, 예상한 단위로 수집되는지, 사용 중인 대시보드 쿼리가 그 표현을 읽는지가 검증 항목이에요.</p>
+<p>비용도 달라집니다. Counter의 속성 조합 하나와 여러 구간을 가진 Histogram의 속성 조합 하나가 같은 상태량·출력량을 갖는다고 볼 근거는 없어요. 구간 수, 조합 수, Reader 수와 전송 형식을 함께 검토해야 합니다. 불필요한 속성을 줄이거나 질문에 맞는 구간을 정하는 것은 비용과 정보 사이의 선택입니다. 무조건 더 적게 남기는 것이 정답도 아니고, 더 많은 구간이면 모든 질문에 답할 수 있는 것도 아니에요.</p>
+
+<h2>8. 도구를 고르기 전에 무엇을 관측할지 정해요</h2>
+<p>소스를 읽고 나니 선택 순서도 달라졌어요. 먼저 “요청 수의 증가율인가, 현재 값인가, 지연 분포인가”를 정하고, 필요한 차원과 집계 형태를 고르는 편이 이해하기 쉽습니다. 그다음 누가 언제 수집할지와 어디서 저장·질의할지를 결정해요. 전송 방식만 먼저 고르면 같은 숫자를 보내면서도 서로 다른 통계를 만들 수 있습니다.</p>
+<p>예를 들어 앱의 scrape endpoint에 수집기가 접근할 수 있고, 이미 Prometheus의 발견·질의·경보 체계가 있다면 그 경로를 유지할 이유가 있어요. 이 조건에서도 OTel Prometheus Reader와 Micrometer Prometheus Registry는 모두 검토 대상입니다. endpoint 접근이 어렵고 앱에서 수신 대상으로 전송하는 경로가 필요하다면 주기 전송을 검토할 수 있어요. 다만 주기 전송을 골랐다는 사실만으로 retry·buffer·프로세스 종료 시 손실 문제가 해결되지는 않습니다.</p>
+<p>여러 백엔드로 동시에 전송해야 한다면 OTel의 여러 Reader나 Micrometer의 여러 Registry를 고려할 수 있어요. 이때 “한 번 계측했으니 출력 추가는 공짜”라는 전제는 내려놓아야 합니다. 앱 안의 집계 상태와 측정 경로, 수집 callback 호출, 네트워크 출력이 어떻게 늘어나는지 봐야 해요. 성능 우열은 서비스의 조합 수와 구성으로 측정할 문제이고, 여기서 읽은 인터페이스 수만으로 순위를 낼 수 없습니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">🔎 구성을 바꿀 때 확인할 항목</div>
+  &bull; 도구의 종류·단위·유지할 속성은 질문에 맞나요?<br>
+  &bull; 값의 시작 시각·끝 시각과 delta/cumulative 해석을 알고 있나요?<br>
+  &bull; 수집 건너뜀, 수집 후 전송 실패, 재시작을 구분해 볼 수 있나요?<br>
+  &bull; Reader·Registry를 늘렸을 때 상태와 callback 비용을 확인했나요?<br>
+  &bull; Histogram 형태와 경계가 exporter·백엔드·쿼리에서 호환되나요?<br>
+  &bull; 전환 중 같은 업무 동작을 중복 합산하지 않도록 경로를 구분했나요?
+</div>
+<h3>실제로 검증하려면 수집 시점을 통제해야 해요</h3>
+<p>다음에 작은 재현 코드를 만든다면 타이머를 기다리는 것부터 시작하지 않을 것 같아요. 동일한 속성의 Counter에 <code>1, 1, 3</code>을 기록하고 수동 수집한 다음, <code>4</code>를 기록하고 다시 수집하면 먼저 시간 의미를 분리할 수 있습니다. Delta와 cumulative Reader를 함께 두고, 한 Reader만 추가 수집했을 때 다른 Reader의 구간이 달라지는지도 검사할 수 있어요. 이는 아직 실행하지 않은 검증 설계이지 통과한 테스트 목록은 아닙니다.</p>
+<p>값만 검사하지 않고 각 데이터 점의 속성·시작 시각·끝 시각·temporality도 확인해야 합니다. 이어서 exporter가 실패를 반환하는 경우와 전송 완료가 늦어지는 경우를 별도로 주고, 수집 횟수와 후속 구간을 비교하면 앞에서 구분한 실패 조건을 검증할 수 있어요. 프로세스 재시작이나 최종 수집 전에 상태가 사라지는 문제는 새 Provider를 만들거나 별도 프로세스를 사용하는 검증으로 나누는 것이 좋겠습니다.</p>
+<p>이번 글에서 실제로 한 일은 공개 고정 소스와 공식 문서의 대조예요. 메트릭 예제를 빌드·실행하거나 Prometheus 서버를 띄우지 않았고, CPU·메모리·전송 손실률도 측정하지 않았습니다. 같은 시리즈의 Context·Trace 실행 기록이 있더라도 이 메트릭 경로의 검증으로 사용하지 않았어요. 소스 경로와 캡처 해시는 <a href="https://github.com/DDINGJOO/Platform-study/blob/main/labs/observability/otel-05-metrics/README.md">원자료 확인 기록</a>에 따로 남겼습니다.</p>
+
+<p><small>소스 기준: <a href="https://github.com/open-telemetry/opentelemetry-java/tree/b4b3a1b354425c3f1411173c0e48cb24a1cba224">OpenTelemetry Java v1.67.0</a>. 코드 이미지는 해당 공개 소스를 렌더링했어요.</small></p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>메트릭은 개별 측정값을 그대로 보내는 일이 아니라, 필요한 통계와 시간 구간을 정해 집계하는 일이에요.</b><br><br>
+  OTel Java에서는 View와 Reader의 선택이 저장소와 출력 의미에 영향을 줍니다. 여러 Reader의 수집은 독립적으로 다뤄지지만 상태·작업·출력 비용은 검토해야 해요. Micrometer Registry와 Prometheus 서버는 서로 다른 책임을 맡으며 OTel과도 조합할 수 있습니다.<br><br>
+  숫자가 맞는지 보려면 값뿐 아니라 <b>무엇을 합쳤고, 어느 구간이며, 누가 수집하고, 실패했을 때 어떤 상태가 남는지</b>까지 확인해야 해요.
+</div>
+</div>

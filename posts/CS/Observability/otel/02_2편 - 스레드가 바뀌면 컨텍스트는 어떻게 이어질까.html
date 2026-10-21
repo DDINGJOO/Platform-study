@@ -1,0 +1,274 @@
+<!-- lead: 같은 요청을 처리해도 스레드가 바뀌면 부모 스팬을 찾지 못하거나 이전 요청의 문맥을 읽을 수 있어요. OpenTelemetry Java의 부착·복원과 캡처 시점을 소스로 확인하고, Reactor의 구독 문맥과 Go의 명시적 전달 방식을 비교했어요. -->
+<!-- tags: ThreadLocal, Context 전파, Scope, Executor, 비동기 트레이싱 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 OpenTelemetry 구조와 설계 읽기</div>
+  1편. API와 SDK는 왜 나뉘어 있을까<br>
+  <b>2편. 스레드가 바뀌면 컨텍스트는 어떻게 이어질까</b> &larr; 지금 이 글
+</div>
+
+<p>요청을 받는 스레드가 작업 하나를 Executor에 제출한다고 해 볼게요. 작업 안에서 만든 스팬도 같은 요청에 속할 텐데, 실행 스레드가 바뀌었다는 이유로 부모 스팬을 찾지 못하면 트레이스가 나뉠 수 있어요. 반대로 이전 작업의 문맥이 남아 있으면 엉뚱한 요청에 연결될 수 있습니다.</p>
+<p>OpenTelemetry Java <code>v1.67.0</code>의 기본 저장소와 예외 처리, 감싼 작업을 재사용할 때 생기는 차이까지 따라가 볼게요. Reactor와 Go도 같은 실행 문맥 문제를 다루지만 저장 위치와 전달 규칙이 달라요. 전체 관측 도구의 우열이 아니라 이 규칙을 비교해 봐요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">🧭 이번에 확인할 질문</div>
+  &bull; Context에 값을 추가하는 것과 현재 Context를 바꾸는 것은 어떻게 다른가요?<br>
+  &bull; Scope를 순서대로 닫지 않으면 실제로 어떤 상태가 남나요?<br>
+  &bull; Runnable을 한 번 감싸는 것과 Executor를 감싸는 것은 언제 달라지나요?<br>
+  &bull; 실행 문맥을 스레드, 구독자, 함수 인자 중 어디에 두면 어떤 비용이 생기나요?
+</div>
+
+<h2>1. 같은 요청이라는 정보는 어디에 있을까</h2>
+<p>새 스팬은 기본적으로 현재 문맥의 스팬을 부모로 사용해요. 호출 위치만으로 요청을 구분할 수 없으니, 실행 중인 코드가 어떤 문맥에 속하는지 읽을 방법이 필요합니다. Java에서는 <code>Context.current()</code>가 그 역할을 해요. 명시적으로 부모를 지정하는 방법도 있으므로, 현재 문맥만이 유일한 방법은 아닙니다. <a href="https://opentelemetry.io/docs/languages/java/api/#span">공식 Java API 설명</a>에서 이 기본 동작을 확인할 수 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 컨텍스트 (Context)</div>
+  실행과 관련된 값을 보관하는 객체예요. 현재 스팬도 이 문맥을 통해 찾을 수 있지만, Context 자체가 스팬이거나 트레이스 ID 하나인 것은 아닙니다.
+</div>
+<p><a href="https://opentelemetry.io/docs/specs/otel/context/">Context 사양</a>은 Context를 불변으로 규정해요. 값을 추가해도 기존 문맥을 수정하지 않습니다. 여기서 구별할 것이 있어요. <span class="obsv-mark">Context를 만드는 일과 그것을 현재 문맥으로 지정하는 일은 달라요.</span> 갱신한 객체를 가지고만 있어서는 <code>Context.current()</code>가 달라지지 않습니다.</p>
+<div class="obsv-code">// 동작 관계를 설명하는 예제예요.
+Context before = Context.current();
+Context derived = before.with(REQUEST_KEY, "request-A");
+
+// derived를 만들었지만 현재 문맥은 여전히 before예요.
+try (Scope ignored = derived.makeCurrent()) {
+  process(); // 이 범위에서 현재 문맥으로 derived를 읽어요.
+}
+// 정상적으로 닫히면 before로 돌아가요.</div>
+<p>예제의 <code>REQUEST_KEY</code>는 미리 만든 키이고 <code>process()</code>는 처리 함수예요. 갱신 결과를 변수에 저장하는 코드와 현재 실행 범위에 부착하는 코드가 분리되어 있습니다. 요청 A에서 문맥을 파생하더라도 원래 객체를 함께 사용하는 다른 코드의 키·값 구성이 바뀌지는 않아요.</p>
+<p>구현도 확인했어요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/ArrayBasedContext.java#L54-L85">ArrayBasedContext의 get과 with</a>는 키를 객체 동일성으로 비교하고 배열에서 값을 찾습니다. 기존 키의 값이 달라지면 배열을 복제하고, 새 키면 길이를 늘린 배열을 만들어 반환해요. 같은 키에 같은 값 객체를 넣으면 기존 Context를 반환하는 최적화도 있습니다. 그래서 객체가 매번 새로 생긴다고 단정하기보다, <b>기존 문맥의 항목 구성을 변경하지 않는다</b>고 이해하는 편이 정확해요.</p>
+<p>불변성의 범위도 중요해요. Context가 보관하는 값 객체까지 복사하거나 불변으로 만들지는 않습니다. 값에 가변 객체를 넣고 여러 스레드에서 수정하면 그 객체의 동시성 문제는 남아요. 또한 이 배열 구현의 탐색·복사 비용은 항목 수와 관련이 있으므로, 단지 요청에서 쓰인다는 이유로 큰 업무 데이터를 모두 넣을 근거는 되지 않습니다. 코드에 근거한 비용 분석이고 처리량을 측정한 결과는 아니에요.</p>
+
+<h2>2. 기본 저장소는 현재 스레드의 값만 바꿔요</h2>
+<p><a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/Context.java#L90-L94"><code>Context.current()</code></a>는 저장소에서 현재 값을 읽고, 값이 없으면 루트 Context를 반환해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/ContextStorage.java#L75-L80">기본 ContextStorage</a>는 <code>ThreadLocalContextStorage</code>입니다. 아래 코드를 보면 전체 요청의 값을 하나로 바꾸는 것이 아니라 현재 스레드의 값을 설정해요.</p>
+<div class="obsv-code">Context.current()
+  → ContextStorage.get().current()
+  → LazyStorage에 초기화된 저장소의 current()
+  → 기본 구현에서는 ThreadLocal.get()
+  → 값이 없으면 Context.root()
+
+derived.makeCurrent()
+  → ContextStorage.get().attach(derived)
+  → 기본 구현에서는 이전 값 보관 + ThreadLocal.set(derived)</div>
+<p>위 내용은 고정 소스의 호출 관계를 정리한 것이에요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/ContextStorage.java#L65-L80">ContextStorage.get()</a>은 매번 새 저장소를 만드는 대신 <code>LazyStorage.get()</code>으로 위임합니다. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/LazyStorage.java#L78-L121">LazyStorage 초기화 코드</a>는 provider를 통해 저장소를 선택하고, 없으면 기본 구현을 사용해요. 엄격 검사와 등록한 wrapper를 적용하는 단계도 있어요. 따라서 <code>ContextStorage.get()</code>이 어떤 환경에서든 기본 ThreadLocal 객체를 그대로 반환한다고 말하면 지나친 단정입니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ThreadLocal</div>
+  같은 변수에 접근해도 스레드마다 별도 값을 읽고 쓰게 하는 Java 기능이에요. 한 스레드에서 설정한 값이 다른 스레드의 현재 값으로 자동 복사되지는 않아요.
+</div>
+<div class="obsv-fig">
+  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/02/threadlocal-scope.png" alt="ThreadLocalContextStorage.java 17~35행. 이전 Context를 읽고 새 값을 설정한 다음 이전 값과 새 값을 가진 ScopeImpl을 반환한다." style="width:100%;height:auto;border-radius:10px;">
+</div>
+<div class="obsv-figcap">코드 캡처 1. 부착할 때 이전 문맥도 함께 보관해요</div>
+<p><a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/ThreadLocalContextStorage.java#L17-L35">ThreadLocalContextStorage.java 17~35행</a>을 보면 27행에서 이전 값을 읽고, 32행에서 새 값을 설정하고, 34행에서 둘을 기억하는 Scope를 반환해요. 같은 Context를 다시 부착하면 값을 바꾸지 않는 분기도 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 스코프 (Scope)</div>
+  Context를 현재 문맥으로 부착한 실행 범위예요. 반환된 Scope를 닫으면 부착 전의 문맥으로 복원할 수 있어요. 스팬의 종료와는 별도 동작입니다.
+</div>
+<p>여기서 <code>ThreadLocal</code>은 <code>InheritableThreadLocal</code>도 아니에요. 다른 스레드로 넘어간다는 사실만으로 이 저장소의 값이 복제되지는 않습니다. 특히 이미 생성한 스레드 풀의 작업 스레드는 요청 스레드와 수명이 달라요. 요청이 끝나는 시간과 작업이 실행되는 시간도 다를 수 있으니, 문맥을 어느 시점에 확보할지 정해야 합니다.</p>
+
+<h2>3. Scope를 닫는 것은 초기화가 아니라 복원이에요</h2>
+<p>복원은 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/ThreadLocalContextStorage.java#L47-L58">같은 파일의 47~58행</a>에 있어요. 아직 닫지 않았고 현재 값이 부착했던 객체와 같을 때 이전 값을 다시 설정합니다. 닫으면 항상 빈 값으로 초기화하는 구현이 아니에요. 외부 작업의 문맥 A 안에서 내부 작업의 문맥 B를 사용하는 정상적인 중첩도 지원해야 하기 때문입니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs><marker id="arrCtxScope" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+  <text x="35" y="34" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">동일한 스레드에서 중첩한 Scope</text>
+  <path d="M30 66 C180 63,350 68,670 65 C673 104,671 143,670 180 C430 183,190 179,31 181 C28 143,31 104,30 66 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5"/>
+  <text x="50" y="95" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">처음의 현재 문맥 A</text>
+  <path d="M230 108 C300 105,390 109,470 107 C473 127,471 147,470 165 C390 168,300 164,231 166 C228 146,231 126,230 108 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4"/>
+  <text x="350" y="143" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#c07f18">B를 현재 문맥으로 부착</text>
+  <path d="M110 210 C175 207,203 207,260 210" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrCtxScope)"/>
+  <text x="70" y="216" text-anchor="middle" font-family="Menlo, monospace" font-size="14" fill="#4a7fb5">A</text>
+  <text x="350" y="214" text-anchor="middle" font-family="Menlo, monospace" font-size="14" fill="#c07f18">B (Scope 내부)</text>
+  <path d="M447 210 C490 208,526 212,568 210" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrCtxScope)"/>
+  <text x="620" y="216" text-anchor="middle" font-family="Menlo, monospace" font-size="14" fill="#2e6b41">A</text>
+  <text x="350" y="251" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">정상적인 순서로 Scope를 닫으면 이전 문맥으로 돌아와요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 복원의 기준은 빈 문맥이 아니라 부착 직전의 문맥이에요</div>
+
+<p>이 복원은 닫는 순서를 지킬 때 성립해요. 원래 문맥을 A라고 하고 B, C 순서로 부착한 뒤 B의 Scope부터 닫는 상황을 가정해 볼게요. 현재 값은 C인데 B를 닫으려 하므로 조건이 맞지 않아요. 이 기본 구현은 해당 호출을 무시하고 FINE 수준으로 기록합니다. 이어서 C를 닫으면 C가 기억하던 이전 값 B로 돌아가요. B를 닫는 일을 다시 하지 않으면 A까지 복원되지 않습니다.</p>
+<div class="obsv-code">처음 현재 값: A
+B 부착: 현재 B, B의 이전 값 A
+C 부착: 현재 C, C의 이전 값 B
+B 먼저 close: 현재 C 유지, 잘못된 순서의 호출 무시
+C close: 현재 B로 복원
+여기서 끝내면: A가 아니라 B가 남음</div>
+<p>위 상태 변화는 종료 조건을 따라 정리한 분석이에요. 자동으로 모든 Scope를 거슬러 올라가 복구하는 코드가 아니고, 잘못된 종료가 반드시 예외를 던지는 것도 아닙니다. 반대로 현재 Context와 같은 객체를 다시 부착하면 NoopScope를 반환하므로, 그 내부 Scope를 닫았다고 외부 Scope까지 종료되지는 않아요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ Scope는 부착한 스레드에서 닫아요</div>
+  스레드 A에서 받은 Scope를 스레드 B로 넘겨 닫는 것은 올바른 사용이 아니에요. 기본 구현의 객체 동일성 검사는 모든 잘못된 스레드 사용을 탐지하는 장치가 아닙니다. 직접 부착할 때는 try-with-resources로 수명을 제한하고, 비동기 작업에서는 그 작업을 실행하는 스레드 안에서 부착과 닫기를 모두 처리해요.
+</div>
+<p><a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/Context.java#L60-L84">Context의 사용 주의사항</a>은 엄격 검사 옵션도 설명해요. <code style="overflow-wrap:anywhere;">-Dio.opentelemetry.context.enableStrictContext=true</code>를 쓰면 잘못된 스레드에서 닫거나 닫지 않은 Scope를 진단하는 데 도움을 받을 수 있어요. 스택 추적 비용이 있으므로 무조건 운영에 켜기보다는 테스트·검증 환경에서 적용 범위를 판단할 옵션입니다. 이 진단을 켠 것과 애플리케이션의 전파 경로가 모두 맞는 것을 동일시할 수는 없어요.</p>
+
+<h2>4. 감싼 작업을 재사용하면 어느 요청의 문맥일까</h2>
+<p>작업을 제출한 시점의 Context를 확보한 다음, 다른 스레드에서 그 Context를 현재 값으로 지정하면 됩니다. Java Context API의 <code>wrap(Runnable)</code>이 이 순서를 제공해요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 컨텍스트 캡처</div>
+  나중에 실행할 작업에서 사용할 Context를 미리 확보하는 일이에요. 이 예제에서는 작업을 제출하는 스레드에서 현재 Context의 참조를 보관합니다.
+</div>
+<div class="obsv-code">// 흐름을 설명하는 예제예요. 이번 글에서 실행하지는 않았어요.
+Context submittingContext = Context.current();
+Runnable task = () -&gt; process();
+executor.execute(submittingContext.wrap(task));</div>
+<p>처리 함수인 <code>process()</code>를 실행할 때 제출 스레드에서 확보한 문맥을 사용하게 감싸요. Executor는 이미 준비한 실행기라고 가정한 설명용 코드입니다. <code>Context.current()</code>를 작업 안에서 처음 읽으면 제출 시점의 문맥을 확보하는 것과 같지 않아요.</p>
+<div class="obsv-fig">
+  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/02/context-wrap.png" alt="Context.java 230~245행. makeCurrent는 저장소에 Context를 부착하며 wrap은 Runnable 실행 전 Scope를 만들고 try-with-resources로 닫는다." style="width:100%;height:auto;border-radius:10px;">
+</div>
+<div class="obsv-figcap">코드 캡처 2. 감싼 작업을 실행하는 스레드에서 부착과 복원을 해요</div>
+<p><a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/Context.java#L230-L245">Context.java 230~245행</a>을 보면 <code>wrap</code>을 호출하는 즉시 부착하지 않습니다. 반환된 Runnable을 실행할 때 <code>makeCurrent()</code>를 호출해요. 작업이 끝나거나 예외를 던지면 try-with-resources가 Scope를 닫아 실행 스레드의 이전 문맥을 복원합니다.</p>
+<p>즉, <span class="obsv-mark">전달할 Context는 미리 정하지만, 현재 값의 변경은 작업을 실행하는 스레드에서 일어나요.</span> 이전 문맥이 있던 작업 스레드를 사용하더라도 정상적인 Scope 사용에서는 그 이전 값으로 돌아갑니다. 작업이 예외를 던져도 Scope를 닫는 경로를 지나요. 다만 작업 자체가 다른 Scope를 잘못 열어 둔 경우까지 모두 복구하는 보장은 아닙니다. Scope를 닫는 것이 작업에서 시작한 스팬을 종료하는 것도 아니에요.</p>
+<h3>한 번 감싼 Runnable은 Context를 고정해요</h3>
+<p>요청 A의 Context로 <code>wrapped = contextA.wrap(task)</code>를 만들었다고 해 볼게요. 이 객체는 나중에 요청 B를 처리하는 코드에서 제출해도 실행 범위에 A를 부착해요. 감쌀 때 메서드를 호출한 대상 객체가 A였기 때문입니다. <code>wrap</code>이라는 이름만 보고 실행 시점의 최신 요청을 다시 읽는다고 생각하면 잘못된 요청 연결을 만들 수 있어요.</p>
+<p>이 성질 자체가 잘못된 것은 아닙니다. 같은 요청에서 파생한 작업을 지연 실행할 때는 당시의 문맥을 유지하는 것이 필요할 수 있어요. 문제는 요청별이어야 할 감싼 작업을 애플리케이션 전체의 재사용 작업으로 저장하는 경우예요. 어느 요청의 문맥을 유지하려 했는지 먼저 결정해야 합니다.</p>
+<h3>Executor를 감싸면 제출할 때마다 현재 문맥을 읽어요</h3>
+<p><a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/Context.java#L108-L143">Context.taskWrapping(Executor)</a>는 다른 시점을 선택합니다. 반환한 Executor의 <code>execute</code>가 호출될 때마다 <code>Context.current().wrap(command)</code>를 실행해요. 감싼 Executor를 요청 A와 B가 함께 쓰더라도 각각 제출하는 시점의 현재 문맥을 확보합니다. Executor wrapper를 만들던 시점의 Context에 영구 고정되는 것이 아니에요.</p>
+<div class="obsv-code">// 설명용 코드예요. preparedExecutor는 미리 만든 실행기예요.
+Executor forwarding = Context.taskWrapping(preparedExecutor);
+
+try (Scope ignored = contextA.makeCurrent()) {
+  forwarding.execute(task); // 제출 시점의 A를 확보해요.
+}
+try (Scope ignored = contextB.makeCurrent()) {
+  forwarding.execute(task); // 제출 시점의 B를 확보해요.
+}</div>
+<p>ExecutorService overload는 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/CurrentContextExecutorService.java#L23-L66">submit과 execute 구현</a>에서도 같은 제출 시점 캡처를 확인할 수 있어요. 하지만 이 결론을 모든 예약 작업으로 넓히면 안 됩니다. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/CurrentContextScheduledExecutorService.java#L23-L42">예약 실행 wrapper</a>는 일회성 schedule을 감싸지만 <code>scheduleAtFixedRate</code>와 <code>scheduleWithFixedDelay</code>는 그대로 위임해요. 이 버전에서는 이 두 반복 예약 API에 문맥 전파를 제공하지 않는다고 명시되어 있습니다.</p>
+<p>반복 작업이 요청 A가 끝난 뒤에도 계속 실행된다면 매 회차가 A의 자식이어야 하는지도 별도 문제예요. 자동으로 A를 계속 붙이는 것이 항상 좋은 답은 아닙니다. 요청에서 분리된 장기 작업은 별도 작업 문맥으로 기록할지, 원래 요청과의 관계를 다른 방식으로 남길지 수명부터 정해야 해요. 이 부분은 소스를 읽고 얻은 적용 기준이며 모든 작업에 대한 규약이라고 주장하는 것은 아닙니다.</p>
+
+<h2>5. Reactor는 현재 스레드 대신 구독의 문맥을 써요</h2>
+<p>한 작업을 한 번 실행하는 Executor와 달리, 리액티브 실행에서는 하나의 스레드가 여러 구독을 처리하고 한 구독이 여러 스레드에서 진행될 수 있어요. 이때 업무 흐름과 스레드를 일대일로 생각하면 문맥을 잘못 연결하기 쉽습니다. Reactor는 <code>reactor.util.context.Context</code>를 각 Subscriber에 연결해 이 문제를 다뤄요. 이름이 같지만 OTel의 <code>io.opentelemetry.context.Context</code>와는 다른 타입입니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 구독자와 구독 문맥</div>
+  Subscriber는 리액티브 데이터와 완료·오류 신호를 받는 쪽이에요. Reactor Context는 스레드 하나의 전역 값 대신 각 구독자의 실행에 관련된 값을 표현합니다.
+</div>
+<p><a href="https://projectreactor.io/docs/core/release/reference/advancedFeatures/context.html">Reactor 공식 Context 설명</a>에서는 <code>contextWrite</code>가 구독 시점에 문맥을 구성하고, 구독 신호를 따라 아래쪽에서 위쪽으로 전달한다고 설명해요. <code>deferContextual</code>로 읽는 위치와 <code>contextWrite</code>를 둔 위치가 중요합니다. 데이터를 아래로 보내는 순서와 문맥을 읽을 수 있는 범위가 같다고 생각하면 안 돼요.</p>
+<div class="obsv-code">// Reactor 흐름을 설명하는 예제이며, 여기서 실행한 결과는 아니에요.
+Mono.deferContextual(view -&gt;
+    Mono.just(view.get("request-id")))
+  .publishOn(scheduler)
+  .contextWrite(ctx -&gt; ctx.put("request-id", "request-A"));</div>
+<p>예제는 읽는 코드를 <code>deferContextual</code> 안에 두고, 그 아래의 <code>contextWrite</code>로 문맥을 제공합니다. 같은 Mono에 여러 번 구독할 수 있다는 점도 고려해야 해요. 파이프라인을 조립할 때 ThreadLocal을 한 번 읽어 문자열로 저장하는 것과, 구독이 시작된 뒤 구독 문맥을 읽는 것은 같지 않습니다.</p>
+<p>그렇다고 Reactor Context에 값을 넣기만 하면 모든 ThreadLocal 기반 코드가 알아서 같은 값을 읽는 것은 아니에요. <a href="https://projectreactor.io/docs/core/release/reference/advanced-contextPropagation.html">Reactor의 Context-Propagation 지원 문서</a>는 Micrometer context-propagation과의 연동, 등록한 ThreadLocalAccessor, 제한 모드와 자동 모드를 구분해요. 자동 모드는 <code style="overflow-wrap:anywhere;">Hooks.enableAutomaticContextPropagation()</code>으로 켜고 새 구독에 적용합니다. 복원할 ThreadLocal은 등록 정보와 Reactor 문맥의 값에 근거하므로, 임의의 ThreadLocal을 무조건 찾아 전달하는 기능으로 이해하면 안 됩니다.</p>
+<p>이런 연동에서는 빠진 값을 지우는 정리 규칙도 중요해요. 같은 스레드를 다른 구독이 재사용하므로 이전 구독의 값을 남겨 두면 안 되기 때문입니다. 공식 문서는 복원 모드에 성능 영향이 있음을 설명하지만, 이 글에서는 비용을 측정하지 않았어요. 따라서 자동 모드를 쓰면 몇 퍼센트 느리다거나 직접 인자 전달이 항상 더 빠르다는 수치는 제시할 수 없습니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 비동기 지원은 실행 경계별로 확인해요</div>
+  Reactor Context를 직접 쓰는 코드, ThreadLocal 복원 연동, OTel Java 에이전트의 Reactor 계측은 같은 설정 하나가 아닙니다. 프레임워크가 이미 제공하는 전파 경로를 확인한 뒤 수동 wrapper의 필요성을 판단해요. 예제에 wrapper를 추가했다는 사실만으로 중복 전파·중복 계측이 해결됐다고 말할 수는 없어요.
+</div>
+
+<h2>6. Go는 필요한 함수에 Context를 명시적으로 전달해요</h2>
+<p>Go 표준 라이브러리는 <code>context.Context</code>를 필요한 함수의 첫 번째 인자로 전달하도록 권장해요. 요청 문맥뿐 아니라 deadline과 취소 신호도 포함합니다. 여러 goroutine이 같은 Context를 함께 사용할 수 있고, 요청별 값을 함수 인자로 전달하므로 어떤 호출이 어느 문맥을 사용하는지 시그니처에서 확인할 수 있어요. <a href="https://pkg.go.dev/context">Go context 공식 문서</a>가 설명하는 계약입니다.</p>
+<div class="obsv-code">// Go에서 문맥을 전달하는 방식을 설명하는 예제예요.
+func process(parent context.Context) error {
+    ctx, cancel := context.WithTimeout(parent, time.Second)
+    defer cancel()
+    return query(ctx)
+}</div>
+<p>예제의 <code>query</code>는 Context를 받아 처리하는 함수라고 가정했어요. 제한 시간이 지나면 취소 상태를 관찰할 수 있지만 아무 함수나 강제로 종료시키는 것은 아닙니다. 호출한 라이브러리나 작업 코드가 Context의 취소를 확인해야 해요. <code>cancel()</code>은 관련 자원을 정리하는 역할도 하므로 완료·오류 경로에서 빠뜨리지 않는 것이 중요합니다. OTel Java의 Scope close는 이전 현재 문맥을 복원하는 동작이지 Go의 취소 함수와 같은 역할은 아니에요.</p>
+<p>이 비교를 Go와 OpenTelemetry 중 하나를 고르는 문제로 읽으면 안 됩니다. <a href="https://opentelemetry.io/docs/languages/go/instrumentation/#creating-spans">OTel Go 계측 예제</a>도 표준 Context를 사용해 <code>tracer.Start(ctx, ...)</code>에서 반환한 문맥을 하위 호출에 전달해요. 표준 Context는 실행 문맥 전달 방식이고, OTel은 그 문맥과 연결되는 스팬·계측 기능을 제공합니다. 함께 사용하는 관계예요.</p>
+<p>명시적 전달은 수명과 인과관계를 코드에서 확인하기 쉽지만, 관련된 함수들이 인자를 받아 다음 호출에 넘기는 규칙을 지켜야 해요. 중간 함수가 새 <code>context.Background()</code>로 교체하면 기존의 취소·요청 문맥과의 관계를 끊을 수 있습니다. 반대로 Java의 현재 문맥은 함수 인자 변경 없이 읽을 수 있지만, 호출 스택만 보고 비동기 경계를 넘어왔는지 알기 어렵다는 비용이 있어요. 이 장단점은 구현과 API에서 읽은 제 비교이며 언어 전체의 우열을 뜻하지 않습니다.</p>
+
+<div style="overflow-x:auto;">
+<table style="width:100%;border-collapse:collapse;font-size:14px;">
+  <thead><tr><th style="border:1px solid #d8cfba;padding:10px;">전달 방식</th><th style="border:1px solid #d8cfba;padding:10px;">현재 값의 기준</th><th style="border:1px solid #d8cfba;padding:10px;">맞는 사용 조건</th><th style="border:1px solid #d8cfba;padding:10px;">쉽게 놓치는 경계</th></tr></thead>
+  <tbody>
+    <tr><td style="border:1px solid #d8cfba;padding:10px;">OTel Java 기본 저장소 + Scope</td><td style="border:1px solid #d8cfba;padding:10px;">실행 중인 스레드에 부착한 값</td><td style="border:1px solid #d8cfba;padding:10px;">동기 범위 또는 제출·실행 경계를 감쌀 수 있는 작업</td><td style="border:1px solid #d8cfba;padding:10px;">미복원, 잘못된 캡처 시점, wrapper를 통하지 않는 작업</td></tr>
+    <tr><td style="border:1px solid #d8cfba;padding:10px;">Reactor Context</td><td style="border:1px solid #d8cfba;padding:10px;">Subscriber의 문맥</td><td style="border:1px solid #d8cfba;padding:10px;">구독 단위로 동작하는 Reactor 실행</td><td style="border:1px solid #d8cfba;padding:10px;">쓰기·읽기 위치, 외부 콜백, ThreadLocal 연동 설정</td></tr>
+    <tr><td style="border:1px solid #d8cfba;padding:10px;">Go context.Context 전달</td><td style="border:1px solid #d8cfba;padding:10px;">함수가 인자로 받은 문맥</td><td style="border:1px solid #d8cfba;padding:10px;">호출자가 취소·수명·하위 호출을 명시적으로 관리하는 코드</td><td style="border:1px solid #d8cfba;padding:10px;">인자 전달 누락, 새 루트로 교체, 취소 신호 미확인</td></tr>
+  </tbody>
+</table>
+</div>
+<p>같은 요청을 비동기 실행에 연결한다는 문제는 같아도, 이 세 방식이 같은 라이브러리를 대체하는 것은 아니에요. Reactor 안에서 OTel을 쓰거나 Go에서 OTel을 쓰는 조합도 가능합니다. 선택해야 할 것은 업무 흐름이 가진 실행 모델에 맞는 문맥 보관·전달 방식과 그 사이의 연동이에요.</p>
+
+<h2>7. 다른 프로세스로 보낼 때는 다른 처리가 필요해요</h2>
+<p>스레드 안에서 현재 문맥을 바꾸는 코드에는 HTTP 헤더를 쓰는 동작이 없어요. 다른 프로세스로 요청을 보낼 때는 전달할 정보를 정해진 형식으로 기록하고, 받는 쪽에서 다시 읽어야 합니다. Java 문서도 ContextStorage와 ContextPropagators를 구분해 설명해요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 프로퍼게이터 (Propagator)</div>
+  전송할 문맥 정보를 헤더 같은 전달 매체에 쓰거나 읽는 구성 요소예요. Context 객체 전체를 그대로 직렬화하는 것이 아니라, 등록한 전파 형식에 해당하는 값을 처리합니다.
+</div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs><marker id="arrCtxWire" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+  <text x="35" y="34" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">프로세스 내부와 프로세스 사이의 전파를 구분해요</text>
+  <path d="M28 57 C130 54,250 59,336 56 C339 116,337 175,336 232 C230 235,120 231,29 233 C26 173,29 113,28 57 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5"/>
+  <text x="182" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#4a7fb5">프로세스 A</text>
+  <text x="182" y="125" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">Context → wrap → 작업 스레드</text>
+  <text x="182" y="156" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">로컬 현재 문맥을 부착하고 복원</text>
+  <text x="182" y="208" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#c07f18">Propagator.inject</text>
+  <path d="M363 57 C465 54,580 59,672 56 C675 116,673 175,672 232 C570 235,460 231,364 233 C361 173,364 113,363 57 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5"/>
+  <text x="518" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2e6b41">프로세스 B</text>
+  <text x="518" y="125" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">추출한 Context를 사용</text>
+  <text x="518" y="156" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">필요한 실행 범위에서 부착</text>
+  <text x="518" y="208" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#c07f18">Propagator.extract</text>
+  <path d="M182 238 C223 271,350 275,400 265 C445 261,490 251,518 238" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#arrCtxWire)"/>
+  <text x="350" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">프로세스를 넘을 때는 헤더 등에 기록하는 단계가 더 필요해요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 로컬 부착과 프로세스 간 전파는 구분해서 확인해요</div>
+<p><a href="https://opentelemetry.io/docs/languages/java/api/#context-api">공식 Context API 설명</a>과 <a href="https://opentelemetry.io/docs/languages/java/api/#contextpropagators">전파 예제</a>를 함께 읽으면 경계가 분명해져요. 송신 측은 등록된 전파 형식으로 헤더에 값을 쓰고, 수신 측은 헤더에서 값을 읽어 Context를 만든 뒤 실행 범위에 적용해요. 스레드 전환이 완벽해도 헤더 기록을 하지 않으면 원격 서버가 부모 정보를 읽을 수 없습니다. 반대로 올바른 헤더를 받았어도 이후 작업 스레드에 전파하지 않으면 서버 내부에서 다시 관계를 잃을 수 있어요.</p>
+<p>따라서 “트레이스가 끊겼다”는 화면만으로 ThreadLocal을 원인으로 정할 수는 없어요. 헤더가 기록됐는지, 수신 측에서 추출했는지, 현재 문맥에 적용했는지, 비동기 경계에서 어떤 값을 확보했는지를 나눠 봐야 합니다. 수집·전송 단계에서 스팬 자체가 누락된 상황도 겉으로는 비슷하게 보일 수 있어요. 문맥 전파와 스팬 수집 성공은 서로 다른 검증 항목입니다.</p>
+
+<h2>8. 적용할 때는 끊기는 지점과 남는 값을 함께 봐요</h2>
+<h3>예외 이후에도 같은 작업 스레드의 문맥이 복원될까</h3>
+<p>코드만 읽은 설명과 실제 동작을 구분하기 위해 작은 Java 실험도 추가했어요. OTel <code>1.67.0</code>의 공개 Maven 아티팩트를 그대로 사용하고, 단일 작업 스레드에서 감싸지 않은 작업과 감싼 작업을 차례로 실행합니다. 실행 환경은 OpenJDK <code>25.0.3</code>이며 컴파일 대상은 <code>--release 11</code>이에요. 이 기록은 고정 소스 전체를 다시 빌드한 결과가 아니라 공개 배포 아티팩트의 동작을 확인한 결과입니다.</p>
+<p>중요한 것은 작업 스레드의 초기 상태를 빈 문맥으로 두지 않았다는 점이에요. 작업 스레드의 수명 동안 <code>study-owner=worker-baseline</code>을 부착해 두었습니다. 감싼 작업이 끝나면 단순히 null이 되는지 보는 대신, 기존에 있던 정확한 값으로 복원되는지 검사하려는 설정이에요. 이 초기 값은 실험을 위해 명시적으로 넣은 것이며, 일반 스레드 풀이 원래 이 값을 가진다는 뜻은 아닙니다.</p>
+<ol>
+  <li>감싸지 않은 작업을 제출해 작업 스레드가 <code>worker-baseline</code>을 읽는지 확인해요.</li>
+  <li>호출 스레드에서 <code>study-owner=captured</code>인 문맥을 만들고 그 문맥으로 Runnable을 감싼 뒤 호출 스레드의 Scope를 닫아요.</li>
+  <li>감싼 작업을 제출해 작업 안에서 <code>captured</code>를 읽는지 확인하고, 의도한 <code>ExpectedFailure</code> 예외를 던져요.</li>
+  <li>그 예외를 Future를 통해 받은 뒤 다음 작업을 제출해, 동일한 스레드 객체에서 <code>worker-baseline</code>이 다시 보이는지 확인해요.</li>
+  <li>호출 스레드의 현재 문맥도 실험 시작 전 객체와 같은지 검사해요.</li>
+</ol>
+<p>실제 출력에서 컨텍스트 실험에 해당하는 부분을 그대로 옮기면 아래와 같아요. 원본 코드와 기록은 <a href="https://github.com/DDINGJOO/Platform-study/blob/main/labs/observability/otel-runtime-probes/RuntimeProbes.java">RuntimeProbes.java</a>, <a href="https://github.com/DDINGJOO/Platform-study/blob/main/labs/observability/otel-runtime-probes/actual.txt">실행 표준 출력</a>, <a href="https://github.com/DDINGJOO/Platform-study/blob/main/labs/observability/otel-runtime-probes/validation.json">검증 기록</a>에서 확인할 수 있습니다.</p>
+<div class="obsv-code">context unwrapped=worker-baseline
+context wrapped=captured
+context exception=ExpectedFailure
+context worker-restored=worker-baseline
+context same-worker=true
+context caller-restored=true
+context PASS</div>
+<p><code>wrapped=captured</code>는 감싼 작업 안에서 전달한 문맥을 읽었다는 뜻이고, <code>worker-restored=worker-baseline</code>은 예외 이후 작업 스레드의 이전 값이 복원됐다는 뜻이에요. <code>same-worker=true</code>도 함께 확인했습니다. 새 스레드가 만들어져 우연히 상태가 사라진 경우와 구분하려는 검사예요. 작업 예외는 Future에서 받아 처리하므로, 예외를 관찰한 다음에도 같은 작업 스레드로 검사를 이어갑니다.</p>
+<p>러너는 공개 JAR의 SHA-256을 확인한 뒤 컨텍스트 실험을 별도 JVM에서 다섯 번 실행했고, 기록된 다섯 번의 종료 코드는 모두 0이며 출력도 같았어요. 작업의 완료는 <code>Future.get()</code>으로 기다리고, 대기 제한은 멈춤을 방지하기 위해서만 사용합니다. 일정 시간 동안 기다렸으니 복원이 끝났을 것이라고 추측하는 실험은 아니에요.</p>
+<p>이 결과는 <b>기본 저장소에서 감싼 Runnable이 예외를 던진 뒤에도 이전 문맥을 복원한다</b>는 한 경로를 검증해요. Runnable 재사용의 모든 조합, <code>taskWrapping</code>의 모든 overload, Scope의 잘못된 종료 순서, Reactor나 에이전트 계측을 실행한 결과는 아닙니다. 앞 장의 다른 설명은 고정 소스 분석이나 공식 문서 비교에 근거해요. 이 실험에서는 스팬을 만들어 부모 관계를 검사하거나 HTTP 요청을 보내지도 않았으므로, <code>PASS</code>를 원격 트레이스 전체의 성공으로 확대하지 않습니다.</p>
+
+<h3>실제 서비스에서는 어떤 테스트를 더할까</h3>
+<p>제가 이 코드를 실제 애플리케이션에 적용한다면 먼저 실행 경계 목록을 만들 것 같아요. 요청 진입, Executor 제출, CompletableFuture 콜백, Reactor 구독, 외부 콜백, HTTP 송수신을 한 덩어리로 묶지 않고 구분하는 방식입니다. 각 경계에서 문맥을 누가 보관하고 언제 확보하며 어디서 복원하는지 확인해요. 아래 항목은 그 확인 순서예요.</p>
+<ol>
+  <li><b>실행 모델을 확인해요.</b> 동기 호출인지, 작업 제출인지, 구독인지에 따라 현재 값을 찾는 기준을 정해요. 프레임워크나 에이전트가 이미 전파하는 범위도 따로 확인합니다.</li>
+  <li><b>캡처 시점을 확인해요.</b> 요청별 작업이면 요청이 현재 문맥인 시점에 확보해야 해요. 애플리케이션 초기화 때 감싼 객체를 계속 재사용하는 코드는 특히 구분합니다.</li>
+  <li><b>작업 스레드에서 부착하고 닫는지 확인해요.</b> 제출 스레드의 Scope를 작업 스레드에서 닫는 구조가 아닌지 보고, 예외·타임아웃·작업 거절 경로의 정리도 확인합니다.</li>
+  <li><b>작업이 끝난 뒤의 상태를 확인해요.</b> 작업 안에서 값이 맞다는 것만으로 충분하지 않아요. 같은 작업 스레드에 다른 요청을 연속 실행하고 이전 문맥이 남지 않는지 봅니다.</li>
+  <li><b>취소와 추적 수명을 분리해요.</b> Context가 있다고 작업 취소가 자동 전파되는 것은 아니고, Scope를 닫았다고 스팬이 종료되는 것도 아닙니다. 각 자원의 종료 주체를 정해요.</li>
+  <li><b>원격 경계는 별도로 확인해요.</b> inject·extract와 로컬 전파를 나눠 보고, 최종 화면뿐 아니라 경계 전후의 trace ID·span ID도 비교합니다.</li>
+</ol>
+<p>예를 들어 스레드 풀의 같은 작업 스레드에서 요청 A, 예외를 던지는 요청 B, 아무 문맥도 주지 않은 작업 C를 차례로 실행해 볼 수 있어요. B 안에서만 올바른 값을 확인하는 대신, B 이후에 A나 B의 값이 C에서 보이지 않는지도 확인하는 것입니다. 수동 wrapper와 프레임워크 연동을 비교한다면 스팬 개수와 부모 관계도 함께 봐야 해요. 이 문단은 제안하는 테스트 설계이고 실행했다고 주장하는 결과는 아닙니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">🔎 확인 범위와 남은 검증</div>
+  Java v1.67.0의 기본 저장소·불변 Context·작업 wrapper 코드를 확인했고, 별도 실험으로 같은 작업 스레드에서 예외 이후의 복원을 검증했어요. Reactor와 Go는 공식 문서의 전달 계약을 비교했습니다. Reactor 자동 모드, Go 취소, Java 에이전트별 계측을 직접 실행한 결과는 아니며, 실행 비용·모든 프레임워크 지원·원격 전파 성공도 확인하지 않았어요.
+</div>
+
+<p><small>소스 기준: <a href="https://github.com/open-telemetry/opentelemetry-java/tree/b4b3a1b354425c3f1411173c0e48cb24a1cba224">OpenTelemetry Java v1.67.0</a>. 코드 이미지는 해당 공개 소스를 렌더링했어요.</small></p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>Context 객체를 확보하는 일, 현재 스레드에 부착하는 일, 전송 매체에 기록하는 일은 달라요.</b><br><br>
+  Java의 기본 저장소는 스레드를, Reactor Context는 구독자를, Go Context는 명시적 인자를 기준으로 문맥을 전달해요. 선택한 방식의 캡처 시점과 종료 규칙을 확인하고, 실행 중의 값뿐 아니라 작업 뒤에 남는 값까지 검사해야 합니다.
+</div>
+</div>

@@ -1,0 +1,189 @@
+<!-- tags: 시맨틱 컨벤션, 메트릭 카디널리티, Micrometer 태그, Prometheus 라벨, 개인정보 -->
+<!-- lead: 같은 HTTP 요청도 속성 이름과 단위가 다르면 다른 데이터로 읽혀요. OpenTelemetry의 시맨틱 컨벤션과 Java SDK 제한 코드를 따라가며 Micrometer·Prometheus의 태그 설계, 버전 전환, 개인정보 처리의 경계를 구분해 봤어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 OpenTelemetry 구조와 설계 읽기</div>
+  6편. Collector를 두면 무엇을 중앙에서 바꿀 수 있을까<br>
+  7편. 자동 계측은 애플리케이션을 어디까지 알 수 있을까<br>
+  <b>8편. 같은 요청을 같은 이름으로 기록하려면 무엇이 필요할까</b> &larr; 지금 이 글
+</div>
+
+<p>두 서비스가 모두 HTTP 요청 시간을 기록한다고 가정해 볼게요. 한쪽은 메서드를 <code>http.method</code>에, 다른 쪽은 <code>http.request.method</code>에 넣어요. 지연 시간도 한쪽은 밀리초, 다른 쪽은 초로 기록합니다. Collector가 둘 다 정상 수신하더라도 같은 쿼리로 올바르게 비교할 수 있을까요?</p>
+<p>전송에 성공했다는 사실만으로 데이터의 의미까지 같아지지는 않아요. OTel을 공부하면서 API와 전송 경로를 이해한 뒤에도 남는 질문이 이것이었어요. <b>서로 다른 계측이 같은 작업을 같은 의미로 표현하려면 무엇을 맞춰야 하고, 얼마나 자세히 기록할지는 누가 정할까요?</b></p>
+<p>공식 시맨틱 컨벤션과 Java SDK <code>v1.67.0</code>의 제한 코드를 함께 읽으며, 전송 형식·데이터의 의미·집계 차원을 나누어 볼게요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 이 글에서 확인할 질문</div>전송 형식과 데이터 의미는 어떻게 다른가요?<br>서비스 이름과 계측 라이브러리 이름은 어디에 들어가나요?<br>스팬의 속성 개수 제한으로 메트릭의 시계열 수를 줄일 수 있나요?<br>Micrometer의 low/high 구분과 Prometheus 라벨은 무엇을 해결하나요?<br>집계 비용을 줄이는 설정으로 개인정보도 보호할 수 있나요?</div>
+
+<h2>1. OTLP로 보냈다고 의미까지 통일되지는 않아요</h2>
+<p>OTLP는 관측 데이터를 어떤 구조로 인코딩하고 gRPC·HTTP 등의 전송으로 교환하는지를 정해요. 시맨틱 컨벤션은 HTTP 요청, 데이터베이스 호출, 서비스 자원 등을 어떤 이름과 의미로 표현할지 정합니다. <a href="https://opentelemetry.io/docs/specs/otlp/">OTLP 명세</a>와 <a href="https://opentelemetry.io/docs/concepts/semantic-conventions/">시맨틱 컨벤션 소개</a>가 다루는 책임이 다른 이유예요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 시맨틱 컨벤션</div>같은 종류의 작업과 데이터를 일관되게 해석하도록 이름·값의 의미·단위 등을 합의한 규칙이에요. 같은 키를 썼는지뿐 아니라 무엇을 측정했는지도 맞춰야 해요.</div>
+<p>설명용 예시로 <code>duration=200</code>과 <code>duration=0.2</code>를 생각해 볼게요. 둘 다 숫자로 인코딩할 수 있어도 단위와 측정 구간을 모르면 같은 지연 시간인지 알 수 없어요. 전체 요청 시간인지, 재시도 한 번의 시간인지, 업무 처리가 끝난 시점인지도 필요합니다. 이름을 같은 문자열로 고치는 것만으로 이런 차이가 없어지지는 않아요.</p>
+<div class="obsv-code">전송 규칙: 수신자가 이 메시지를 해석할 수 있는가?
+의미 규칙: 이 값이 무엇을 어떤 단위로 측정했는가?
+운영 계약: 우리 쿼리와 알림은 어느 규칙을 기대하는가?
+
+수신 성공 ≠ 같은 의미 ≠ 올바른 대시보드</div>
+<p>여기서 운영 계약은 OTel에 별도의 기능 이름이 있다는 뜻이 아니에요. 서비스와 계측 버전이 바뀌어도 유지하려는 팀의 규칙을 가리키는 표현입니다. 예를 들어 특정 지연 시간 알림이 초 단위를 전제한다면, 실제 데이터의 단위가 달라지는 변경도 코드 리뷰 대상이어야 한다는 해석이에요.</p>
+<p>그렇다고 표준 규칙 밖의 속성을 모두 금지할 필요는 없어요. HTTP 라이브러리는 주문이 실제 승인됐는지 알기 어렵습니다. 업무 계측에는 별도의 이름과 값 집합이 필요할 수 있어요. 먼저 이미 정의된 규칙을 확인하고, 없는 업무 의미는 애플리케이션의 네임스페이스와 문서로 정하는 쪽이 낫다고 읽었어요. <span class="obsv-mark">표준 규칙은 공유 가능한 의미를 늘려 주지만 업무 의미를 대신 결정하지는 않아요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="otel8-meaning-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs>
+<path d="M30 40 C215 37,445 43,670 40 C673 66,671 92,670 118 C445 121,215 116,31 120 C28 91,31 65,30 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5" />
+<text x="350" y="72" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="27" fill="#3d3a34">OTLP: 데이터를 어떻게 교환할까요?</text>
+<text x="350" y="100" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">인코딩 · 메시지 구조 · 전송</text>
+<path d="M350 126 C348 139,352 147,350 159" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#otel8-meaning-arrow)" />
+<path d="M30 173 C215 170,445 176,670 173 C673 198,671 224,670 251 C445 253,215 248,31 252 C28 225,31 198,30 173 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5" />
+<text x="350" y="205" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="27" fill="#3d3a34">시맨틱 컨벤션: 무엇을 기록한 값일까요?</text>
+<text x="350" y="234" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#c07f18">속성 이름 · 측정 대상 · 단위 · 값의 의미</text>
+<text x="350" y="307" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f">같이 사용해도 업무 의미와 쿼리 검증은 남아요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 전송 호환성과 데이터의 의미는 별도로 확인해야 해요</div>
+
+<h2>2. 누가 실행했는지와 누가 계측했는지를 나눠요</h2>
+<p>어떤 스팬이 <code>checkout</code>이라는 이름의 서비스에서 나왔다고 가정해 볼게요. 그 안에는 HTTP 프레임워크의 계측과 애플리케이션의 수동 계측이 함께 있을 수 있습니다. 서비스 이름만 남기면 계측 라이브러리 버전을 구분하기 어렵고, 계측 라이브러리 이름만 남기면 어느 서비스 인스턴스가 실행했는지 알기 어려워요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Resource와 Instrumentation Scope</div>Resource는 관측 데이터를 생성한 서비스·프로세스 등의 대상을 설명해요. Instrumentation Scope는 해당 데이터를 기록한 라이브러리나 모듈 같은 소프트웨어 범위를 구분해요. 둘 다 요청 한 건의 속성과는 다른 정보입니다.</div>
+<p><a href="https://opentelemetry.io/docs/concepts/resources/">Resource 문서</a>는 <code>service.name</code>을 논리적인 서비스 이름으로 설명합니다. 반면 <a href="https://opentelemetry.io/docs/concepts/instrumentation-scope/">Instrumentation Scope 문서</a>는 Tracer·Meter 등을 얻을 때 지정하는 이름과 선택적인 버전·스키마 URL·속성으로 계측 출처를 구분해요. 같은 서비스의 두 계측 라이브러리를 비교하거나 업그레이드 영향을 찾을 때 필요한 차이예요.</p>
+<div class="obsv-code">Resource
+  service.name = checkout
+
+Instrumentation Scope
+  name = example.checkout.instrumentation
+  version = 1.0.0
+
+개별 작업의 속성
+  app.checkout.outcome = accepted</div>
+<p>위 이름과 값은 설명용으로 만든 예시이며, <code>app.checkout.outcome</code>은 표준 속성이라는 뜻이 아니에요. 세 정보가 모두 문자열로 표현되더라도 수명과 역할이 다릅니다. 매 요청마다 달라지는 주문 식별자를 서비스 이름에 넣으면 논리 서비스 식별까지 요청 단위로 바뀌어요. 반대로 모든 서비스에서 같은 계측 라이브러리를 쓴다는 이유로 <code>service.name</code>을 그 라이브러리 이름으로 정하면 실행 주체를 구분하기 어렵습니다.</p>
+<p>Resource는 무조건 저카디널리티라는 규칙도 아니에요. 인스턴스나 컨테이너를 식별하는 값은 서비스 이름보다 종류가 많을 수 있습니다. 또 Resource 속성이 저장 백엔드의 모든 메트릭 라벨로 언제나 승격되는 것도 아닙니다. Exporter와 수집·저장 설정이 어떻게 변환하는지 확인해야 해요. 따라서 “어느 위치에 넣었으니 비용은 안전하다”보다 그 정보가 최종적으로 어떤 집계 키가 되는지 확인하는 것이 중요합니다.</p>
+
+<h2>3. 버전 전환은 키 이름 바꾸기로 끝나지 않아요</h2>
+<p>처음의 <code>http.method</code>와 <code>http.request.method</code>는 임의로 만든 대비가 아니에요. <a href="https://opentelemetry.io/docs/specs/semconv/non-normative/http-migration/">공식 HTTP 시맨틱 컨벤션 전환 문서</a>에 있는 변경입니다. 같은 문서는 서버 지연 시간 메트릭이 <code>http.server.duration</code>에서 <code>http.server.request.duration</code>으로 바뀌고, 단위도 <code>ms</code>에서 <code>s</code>로 바뀌는 과정을 설명해요.</p>
+<p>이 전환을 이름 치환 하나로 처리하면 위험해요. 이전 값 200을 새로운 이름으로만 내보내고 단위를 초로 표시하면 의미가 달라집니다. 히스토그램이라면 경계값도 같은 단위에 맞아야 해요. 어떤 입력을 어떤 규칙으로 변환했는지 확인하지 않고 새 이름을 붙이면, 파싱에는 성공하지만 해석은 잘못된 데이터가 생길 수 있어요.</p>
+<p>해당 HTTP 전환 지침에는 지원 계측에서 <code>OTEL_SEMCONV_STABILITY_OPT_IN=http</code>로 새 규칙만 내보내거나 <code>http/dup</code>로 이전·새 규칙을 함께 내보내는 단계적 방법이 나와요. 이것을 현재 모든 언어·모든 계측에서 동일하게 동작하는 범용 스위치로 이해하면 안 됩니다. 실제 사용 중인 계측의 릴리스와 지원 여부를 먼저 확인해야 해요.</p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 두 규칙을 같이 내보낼 때 쿼리도 확인해요</div>동시 출력은 전환 전후 결과를 비교하는 데 도움이 될 수 있어요. 하지만 같은 사건을 표현하는 이전·새 메트릭을 넓은 이름 조건으로 함께 합산하면 중복 계산할 수 있습니다. 이 문장은 특정 백엔드에서 관찰한 장애가 아니라, 동시에 출력된 두 표현을 더할 때 생기는 논리적인 위험이에요.</div>
+<p>제가 검토한다면 먼저 생산자 목록에 SDK 버전만 적지 않고 계측 라이브러리 버전과 출력 규칙을 함께 적을 거예요. 다음에는 기존 쿼리가 기대하는 키·단위·범위를 찾고, 일부 서비스에서 새 규칙을 비교한 뒤 소비 쿼리를 전환하겠습니다. 마지막으로 이전 규칙을 끄는 시점과 롤백 조건을 정하는 방식이에요. 이는 이 문서에서 제안하는 절차이지 이번 글에서 실제 서비스를 전환했다는 기록은 아닙니다.</p>
+<p>한편 스키마 URL이 있다는 것만으로 모든 백엔드가 모든 변경을 자동 변환한다고 기대해서는 안 돼요. 출처 규칙을 설명하는 메타데이터와, 실제로 적용되는 변환 기능은 구분해야 합니다. <span class="obsv-mark">버전 전환의 검증 단위는 새 키가 보이는지가 아니라 기존 질문에 같은 의미로 답하는지예요.</span></p>
+
+<h2>4. 스팬 속성 제한은 시계열 개수 제한이 아니에요</h2>
+<p>속성을 제한하면 메모리를 줄일 수 있으니 스팬 속성 개수를 작게 설정하면 메트릭의 종류도 줄어들 것 같아요. 하지만 스팬 한 개에 들어가는 항목 수와, 반복해서 관찰한 값 조합 수는 다른 차원입니다. 실제 코드를 나눠 읽으니 이 차이가 더 분명했어요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/08/span-limits.png" alt="Java 1.67.0 SpanLimitsBuilder 14~25줄. 스팬 속성, 이벤트, 링크 등의 기본 개수 제한이 각각 선언돼 있다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-figcap">코드 캡처 1. 스팬 하나에 적용되는 항목별 제한이에요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SpanLimitsBuilder.java#L14-L25">원문 14~25줄</a></div>
+<p>고정한 Java 버전은 스팬 속성·이벤트·링크 개수 등에 기본값 128을 각각 선언해요. 여기서 128은 서비스 전체의 서로 다른 속성 값 수가 아닙니다. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SdkSpan.java#L333-L350">SdkSpan.setAttribute()</a>는 <code>SpanLimits</code>의 개수·문자열 길이 제한을 <code>AttributesMap.create()</code>에 넘긴 뒤 속성을 저장해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/common/src/main/java/io/opentelemetry/sdk/common/internal/AttributesMap.java#L101-L119">AttributesMap의 계약</a>도 개수와 길이 제한을 적용하는 동작을 설명합니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 카디널리티</div>여기서는 메트릭 집계에서 구분하는 서로 다른 속성 값 조합의 수를 말해요. 키가 하나여도 매번 새로운 요청 ID가 들어가면 조합은 계속 늘어날 수 있어요.</div>
+<p>예를 들어 스팬마다 <code>request.id</code> 하나만 기록하고 값이 매번 다르다고 가정해 볼게요. 각 스팬의 속성 개수는 1이지만, 백만 개 요청의 식별자가 모두 다르면 값 종류는 백만 개예요. 그 값을 메트릭 집계 차원으로도 넣으면 한 키만으로도 많은 조합을 만들 수 있습니다. 스팬 속성 개수 제한을 8로 낮춰도 이 구조는 바뀌지 않아요.</p>
+<p>반대로 속성 키가 여러 개 있어도 각 값이 작은 집합에서 반복되면 조합 수는 상대적으로 작을 수 있어요. 다만 작은 집합 여러 개의 조합도 커질 수 있습니다. 설명용으로 route 40종, method 4종, outcome 3종, region 5종이 모든 조합으로 나타나면 최대 2,400개 조합이에요. 이것은 가능 조합의 계산일 뿐, 실제 모든 조합이 존재하거나 백엔드의 물리 시계열 수가 정확히 그 숫자라는 주장은 아닙니다. 히스토그램 표현과 자원 구분 등에 따라 저장 형태도 달라질 수 있어요.</p>
+<p>문자열 길이 제한 역시 개인정보 제거와는 다릅니다. 이름이나 인증 정보가 제한 길이보다 짧으면 그대로 남을 수 있어요. 제한 설정의 목적을 과장하지 않으려면 개수·길이·서로 다른 조합·민감성이라는 질문을 각각 따로 확인해야 합니다.</p>
+
+<h2>5. 메트릭 한도를 넘으면 숫자와 구분 중 무엇을 잃을까</h2>
+<p>메트릭은 각각의 측정을 속성 조합별로 집계해요. 조합이 계속 생기면 이를 유지하는 SDK 상태도 커질 수 있습니다. Java 1.67.0의 누적 동기 메트릭 경로를 따라가면 어디에서 집계 키를 고르고 한도를 적용하는지 볼 수 있어요. 누적은 이전 측정을 계속 합친 값을 뜻하고, 동기 계측은 애플리케이션이 <code>add()</code>나 <code>record()</code>로 측정하는 방식을 말합니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: View와 overflow 집계</div>View는 SDK에서 특정 메트릭의 집계 방식이나 집계에 남길 속성 등을 설정하는 구성입니다. overflow 집계는 조합별로 따로 유지하지 못한 측정들을 별도의 합성 속성 조합으로 모으는 동작이에요.</div>
+<div class="obsv-code">등록한 View의 속성 필터·카디널리티 설정
+  → SynchronousMetricStorage.create(...)
+  → Reader의 temporality에 맞는 저장소 선택
+  → CumulativeSynchronousMetricStorage.doRecordLong/Double(...)
+  → 집계용 속성을 필터링하고 기존 handle 조회
+  → 새 조합을 만들 수 없으면 overflow handle 사용
+  → collect()가 집계값에 Resource·Scope를 붙여 반환</div>
+<p>이 경로의 출발점인 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/SynchronousMetricStorage.java#L47-L65">SynchronousMetricStorage.create()</a>는 등록한 View의 필터와 한도를 전달해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/DefaultSynchronousMetricStorage.java#L65-L85">다음 생성 단계</a>는 Reader의 temporality, 즉 시간 구간별 집계 방식을 보고 누적 또는 델타 저장소를 고릅니다. 따라서 아래 누적 저장소 하나만으로 모든 메트릭 종류의 내부 동작을 설명할 수는 없어요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/08/metric-cardinality.png" alt="CumulativeSynchronousMetricStorage 96~120줄. 속성 필터, 기존 handle 조회, 한도 검사와 overflow 속성 전환, putIfAbsent가 순서대로 있다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-figcap">코드 캡처 2. 한도를 넘은 새 조합은 overflow 집계로 처리해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/CumulativeSynchronousMetricStorage.java#L96-L120">원문 96~120줄</a></div>
+<p>98줄은 집계용 속성을 먼저 필터링해요. 99~102줄은 그 조합의 집계 객체인 handle이 이미 있으면 재사용합니다. 새 조합이고 한도에 도달했다면 112줄에서 키를 <code>MetricStorage.CARDINALITY_OVERFLOW</code>로 바꾸고 그 집계 객체를 사용해요. 상위 클래스는 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/DefaultSynchronousMetricStorage.java#L42-L62">overflow를 위한 한 슬롯도 예약</a>합니다.</p>
+<p>중요한 점은 넘친 측정값을 무조건 버리는 코드가 아니라는 거예요. <a href="https://opentelemetry.io/docs/specs/otel/metrics/sdk/#cardinality-limits">메트릭 SDK 명세</a>는 동기 측정이 원래 조합이나 overflow 중 하나의 집계에 반영돼야 하며 overflow 때문에 중복 계산하거나 버리지 않도록 요구해요. 그래서 한도를 넘긴 뒤 전체 요청 수가 남아 있어도, 새로 등장한 route별 요청 수를 따로 조회할 수 없을 수 있습니다. <span class="obsv-mark">합계가 유지되는 것과 원하는 차원별 구분이 유지되는 것은 달라요.</span></p>
+<p>누적 경로에서는 이미 알던 조합을 먼저 조회하므로 이전에 유지하던 조합과 새로 overflow에 들어간 조합의 정보량이 달라질 수 있어요. 이것을 중요한 route를 의도적으로 우선 보존하는 정책으로 오해하면 안 됩니다. 위 코드에는 업무 중요도를 판단하는 로직이 없어요. 또 map의 크기 검사와 새 항목 삽입은 별도 동작이므로 이 짧은 구간만 보고 동시 실행에서도 항목 수를 정확하게 증명했다고 말하지 않겠습니다.</p>
+<p>이 코드를 읽고 얻은 적용 기준은 단순해요. SDK의 한도를 최후의 방어 설정으로 두는 것과, 처음부터 필요한 차원만 계측하는 것은 서로 다른 선택입니다. 요청 ID를 메트릭 속성에서 빼면 잃는 구분이 명확하지만, 일단 모두 넣고 한도에 도달하기를 기다리면 어떤 새 조합이 분리되지 않을지 예측하기 어려워져요.</p>
+
+<h2>6. Micrometer와 Prometheus는 같은 문제를 어디서 다룰까</h2>
+<p>이 문제를 “OTel은 구조화돼 있고 다른 스택은 자유롭다”로 비교하면 정확하지 않아요. Micrometer Observation도 기록할 key-value를 구분하고 이름·태그를 정하는 Convention을 제공해요. Prometheus도 메트릭 이름과 라벨로 집계 차원을 표현하고 관련 작명 지침을 갖고 있습니다. 차이는 같은 계층에서 어떤 결정을 드러내는지 봐야 해요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 라벨과 시계열</div>Prometheus 라벨은 메트릭에 붙는 키·값 차원이에요. 이름과 라벨 조합으로 시계열을 식별하며, 시계열은 같은 대상을 시간에 따라 측정한 값들의 모음입니다.</div>
+<div style="overflow-x:auto;margin-bottom:18px;">
+<table style="width:100%;min-width:620px;border-collapse:collapse;font-size:15px;">
+<thead><tr><th style="text-align:left;padding:10px;border-bottom:2px solid #d8cfba;">결정할 문제</th><th style="text-align:left;padding:10px;border-bottom:2px solid #d8cfba;">OTel의 관련 기능</th><th style="text-align:left;padding:10px;border-bottom:2px solid #d8cfba;">비교할 기능</th></tr></thead>
+<tbody>
+<tr><td style="padding:10px;border-bottom:1px dashed #d8cfba;">같은 작업을 같은 의미로 표현하기</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">공통 시맨틱 컨벤션과 업무 계측 규칙</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">Micrometer ObservationConvention의 이름·key-value 규칙</td></tr>
+<tr><td style="padding:10px;border-bottom:1px dashed #d8cfba;">어떤 값을 메트릭 차원으로 쓸지 정하기</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">계측 속성 선택, SDK View의 집계용 속성 필터</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">Observation의 low/high 구분과 실제 Handler, Prometheus 라벨 설계</td></tr>
+<tr><td style="padding:10px;border-bottom:1px dashed #d8cfba;">시계열을 구분하기</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">메트릭 스트림과 데이터 포인트의 속성 조합</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">Prometheus 이름과 라벨 조합</td></tr>
+<tr><td style="padding:10px;">기록해서는 안 되는 값을 제거하기</td><td style="padding:10px;" colspan="2">어느 스택을 골라도 별도의 수집·처리 정책이 필요해요. 집계 차원 분류 자체는 개인정보 판정이 아니에요.</td></tr>
+</tbody></table>
+</div>
+<p><a href="https://docs.micrometer.io/micrometer/reference/observation/components.html#micrometer-observation-default-meter-handler">Micrometer 1.17.1의 DefaultMeterObservationHandler 문서</a>는 low cardinality key-value만 meter 태그에 사용한다고 설명해요. 그러나 <code>lowCardinalityKeyValue("request.id", ...)</code>라고 호출하면 ID가 실제로 작은 집합이 되지는 않습니다. low/high는 작성자가 부여하는 의미 구분이므로 잘못 분류하면 이 설계의 이점을 잃어요. 사용자 정의 Handler까지 모두 같은 동작이라고 일반화해서도 안 됩니다.</p>
+<p><a href="https://prometheus.io/docs/concepts/data_model/">Prometheus 데이터 모델</a>은 이름과 라벨 조합이 시계열을 식별하며 라벨 값 변경도 새 시계열을 만든다고 설명해요. <a href="https://prometheus.io/docs/practices/naming/">작명 지침</a>은 무한히 늘어날 수 있는 사용자 ID 같은 차원에 주의하도록 안내합니다. 이 부분은 OTel SDK의 내부 overflow 구현과 같은 기능을 비교하는 것이 아니라, 메트릭 생산자가 어떤 차원을 선택할지 비교하는 내용이에요.</p>
+<p>선택을 실제로 해 본다면, 이미 Observation으로 업무 작업을 기록하는 서비스에서는 이름·low/high key-value를 Convention으로 모아 관리할 수 있겠어요. 직접 OTel Metrics를 쓴다면 instrument와 View의 책임을 나눠 검토할 수 있습니다. 둘 다 최종 메트릭을 Prometheus로 전달할 수 있으므로 “Micrometer냐, OTel이냐, Prometheus냐”를 하나만 선택해야 하는 관계로 설명할 수 없어요.</p>
+<p>반례도 있습니다. low/high 구분이 있는 API를 썼지만 실제 Handler 연결을 확인하지 않거나, OTel View를 정의했지만 해당 instrument에 선택 조건이 맞지 않으면 기대한 차원 조절이 적용되지 않을 수 있어요. 설정이 존재한다는 사실보다 대표 입력을 넣었을 때 최종 출력의 집계 키가 무엇인지 확인하는 편이 더 직접적인 검증입니다.</p>
+
+<h2>7. 집계에서 뺀 정보는 나중에 다시 나눌 수 없어요</h2>
+<p>다시 설명용 HTTP 요청을 보죠. <code>/orders/alpha</code>와 <code>/orders/beta</code>를 실제 경로마다 집계하면 개별 주문 식별에 따라 조합이 늘 수 있어요. 서버 프레임워크가 매칭한 <code>/orders/{id}</code>라는 route로 집계하면 그 차원을 줄일 수 있습니다. <a href="https://opentelemetry.io/docs/specs/semconv/http/http-spans/">HTTP 스팬 규칙</a>도 route를 실제 URI 경로와 구분하며, route를 알 수 없을 때 원시 경로로 대체하지 않도록 설명해요.</p>
+<p>하지만 route로 합쳤다는 것은 alpha와 beta의 구분을 그 집계에서 포기했다는 뜻이기도 해요. 두 요청이 각각 1초와 9초였고 같은 합계·개수만 남았다면, 어느 주문이 9초였는지를 그 숫자에서 복원할 수 없습니다. 이 예시는 특정 집계의 계산 예시이며 히스토그램이 개별 사건을 모두 저장한다는 뜻도 아니에요.</p>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="otel8-aggregate-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs>
+<path d="M25 45 C100 42,183 47,254 45 C257 83,255 121,254 159 C179 162,101 157,26 161 C23 122,26 83,25 45 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5" />
+<text x="140" y="77" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">개별 요청</text>
+<text x="140" y="111" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5">alpha: 1 second</text>
+<text x="140" y="140" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5">beta: 9 seconds</text>
+<path d="M266 102 C312 100,355 105,396 102" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#otel8-aggregate-arrow)" />
+<text x="330" y="82" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">route로 집계</text>
+<path d="M410 45 C491 42,593 47,674 45 C677 83,675 121,674 159 C589 162,492 157,411 161 C408 122,411 83,410 45 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5" />
+<text x="542" y="78" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">/orders/{id}</text>
+<text x="542" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#c07f18">개수 2 · 합계 10초</text>
+<text x="542" y="142" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18">개별 주문 구분은 없어요</text>
+<path d="M542 175 C510 214,453 217,410 219" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="8 8" />
+<text x="350" y="254" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f">집계 뒤에는 어느 주문이 느렸는지 복원할 수 없어요</text>
+<text x="350" y="289" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#8a8272">다른 신호를 연결해도 그 기록이 실제 남아 있어야 해요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 조합 수를 줄이면 유지할 수 있는 개별 구분도 줄어들어요</div>
+<p>그렇다면 모든 식별자를 메트릭에 넣는 것이 정답일까요? 그렇지도 않아요. 전체 추세를 질문하는 메트릭과 개별 사건을 질문하는 추적·로그의 역할을 나눌 수 있습니다. 메트릭에서 이상 구간을 찾고, 연결 정보가 있는 스팬을 조회하는 구성도 가능해요. 다만 추적이 샘플링되거나 유실됐다면 특정 요청 기록이 반드시 존재하는 것은 아닙니다. 다른 신호를 쓴다는 결정을 모든 사건의 조회 보장으로 바꾸면 안 돼요.</p>
+<p>제가 기준으로 삼고 싶은 질문은 “나중에 쓸 수도 있으니 전부 남길까?”가 아니라 “이 차원으로 어떤 결정을 내릴까?”예요. 배포 버전별 오류 비율을 비교하려면 그 구분을 유지할 이유가 있어요. 반면 개별 주문 번호는 전체 비율 계산에는 필요하지 않을 수 있습니다. 실제 필요와 허용된 수집 범위를 확인한 뒤 신호별로 둘 위치를 정해야 해요.</p>
+
+<h2>8. 높은 카디널리티와 민감한 데이터는 다른 문제예요</h2>
+<p>값 종류가 많으면 위험하다는 설명만으로 개인정보를 다루면 두 방향으로 틀릴 수 있어요. 무작위 요청 ID는 값 종류가 많지만 그 자체의 민감성은 맥락에 따라 달라집니다. 반대로 값이 두 종류인 민감한 개인 상태는 카디널리티가 작아도 수집해도 된다는 결론이 나오지 않아요. <span class="obsv-mark">비용을 위한 분류와 수집 허용 여부를 위한 판단은 별도로 해야 해요.</span></p>
+<p><a href="https://opentelemetry.io/docs/security/handling-sensitive-data/">OTel 민감정보 처리 문서</a>는 데이터의 민감성을 구현 맥락 없이 자동 판정할 수 없으며, 불필요한 개인정보를 처음부터 수집하지 않는 원칙을 강조해요. 같은 문서는 입력 범위가 작고 예측 가능하면 해시만으로 필요한 익명화 수준에 도달하지 못할 수 있다고 설명합니다. 따라서 <code>user.id</code>를 해시했으니 비용과 개인정보 문제가 모두 해결됐다고 결론낼 수 없어요.</p>
+<p>해시의 길이가 고정돼도 서로 다른 입력이 구분되는 값으로 남으면 메트릭 조합 수는 여전히 클 수 있습니다. 추적을 일부만 샘플링해도 선택된 데이터에 민감한 값이 들어 있으면 해당 값은 남아요. 스팬 문자열을 자르는 설정도 의미를 판정하지 않습니다. 이런 설정은 각자 줄이는 대상이 다르고, 그 결과를 수집 허가로 해석해서는 안 돼요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Exemplar</div>집계한 메트릭에 일부 원래 측정의 값·시각·추적 정보 등을 연결하는 표본이에요. 전체 사건 기록을 대신하지 않으며, 메트릭의 집계 차원에서 제외한 속성이 별도 표본 경로에 남는지도 확인해야 해요.</div>
+<p>View 필터는 특히 주의해서 읽어야 했어요. 앞의 누적 저장소에서 집계 키는 필터를 적용하지만, <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/internal/state/CumulativeSynchronousMetricStorage.java#L50-L72">doRecordLong/Double과 bound handle 경로</a>는 원래 속성을 handle에 전달해 exemplar 샘플링에 사용할 수 있게 합니다. <a href="https://opentelemetry.io/docs/specs/otel/metrics/sdk/#exemplarreservoir">ExemplarReservoir 명세</a>도 집계 포인트의 속성과 다른 원래 측정 속성을 받을 수 있는 구조를 설명해요. 이 코드만으로 특정 값이 실제로 내보내졌다고 단정할 수는 없지만, View에서 집계 차원을 지웠으니 모든 경로에서 삭제됐다는 보장도 할 수 없습니다.</p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 제거 설정을 검사할 때 경로를 나눠요</div>메트릭 포인트의 속성만 확인하지 않고 exemplar·스팬 이벤트·로그·Resource 등 실제 사용하는 출력도 확인해야 해요. Collector에서 제거하더라도 애플리케이션에서 Collector까지 이미 전달한 구간은 남습니다. 수집 전에 제외할 수 있는 정보라면 그 시점부터 제외하는 편이 경계를 더 명확히 정할 수 있어요.</div>
+<p>무엇이 적법한 수집인지를 이 글에서 일괄 판정하지는 않아요. 다만 구현 검토에서 분명히 구분할 수 있는 것은 있습니다. 값 종류를 줄이는 작업, 저장 용량을 줄이는 작업, 필요하지 않은 정보를 수집하지 않는 작업은 서로 영향을 줄 수 있어도 같은 보장은 아니에요.</p>
+
+<h2>9. 데이터 계약을 테스트한다면 무엇을 비교할까</h2>
+<p>라이브러리 업그레이드 테스트에서 애플리케이션이 정상 기동하는지만 확인하면, 서비스 동작은 그대로인데 관측 데이터 이름과 단위가 달라진 변경을 놓칠 수 있어요. 반대로 모든 속성을 스냅샷으로 고정하면 호스트나 실행 인스턴스 차이 때문에 필요하지 않은 실패가 늘 수 있습니다. 그래서 보존하려는 계약부터 작게 정하는 편이 좋겠어요.</p>
+<p>예를 들어 HTTP 계측을 바꾸는 검증이라면 대표 요청에서 method·route·상태 코드가 기대한 위치와 값으로 기록되는지, 지연 시간 메트릭의 단위가 무엇인지 확인할 수 있어요. 라이브러리 기본값을 추측하지 않고 최종 출력에서 확인하는 방식입니다. 업무 계측이라면 성공과 실패의 기준, 재시도 횟수의 의미처럼 애플리케이션이 정한 부분도 포함해야 해요.</p>
+<div class="obsv-code">제안하는 계약 검증 항목 (실행 결과가 아니에요)
+
+의미: 같은 입력에서 작업 범위·이름·단위가 기대와 같은가?
+출처: Resource와 계측 Scope가 서로 구분되는가?
+조합: 요청 ID를 바꿔도 의도하지 않은 메트릭 차원이 생기지 않는가?
+경계: 새 조합 한도를 넘겼을 때 합계와 overflow를 함께 확인하는가?
+전환: 이전·새 출력 중 쿼리가 의도한 한쪽만 계산하는가?
+수집: 금지한 값이 포인트·표본·스팬·로그 등 출력에 남지 않는가?</div>
+<p>이 목록을 이번 글에서 모두 실행해 통과했다는 뜻은 아니에요. 고정 소스와 공식 문서를 읽고 도출한 검증 제안입니다. 특정 환경에서 확인하려면 사용하는 계측·Exporter·Collector·백엔드 구성으로 별도의 테스트를 만들어야 해요. 처리량·메모리·저장 비용도 이 글에서는 실측하지 않았습니다.</p>
+<p>여기까지 읽고 나니 OTel이 포기한 것을 “정보를 적게 남긴다” 하나로 표현하기는 어려웠어요. 공통 데이터 모델과 시맨틱 컨벤션으로 여러 생산자가 의미를 공유할 수 있게 하되, 모든 업무 정의와 개인정보 정책을 표준 하나로 결정하지는 않습니다. SDK는 속성 개수와 집계 조합을 제어할 수 있지만, 그 과정에서 무엇이 중요한지를 애플리케이션 대신 판단하지는 않아요. 이는 공개 문서와 구현에서 제가 읽은 책임 경계이지 모든 설계자의 의도를 단정하는 설명은 아닙니다.</p>
+
+<p><small>소스 기준: <a href="https://github.com/open-telemetry/opentelemetry-java/tree/b4b3a1b354425c3f1411173c0e48cb24a1cba224">OpenTelemetry Java v1.67.0</a>. 코드 이미지는 해당 공개 소스를 렌더링했어요.</small></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<b>OTLP의 전송 호환성, 시맨틱 컨벤션의 의미, 업무 계측의 규칙은 함께 맞춰야 해요.</b><br><br>
+스팬 한 개의 속성 제한과 메트릭 조합 제한은 다른 설정이며, 집계의 합계를 유지해도 개별 구분은 잃을 수 있어요. Micrometer의 low/high 분류나 OTel View도 개인정보 정책을 대신하지 않으므로, 어떤 의미를 보존하고 어떤 정보는 처음부터 수집하지 않을지 별도로 검증해야 해요.
+</div>
+</div>

@@ -1,0 +1,167 @@
+<!-- tags: OpenTelemetry API SDK 차이, no-op, TracerProvider, 계측 라이브러리 -->
+<!-- lead: OpenTelemetry의 계측 API를 호출한다고 스팬이 바로 외부로 전송되는 것은 아니에요. Java 소스의 no-op과 SDK 구성 코드를 읽고, 계측 호출과 운영 정책을 분리해서 얻는 점과 직접 설정해야 하는 부분을 확인했어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 OpenTelemetry 구조와 설계 읽기</div>
+  <b>1편. API와 SDK는 왜 나뉘어 있을까</b> &larr; 지금 이 글
+</div>
+
+<p>Java의 <code>OpenTelemetry.java</code>를 열었더니 첫 구현 선택은 전송 주소가 아니라 <code>noop()</code>이었어요. 스팬을 만드는 API와 관측 데이터를 보내는 코드는 처음부터 다른 곳에 있습니다. 같은 OpenTelemetry를 쓴다고 하는데, 왜 API와 SDK를 따로 구분할까요?</p>
+<p>공식 문서와 Java <code>v1.67.0</code>의 소스를 함께 읽으며, <b>API와 SDK의 책임이 실제 구현에서 어디서 나뉘는지</b> 따라가 볼게요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 스팬과 트레이스</div>스팬은 요청 처리나 DB 호출 같은 작업 한 구간의 기록이에요. 같은 trace ID로 연결된 스팬들이 하나의 트레이스를 이룹니다.</div>
+
+<h2>1. 라이브러리가 전송 설정까지 정하면 무엇이 곤란할까</h2>
+<p>DB 클라이언트와 HTTP 서버 라이브러리가 각자 특정 관측 서비스의 SDK를 직접 호출한다고 가정해 볼게요. 애플리케이션 운영자가 전송 대상을 바꾸려면, 계측이 들어간 여러 라이브러리의 선택과 설정을 함께 맞춰야 합니다. 호출 위치를 아는 사람과 데이터 보관·전송 정책을 정하는 사람이 다른데 의존성은 묶여 있는 상태예요.</p>
+<p><a href="https://opentelemetry.io/docs/specs/otel/overview/#api">OTel의 클라이언트 구조 문서</a>는 계측 작성자가 API에 의존하고, SDK는 애플리케이션 소유자가 설치·관리하도록 구분합니다. <span class="obsv-mark">라이브러리는 무엇을 관찰할지 표현하고, 애플리케이션은 그 호출을 어떤 구현과 정책으로 처리할지 정하는 구조</span>예요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 계측 (instrumentation)</div>요청 시작·종료 시간이나 DB 호출 결과를 관측 데이터로 기록하도록 코드를 추가하는 일이에요. 여기서는 라이브러리에 들어가는 API 호출을 뜻합니다.</div>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: SDK</div>계측 API의 호출을 실제 기록·처리 동작으로 구현하는 구성요소예요. 전송 설정만이 아니라 샘플링과 데이터 제한 등의 정책도 포함합니다.</div>
+<p>여기서 문제가 되는 것은 단순히 Maven 의존성의 개수가 아니에요. 예를 들어 공용 결제 라이브러리가 초기화될 때 SDK를 만들고 전역에 등록하며 종료 훅까지 추가한다고 가정해 볼게요. 그 라이브러리는 자기 작업을 기록하는 범위를 넘어, 함께 실행되는 서버의 샘플링 정책과 전송 자원의 수명까지 결정하게 됩니다. 같은 프로세스에 다른 라이브러리가 들어오면 누가 설정을 소유하는지부터 충돌할 수 있어요. 이 예시는 설계상의 문제를 설명하기 위한 가정이지, 특정 제품에서 재현한 장애가 아닙니다.</p>
+<p>API만 받는 구조에서는 공용 라이브러리가 <code>Tracer</code>로 작업 시작·종료를 표현하고, 실행 애플리케이션이 전달한 구현을 사용하게 만들 수 있어요. API를 생성자 인자로 전달할지 전역 접근을 사용할지는 별도 선택입니다. 의존성을 인자로 받으면 테스트마다 다른 인스턴스를 전달하기 쉽지만 생성 경로가 늘어요. 전역 접근은 연결 코드가 줄어드는 대신, 초기화 순서와 전체 프로세스의 단일 설정에 더 신경 써야 합니다. 이 부분은 OTel만의 기능이라기보다 객체의 생성과 사용을 나누는 일반적인 설계 선택이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="otel1-boundary-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs>
+<path d="M28 40 C100 38,170 42,222 40 C225 65,223 96,222 120 C170 122,100 118,29 120 C27 94,29 66,28 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" />
+<text x="125" y="73" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">계측 라이브러리</text><text x="125" y="101" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5">어디서 무엇을 기록할까</text>
+<path d="M232 80 C251 79,267 81,285 80" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#otel1-boundary-arrow)" />
+<path d="M295 40 C340 38,385 41,426 40 C429 65,427 95,426 120 C380 122,337 119,296 120 C294 94,296 65,295 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" /><text x="360" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#3d3a34">API</text><text x="360" y="101" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5">호출 계약</text>
+<path d="M438 80 C458 78,476 82,493 80" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#otel1-boundary-arrow)" />
+<path d="M504 40 C559 38,616 42,674 40 C676 64,675 96,674 120 C616 122,559 119,505 120 C503 95,505 65,504 40 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" /><text x="589" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#3d3a34">SDK / no-op</text><text x="589" y="101" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">선택한 구현</text>
+<path d="M388 191 C430 191,486 172,556 131" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#otel1-boundary-arrow)" />
+<path d="M175 176 C243 173,316 178,386 175 C388 195,387 218,386 238 C315 241,245 237,176 239 C174 218,176 198,175 176 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" /><text x="281" y="203" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">앱을 운영하는 쪽</text><text x="281" y="226" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">구현·샘플링·전송 구성</text>
+<text x="350" y="274" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">기록 호출과 처리 정책의 의존성을 분리해요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 계측 라이브러리가 SDK의 전송 정책까지 소유하지 않아요</div>
+
+<h2>2. API가 있으면 반드시 기록하는 것은 아니에요</h2>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/01/api-noop.png" alt="OpenTelemetry.java 30~47줄. 인터페이스에 noop과 propagating 팩터리, getTracerProvider 선언이 있다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-figcap">코드 캡처 1. API가 구현 선택을 드러내요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/api/all/src/main/java/io/opentelemetry/api/OpenTelemetry.java#L30-L47">원문 30~47줄</a></div>
+<p>32~34줄의 <code>noop()</code>은 <code>DefaultOpenTelemetry.getNoop()</code>을 반환해요. 반면 47줄의 <code>getTracerProvider()</code>는 인터페이스 선언입니다. API를 호출하는 쪽은 구체적인 SDK 클래스나 전송 주소를 여기서 알 필요가 없어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: no-op과 비기록 스팬</div>새 관측 데이터를 기록하지 않는 구현을 no-op이라고 불러요. 비기록 스팬은 기록 대상 데이터는 쌓지 않지만 추적 문맥을 나타낼 수 있는 스팬입니다.</div>
+<p>다만 이를 “아무 동작도 하지 않는다”로 이해하면 범위를 놓쳐요. <a href="https://opentelemetry.io/docs/specs/otel/trace/api/#behavior-of-the-api-in-the-absence-of-an-installed-sdk">SDK가 없을 때의 Trace API 규칙</a>은 부모의 SpanContext를 보존하는 비기록 스팬을 설명합니다. SpanContext는 추적 ID·스팬 ID·플래그 등을 담은 문맥이에요. 캡처의 <code>propagating(...)</code>도 전파기를 받되 나머지는 no-op인 선택을 별도로 제공해요. 데이터 기록과 문맥 전파는 같은 동작이 아닙니다.</p>
+<p>부모 문맥을 보존한다는 말도 새 자식 스팬을 저장한다는 뜻은 아니에요. 계측 API를 호출한 작업이 관측 저장소에 한 행으로 남지 않더라도, 앞에서 받은 추적 정보를 다음 호출에 전달할 수 있습니다. 따라서 스팬의 문맥이 유효한지, 데이터를 기록 중인지, 내보낼 대상으로 선택됐는지는 서로 다른 질문이에요. 이 구분이 없으면 “trace ID가 있는데 왜 스팬이 없지?”라는 상황을 모두 Exporter 장애로 오해하기 쉽습니다.</p>
+<p>반대 방향의 오해도 있어요. no-op을 허용한다는 것이 계측 코드 전체의 비용을 없애 주지는 않습니다. 예를 들어 <code>span.setAttribute("detail", buildLargeString())</code>에서 <code>buildLargeString()</code>은 메서드에 인자를 넘기기 전에 실행돼요. 비싼 부가 정보를 오직 기록을 위해 계산한다면 <code>span.isRecording()</code>을 확인한 뒤 계산할 수 있습니다. 다만 이미 필요한 업무 계산을 생략하거나, 샘플러가 시작 시점에 필요로 하는 속성까지 무조건 나중으로 미루라는 뜻은 아니에요. 데이터 생성 비용과 API 내부 기록 비용을 구분해야 합니다.</p>
+
+<h2>3. SDK는 기본 구현을 만들지만 전송까지 보장하지 않아요</h2>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/01/sdk-build.png" alt="OpenTelemetrySdkBuilder.build에서 지정하지 않은 tracer, meter, logger provider를 생성하고 조합하는 Java 원문" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-figcap">코드 캡처 2. build는 Provider들을 조합해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/all/src/main/java/io/opentelemetry/sdk/OpenTelemetrySdkBuilder.java#L127-L148">원문 127~148줄</a></div>
+<p>127줄부터는 역할이 달라져요. Provider가 없으면 각 기본 SDK Provider를 만들고, 이들과 전파기를 묶어 SDK 객체를 반환합니다. <code>OpenTelemetry.noop()</code>과 <code>OpenTelemetrySdk.builder().build()</code>는 같은 것이 아니에요. 후자는 SDK의 기본 정책을 가진 구현을 구성해요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Provider</div>스팬을 만드는 Tracer나 메트릭 계측 도구를 만드는 Meter 같은 객체를 제공하는 구성요소예요. Java SDK에서는 샘플러와 처리기를 TracerProvider에 설정해 해당 Provider가 만든 Tracer에 적용합니다.</div>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/01/sdk-trace-policy.png" alt="SdkTracerProviderBuilder의 setSampler와 addSpanProcessor. 샘플러와 스팬 처리기를 별도 메서드로 설정한다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-figcap">코드 캡처 3. 기록 결정과 후속 처리를 나눠 설정해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SdkTracerProviderBuilder.java#L132-L162">원문 132~162줄</a></div>
+<p><code>setSampler()</code>는 샘플러를 바꾸고, <code>addSpanProcessor()</code>는 처리기 목록에 항목을 더합니다. 전송 구현인 Exporter를 처리기에 연결하는 것은 또 다른 구성 단계예요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/export/SimpleSpanProcessor.java#L64-L83">SimpleSpanProcessor의 생성 코드</a>에서도 Exporter를 별도 객체로 받는 것을 확인할 수 있어요. 이 예시는 구조 확인용이지 운영에서 단순 처리기를 권장한다는 뜻은 아닙니다.</p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ SDK 생성과 전역 등록도 달라요</div><code>build()</code>는 생성한 SDK를 전역으로 등록하지 않아요. <code>buildAndRegisterGlobal()</code>은 별도로 등록합니다. SDK를 만들었다는 사실만으로 기존 전역 API 호출이 그 객체를 사용하거나 데이터가 외부로 전송된다고 판단할 수 없습니다.</div>
+
+<h2>4. startSpan에서 end까지 실제 호출을 따라가요</h2>
+<p>Builder의 설정 메서드만 보면 “설정할 수 있다”는 사실까지만 알 수 있어요. 그 설정이 실행될 때 어디에 쓰이는지 확인하려고 호출 경로를 더 따라갔습니다. 이 경로는 기록용 처리기가 연결된 Java SDK를 기준으로 읽었어요. 뒤에서 볼 것처럼 처리기가 하나도 없으면 이 경로 자체를 사용하지 않는 최적화가 있습니다.</p>
+<div class="obsv-code">애플리케이션의 Tracer.spanBuilder(name)
+  → SdkSpanBuilder.startSpan()
+  → 부모 Context 확인, trace ID / span ID 준비
+  → Sampler.shouldSample(...)
+  → 비기록 Span 또는 기록하는 SdkSpan 반환
+
+애플리케이션의 span.end()
+  → SdkSpan.endInternal(...)
+  → SpanProcessor.onEnd(...) [해당 콜백이 필요한 처리기]
+  → 연결된 Exporter의 export(...) [내보내는 처리기인 경우]</div>
+<p><a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SdkSpanBuilder.java#L182-L250">SdkSpanBuilder 182~250줄</a>은 명시한 부모가 없으면 <code>Context.current()</code>를 사용해요. 유효한 부모가 있으면 trace ID를 이어받고, 없으면 새 trace ID를 준비합니다. 이후 이름·종류·시작 속성·링크 등을 샘플러에 넘겨요. 여기서 반환한 결정으로 기록하지 않으면 <code>Span.wrap(spanContext)</code>를, 기록하면 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SdkSpanBuilder.java#L248-L277">SdkSpan.startSpan(...)</a>을 사용합니다.</p>
+<p>이 순서에는 중요한 제한이 있어요. 시작할 때 실행되는 샘플러는 아직 끝나지 않은 작업의 최종 오류나 전체 지연 시간을 알 수 없습니다. “느린 요청만 기록”을 시작 시점 샘플러 하나로 해결할 수 없는 이유예요. API가 샘플링 메서드를 감췄기 때문이 아니라, 판단 시점에 그 정보가 존재하지 않기 때문입니다.</p>
+<p>종료 쪽의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SdkSpan.java#L560-L583">SdkSpan.endInternal 560~583줄</a>은 중복 종료를 검사하고 종료 상태를 바꾼 뒤, 필요한 경우 처리기의 <code>onEnd(this)</code>를 호출해요. SpanProcessor는 완료 데이터를 받아 배치에 넣거나 다른 처리를 할 수 있고, Exporter는 그 뒤에 연결되는 전송 구현입니다. 모든 처리기가 반드시 전송을 하는 것은 아니에요. 종료 횟수만 세는 사용자 정의 처리기를 연결해도 SDK 처리 단계는 성립합니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: SpanProcessor와 Exporter</div>SpanProcessor는 SDK 스팬의 시작·종료 등에 반응하는 처리 확장점이에요. Exporter는 외부로 내보내는 동작을 맡습니다. 배치 처리기는 끝난 스팬을 모아 Exporter에 넘기지만, 사용자 정의 처리기는 전송 없이 다른 처리를 할 수도 있어요.</div>
+<p>즉 <code>span.end()</code>를 호출했다는 사실은 SDK가 작업 종료를 전달받았다는 뜻이지, 백엔드가 이미 저장했다는 확인이 아니에요. 처리기에 따라 대기열에 들어갈 수도 있고, 내보내기를 시작했더라도 비동기 결과를 기다리지 않을 수도 있습니다. API → 기록 결정 → 완료 처리 → 전송 → 저장을 나눠 읽어야 각 단계의 성공을 과장하지 않을 수 있어요.</p>
+
+<h3>SDK 객체를 만들었는데도 no-op이 나오는 반례</h3>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/01/sdk-no-processor.png" alt="SdkTracerProvider.tracerBuilder 98~107줄. SpanProcessor가 없으면 noop TracerProvider로 위임한다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-figcap">코드 캡처 4. 처리기가 없을 때는 SDK Provider도 no-op Tracer를 돌려줘요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SdkTracerProvider.java#L98-L107">원문 98~107줄</a></div>
+<p>이번 버전의 <code>SdkTracerProvider.tracerBuilder()</code>는 <code>hasNoSpanProcessor()</code>이면 <code>TracerProvider.noop()</code>에 위임해요. 따라서 “API는 no-op, SDK를 만들면 무조건 기록”이라는 구분도 정확하지 않습니다. 객체의 클래스 이름만 보지 말고 구성과 실행 결과를 확인해야 해요. 이는 Java 1.67.0에서 확인한 구현 동작이며, 모든 언어 SDK가 반드시 같은 내부 최적화를 가져야 한다는 뜻은 아닙니다.</p>
+
+<h2>5. Micrometer를 쓰면 같은 문제를 어디서 나눌까</h2>
+<p>분리의 장점을 설명할 때 OTel만 구현을 교체할 수 있는 것처럼 쓰면 비교가 틀어져요. Java·Spring 환경에서 자주 만나는 Micrometer도 계측 호출과 구현을 구분합니다. 다만 비교할 대상을 MeterRegistry, Observation, Tracing으로 나누지 않고 전부 “Micrometer”라고 부르면 역할이 섞여요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Observation과 브리지</div>Micrometer Observation은 작업의 시작·종료·오류·이벤트를 한 번 표현하고 등록한 Handler가 반응하도록 하는 API예요. 브리지는 한 API의 호출을 다른 구현으로 연결하는 코드입니다. Micrometer Tracing은 Brave 또는 OTel 구현을 사용하는 브리지를 제공해요.</div>
+<div style="overflow-x:auto;margin-bottom:18px;">
+<table style="width:100%;min-width:590px;border-collapse:collapse;font-size:15px;">
+<thead><tr><th style="text-align:left;padding:10px;border-bottom:2px solid #d8cfba;">비교할 질문</th><th style="text-align:left;padding:10px;border-bottom:2px solid #d8cfba;">OTel API + SDK</th><th style="text-align:left;padding:10px;border-bottom:2px solid #d8cfba;">Micrometer의 관련 구성</th></tr></thead>
+<tbody>
+<tr><td style="padding:10px;border-bottom:1px dashed #d8cfba;">작업의 한 구간을 어떻게 표현할까</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">Trace API의 Span 시작·종료</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">Observation 생명주기, 또는 Tracing의 Span</td></tr>
+<tr><td style="padding:10px;border-bottom:1px dashed #d8cfba;">같은 작업에서 시간 메트릭과 스팬을 얻으려면</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">Trace·Metrics API는 구분돼요. 계측 통합이 둘을 기록할 수 있어요.</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">하나의 Observation에 meter·tracing Handler를 연결할 수 있어요.</td></tr>
+<tr><td style="padding:10px;border-bottom:1px dashed #d8cfba;">추적 구현을 바꾸려면</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">API 호출을 유지하며 SDK·Exporter 구성을 바꿔요.</td><td style="padding:10px;border-bottom:1px dashed #d8cfba;">Tracing API에 Brave 또는 OTel 브리지를 연결해요.</td></tr>
+<tr><td style="padding:10px;">무엇을 같이 쓸 수 있을까</td><td style="padding:10px;" colspan="2">Observation → Tracing Handler → OTel 브리지 → OTel SDK → Exporter라는 구성이 가능해요.</td></tr>
+</tbody></table>
+</div>
+<p><a href="https://docs.micrometer.io/micrometer/reference/observation/components.html">Micrometer 1.17.1의 구성 문서</a>에서 Observation은 생명주기마다 Handler를 호출하고, 공유하는 가변 Context를 전달합니다. 이 Context는 OTel의 불변 Context와 같은 객체가 아니에요. 또한 meter Handler가 등록됐다고 tracing Handler까지 생기는 것은 아니며, 실제로 연결한 Handler에 따라 결과가 달라집니다.</p>
+<p><a href="https://docs.micrometer.io/tracing/reference/api.html">Micrometer Tracing 1.7.1의 직접 사용 예제</a>에는 Brave 구성과 OTel 구성이 별도로 나와 있어요. OTel을 선택한 예제도 <code>SdkTracerProvider</code>에 처리기와 Exporter를 연결한 뒤 <code>OtelTracer</code>로 감쌉니다. 바깥 API를 바꾸는 것과 내부 기록·전송 구성을 없애는 것은 다른 일이에요.</p>
+<p>선택 기준은 “더 표준적인 이름” 하나로 정하기 어렵다고 읽었어요. 이미 Spring의 Observation으로 작업 생명주기를 기록하고 있다면 기존 호출을 유지한 채 OTel 구현을 연결하는 선택을 검토할 수 있습니다. 반대로 여러 프레임워크에서 재사용할 라이브러리의 계측 API를 설계하고 OTel의 스팬·속성 모델을 직접 쓰려면 OTel API 의존성이 자연스러울 수 있어요. 이 판단은 구조에서 얻은 해석이지 두 구현의 성능을 비교 측정한 결론은 아닙니다.</p>
+<p>공존도 무조건 안전한 것은 아니에요. 동일한 업무 구간을 Observation Handler, 수동 OTel 코드, 자동 계측이 각각 새 스팬으로 기록하면 의도하지 않은 중복이 생길 수 있습니다. 함께 쓸 수 있다는 말은 각 계층의 담당 구간과 부모 관계가 자동으로 정리된다는 말이 아니에요. 제가 확인할 순서는 사용 중인 계측 진입점을 먼저 찾고, 생성되는 작업 이름과 부모 관계를 보고, 같은 구간을 두 번 표현하고 있는지 판단하는 것입니다.</p>
+
+<h2>6. 교체 가능성을 얻는 대신 남는 책임</h2>
+<p>이 분리에서 제가 읽은 이점은 계측 호출을 유지하면서 처리·전송 구성을 바꿀 여지가 생긴다는 점이에요. 대신 Provider와 처리기, Exporter를 맞춰 연결하고 종료 시 자원을 정리해야 합니다. 구성 요소가 있다는 것과 운영 가능한 설정이 완성됐다는 것은 달라요.</p>
+<p><a href="https://opentelemetry.io/docs/what-is-opentelemetry/">프로젝트 소개 문서</a>도 저장소와 시각화 도구를 OTel의 범위에 포함하지 않습니다. 수집을 표준화해도 백엔드의 쿼리 언어, 보존 정책, 화면과 과금 모델까지 같아지는 것은 아니에요. <span class="obsv-mark">OTel을 쓰면 도구를 바꾸기 쉬워질 수 있지만, 도구별 운영 차이가 없어지지는 않습니다.</span></p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Exporter와 Collector</div>Exporter는 데이터를 외부로 내보내는 구현이에요. Collector는 별도 프로세스에서 데이터를 받아 처리·전송할 수 있는 구성요소이며 모든 전송 경로에 필수인 것은 아닙니다.</div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="otel1-topology-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs>
+<path d="M25 90 C80 87,136 92,193 90 C195 113,194 137,193 160 C138 163,80 158,26 161 C24 137,26 113,25 90 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" /><text x="109" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">앱 SDK</text><text x="109" y="145" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">Exporter</text>
+<path d="M203 125 C235 124,265 126,294 125" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#otel1-topology-arrow)" />
+<path d="M305 90 C354 88,403 92,451 90 C453 113,452 137,451 160 C400 162,352 159,306 161 C304 137,306 113,305 90 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" /><text x="378" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">Collector</text><text x="378" y="145" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">선택한 경로</text>
+<path d="M462 125 C484 124,502 126,522 125" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#otel1-topology-arrow)" />
+<path d="M533 90 C579 88,628 92,674 90 C676 113,675 137,674 160 C625 162,580 159,534 161 C532 137,534 113,533 90 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" /><text x="604" y="120" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">백엔드</text><text x="604" y="145" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">저장·조회·화면</text>
+<path d="M110 82 C185 15,490 14,604 82" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="8 8" marker-end="url(#otel1-topology-arrow)" /><text x="352" y="32" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Exporter가 지원하면 직접 전송도 가능해요</text>
+<text x="350" y="219" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">생성·수집의 표준화가 저장·조회까지 대신하지는 않아요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. Collector는 선택할 수 있고, 저장·조회 책임은 따로 남아요</div>
+<p>호환성을 나누어 보면 경계가 더 분명해져요. 계측 호출의 API 호환성, 속성 이름과 의미의 일치, 전송 프로토콜 지원, 저장된 데이터를 질의하는 방식은 서로 다른 문제입니다. OTLP로 데이터를 받는 두 백엔드라도 같은 쿼리 언어와 보존 정책을 제공하는 것은 아니에요. 또한 Exporter를 바꿔도 이미 잘못 붙인 속성의 의미나 개인정보 수집 범위를 자동으로 바로잡지는 못합니다.</p>
+<p>다중 백엔드 전송도 비용 없는 복제가 아니에요. 여러 전송 경로를 연결할수록 각각의 대기열·연결·오류 처리·종료를 생각해야 합니다. 반대로 단일 백엔드만 쓰는 작은 애플리케이션이라면 처음부터 Collector와 여러 브리지를 모두 추가할 이유는 없을 수 있어요. 필요한 교체 지점과 운영자가 관리할 수 있는 복잡도를 함께 봐야 한다는 것이 제 해석입니다.</p>
+<p><a href="https://opentelemetry.io/docs/specs/otel/error-handling/">OTel 오류 처리 원칙</a>도 정상 실행 중 관측 처리의 실패가 애플리케이션에 큰 악영향을 주지 않도록 하는 방향을 설명해요. 이것을 “관측은 실패해도 상관없다”로 읽으면 안 됩니다. 업무 요청의 성공과 관측 데이터의 완전성이 다른 목표이며, 어느 쪽을 우선하는지와 손실을 어떻게 감지할지를 분리해야 한다는 뜻으로 읽었어요. 초기 설정 오류와 실행 중 전송 오류까지 무조건 같은 식으로 숨긴다는 보장은 아닙니다.</p>
+
+<h2>7. 작은 프로그램으로 경계를 구분해서 확인해요</h2>
+<p>소스에서 읽은 비기록 스팬 동작은 작은 Java 프로그램으로도 확인했어요. API·context와 이 버전의 전이 의존성인 common만 사용하고 SDK와 Exporter는 넣지 않았습니다. 부모를 지정하지 않은 경우와 유효한 부모 문맥을 직접 넘긴 경우를 각각 실행했어요.</p>
+<div class="obsv-code">no-parent isRecording=false
+no-parent contextValid=false
+no-parent PASS
+with-parent isRecording=false
+with-parent contextValid=true
+with-parent contextPreserved=true
+with-parent PASS</div>
+<p>두 경우 모두 새 데이터를 기록하지 않았지만, 부모를 지정했을 때는 그 SpanContext를 보존했어요. <code>OpenTelemetry.noop()</code>을 명시적으로 사용한 결과이며, 전역 API의 초기화나 자동 구성까지 검증한 실험은 아닙니다. 실행 자료는 저장소의 <code>labs/observability/otel-01-api-sdk/</code>에 있어요.</p>
+<h3>같은 API에 다른 SDK 구성을 연결해 봐요</h3>
+<p>추가 실험은 같은 버전의 공개 SDK 아티팩트를 사용했어요. 자동 구성과 전역 등록 없이 Provider를 직접 만들고, 부모 없는 스팬을 생성했습니다. 처리기가 없는 경우, 전송 없이 종료 콜백만 세는 처리기를 넣은 경우, 메모리 Exporter와 SimpleSpanProcessor를 연결한 경우를 구분했어요.</p>
+<div class="obsv-code">api-sdk noop-root recording=false context-valid=false
+api-sdk sdk-no-processor recording=false context-valid=false configured-exporters=0
+api-sdk sdk-observer-only recording=true context-valid=true ended-observed=1 configured-exporters=0
+api-sdk sdk-with-processor recording=true context-valid=true exported-after-end=1
+api-sdk PASS</div>
+<p>출력의 기록 상태는 종료 전 값이에요. 처리기가 없는 SDK는 앞서 읽은 최적화처럼 no-op 결과를 보였습니다. 종료만 관찰하는 처리기를 넣으면 유효한 문맥을 가진 기록 스팬이 만들어졌지만 Exporter는 하나도 없었어요. 마지막 구성에서는 종료 후 메모리 Exporter가 한 개를 받았습니다. 이 네 결과는 <b>API 호출, SDK 구성, 기록, 완료 처리, 내보내기가 서로 다른 단계</b>라는 설명을 작은 범위에서 확인해 줍니다.</p>
+<p>실행 코드와 출력은 <code>labs/observability/otel-runtime-probes/</code>에 남겼어요. JDK 25.0.3에서 <code>javac --release 11 -Xlint:all</code>로 컴파일하고 네 종류의 동작 실험을 각각 다섯 번 반복했을 때 같은 결과를 얻었습니다. 다운로드한 Maven 아티팩트의 SHA-256도 확인했어요. 이 테스트는 전체 upstream 프로젝트의 빌드나 모든 조합에 대한 호환성 시험은 아닙니다.</p>
+<div class="obsv-callout"><div class="obsv-ct">💡 이번 확인으로 말할 수 없는 것</div>CPU·할당 비용을 측정하지 않았고, 실제 백엔드 전송이나 Java 에이전트의 초기화도 시험하지 않았습니다. 메모리 Exporter 호출을 확인한 것이므로 네트워크 수신·저장·검색의 성공을 증명하지 않아요. no-op의 비용이 0이라거나 SDK를 연결하기만 하면 수집이 보장된다고도 말하지 않습니다.</div>
+<p>분리는 전송 정책을 바꿀 수 있게 하지만, 그만큼 무엇을 연결했는지 확인할 책임도 남깁니다. 데이터가 안 보일 때는 “API를 호출했나”와 “그 호출에 어떤 SDK·처리기·Exporter가 연결됐나”를 나눠 확인하는 것이 이 구조를 읽고 얻은 점이에요.</p>
+<h3>데이터가 보이지 않을 때 확인할 질문</h3>
+<p>첫째, 지금 호출하는 API 인스턴스가 무엇인지 확인해요. 생성한 SDK를 직접 전달했는지, 전역 인스턴스를 사용하는지부터 구분합니다. 둘째, 해당 Provider에 처리기가 있는지, 시작 직후 스팬의 기록 상태와 문맥이 무엇인지 봅니다. 셋째, 스팬을 종료하는 코드가 예외 경로에서도 실행되는지 확인해요. 이 세 질문은 아직 네트워크가 없어도 검사할 수 있어요.</p>
+<p>그 다음에 처리기가 데이터를 받았는지, Exporter를 호출했는지, 전송 결과가 성공했는지, 수신 측에서 저장·검색할 수 있는지 확인합니다. 네트워크 요청이 없다는 현상 하나만으로 API·샘플링·대기열·인증 가운데 원인을 정할 수는 없습니다. 종료 시에는 flush와 shutdown의 대기 범위를 확인해야 하며, 강제 종료까지 데이터 보존을 보장한다고 생각하지 않는 것이 이 구조와 맞아요.</p>
+<p>이 순서는 특정 장애를 해결했다는 회고가 아니라, 소스의 책임 경계를 기준으로 만든 진단 순서예요. 이번 실험은 작은 결정적 조건을 확인한 것이고 실제 서버 부하, Micrometer와의 동시 사용, 백엔드 장애·재시도까지 검증하지는 않았습니다.</p>
+
+<p><small>소스 기준: <a href="https://github.com/open-telemetry/opentelemetry-java/tree/b4b3a1b354425c3f1411173c0e48cb24a1cba224">OpenTelemetry Java v1.67.0</a>. 코드 이미지는 해당 공개 소스를 렌더링했어요.</small></p>
+
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div><b>API는 계측 호출의 계약이고, SDK는 그 호출을 처리하는 구현과 정책이에요.</b><br><br>이 경계를 나누면 라이브러리의 계측과 애플리케이션의 운영 설정을 분리할 수 있어요. 그 대신 실제 기록·전송·종료 설정은 확인해야 하고, 저장과 조회도 별도 도구의 책임으로 남습니다.</div>
+</div>
