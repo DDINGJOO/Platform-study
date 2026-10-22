@@ -1,0 +1,160 @@
+diff --git a/instrumentation/kafka/kafka-clients/kafka-clients-2.6/library/src/test/java/io/opentelemetry/instrumentation/kafkaclients/v2_6/WrapperSendExceptionTest.java b/instrumentation/kafka/kafka-clients/kafka-clients-2.6/library/src/test/java/io/opentelemetry/instrumentation/kafkaclients/v2_6/WrapperSendExceptionTest.java
+index 9e62caad17..faca369ecf 100644
+--- a/instrumentation/kafka/kafka-clients/kafka-clients-2.6/library/src/test/java/io/opentelemetry/instrumentation/kafkaclients/v2_6/WrapperSendExceptionTest.java
++++ b/instrumentation/kafka/kafka-clients/kafka-clients-2.6/library/src/test/java/io/opentelemetry/instrumentation/kafkaclients/v2_6/WrapperSendExceptionTest.java
+@@ -8,12 +8,14 @@ package io.opentelemetry.instrumentation.kafkaclients.v2_6;
+ import static io.opentelemetry.sdk.testing.assertj.OpenTelemetryAssertions.equalTo;
+ import static io.opentelemetry.semconv.ErrorAttributes.ERROR_TYPE;
+ import static io.opentelemetry.semconv.incubating.MessagingIncubatingAttributes.MESSAGING_DESTINATION_NAME;
++import static io.opentelemetry.semconv.incubating.MessagingIncubatingAttributes.MESSAGING_DESTINATION_PARTITION_ID;
+ import static io.opentelemetry.semconv.incubating.MessagingIncubatingAttributes.MESSAGING_KAFKA_MESSAGE_KEY;
+ import static io.opentelemetry.semconv.incubating.MessagingIncubatingAttributes.MESSAGING_OPERATION_NAME;
+ import static io.opentelemetry.semconv.incubating.MessagingIncubatingAttributes.MESSAGING_OPERATION_TYPE;
+ import static io.opentelemetry.semconv.incubating.MessagingIncubatingAttributes.MESSAGING_SYSTEM;
+ import static org.assertj.core.api.Assertions.assertThatThrownBy;
+ import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.doAnswer;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.when;
+ 
+@@ -21,9 +23,13 @@ import io.opentelemetry.api.trace.SpanKind;
+ import io.opentelemetry.instrumentation.testing.junit.InstrumentationExtension;
+ import io.opentelemetry.instrumentation.testing.junit.LibraryInstrumentationExtension;
+ import io.opentelemetry.sdk.trace.data.StatusData;
++import org.apache.kafka.clients.producer.Callback;
+ import org.apache.kafka.clients.producer.Producer;
+ import org.apache.kafka.clients.producer.ProducerRecord;
++import org.apache.kafka.clients.producer.RecordMetadata;
+ import org.apache.kafka.common.KafkaException;
++import org.apache.kafka.common.TopicPartition;
++import org.apache.kafka.common.record.RecordBatch;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.extension.RegisterExtension;
+ 
+@@ -65,4 +71,103 @@ class WrapperSendExceptionTest {
+                             equalTo(MESSAGING_KAFKA_MESSAGE_KEY, "test-key"),
+                             equalTo(ERROR_TYPE, KafkaException.class.getName()))));
+   }
++
++  // Since the Kafka client fills in a RecordMetadata with partition -1 (no partition assigned yet)
++  // and offset -1 when a send fails, these are "unknown" markers and must not become attributes.
++  @Test
++  @SuppressWarnings("unchecked")
++  void producerSpanHasNoPartitionAndOffsetWhenSendFailsBeforePartitionAssigned() {
++    Producer<String, String> producer = mock(Producer.class);
++    doAnswer(
++            invocation -> {
++              Callback callback = invocation.getArgument(1);
++              callback.onCompletion(
++                  new RecordMetadata(
++                      new TopicPartition("test-topic", RecordMetadata.UNKNOWN_PARTITION),
++                      -1,
++                      -1,
++                      RecordBatch.NO_TIMESTAMP,
++                      -1L,
++                      -1,
++                      -1),
++                  new KafkaException("send failed"));
++              return null;
++            })
++        .when(producer)
++        .send(any(), any());
++
++    KafkaTelemetry telemetry = KafkaTelemetry.builder(testing.getOpenTelemetry()).build();
++    Producer<String, String> wrappedProducer = telemetry.wrap(producer);
++
++    ProducerRecord<String, String> record =
++        new ProducerRecord<>("test-topic", "test-key", "test-value");
++    testing.runWithSpan("parent", () -> wrappedProducer.send(record));
++
++    testing.waitAndAssertTraces(
++        trace ->
++            trace.hasSpansSatisfyingExactly(
++                span -> span.hasName("parent").hasKind(SpanKind.INTERNAL).hasNoParent(),
++                span ->
++                    span.hasName("send test-topic")
++                        .hasKind(SpanKind.PRODUCER)
++                        .hasParent(trace.getSpan(0))
++                        .hasStatus(StatusData.error())
++                        .hasAttributesSatisfyingExactly(
++                            equalTo(MESSAGING_SYSTEM, "kafka"),
++                            equalTo(MESSAGING_DESTINATION_NAME, "test-topic"),
++                            equalTo(MESSAGING_OPERATION_NAME, "send"),
++                            equalTo(MESSAGING_OPERATION_TYPE, "send"),
++                            equalTo(MESSAGING_KAFKA_MESSAGE_KEY, "test-key"),
++                            equalTo(ERROR_TYPE, KafkaException.class.getName()))));
++  }
++
++  // Kafka reports the real partition but offset -1 when the send fails after partition assignment.
++  @Test
++  @SuppressWarnings("unchecked")
++  void producerSpanKeepsPartitionButNotOffsetWhenSendFailsAfterPartitionAssigned() {
++    Producer<String, String> producer = mock(Producer.class);
++    KafkaException failure = new KafkaException("send failed");
++    doAnswer(
++            invocation -> {
++              Callback callback = invocation.getArgument(1);
++              callback.onCompletion(
++                  new RecordMetadata(
++                      new TopicPartition("test-topic", 3),
++                      -1,
++                      -1,
++                      RecordBatch.NO_TIMESTAMP,
++                      -1L,
++                      -1,
++                      -1),
++                  failure);
++              return null;
++            })
++        .when(producer)
++        .send(any(), any());
++
++    KafkaTelemetry telemetry = KafkaTelemetry.builder(testing.getOpenTelemetry()).build();
++    Producer<String, String> wrappedProducer = telemetry.wrap(producer);
++
++    ProducerRecord<String, String> record =
++        new ProducerRecord<>("test-topic", "test-key", "test-value");
++    testing.runWithSpan("parent", () -> wrappedProducer.send(record));
++
++    testing.waitAndAssertTraces(
++        trace ->
++            trace.hasSpansSatisfyingExactly(
++                span -> span.hasName("parent").hasKind(SpanKind.INTERNAL).hasNoParent(),
++                span ->
++                    span.hasName("send test-topic")
++                        .hasKind(SpanKind.PRODUCER)
++                        .hasParent(trace.getSpan(0))
++                        .hasStatus(StatusData.error())
++                        .hasAttributesSatisfyingExactly(
++                            equalTo(MESSAGING_SYSTEM, "kafka"),
++                            equalTo(MESSAGING_DESTINATION_NAME, "test-topic"),
++                            equalTo(MESSAGING_OPERATION_NAME, "send"),
++                            equalTo(MESSAGING_OPERATION_TYPE, "send"),
++                            equalTo(MESSAGING_KAFKA_MESSAGE_KEY, "test-key"),
++                            equalTo(MESSAGING_DESTINATION_PARTITION_ID, "3"),
++                            equalTo(ERROR_TYPE, KafkaException.class.getName()))));
++  }
+ }
+diff --git a/instrumentation/kafka/kafka-clients/kafka-clients-common-0.11/library/src/main/java/io/opentelemetry/instrumentation/kafkaclients/common/v0_11/internal/KafkaProducerAttributesExtractor.java b/instrumentation/kafka/kafka-clients/kafka-clients-common-0.11/library/src/main/java/io/opentelemetry/instrumentation/kafkaclients/common/v0_11/internal/KafkaProducerAttributesExtractor.java
+index 8dddeb9c14..d9e82d821f 100644
+--- a/instrumentation/kafka/kafka-clients/kafka-clients-common-0.11/library/src/main/java/io/opentelemetry/instrumentation/kafkaclients/common/v0_11/internal/KafkaProducerAttributesExtractor.java
++++ b/instrumentation/kafka/kafka-clients/kafka-clients-common-0.11/library/src/main/java/io/opentelemetry/instrumentation/kafkaclients/common/v0_11/internal/KafkaProducerAttributesExtractor.java
+@@ -48,9 +48,15 @@ final class KafkaProducerAttributesExtractor
+     }
+ 
+     if (recordMetadata != null) {
+-      attributes.put(
+-          MESSAGING_DESTINATION_PARTITION_ID, String.valueOf(recordMetadata.partition()));
+-      attributes.put(MESSAGING_KAFKA_OFFSET, recordMetadata.offset());
++      // when a send fails, kafka-clients passes a RecordMetadata where the partition (if it was not
++      // assigned yet) and the offset are -1, which means "unknown" and should not be recorded
++      if (recordMetadata.partition() >= 0) {
++        attributes.put(
++            MESSAGING_DESTINATION_PARTITION_ID, String.valueOf(recordMetadata.partition()));
++      }
++      if (recordMetadata.offset() >= 0) {
++        attributes.put(MESSAGING_KAFKA_OFFSET, recordMetadata.offset());
++      }
+     }
+   }
+ }

@@ -1,0 +1,78 @@
+diff --git a/instrumentation/lettuce/lettuce-5.0/javaagent/src/test/java/io/opentelemetry/javaagent/instrumentation/lettuce/v5_0/LettuceSyncClientTest.java b/instrumentation/lettuce/lettuce-5.0/javaagent/src/test/java/io/opentelemetry/javaagent/instrumentation/lettuce/v5_0/LettuceSyncClientTest.java
+index d37b8295a6..4738810514 100644
+--- a/instrumentation/lettuce/lettuce-5.0/javaagent/src/test/java/io/opentelemetry/javaagent/instrumentation/lettuce/v5_0/LettuceSyncClientTest.java
++++ b/instrumentation/lettuce/lettuce-5.0/javaagent/src/test/java/io/opentelemetry/javaagent/instrumentation/lettuce/v5_0/LettuceSyncClientTest.java
+@@ -5,7 +5,9 @@
+ 
+ package io.opentelemetry.javaagent.instrumentation.lettuce.v5_0;
+ 
++import static io.opentelemetry.api.common.AttributeKey.booleanKey;
+ import static io.opentelemetry.instrumentation.testing.junit.db.DbClientMetricsTestUtil.assertDurationMetric;
++import static io.opentelemetry.javaagent.instrumentation.lettuce.v5_0.ExperimentalHelper.experimental;
+ import static io.opentelemetry.instrumentation.testing.junit.service.SemconvServiceStabilityUtil.maybeStablePeerService;
+ import static io.opentelemetry.sdk.testing.assertj.OpenTelemetryAssertions.equalTo;
+ import static io.opentelemetry.sdk.testing.assertj.OpenTelemetryAssertions.satisfies;
+@@ -14,6 +16,7 @@ import static io.opentelemetry.semconv.DbAttributes.DB_OPERATION_BATCH_SIZE;
+ import static io.opentelemetry.semconv.DbAttributes.DB_OPERATION_NAME;
+ import static io.opentelemetry.semconv.DbAttributes.DB_QUERY_TEXT;
+ import static io.opentelemetry.semconv.DbAttributes.DB_SYSTEM_NAME;
++import static io.opentelemetry.semconv.ErrorAttributes.ERROR_TYPE;
+ import static io.opentelemetry.semconv.ExceptionAttributes.EXCEPTION_MESSAGE;
+ import static io.opentelemetry.semconv.ExceptionAttributes.EXCEPTION_STACKTRACE;
+ import static io.opentelemetry.semconv.ExceptionAttributes.EXCEPTION_TYPE;
+@@ -29,6 +32,7 @@ import static org.assertj.core.api.Assertions.catchException;
+ 
+ import com.google.common.collect.ImmutableMap;
+ import io.lettuce.core.RedisClient;
++import io.lettuce.core.RedisCommandTimeoutException;
+ import io.lettuce.core.RedisConnectionException;
+ import io.lettuce.core.RedisFuture;
+ import io.lettuce.core.RedisURI;
+@@ -44,6 +48,7 @@ import io.opentelemetry.sdk.trace.data.StatusData;
+ import java.lang.reflect.Method;
+ import java.net.InetAddress;
+ import java.net.UnknownHostException;
++import java.time.Duration;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.concurrent.CompletableFuture;
+@@ -490,4 +495,39 @@ class LettuceSyncClientTest extends AbstractLettuceClientTest {
+                                   equalTo(DB_OPERATION_NAME, "SHUTDOWN"))));
+         });
+   }
++
++  @Test
++  void testCommandTimeout() {
++    StatefulRedisConnection<String, String> timeoutConnection = redisClient.connect();
++    cleanup.deferCleanup(timeoutConnection);
++    if (connectionTelemetryEnabled()) {
++      testing.waitForTraces(1);
++    }
++    testing.clearData();
++    timeoutConnection.setTimeout(Duration.ofMillis(300));
++
++    // the sync API cancels the command when the timeout expires and throws the timeout exception
++    // to the caller only, the command future itself completes with a CancellationException
++    Exception exception =
++        catchException(() -> timeoutConnection.sync().blpop(2, "TIMEOUT_LIST"));
++
++    assertThat(exception).isInstanceOf(RedisCommandTimeoutException.class);
++    testing.waitAndAssertTraces(
++        trace ->
++            trace.hasSpansSatisfyingExactly(
++                span ->
++                    span.hasName("BLPOP " + host + ":" + port)
++                        .hasKind(SpanKind.CLIENT)
++                        .hasStatus(StatusData.error())
++                        .hasException(exception)
++                        .hasAttributesSatisfyingExactly(
++                            equalTo(SERVER_ADDRESS, host),
++                            equalTo(SERVER_PORT, port),
++                            equalTo(DB_SYSTEM_NAME, REDIS),
++                            equalTo(DB_NAMESPACE, "0"),
++                            equalTo(DB_QUERY_TEXT, "BLPOP TIMEOUT_LIST 2"),
++                            equalTo(DB_OPERATION_NAME, "BLPOP"),
++                            equalTo(ERROR_TYPE, "io.lettuce.core.RedisCommandTimeoutException"),
++                            equalTo(booleanKey("lettuce.command.cancelled"), experimental(true)))));
++  }
+ }

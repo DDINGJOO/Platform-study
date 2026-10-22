@@ -1,0 +1,170 @@
+diff --git a/instrumentation/reactor/reactor-3.1/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/HooksInstrumentation.java b/instrumentation/reactor/reactor-3.1/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/HooksInstrumentation.java
+index 7ff943fb2e..c7ec8a7812 100644
+--- a/instrumentation/reactor/reactor-3.1/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/HooksInstrumentation.java
++++ b/instrumentation/reactor/reactor-3.1/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/HooksInstrumentation.java
+@@ -8,10 +8,8 @@ package io.opentelemetry.javaagent.instrumentation.reactor.v3_1;
+ import static net.bytebuddy.matcher.ElementMatchers.isTypeInitializer;
+ import static net.bytebuddy.matcher.ElementMatchers.named;
+ import static net.bytebuddy.matcher.ElementMatchers.namedOneOf;
++import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
+ 
+-import io.opentelemetry.api.GlobalOpenTelemetry;
+-import io.opentelemetry.instrumentation.api.incubator.config.internal.DeclarativeConfigUtil;
+-import io.opentelemetry.instrumentation.reactor.v3_1.ContextPropagationOperator;
+ import io.opentelemetry.javaagent.extension.instrumentation.TypeInstrumentation;
+ import io.opentelemetry.javaagent.extension.instrumentation.TypeTransformer;
+ import net.bytebuddy.asm.Advice;
+@@ -31,21 +29,29 @@ class HooksInstrumentation implements TypeInstrumentation {
+   @Override
+   public void transform(TypeTransformer transformer) {
+     transformer.applyAdviceToMethod(
+-        isTypeInitializer().or(named("resetOnEachOperator")),
++        isTypeInitializer().or(named("resetOnEachOperator").and(takesArguments(1))),
++        getClass().getName() + "$RegisterOnEachOperatorAdvice");
++    // The operator itself resets its hook by key, so only the reset of all hooks re-registers.
++    transformer.applyAdviceToMethod(
++        named("resetOnEachOperator").and(takesArguments(0)),
+         getClass().getName() + "$ResetOnEachOperatorAdvice");
+   }
+ 
+   @SuppressWarnings("unused")
+-  public static class ResetOnEachOperatorAdvice {
++  public static class RegisterOnEachOperatorAdvice {
+ 
+     @Advice.OnMethodExit(suppress = Throwable.class, inline = false)
+     public static void postStaticInitializer() {
+-      ContextPropagationOperator.builder()
+-          .setCaptureExperimentalSpanAttributes(
+-              DeclarativeConfigUtil.getInstrumentationConfig(GlobalOpenTelemetry.get(), "reactor")
+-                  .getBoolean("experimental_span_attributes/development", false))
+-          .build()
+-          .registerOnEachOperator();
++      ReactorSingletons.registerOnEachOperator();
++    }
++  }
++
++  @SuppressWarnings("unused")
++  public static class ResetOnEachOperatorAdvice {
++
++    @Advice.OnMethodExit(suppress = Throwable.class, inline = false)
++    public static void postReset() {
++      ReactorSingletons.reregisterOnEachOperator();
+     }
+   }
+ }
+diff --git a/instrumentation/reactor/reactor-3.1/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/ReactorSingletons.java b/instrumentation/reactor/reactor-3.1/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/ReactorSingletons.java
+new file mode 100644
+index 0000000000..b3e3142fc8
+--- /dev/null
++++ b/instrumentation/reactor/reactor-3.1/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/ReactorSingletons.java
+@@ -0,0 +1,35 @@
++/*
++ * Copyright The OpenTelemetry Authors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++package io.opentelemetry.javaagent.instrumentation.reactor.v3_1;
++
++import io.opentelemetry.api.GlobalOpenTelemetry;
++import io.opentelemetry.instrumentation.api.incubator.config.internal.DeclarativeConfigUtil;
++import io.opentelemetry.instrumentation.reactor.v3_1.ContextPropagationOperator;
++
++final class ReactorSingletons {
++
++  // A single operator, so that registering again after a reset reuses the same async operation end
++  // strategy instead of adding a new one to the strategy registry each time.
++  private static final ContextPropagationOperator OPERATOR =
++      ContextPropagationOperator.builder()
++          .setCaptureExperimentalSpanAttributes(
++              DeclarativeConfigUtil.getInstrumentationConfig(GlobalOpenTelemetry.get(), "reactor")
++                  .getBoolean("experimental_span_attributes/development", false))
++          .build();
++
++  static void registerOnEachOperator() {
++    OPERATOR.registerOnEachOperator();
++  }
++
++  // Hooks.resetOnEachOperator() removes the hook without going through the operator, which still
++  // considers it registered and would ignore a plain registration.
++  static void reregisterOnEachOperator() {
++    OPERATOR.resetOnEachOperator();
++    OPERATOR.registerOnEachOperator();
++  }
++
++  private ReactorSingletons() {}
++}
+diff --git a/instrumentation/reactor/reactor-3.1/javaagent/src/test/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/HooksResetTest.java b/instrumentation/reactor/reactor-3.1/javaagent/src/test/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/HooksResetTest.java
+new file mode 100644
+index 0000000000..76f463532b
+--- /dev/null
++++ b/instrumentation/reactor/reactor-3.1/javaagent/src/test/java/io/opentelemetry/javaagent/instrumentation/reactor/v3_1/HooksResetTest.java
+@@ -0,0 +1,69 @@
++/*
++ * Copyright The OpenTelemetry Authors
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++package io.opentelemetry.javaagent.instrumentation.reactor.v3_1;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import io.opentelemetry.context.Context;
++import io.opentelemetry.context.ContextKey;
++import io.opentelemetry.context.Scope;
++import io.opentelemetry.instrumentation.testing.junit.AgentInstrumentationExtension;
++import io.opentelemetry.instrumentation.testing.junit.InstrumentationExtension;
++import java.util.concurrent.atomic.AtomicReference;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.RegisterExtension;
++import reactor.core.publisher.Flux;
++import reactor.core.publisher.FluxSink;
++import reactor.core.publisher.Hooks;
++
++class HooksResetTest {
++
++  @RegisterExtension
++  static final InstrumentationExtension testing = AgentInstrumentationExtension.create();
++
++  private static final ContextKey<String> TEST_CONTEXT_KEY = ContextKey.named("test-context-key");
++
++  @Test
++  void contextIsPropagatedAfterResettingAllOnEachOperatorHooks() {
++    assertThat(propagatesContextToExternallyDrivenPublisher()).isTrue();
++
++    // the agent re-registers its hook when the application removes all onEachOperator hooks
++    Hooks.resetOnEachOperator();
++
++    assertThat(propagatesContextToExternallyDrivenPublisher()).isTrue();
++
++    // and it keeps doing so
++    Hooks.resetOnEachOperator();
++
++    assertThat(propagatesContextToExternallyDrivenPublisher()).isTrue();
++  }
++
++  @Test
++  void contextIsPropagatedAfterResettingUnrelatedOnEachOperatorHook() {
++    Hooks.resetOnEachOperator("unrelated-hook");
++
++    assertThat(propagatesContextToExternallyDrivenPublisher()).isTrue();
++  }
++
++  // The publisher is driven from outside of the subscription, so the context that is current in the
++  // subscriber callback can only come from the subscription time and not from the producer.
++  private static boolean propagatesContextToExternallyDrivenPublisher() {
++    AtomicReference<FluxSink<String>> sink = new AtomicReference<>();
++    AtomicReference<String> observedContextValue = new AtomicReference<>();
++    Flux<String> publisher = Flux.create(sink::set);
++
++    try (Scope ignored =
++        Context.root().with(TEST_CONTEXT_KEY, "test-context-value").makeCurrent()) {
++      publisher.subscribe(
++          unused -> observedContextValue.set(Context.current().get(TEST_CONTEXT_KEY)));
++    }
++
++    testing.runWithSpan("producer", () -> sink.get().next("message"));
++    sink.get().complete();
++
++    return "test-context-value".equals(observedContextValue.get());
++  }
++}
