@@ -1,0 +1,174 @@
+<!-- tags: Spinnaker, Orca, 취소 경쟁 조건, 롤백, 갱신 손실, SELECT FOR UPDATE, 코드 리뷰 후속 이슈, Testcontainers -->
+<!-- lead: Spinnaker Orca PR #8174 승인 코멘트에 남은 후속 8항목을 코드와 대조해 이슈 #8207과 PR #8208, #8209로 나눈 과정과, 두 PR의 테스트를 되돌려 확인한 결과를 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 오픈소스 기여 회고 · Spinnaker</div>
+  1편. 중복 배달된 StartExecution이 끝난 파이프라인을 RUNNING으로 되돌렸다<br>
+  <b>2편. 승인 코멘트의 후속 8항목을 이슈 하나와 PR 둘로 옮긴 과정</b> &larr; 지금 이 글
+</div>
+
+<p>1편의 #8174는 리뷰어의 승인과 함께 머지됐지만, 승인 코멘트에는 "남은 항목" 8개가 적혀 있었어요. 어떤 항목은 이 PR의 범위 밖이었고, 어떤 항목은 고치는 편이 맞아 보였고, 어떤 항목은 아무 조치도 필요 없다는 결론이 이미 적혀 있었어요.</p>
+<p>이 글은 그 8개를 코드와 대조해서 이슈 하나(<a href="https://github.com/spinnaker/spinnaker/issues/8207">#8207</a>)와 PR 둘(<a href="https://github.com/spinnaker/spinnaker/pull/8208">#8208</a>, <a href="https://github.com/spinnaker/spinnaker/pull/8209">#8209</a>)로 나눈 과정을 적어요. 2026-10-22에 <code>gh</code>로 읽은 현재 상태는 셋 모두 열려 있고, #8208과 #8209에는 리뷰도 코멘트도 아직 없어요. 그래서 이 글은 머지된 결과가 아니라 열려 있는 작업의 기록이에요. 시각은 따로 적지 않으면 모두 UTC예요.</p>
+
+<h2>1. 승인 코멘트의 8개 항목</h2>
+
+<p>리뷰어 jasonmcintosh는 10월 12일 14:46에 승인 코멘트를 하나 더 남겼어요. 흐름을 확인한 결과(취소 경로는 비교에서 걸러지고, SQL 구현은 쓰기 풀을 쓰고, 삭제된 실행은 <code>false</code>로 처리된다)를 적은 다음 "Remaining gaps"라는 제목으로 8개를 나열했어요. 각 항목을 제가 읽은 대로 줄이면 이래요.</p>
+
+<div class="obsv-code">1. 롤백이 무조건 updateStatus. 늦은 롤백이 끝난 실행을 NOT_STARTED로 되돌릴 수 있음, "not a blocker"
+2. cancel 쪽에는 FOR UPDATE가 없음. 이미 있던 경쟁이고 이번에 악화되지 않음
+3. 테스트가 원자성을 증명하지 못함. 직렬 재생이라 FOR UPDATE 없이도 통과
+4. 메모리 저장소는 항상 true. 핸들러 테스트가 false 경로를 못 탐
+5. 기본(Redis) 구현이 읽고 쓰는 두 단계. TODO 대신 추적 이슈를 열어 달라
+6. CompleteExecutionHandler, RestartStageHandler도 같은 모양. 머지 전에 이슈를
+7. 근본 원인(핸들러가 느린 이유)과 이미 RUNNING에 갇힌 39건은 그대로
+8. 로그 메시지의 Kotlin 보간과 {} 자리표시자 혼용. 기존 스타일이라 그대로</div>
+
+<p>3분 뒤인 14:49에 이어진 코멘트에는 "most of those should probably create issues/get fixes, but can do that later"라는 문장이 있었어요. 항목이 곧바로 고쳐야 하는 결함은 아니고, 이슈로 남겨서 나중에 처리해도 된다는 뜻으로 읽었어요.</p>
+<p>이 항목을 세 갈래로 나눴어요. 항목 1은 롤백 경로 하나만 고치면 되는 작은 수정이라서 PR로, 항목 3은 테스트 하나만 더하면 되는 변경이라서 따로 PR로 만들었어요. 항목 2, 5, 6은 서로 이어진 같은 종류의 문제라서 하나의 이슈로 모았어요. 항목 4와 8은 리뷰어가 받아들일 만하다고 쓴 것이라서 아무것도 하지 않았고, 항목 7은 이슈에서 범위 밖이라고 명시했어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="b1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs><text x="130" y="24" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#8a8272">승인 코멘트의 항목</text><text x="580" y="24" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#8a8272">옮겨 간 곳</text><path d="M19.3 38.6 C89.0 40.6,181.0 38.3,250.1 39.5 C248.2 53.8,250.0 72.2,248.1 85.7 C181.0 84.3,89.0 84.4,19.7 87.3 C18.5 72.2,18.9 53.8,20.5 41.8 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" /><text x="135" y="70" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">1. 롤백이 무조건 updateStatus</text><path d="M256 63 Q338.0 63.5 420 63" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#b1)" /><path d="M425.6 41.9 C502.2 38.2,603.8 41.4,679.2 38.6 C678.5 53.8,679.2 72.2,681.3 84.7 C603.8 86.3,502.2 86.6,425.5 86.2 C424.3 72.2,424.2 53.8,424.8 40.7 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round" /><text x="553" y="70" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">#8208 PR (열림)</text><path d="M19.7 103.3 C89.0 104.3,181.0 103.8,249.2 105.2 C250.8 117.8,249.0 136.2,250.3 150.1 C181.0 151.5,89.0 150.9,19.2 151.9 C18.5 136.2,19.7 117.8,21.0 102.6 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" /><text x="135" y="134" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">3. 잠금을 증명 못 하는 테스트</text><path d="M256 127 Q338.0 126.9 420 127" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#b1)" /><path d="M424.2 104.7 C502.2 105.1,603.8 104.3,681.5 103.3 C680.8 117.8,680.4 136.2,680.3 149.8 C603.8 151.4,502.2 151.8,425.9 150.7 C424.2 136.2,426.8 117.8,426.6 106.0 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round" /><text x="553" y="134" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">#8209 PR (열림)</text><path d="M21.3 167.1 C89.0 167.5,181.0 168.7,248.1 167.8 C248.7 181.8,248.5 200.2,248.2 215.1 C181.0 212.5,89.0 213.0,19.6 215.5 C18.3 200.2,19.8 181.8,20.2 169.5 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" /><text x="135" y="198" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">2, 5, 6. 취소 잠금, Redis, 형제 핸들러</text><path d="M256 191 Q338.0 192.9 420 191" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#b1)" /><path d="M427.5 167.1 C502.2 167.7,603.8 167.4,681.5 169.8 C678.6 181.8,678.7 200.2,678.9 212.9 C603.8 213.9,502.2 214.4,425.1 212.0 C425.7 200.2,425.5 181.8,426.3 169.8 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round" /><text x="553" y="198" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">#8207 이슈 (열림)</text><path d="M20.8 232.1 C89.0 232.5,181.0 232.7,248.2 233.6 C251.1 245.8,251.5 264.2,251.2 277.6 C181.0 277.6,89.0 276.4,20.5 276.2 C18.3 264.2,18.8 245.8,18.6 231.4 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round" /><text x="135" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">4, 7, 8. 수용하거나 범위 밖</text><path d="M256 255 Q338.0 252.3 420 255" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round" stroke-dasharray="7 6" marker-end="url(#b1)" /><path d="M424.0 230.6 C502.2 230.4,603.8 231.5,678.1 233.5 C680.5 245.8,678.6 264.2,679.0 277.4 C603.8 277.5,502.2 276.5,427.4 280.0 C425.9 264.2,425.9 245.8,424.3 230.4 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round" /><text x="553" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">조치 없음 (7은 이슈에 명시)</text>
+</svg>
+</div>
+
+<div class="obsv-figcap">그림 1. 8개 항목은 PR 둘, 이슈 하나, 조치 없음 세 곳으로 나뉘었어요</div>
+
+<h2>2. 이슈 #8207: 같은 모양의 쓰기를 한곳에 모았다</h2>
+
+<p>#8174를 머지한 다음 날인 10월 16일 12:48에 #8207을 열었어요. 승인 코멘트의 항목 5와 6이 요청한 이슈예요. 항목 6에서 리뷰어는 "머지 전에" 열어 달라고 썼는데 실제로는 머지 뒤에 열었어요. 3분 뒤 코멘트가 나중에 해도 된다고 덧붙이기는 했어요. 이슈 본문은 핸들러가 실행을 읽고, 판단하고, <code>repository.updateStatus(execution)</code>로 되쓰는 모양이 여러 곳에 있다는 점에서 시작해요. SQL 저장소에서 이 호출이 상태만이 아니라 실행 본문 전체와 <code>canceled</code> 열을 핸들러의 복사본으로 쓰기 때문에, 읽은 뒤 쓰기 전에 다른 쪽이 한 일(사용자의 취소나 재시작)이 덮어쓰인다는 설명이에요. 실행 단위 쓰기는 잠금이 없고, <code>RetriableLock</code>은 스테이지 id를 키로 쓰기 때문에 시작 경로를 빼면 보호되지 않는다고 적었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 취소(cancel)와 CompleteExecution</div>사용자가 파이프라인을 취소하면 실행 상태가 <code>CANCELED</code>가 되고 <code>canceled=true</code>가 저장돼요. <code>CompleteExecution</code>은 마지막 스테이지가 끝난 뒤 실행의 최종 상태(<code>SUCCEEDED</code> 등)를 저장하는 큐 메시지예요. 둘이 같은 실행에 거의 동시에 쓰면 나중에 쓴 쪽이 이겨요.</div>
+
+<p>이슈에는 재현 세 건이 적혀 있어요. 실제 핸들러(<code>CompleteExecutionHandler</code>, <code>RestartStageHandler</code>, <code>CancelExecutionHandler</code>, <code>StartExecutionHandler</code>)를 MySQL 8.0.40(Testcontainers)의 <code>SqlExecutionRepository</code> 위에서 돌리고, 첫 핸들러가 실행을 읽은 직후에 멈춘 사이 두 번째 핸들러를 돌린 결과예요. 케이스마다 같은 단계에서 끼어들기만 뺀 대조군이 있어요. 아래는 이슈 본문에 있는 텍스트 출력 중 둘이에요.</p>
+
+<div class="obsv-code">(2) stale CompleteExecution vs CancelExecution
+stored                    execution=RUNNING   canceled=false canceledBy=null
+CompleteExecution loaded  execution=RUNNING   canceled=false canceledBy=null
+CancelExecution done      execution=CANCELED  canceled=true  canceledBy=alice
+CompleteExecution done    execution=SUCCEEDED canceled=false canceledBy=null
+  control (CompleteExecution loads after the cancel):
+CompleteExecution done    execution=CANCELED  canceled=true  canceledBy=alice
+
+(3) stale StartExecution rollback vs CancelExecution
+StartExecution set RUNNING   execution=RUNNING     canceled=false canceledBy=null
+CancelExecution done         execution=CANCELED    canceled=true  canceledBy=alice
+StartExecution rolled back   execution=NOT_STARTED canceled=false canceledBy=null
+retried StartExecution done  execution=RUNNING     canceled=false canceledBy=null</div>
+
+<p>(2)는 마지막 스테이지가 성공한 뒤 <code>CompleteExecution</code>이 실행을 읽었는데 사용자가 취소한 경우예요. 취소가 저장한 <code>CANCELED</code>를 핸들러의 복사본(<code>SUCCEEDED</code>, <code>canceled=false</code>)이 덮어써서, 취소한 기록이 사라지고 <code>ExecutionComplete</code> 이벤트도 <code>CANCELED</code>와 <code>SUCCEEDED</code> 두 개가 나가요. (1)은 같은 <code>CompleteExecution</code>의 오래된 복사본이 스테이지 재시작을 되돌려서 실행이 <code>TERMINAL</code>에 영구히 남는 경우이고, (3)은 3장에서 다룰 롤백이에요. 이 글을 쓰면서 이 세 건 중 (3)만 #8208의 테스트로 다시 돌렸고, (1)과 (2)는 이슈 본문의 출력을 인용했어요. 이 둘을 돌리는 테스트는 열린 PR에 들어 있지 않아서, 로컬에 받은 저장소에서는 실행할 수 없었어요.</p>
+<p>이슈에는 실행 단위 쓰기를 전부 훑은 표도 있어요. 시작 경로는 #8174가 고쳤고, 롤백은 #8208이 고치고, <code>CompleteExecutionHandler</code>와 <code>RestartStageHandler</code>는 같은 모양이라고 적었어요. <code>SqlExecutionRepository</code>의 <code>cancel</code>, <code>pause</code>, <code>resume</code>은 트랜잭션 안에서 읽고 쓰지만 행 잠금이 없어요(승인 코멘트의 항목 2). 기본 구현(Redis)이 원자적이지 않다는 항목 5는 이 이슈를 추적 이슈로 삼는다고 적었어요. 초기 스테이지가 없는 <code>TERMINAL</code> 경로와 <code>ConfigurationErrorHandler</code>는 실행이 시작되기 전의 쓰기라서 위험이 낮다고 분류했어요. 스테이지 단위 쓰기(<code>storeStage</code>, 호출 지점 약 30곳)는 범위에서 뺐어요. 스테이지별로 메시지 흐름이 순서를 지키고 <code>RunTask</code>가 스테이지 잠금을 잡기 때문이라고 적었어요.</p>
+<p>이슈 끝에는 해결 방향 세 가지를 적고 리뷰어에게 물었어요. 하나는 핸들러마다 읽었던 상태를 기대값으로 <code>updateStatusIfExpected</code>를 쓰는 것이에요. 다른 하나는 저장소의 <code>doForeignAware</code>에서 행을 잠가서 <code>cancel</code>, <code>pause</code>, <code>resume</code>도 원자적으로 만드는 것이에요. 마지막은 비교가 <code>status</code>만 보고 쓰기는 본문 전체를 한다는 점을 줄이는 방법(상태만 갱신하거나 <code>canceled</code>도 비교)이에요. 리뷰어가 큐 시스템을 더 크게 바꿀 계획을 비친 적이 있어서, 더 진행하기 전에 어느 방향을 원하는지 물었어요. 같은 날 12:51에 "롤백 수정과 잠금에 의존하는 테스트부터 하고, 방향이 정해지면 다른 핸들러를 이어서 하겠다"고 코멘트를 남겼어요. 2026-10-22 02:03에는 리뷰어를 지목해서 두 PR이 올라와 있다고 알리고 방향을 다시 물었어요. 2026-10-22 현재 이 이슈의 코멘트는 제 것 두 개뿐이고, 리뷰어의 답은 없어요.</p>
+
+<h2>3. #8208: 롤백이 취소를 되돌리던 경로</h2>
+
+<p>항목 1은 승인 코멘트에서 가장 작은 항목이었어요. 리뷰어가 구간이 아주 좁다고 쓴 이 대상은, <code>StartStage</code> 푸시가 실패했을 때 <code>StartExecutionHandler</code>가 실행을 <code>NOT_STARTED</code>로 되돌리는 롤백이에요. 이 롤백이 있는 이유는, 큐가 같은 <code>StartExecution</code>을 다시 배달했을 때 <code>NOT_STARTED</code> 검사에서 메시지가 버려지지 않게 하려는 것이에요. 문제는 이 롤백이 #8174 이후에도 무조건 <code>updateStatus</code>로 핸들러의 복사본을 쓴다는 점이었어요.</p>
+<p>PR 본문이 취소를 예로 들어 적은 순서는 다섯 단계예요. 핸들러가 실행을 <code>RUNNING</code>으로 바꾸고, <code>StartStage</code> 푸시가 연결 오류 같은 이유로 실패하고, 그 사이에 사용자가 취소하면 아직 스테이지가 시작되지 않았으니 <code>CANCELED</code>, <code>canceled=true</code>가 저장돼요. 그다음 롤백이 핸들러의 복사본(<code>NOT_STARTED</code>, <code>canceled=false</code>)을 쓰고, 다시 배달된 <code>StartExecution</code>은 취소되지 않은 <code>NOT_STARTED</code> 실행을 보고 시작해요. 취소한 파이프라인이 그대로 실행되는 결과가 돼요. 구간이 좁다고 해도 결과가 이렇게 나쁘니 닫을 가치가 있다고 판단했어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 210" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="b2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs><path d="M13.4 39.1 C56.0 41.3,112.0 38.6,152.1 41.8 C154.1 61.0,152.6 89.0,154.2 108.1 C112.0 110.1,56.0 111.9,15.5 110.8 C13.0 89.0,13.5 61.0,12.7 41.1 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" /><text x="84" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">푸시 직전</text><text x="84" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">RUNNING</text><path d="M158 75 Q171.0 75.2 184 75" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#b2)" /><path d="M189.1 39.3 C233.0 38.9,293.0 41.2,339.9 41.4 C339.2 61.0,339.3 89.0,339.0 108.9 C293.0 110.1,233.0 109.4,186.1 108.1 C187.1 89.0,187.0 61.0,188.8 41.8 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round" /><text x="263" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">사용자 취소</text><text x="263" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#c07f18">CANCELED</text><path d="M342 75 Q355.0 74.7 368 75" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#b2)" /><path d="M373.7 42.0 C420.0 41.8,484.0 39.5,530.9 38.9 C530.8 61.0,530.8 89.0,532.5 111.6 C484.0 111.4,420.0 109.9,372.6 111.2 C370.3 89.0,372.6 61.0,373.6 41.1 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round" /><text x="452" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">롤백이 복사본 저장</text><text x="452" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#b3502f">NOT_STARTED</text><path d="M536 75 Q549.0 76.5 562 75" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#b2)" /><path d="M565.9 38.7 C602.6 41.2,651.4 39.3,689.2 41.9 C687.6 61.0,687.6 89.0,689.8 110.9 C651.4 108.7,602.6 108.5,564.6 111.6 C567.2 89.0,564.6 61.0,567.3 41.9 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round" /><text x="627" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">재배달 후 시작</text><text x="627" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#b3502f">RUNNING</text><text x="350" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">취소가 사라지고 파이프라인이 실행돼요</text><text x="350" y="192" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">수정 후에는 롤백이 거부되고 CANCELED가 남아요</text>
+</svg>
+</div>
+
+<div class="obsv-figcap">그림 2. 롤백이 실행 전체를 되쓰기 때문에 취소(canceled=true)가 지워져요</div>
+
+<p>수정은 롤백을 #8174에서 쓴 같은 방법으로 바꾸는 것이에요. 저장된 상태가 아직 <code>RUNNING</code>일 때만 <code>NOT_STARTED</code>로 되돌리고, 아니라면 저장된 상태를 로그에 남기고 쓰기를 건너뛰어요. 예외는 그대로 던져서 메시지가 다시 배달되게 해요. 다시 배달된 핸들러는 <code>CANCELED</code>를 보고 실행을 끝내요.</p>
+
+<div class="obsv-code">           execution.updateStatus(NOT_STARTED)
+-          repository.updateStatus(execution)
++          if (!repository.updateStatusIfExpected(execution, RUNNING)) {
++            log.warn(
++              "Not restoring execution (type ${execution.type}, id {}, application: {}) to NOT_STARTED: {}.",
++              value("executionId", execution.id),
++              value("application", execution.application),
++              describeStoredStatus(execution)
++            )
++          }
+           throw e</div>
+
+<p>PR 본문이 스스로 적은 한계가 있어요. 비교는 <code>status</code>만 보기 때문에, 초기 스테이지가 여러 개이고 일부가 이미 푸시된 뒤에 실패하면 취소가 상태를 <code>RUNNING</code>인 채로 <code>canceled=true</code>만 바꿀 수 있어요. 그 경우 롤백은 여전히 <code>canceled</code>를 덮어써요. 이건 이슈의 세 번째 방향(비교는 상태, 쓰기는 본문 전체)이라서 이 PR에서는 건드리지 않았어요. 같은 PR의 두 번째 커밋은 <code>updateStatusIfExpected</code>의 TODO가 "추적 이슈가 없다"고 적은 문장을 #8207을 가리키는 문장으로 고쳤어요. 승인 코멘트의 항목 5가 요청한 것이에요.</p>
+<p>테스트는 두 곳이에요. <code>StartExecutionHandlerTest</code>에 두 케이스를 더해서, 롤백이 <code>updateStatusIfExpected(pipeline, RUNNING)</code>를 쓰고 <code>updateStatus</code>를 부르지 않는 것을 확인해요. 새 파일 <code>StartExecutionHandlerSqlTest</code>는 실제 <code>StartExecutionHandler</code>와 <code>CancelExecutionHandler</code>를 MySQL의 <code>SqlExecutionRepository</code> 위에서 돌려요. 큐를 감싼 객체가 <code>StartStage</code> 푸시를 막아 두고, 그 사이에 테스트가 취소하고, 푸시를 실패시킨 뒤 <code>StartExecution</code>을 다시 배달해요.</p>
+
+<p>PR head(<code>d91a2724c3</code>)에서 돌렸어요. 모듈 둘에서 해당 클래스만 골랐고, Gradle 옵션과 JDK는 1편과 같아요.</p>
+
+<div class="obsv-code">./gradlew --no-daemon --max-workers=2 -Dorg.gradle.jvmargs=-Xmx2g \
+  :orca:orca-queue:test --tests '*StartExecutionHandlerTest*' \
+  :orca:orca-queue-sql:test --tests '*StartExecutionHandlerSqlTest*'
+
+BUILD SUCCESSFUL in 1m 9s
+StartExecutionHandlerTest        tests=51 failures=0
+StartExecutionHandlerSqlTest     tests=1  failures=0</div>
+
+<p>통과했어요. 이어서 <code>StartExecutionHandler.kt</code>만 #8174 머지 시점의 버전(롤백이 무조건 <code>updateStatus</code>)으로 되돌리고 테스트는 두고 다시 돌렸어요.</p>
+
+<div class="obsv-code">BUILD FAILED in 53s
+StartExecutionHandlerSqlTest
+  a cancellation made while StartStage is being pushed survives the failed push() FAILED
+    expected: "CANCELED"
+     but was: "RUNNING"
+StartExecutionHandlerTest        tests=51 failures=2
+  it restores execution status to NOT_STARTED only if it is still RUNNING
+  it does not overwrite the stored execution
+    Never wanted here: updateStatus(...)  at StartExecutionHandler.kt:119</div>
+
+<p>SQL 테스트가 <code>expected: "CANCELED" but was: "RUNNING"</code>으로 실패했어요. PR 본문에 적힌 실패 메시지와 같아요. 되돌린 코드에서는 취소가 사라진 실행이 다시 시작된 것이고, 핸들러 테스트 2개가 새로 더한 케이스예요.</p>
+
+<h2>4. #8209: 잠금이 있어야만 통과하는 테스트</h2>
+
+<p>항목 3은 1편에서 제가 스스로 적어 둔 한계이기도 했어요. #8174의 SQL 테스트는 오래된 복사본을 순서대로 재생하는 것이라, <code>FOR UPDATE</code>를 빼도 통과한다는 점이에요. 리뷰어는 "I'd ask for it, since atomicity is the whole point"라고 적고, 행을 잡은 트랜잭션을 열어 둔 채 조건부 저장이 막히는지 보거나, 여러 스레드를 경쟁시켜서 <code>true</code>가 정확히 하나만 나오는지 보는 방법을 제안했어요.</p>
+<p>#8209는 첫 번째 방법을 따랐어요. 테스트가 하는 일은 세 단계예요.</p>
+
+<div class="obsv-code">1) 다른 트랜잭션이 실행의 행을 SELECT ... FOR UPDATE로 잠그고 붙잡는다
+2) NOT_STARTED로 읽어 둔 오래된 복사본이 다른 스레드에서
+   updateStatusIfExpected(copy, NOT_STARTED)를 호출한다.
+   1초 뒤에도 끝나지 않고 막혀 있는지 확인한다 (TimeoutException)
+3) 다른 트랜잭션이 SUCCEEDED를 저장하고 커밋한다.
+   그러면 조건부 저장은 false를 돌려주고, 저장된 값은 SUCCEEDED로 남아야 한다</div>
+
+<p>순서는 행 잠금과 래치로 정해지므로, 타이밍에 기대지 않는 결정적인 테스트예요. 2단계의 "1초 뒤에도 막혀 있다"는 확인이 핵심이에요. 이 확인이 있어야 잠금을 기다리지 않고 자기가 먼저 읽은 상태를 쓰는 구현이 걸러져요. <code>FOR UPDATE</code>가 없으면 조건부 저장은 쓰는 시점에는 행 잠금 때문에 막히지만, 비교는 잠금 전에 읽은 <code>NOT_STARTED</code>로 이미 끝나 있어서 <code>true</code>를 돌려주고 커밋된 <code>SUCCEEDED</code>를 덮어써요. 이것이 잠금이 막는 갱신 손실(lost update)이에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 갱신 손실(lost update)</div>두 트랜잭션이 같은 값을 읽고 각자 고쳐서 저장할 때, 나중에 저장한 쪽이 먼저 저장한 쪽의 변경을 모르고 덮어써서 변경 하나가 없어지는 현상이에요. 행을 잠그고 읽으면 나중 트랜잭션이 먼저 커밋된 값을 읽게 돼서 생기지 않아요.</div>
+
+<p>PR head(<code>92bd5f89b3</code>)에서 확인했어요.</p>
+
+<div class="obsv-code">./gradlew --no-daemon --max-workers=2 -Dorg.gradle.jvmargs=-Xmx2g \
+  :orca:orca-sql:test --tests '*SqlExecutionRepositoryTest*'
+
+BUILD SUCCESSFUL in 1m 9s        tests=22 failures=0
+
+# SqlExecutionRepository.updateStatusIfExpected 에서 .forUpdate() 한 줄만 삭제
+tests=22 failures=1
+  waits for a concurrent writer and compares against the status it committed
+    Expecting value to be false but was true   (SqlExecutionRepositoryTest.kt:377)</div>
+
+<p>잠금이 있을 때는 22개가 모두 통과하고, <code>.forUpdate()</code> 한 줄을 지우면 새 테스트 하나만 <code>Expecting value to be false but was true</code>로 실패했어요. 이때 #8174가 넣은 순차 테스트(<code>a stale copy cannot move a completed execution back to RUNNING</code>)는 통과했어요. 리뷰어가 지적한 것이 이 로컬 실험에서도 그대로 확인된 셈이에요. 순차 테스트는 비교 로직을, 새 테스트는 잠금을 각각 따로 증명해요. 두 번의 실행은 각각 1분 안팎이 걸렸어요. 이 테스트를 만든 PR의 본문에도 같은 두 결과(22개 통과, 잠금을 빼면 같은 메시지로 실패)가 적혀 있어요.</p>
+
+<h2>5. 현재 상태와 남은 것</h2>
+
+<p>2026-10-22에 <code>gh</code>로 읽은 상태예요. #8207, #8208, #8209는 모두 열려 있어요. #8208과 #8209는 리뷰 결정이 <code>REVIEW_REQUIRED</code>이고 리뷰도 코멘트도 0건이에요. 두 PR 모두 10월 16일에 열었고, 이후에 main을 합치는 병합 커밋이 각각 10번 들어가 있어요. 이 병합 커밋은 제가 낸 코드 변경이 아니라 브랜치를 main에 맞춘 기록이에요. #8207에는 제 코멘트만 있어요.</p>
+<p>그래서 이 작업은 두 가지가 정해지지 않았어요. 하나는 #8208과 #8209가 리뷰를 받아 머지될지예요. 다른 하나는 #8207의 세 방향 중 어느 쪽으로 갈지예요. 방향이 정해지지 않았으니 <code>CompleteExecutionHandler</code>와 <code>RestartStageHandler</code>의 수정은 시작하지 않았어요. 두 핸들러의 재현은 이슈에 있지만 고치는 PR은 없어요.</p>
+<p>정리하면 승인 코멘트의 항목 1과 3에는 PR이 있고, 항목 2, 5, 6에는 이슈가 있어요. 승인 코멘트의 항목 2(<code>cancel</code>이 잠금 없이 읽는 경쟁)와 #8208 본문이 적은 한계(상태는 같은데 <code>canceled</code>만 다른 경우)는 어느 PR에서도 고쳐지지 않아요. 항목 7의 이미 <code>RUNNING</code>에 갇힌 39건을 정리하는 일은 코드 변경이 아니라 운영 작업이라서 이 작업에 들어 있지 않아요.</p>
+
+<div class="obsv-summary"><div class="obsv-st2">✍️ 요약</div><p>#8174의 승인 코멘트에는 남은 항목 8개가 있었어요. 롤백이 취소를 덮어쓰는 문제는 #8208로, 잠금을 증명하지 못하는 테스트는 #8209로, 같은 모양의 쓰기와 기본 구현의 한계는 이슈 #8207로 옮겼어요. 로컬에서 #8208은 롤백 코드를 되돌리면 취소가 <code>RUNNING</code>으로 바뀌며 실패했고, #8209는 <code>.forUpdate()</code>를 지우면 새 테스트만 실패하고 기존 순차 테스트는 통과했어요. 2026-10-22 현재 셋 모두 열려 있고 메인테이너의 답은 아직 없어요.</p></div>
+</div>

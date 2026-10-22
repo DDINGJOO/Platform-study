@@ -1,0 +1,184 @@
+<!-- tags: Spinnaker, Orca, StartExecution, 경쟁 조건, 중복 배달, SELECT FOR UPDATE, 조건부 갱신, Testcontainers -->
+<!-- lead: Spinnaker Orca에서 중복 배달된 StartExecution 메시지가 끝난 파이프라인을 다시 RUNNING으로 바꾸는 경쟁 조건을 조건부 상태 갱신으로 고친 PR #8174의 과정과 리뷰, 재현 결과를 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 오픈소스 기여 회고 · Spinnaker</div>
+  <b>1편. 중복 배달된 StartExecution이 끝난 파이프라인을 RUNNING으로 되돌렸다</b> &larr; 지금 이 글<br>
+  2편. 승인 코멘트의 후속 8항목을 이슈 하나와 PR 둘로 옮긴 과정
+</div>
+
+<p>Spinnaker의 Orca에서 파이프라인의 모든 스테이지가 <code>SUCCEEDED</code> 또는 <code>SKIPPED</code>로 끝났는데, 파이프라인 자체의 상태는 <code>RUNNING</code>으로 남아 있는 실행이 39건 보고됐어요. PR 본문의 표현으로는 이 파이프라인이 영원히 <code>RUNNING</code>으로 남아요.</p>
+<p>이 글은 그 이슈(<a href="https://github.com/spinnaker/spinnaker/issues/7921">spinnaker/spinnaker #7921</a>)를 고친 <a href="https://github.com/spinnaker/spinnaker/pull/8174">#8174</a>의 회고예요. 이슈는 제가 겪은 장애가 아니라 다른 사용자가 보고한 것이고, 저는 그 이슈의 수정 PR을 맡았어요. 버그가 어떻게 생기는지, 무엇을 어떻게 고쳤는지, 리뷰에서 무엇이 바뀌었는지, 그리고 글을 쓰려고 2026-10-22에 머지 커밋에서 테스트를 다시 돌려 확인한 것을 차례로 적었어요. 시각은 따로 적지 않으면 모두 UTC예요.</p>
+<p>이 글에서 답할 질문은 네 가지예요. 같은 시작 메시지가 두 번 배달되면 왜 끝난 파이프라인이 다시 <code>RUNNING</code>이 될까요? 저장소가 쓰기 전에 상태를 확인하게 만들려면 무엇을 바꿔야 할까요? 그 수정이 정말 막는지는 어떻게 확인했을까요? 그리고 리뷰어는 무엇을 고치라고 했을까요?</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Orca, StartExecution</div>Orca는 Spinnaker에서 파이프라인 실행을 진행시키는 서비스예요. 실행은 큐에 쌓인 메시지를 핸들러가 하나씩 처리하면서 진행되고, <code>StartExecution</code>은 파이프라인을 <code>NOT_STARTED</code>에서 <code>RUNNING</code>으로 바꾸고 첫 스테이지들을 시작시키는 메시지예요.</div>
+
+<h2>1. 끝난 파이프라인이 다시 RUNNING이 됐다</h2>
+
+<p>이슈를 올린 musabshak은 원인을 이렇게 정리했어요. <code>StartExecution</code>을 처리하는 핸들러가 Redis 큐의 확인 응답 제한 시간(기본 60초)보다 오래 걸리면, 큐가 같은 메시지를 다른 작업자에게 한 번 더 배달해요. 두 작업자가 모두 파이프라인을 <code>NOT_STARTED</code> 상태로 읽은 상태에서, 첫 작업자는 파이프라인을 시작하고 파이프라인은 끝까지 성공해요. 그 뒤에 두 번째 작업자가 자기가 읽어 둔 오래된 복사본을 저장하면서 <code>SUCCEEDED</code>가 <code>RUNNING</code>으로 바뀐다는 설명이었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 확인 응답 제한 시간(ack timeout)과 중복 배달</div>큐는 메시지를 작업자에게 넘긴 뒤 작업자가 처리를 끝냈다는 확인 응답(ack)을 기다려요. 제한 시간 안에 응답이 없으면 처리에 실패한 것으로 보고 같은 메시지를 다시 배달해요. 그래서 메시지가 한 번이 아니라 두 번 이상 처리될 수 있고, 이슈에서도 중복 배달은 큐의 정상 동작이라고 적었어요.</div>
+
+<p>이슈에는 로그에서 확인한 수치가 있었어요. 39건 모두에서 마지막 두 번의 <code>StartExecution</code> 배달 간격이 60.2초에서 65.4초 사이였고, 처음 <code>RUNNING</code>을 쓴 시각은 메시지를 받은 지 61.7초에서 66.4초 뒤였어요. 오래된 <code>RUNNING</code>은 파이프라인이 끝나고 4.9초에서 40.3초 뒤에 쓰였고, 첫 쓰기와 오래된 쓰기는 모든 경우에 서로 다른 Orca 파드에서 나왔다고 해요. 이 수치는 이슈 작성자가 측정한 값이고, 저는 이 값을 재현해 보지 않았어요.</p>
+<p>핸들러가 그렇게 오래 걸린 이유도 이슈에 있어요. 동시 실행 개수를 확인하는 SQL 조회(<code>retrievePipelinesForPipelineConfigId</code>)가 두 번의 급증 구간에서 66초에서 69초 걸렸고, 이 조회가 실행 본문과 스테이지를 통째로 읽어 오기 때문이라고 작성자가 추정했어요. 작성자는 이 지연이 별개의 성능 문제이고, 지연이 없어져도 중복 배달은 정상 동작이라 오래된 복사본이 새 상태를 덮어쓰지 못하게 막아야 한다고 적었어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs><text x="120" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2f5d8c">작업자 A</text><text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2e6b41">SQL 저장소</text><text x="580" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f">작업자 B (같은 메시지)</text><path d="M120 40 C122 143.5,118 281.5,120 385" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="3 7" stroke-linecap="round" /><path d="M350 40 C352 143.5,348 281.5,350 385" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="3 7" stroke-linecap="round" /><path d="M580 40 C582 143.5,578 281.5,580 385" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="3 7" stroke-linecap="round" /><text x="35" y="78" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">1</text><path d="M130 78 Q230.0 76.9 330 78" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a1)" /><text x="230" y="70" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">읽기</text><path d="M260.6 88.6 C314.8 86.3,385.2 88.1,437.5 86.2 C438.0 94.6,436.1 103.4,437.7 108.3 C385.2 108.4,314.8 109.7,263.3 108.5 C260.9 103.4,262.5 94.6,263.8 88.3 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" /><text x="350" y="104" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">status = NOT_STARTED</text><text x="35" y="138" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">2</text><path d="M570 138 Q470.0 137.4 370 138" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a1)" /><text x="470" y="130" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">60초 뒤 재배달, 읽기</text><text x="35" y="198" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">3</text><path d="M130 198 Q230.0 200.9 330 198" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a1)" /><text x="230" y="190" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">RUNNING 저장</text><path d="M260.2 209.4 C314.8 207.2,385.2 206.6,436.5 207.2 C439.3 214.6,436.7 223.4,438.3 230.6 C385.2 229.5,314.8 230.2,260.3 228.2 C260.8 223.4,262.7 214.6,261.7 207.3 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round" /><text x="350" y="224" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">status = RUNNING</text><text x="35" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">4</text><text x="230" y="260" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">파이프라인 진행, 완료</text><path d="M130 268 Q230.0 268.5 330 268" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a1)" /><path d="M261.8 277.2 C314.8 279.2,385.2 278.8,437.0 278.3 C438.1 284.6,439.5 293.4,438.9 299.2 C385.2 301.9,314.8 298.5,261.7 301.0 C260.6 293.4,262.0 284.6,260.2 278.7 Z" fill="#eaf5ee" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round" /><text x="350" y="294" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">status = SUCCEEDED</text><text x="35" y="338" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">5</text><path d="M570 338 Q470.0 339.6 370 338" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#a1)" /><text x="470" y="330" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">오래된 복사본 저장</text><path d="M262.3 349.5 C314.8 347.3,385.2 348.8,438.4 348.3 C437.8 354.6,439.4 363.4,439.8 369.9 C385.2 370.7,314.8 368.2,262.8 370.6 C264.0 363.4,263.3 354.6,261.1 347.5 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round" /><text x="350" y="364" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">status = RUNNING</text>
+</svg>
+</div>
+
+<div class="obsv-figcap">그림 1. 5번의 쓰기가 2번에서 읽은 복사본을 그대로 저장해서 3번과 4번의 결과를 지워요</div>
+
+<h2>2. 이슈 스레드에서 정해진 것</h2>
+
+<p>메인테이너 jasonmcintosh는 8월 27일에 "60초나 걸리는 건 저장소 쪽 문제로 보인다"는 취지로 답하면서도, <code>protecting against a situation like this doesn't sound like a bad thing</code>이라고 적었어요. 이슈는 그 직전인 8월 26일 23:54에 bug로 분류됐어요. 같은 날 늦게는 이런 지연이 이 시스템에서 이미 알려진 문제를 일으킨다고 적었고, 8월 28일에는 릴리스를 앞두고 있어서 바로 고칠 계획은 없지만 PR은 환영한다고 남겼어요. 이슈 작성자는 자신이 수정 PR을 낼 계획은 없다고 답했어요.</p>
+<p>저는 10월 9일 12:04에 드래프트 PR #8174를 열고 이슈에 알렸어요. 이슈에 적힌 제안(<code>NOT_STARTED</code>에서 <code>RUNNING</code>으로 바꾸는 쓰기를, 저장된 상태가 읽었던 상태 그대로일 때만 하게 한다)을 따르는 수정이고, 다른 작업자가 이미 상태를 바꿨다면 중복 메시지로 보고 첫 스테이지들을 큐에 넣지 않게 하는 방식이라고 설명했어요.</p>
+
+<h2>3. 어디서 덮어쓰는가</h2>
+
+<p>PR 본문에 적은 원인은 이래요. <code>StartExecutionHandler</code>가 실행을 읽고, 동시 실행 허용 여부를 확인(<code>shouldQueue()</code>)한 다음 <code>repository.updateStatus(execution)</code>로 <code>RUNNING</code>을 저장해요. SQL 저장소에서 이 호출은 지금 저장된 값을 확인하지 않고, 핸들러가 들고 있는 실행 전체를 저장해요. 그래서 핸들러가 읽은 뒤에 누가 상태를 바꿔도 핸들러의 복사본이 그 위에 쓰여요. 그림 1의 5번이 이 호출이에요.</p>
+<p>한 가지 더 확인해 둔 것이 있어요. 중복으로 배달된 <code>StartStage</code>는 해가 없어요. 이슈에 따르면 <code>StartStageHandler</code>가 이미 끝난 스테이지의 시작 메시지를 무시하기 때문이에요. 그래서 문제는 첫 스테이지가 두 번 시작되는 것보다, 오래된 복사본이 실행의 최상위 상태를 덮어쓰는 쪽에 있어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 경쟁 조건(race condition)과 조건부 갱신</div>여러 작업자가 같은 데이터를 읽고 고치는 순서에 따라 결과가 달라지는 버그를 경쟁 조건이라고 해요. 조건부 갱신(compare-and-set)은 값을 저장하기 전에 지금 저장된 값이 내가 기대한 값인지 확인하고, 기대와 다르면 저장하지 않는 방식이에요. 확인과 저장이 하나로 묶여서 실행되어야 의미가 있어요.</div>
+
+<h2>4. 상태를 확인하고 저장하게 바꿨다</h2>
+
+<p>수정은 저장소 인터페이스에 메서드 하나를 더하고, 핸들러가 그 메서드를 쓰게 하는 것이에요. 파일 7개에 226줄이 늘고 10줄이 줄었고, 그중 테스트가 절반 이상이에요. 메서드는 처음에는 <code>updateStatusIfUnchanged</code>였다가 리뷰에서 <code>updateStatusIfExpected</code>로 바뀌었어요(6장). 아래는 머지된 최종 모양이에요.</p>
+
+<div class="obsv-code">  default boolean updateStatusIfExpected(
+      @Nonnull PipelineExecution execution, @Nonnull ExecutionStatus expectedStatus) {
+    ExecutionStatus storedStatus =
+        retrieve(execution.getType(), execution.getId(), true).getStatus();
+    if (storedStatus != expectedStatus) {
+      return false;
+    }
+    updateStatus(execution);
+    return true;
+  }</div>
+
+<p>인터페이스의 기본 구현이에요. 저장된 실행을 다시 읽어서 상태가 기대와 같을 때만 저장해요. 읽기와 저장 사이에 다른 쓰기가 들어올 구간이 남으니 그 구간을 좁힐 뿐 없애지는 못해요. Redis 저장소가 이 구현을 쓰는데, 실행 저장소로서 Redis는 더 이상 쓰지 않는 방향이라서 Redis 전용 코드는 넣지 않았다고 PR 본문에 적었어요. 이 한계는 메서드의 Javadoc에도 적었어요.</p>
+
+<div class="obsv-code">  override fun updateStatusIfExpected(execution: PipelineExecution, expectedStatus: ExecutionStatus): Boolean {
+    var updated = false
+    withPool(poolName) {
+      jooq.transactional { ctx -&gt;
+        updated = false
+        val storedStatus = ctx.select(field("status"))
+          .from(execution.type.tableName)
+          .where(execution.id.toWhereCondition())
+          .forUpdate()
+          .fetchOne(field("status"), String::class.java)
+        val statusMatches = storedStatus == expectedStatus.toString()
+        if (statusMatches) {
+          storeExecutionInternal(ctx, execution)
+          updated = true
+        }
+      }
+    }
+    return updated
+  }</div>
+
+<p>SQL 저장소의 구현이에요. 한 트랜잭션 안에서 <code>SELECT ... FOR UPDATE</code>로 그 실행의 행을 잠그고 저장된 상태를 읽어요. 다른 트랜잭션이 이 행을 잠그고 있으면 그 트랜잭션이 끝날 때까지 기다리고, 기다린 뒤에는 커밋된 최신 상태를 읽어요. 상태가 기대와 같을 때만 같은 트랜잭션 안에서 저장하니 확인과 저장 사이에 다른 쓰기가 들어올 수 없어요. 메모리 저장소는 호출한 쪽과 같은 인스턴스를 공유해서 오래된 복사본이 생기지 않으므로 무조건 갱신하고, 이중 저장소(<code>DualExecutionRepository</code>)는 선택된 저장소에 위임해요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: SELECT ... FOR UPDATE</div>읽은 행을 트랜잭션이 끝날 때까지 다른 트랜잭션이 고치지 못하게 잠그는 SQL이에요. 이 잠금이 없으면 두 작업자가 같은 오래된 값을 읽고 둘 다 통과할 수 있어요.</div>
+
+<div class="obsv-code">         execution.updateStatus(RUNNING)
+-        repository.updateStatus(execution)
++        if (!repository.updateStatusIfExpected(execution, NOT_STARTED)) {
++          log.warn(
++            "Not starting execution (type ${execution.type}, id {}, application: {}): {}." +
++              " Ignoring StartExecution message.",
++            value("executionId", execution.id),
++            value("application", execution.application),
++            describeStoredStatus(execution)
++          )
++          return
++        }
+         try {
+           initialStages.forEach { queue.push(StartStage(it)) }</div>
+
+<p>핸들러는 저장이 거부되면 경고 로그를 남기고 바로 반환해요. 첫 스테이지들을 큐에 넣지 않고 <code>ExecutionStarted</code> 이벤트도 내보내지 않아요. 이 PR은 초기 스테이지가 없어서 바로 <code>TERMINAL</code>로 끝나는 경로와, <code>StartStage</code> 푸시가 실패했을 때 <code>NOT_STARTED</code>로 되돌리는 경로는 그대로 뒀어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs><path d="M20.7 38.1 C65.0 39.8,125.0 38.7,168.5 38.2 C171.1 67.0,168.5 103.0,169.0 129.6 C125.0 131.5,65.0 128.3,19.8 130.2 C21.5 103.0,21.3 67.0,21.5 39.1 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" /><text x="95" y="70" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">작업자 B의 복사본</text><text x="95" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">status = NOT_STARTED</text><text x="95" y="112" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">RUNNING으로 바꿔 저장 시도</text><path d="M176 85 Q197.0 84.5 218 85" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a2)" /><path d="M223.4 41.5 C269.0 41.8,329.0 38.6,372.7 38.9 C372.9 67.0,373.9 103.0,374.4 129.1 C329.0 128.0,269.0 129.7,223.5 130.3 C225.8 103.0,224.8 67.0,224.1 40.5 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round" /><text x="299" y="66" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">SELECT ... FOR UPDATE</text><text x="299" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">저장된 status를 읽음</text><text x="299" y="110" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#c07f18">= SUCCEEDED</text><path d="M380 85 Q401.0 86.1 422 85" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a2)" /><path d="M426.2 41.6 C464.0 41.1,512.0 41.5,549.2 39.6 C547.6 67.0,546.4 103.0,548.5 128.2 C512.0 128.3,464.0 128.8,426.6 129.4 C426.2 103.0,426.0 67.0,426.6 38.4 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round" /><text x="488" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">기대와 다름</text><text x="488" y="104" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">NOT_STARTED ≠</text><path d="M554 85 Q567.0 84.2 580 85" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a2)" /><path d="M582.1 41.5 C614.0 40.5,654.0 38.6,683.0 39.4 C683.5 67.0,682.5 103.0,685.4 132.0 C654.0 129.9,614.0 129.9,582.3 128.4 C583.4 103.0,583.1 67.0,585.3 38.6 Z" fill="#eaf5ee" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round" /><text x="634" y="76" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">저장 안 함</text><text x="634" y="104" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">false 반환</text><text x="350" y="180" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">핸들러는 StartStage를 큐에 넣지 않고 반환해요</text><text x="350" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">저장된 SUCCEEDED가 그대로 남아요</text>
+</svg>
+</div>
+
+<div class="obsv-figcap">그림 2. 오래된 복사본의 저장은 잠금을 얻은 뒤 읽은 상태와 비교해서 거부돼요</div>
+
+<h2>5. 수정이 정말 막는지 확인했다</h2>
+
+<p>PR에는 테스트 두 곳을 더했어요. <code>StartExecutionHandlerTest</code>에는 조건부 저장이 실패하는 경우를 더해서, 이때 <code>StartStage</code>가 큐에 들어가지 않고 <code>ExecutionStarted</code>도 나가지 않는 것을 확인해요. <code>SqlExecutionRepositoryTest</code>에는 MySQL 컨테이너(Testcontainers)에서 오래된 복사본이 저장을 거부당하는 경우를 더했어요. 두 작업자가 <code>NOT_STARTED</code>로 읽고, 첫 작업자가 시작해서 <code>SUCCEEDED</code>까지 저장한 뒤, 오래된 복사본의 조건부 저장이 <code>false</code>를 돌려주고 저장된 상태가 <code>SUCCEEDED</code>로 남는지 보는 테스트예요.</p>
+<p>2026-10-22에 머지 커밋 <code>1f568ed149</code>을 받아 이 테스트들을 돌렸어요. CI 워크플로가 Java 25를 쓰기 때문에 같은 버전의 JDK를 썼고, 메모리가 넉넉하지 않아서 Gradle을 <code>--no-daemon --max-workers=2 -Dorg.gradle.jvmargs=-Xmx2g</code>로 제한했어요. 두 모듈에서 해당 테스트 클래스만 골라 돌렸어요.</p>
+
+<div class="obsv-code">./gradlew --no-daemon --max-workers=2 -Dorg.gradle.jvmargs=-Xmx2g \
+  :orca:orca-queue:test --tests '*StartExecutionHandlerTest' \
+  :orca:orca-sql:test --tests '*SqlExecutionRepositoryTest'
+
+BUILD SUCCESSFUL in 10m 26s
+StartExecutionHandlerTest      tests=48 failures=0
+SqlExecutionRepositoryTest     tests=21 failures=0</div>
+
+<p>통과했어요. 10분 26초 중 대부분은 처음 받는 Gradle 배포판과 의존성, 컴파일에 쓰였어요. SQL 테스트가 21개라는 숫자는 PR 본문에 적힌 값과 같아요.</p>
+<p>그다음 본 코드만 되돌리고 테스트는 그대로 두었어요. 되돌린 것은 두 가지예요. <code>StartExecutionHandler.kt</code>를 머지 직전 버전(저장을 무조건 하는 <code>updateStatus</code>)으로 돌렸고, SQL 구현의 비교 줄을 <code>val statusMatches = true</code>로 바꿔서 항상 저장하게 했어요.</p>
+
+<div class="obsv-code">BUILD FAILED in 1m 4s
+SqlExecutionRepositoryTest     tests=21 failures=1
+  a stale copy cannot move a completed execution back to RUNNING
+    Expecting value to be false but was true
+StartExecutionHandlerTest      tests=48 failures=11
+  given another worker already started the execution from a duplicate message
+    it does not start the first stage again
+      Wanted but not invoked: executionRepository.updateStatusIfExpected(..., NOT_STARTED)
+      However, there were exactly 2 interactions with this mock:
+        retrieve(...), updateStatus(...)</div>
+
+<p>SQL 테스트 1개와 핸들러 테스트 11개가 실패했어요. 핸들러 쪽 11개는 새로 더한 중복 배달 케이스 5개와, 기존 케이스에서 <code>updateStatus</code> 호출을 <code>updateStatusIfExpected</code> 호출로 바꿔 검증하도록 고친 6개예요. 되돌린 핸들러가 <code>updateStatus</code>만 부르니 이 검증들이 모두 깨진 거예요. PR 본문이 적은 "이전 핸들러에서는 <code>does not start the first stage again</code>이 실패한다"는 내용도 이 출력에서 그대로 확인했어요.</p>
+<p>이 확인에는 한계가 있어요. SQL 테스트는 두 번의 호출을 한 줄로 이어서 실행하는 순차 재현이라서, 동시에 실행되는 두 트랜잭션을 만들지 않아요. 제가 비교 줄을 항상 참으로 바꾸면 이 테스트가 실패한다는 것은 비교 로직을 증명하지만, <code>FOR UPDATE</code> 잠금이 원자성을 지킨다는 것은 증명하지 못해요. 이 한계는 PR 본문에도 적어 뒀고, 리뷰어도 같은 지적을 했어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 주의</div>이 재현은 수정이 있는 상태와 없는 상태에서 테스트 결과가 달라지는지를 본 것이고, 운영에서 39건이 생긴 상황을 다시 만든 것은 아니에요. 이슈의 수치(60초 간격, 66초대 조회)는 작성자의 로그와 지표를 인용했을 뿐이에요.</div>
+
+<h2>6. 리뷰에서 바뀐 것</h2>
+
+<p>리뷰어 jasonmcintosh의 첫 리뷰는 10월 9일 16:59에 왔고, 코멘트는 세 가지였어요. 드래프트 PR을 연 지 5시간이 안 돼서 달린 리뷰예요.</p>
+<p>첫째는 이름이에요. SQL 구현에서 <code>updated</code> 변수가 쓰기 전에 <code>storedStatus == expectedStatus</code> 결과로 먼저 채워지고 있었어요. 이 값은 "쓰기가 일어났다"가 아니라 "쓰기를 해도 된다"는 뜻이니, 리뷰어는 이 변수를 <code>statusMatches</code>로 바꾸고 <code>updated</code>는 쓰기 뒤에 채우라고 했어요. 인라인 코멘트의 한 줄은 이래요.</p>
+
+<div class="obsv-code">Though logically fine... really what we're saying is the stored status was matching
+the expected status so not updated and needs updating :) Just a ... naming issue.</div>
+
+<p>메서드 이름도 같은 이유로 바꾸라고 했어요. <code>updateStatusIfUnchanged</code>의 "unchanged"는 실행이 변하지 않았다는 뜻으로 읽힐 수 있는데, 실제로는 저장된 상태가 기대한 상태인지를 비교하기 때문이에요. 리뷰어는 <code>updateStatusIfExpected</code>와 <code>compareAndSetStatus</code>를 후보로 줬고, 저는 <code>updateStatusIfExpected</code>를 골랐어요. 기본 구현이 원자적이지 않은데 <code>compareAndSet</code>이라는 이름은 그 이상을 약속하기 때문이에요. 이 PR의 본문은 처음 이름인 <code>updateStatusIfUnchanged</code>로 남아 있고, 커밋 메시지와 코드는 바뀐 이름을 써요.</p>
+<p>둘째는 로그 문구예요. 저장이 거부됐을 때 처음 로그는 "다른 작업자가 이미 시작했다"고 단정했어요. 그런데 거부되는 경우는 그것만이 아니에요. 그 사이에 취소됐을 수도 있고, 삭제됐을 수도 있어요. 리뷰어는 거부된 경로에서만 실행을 한 번 더 읽어서 실제 저장된 상태를 로그에 남기고, 읽기가 실패하면 일반적인 문구로 대신하라고 했어요. 저는 이 제안을 받아들여 <code>describeStoredStatus</code>를 만들었고, 삭제된 경우와 추가 읽기를 확인하는 테스트도 더했어요. 위 핸들러 코드의 <code>describeStoredStatus(execution)</code>가 그 결과예요.</p>
+<p>셋째는 SQL 밖의 원자성이에요. 기본 구현은 읽고 쓰는 두 단계라서 원자적이지 않다고 Javadoc에 적혀 있고, 리뷰어는 이를 원자적으로 만드는 일은 별도 변경으로 해도 된다고 했어요. 저는 기본 구현에 TODO를 남기고, 그 TODO에는 추적 이슈가 아직 없다고 적었어요.</p>
+<p>10월 10일 02:40에 위 세 가지를 반영해서 스쿼시하고 main에 리베이스한 커밋을 올렸어요. 이틀 뒤인 10월 12일 14:45에 리뷰어가 승인했어요. 승인 코멘트에는 <code>Overall improvement :)</code>라는 문장과 함께, 흐름을 확인한 내용과 남은 항목 8개가 길게 적혀 있었어요. 취소가 비교에서 걸러지는지, <code>updated = false</code> 초기화가 트랜잭션 재시도에서 안전한지, 쓰기 풀을 쓰는지(읽기 복제본의 지연이 없는지)를 코드에서 확인했다는 내용도 있었어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 실무에서는</div>메서드 이름이 "무엇이 일어났는가"와 "무엇이 허용되는가" 중 어느 쪽을 말하는지 먼저 정하면 좋아요. 이 PR에서는 반환값이 <code>false</code>일 때 아무것도 바뀌지 않았다는 계약을 이름과 Javadoc이 함께 말해야 호출하는 쪽이 오해하지 않았어요.</div>
+
+<h2>7. 결과와 남은 한계</h2>
+
+<p>#8174는 10월 15일 22:11에 머지됐어요. 이슈 #7921도 같은 시각에 닫혔어요. 승인에서 머지까지 사흘 동안 브랜치에는 main을 합치는 병합 커밋이 여러 번 들어갔어요. 이 PR은 이슈에 적힌 원인 중 "오래된 복사본이 새 상태를 덮어쓴다"를 시작 경로에서 막아요. 아래 한계는 그대로 남아 있어요.</p>
+<p>첫째, Redis 저장소의 기본 구현은 여전히 읽고 쓰는 두 단계라서 틈이 남아요. 둘째, 이미 <code>RUNNING</code>으로 남은 39건의 실행은 이 PR이 고치지 않아요. 리뷰어도 이 정리는 운영 작업이니 릴리스 노트에 적어 둘 만하다고 했어요. 셋째, 핸들러가 왜 그렇게 오래 걸렸는지, 즉 동시 실행 확인 조회가 66초씩 걸린 원인은 이 PR의 범위 밖이에요. 이슈에도 별도 개선 항목으로 적혀 있어요. 넷째, 같은 모양의 오래된 쓰기가 다른 핸들러에도 있어요. PR 본문에서 <code>CompleteExecutionHandler</code>와 <code>RestartStageHandler</code>를 확인했다고 적었고, 이 부분을 이슈로 정리한 과정이 2편이에요.</p>
+
+<div class="obsv-summary"><div class="obsv-st2">✍️ 요약</div><p>끝난 파이프라인이 <code>RUNNING</code>으로 되돌아간 원인은 중복 배달된 <code>StartExecution</code>의 오래된 복사본이 저장된 상태를 확인하지 않고 덮어쓰는 것이었어요. #8174는 저장 전에 <code>SELECT ... FOR UPDATE</code>로 잠그고 상태를 비교하는 <code>updateStatusIfExpected</code>를 더해서, 거부되면 첫 스테이지를 큐에 넣지 않게 했어요. 머지 커밋에서 테스트가 통과했고, 본 코드를 되돌리면 SQL 테스트 1개와 핸들러 테스트 11개가 실패하는 것을 확인했어요. 다만 이 SQL 테스트는 잠금이 아니라 비교 로직만 증명해요.</p></div>
+</div>

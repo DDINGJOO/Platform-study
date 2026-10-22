@@ -1,0 +1,147 @@
+<!-- tags: Debezium, MySQL DDL 파서, ANTLR, ALTER DATABASE, grammars-v4 -->
+<!-- lead: MySQL 이 받아 주는 ALTER DATABASE CHARACTER SET utf8mb4 가 Debezium 의 생성된 MySQL 문법에서 ParsingException 을 내며 커넥터를 멈췄어요. schemaRef 를 선택으로 바꾼 수정과 상류 ANTLR grammars-v4 에 같은 변경을 올려 머지하기까지를 재현 결과와 함께 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 오픈소스 기여 회고 · Debezium</div>
+  <b>1편. ALTER DATABASE 한 줄에 멈춘 커넥터, 상류 문법까지 고치기</b> &larr; 지금 이 글<br>
+  2편. DEFAULT를 데이터베이스 이름으로 읽던 문법
+</div>
+
+<p><code>ALTER DATABASE CHARACTER SET utf8mb4;</code> 는 MySQL 이 받아 주는 문장이에요. 데이터베이스 이름을 빼면 지금 선택된 데이터베이스에 적용됩니다. 그런데 Debezium MySQL 커넥터의 새 DDL 문법은 이 문장을 파싱하지 못했고, 파싱 예외가 나면 커넥터가 멈췄어요. Debezium 이슈 dbz#2829 가 이 문제였습니다.</p>
+<p>고친 코드는 문법 파일의 토큰 하나와 리스너 한 줄이었어요. 시간이 걸린 부분은 다른 곳에 있었습니다. 리뷰어가 <b>"이 문법은 상류 ANTLR 문법과 맞춰 두려고 한다"</b>고 했기 때문에, 같은 변경을 grammars-v4 저장소에도 올려 머지된 뒤에야 Debezium PR 이 머지됐어요. 이 글은 그 과정과, 이번에 두 저장소에서 직접 다시 돌린 재현 결과를 정리한 기록입니다.</p>
+
+<h2>1. 커넥터가 왜 DDL 을 파싱할까</h2>
+<p>Debezium 은 MySQL 의 binlog 를 읽어 테이블 변경을 이벤트로 내보내요. binlog 에는 행 변경뿐 아니라 <code>CREATE TABLE</code>, <code>ALTER DATABASE</code> 같은 DDL 도 문장 그대로 들어 있습니다. 커넥터는 이 문장을 직접 파싱해서 테이블 구조와 데이터베이스의 문자셋을 메모리에 따라 적어 둬요. 그래야 이후 행 이벤트의 컬럼을 올바른 타입과 문자셋으로 해석할 수 있습니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: DDL 파서</div>Debezium 이 binlog 로 들어온 DDL 문장을 읽어 커넥터 안의 스키마 정보를 갱신하는 부분이에요. 파싱에 실패하면 이후 이벤트를 해석할 근거가 없어지므로 기본 설정에서는 예외를 내고 멈춥니다.</div>
+<p>파서는 ANTLR 로 만들어요. 문법 파일(<code>.g4</code>)에 규칙을 적으면 빌드할 때 Java 파서 코드가 생성되고, Debezium 은 파싱 트리를 따라 내려가는 리스너에서 스키마를 갱신합니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: ANTLR 문법과 리스너</div>ANTLR 은 <code>.g4</code> 문법 파일에서 렉서·파서 코드를 생성하는 도구예요. 리스너는 파싱 트리의 각 규칙에 들어가고 나올 때 호출되는 콜백이고, Debezium 의 실제 동작은 여기에 있습니다.</div>
+<p>MySQL 쪽에는 문법이 두 벌 있어요. 예전부터 쓰던 legacy 문법과, Oracle 이 관리하는 MySQL 문법을 바탕으로 새로 들인 문법입니다. 이 PR 에서 "생성된 문법"이라고 부른 것이 뒤쪽이에요. 두 문법의 <code>ALTER DATABASE</code> 규칙은 아래처럼 달랐습니다.</p>
+<div class="obsv-code">// legacy MySQL 문법: 이름이 선택
+alterDatabase
+    : ALTER dbFormat = (DATABASE | SCHEMA) uid? createDatabaseOption+   # alterSimpleDatabase
+
+// 생성된 MySQL 문법 (Oracle 문법 기반): 이름이 필수
+alterDatabase
+    : DATABASE_SYMBOL schemaRef alterDatabaseOption+
+    ;</div>
+<p>legacy 문법은 이름(<code>uid?</code>)을 생략할 수 있었고, legacy 리스너는 이름이 없으면 <code>parser.currentSchema()</code> 로 대신했어요. 새 문법으로 옮기면서 이 허용이 빠졌으니 회귀였습니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 회귀 (regression)</div>예전에는 되던 동작이 변경 후에 안 되는 버그예요. 여기서는 legacy 문법이 받아 주던 문장을 새 문법이 거부하게 된 경우입니다.</div>
+
+<h2>2. MySQL 은 정말 이름 없이 받아 줄까</h2>
+<p>문법을 고치기 전에 확인할 것은 "MySQL 이 이 문장을 받아 주는가"였어요. 공식 문서의 문법은 <code>ALTER {DATABASE | SCHEMA} [db_name] alter_option ...</code> 이고 이름이 대괄호 안에 있습니다. 문서만으로는 부족하다고 보고 공식 <code>mysql</code> 이미지 8.0.46, 8.4.11, 9.4.0 에서 같은 문장을 실행해 PR 본문에 붙였어요.</p>
+<div class="obsv-code">$ mysql -NB -e "ALTER DATABASE CHARACTER SET utf8mb4;"
+ERROR 1046 (3D000) at line 1: No database selected
+
+$ mysql -NB -e "CREATE DATABASE db1 CHARACTER SET latin1;
+                USE db1;
+                ALTER DATABASE CHARACTER SET utf8mb4;
+                SHOW CREATE DATABASE db1; ..."
+db1  CREATE DATABASE `db1` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ ...</div>
+<p>선택된 데이터베이스가 없을 때 서버는 문법 오류가 아니라 <code>No database selected</code> 를 돌려줘요. 이름이 빠졌으니 현재 데이터베이스를 쓰겠다는 뜻이고, 현재 데이터베이스가 있으면 문자셋이 실제로 바뀝니다. 세 버전 모두 결과가 같았어요. <span class="obsv-mark">이름은 선택 사항이고, 생략하면 현재 데이터베이스에 적용된다</span>는 것을 서버 응답으로 확인한 셈입니다.</p>
+
+<h2>3. 고친 것: 토큰 하나와 리스너 한 줄</h2>
+<p>문법에서는 <code>schemaRef</code> 를 선택으로 바꿨어요. 이름이 없으면 <code>ctx.schemaRef()</code> 가 <code>null</code> 이 되므로, 리스너는 legacy 리스너처럼 현재 스키마로 대신합니다.</p>
+<div class="obsv-code">--- a/debezium-ddl-parser/.../mysql/generated/MySqlParser.g4
++++ b/debezium-ddl-parser/.../mysql/generated/MySqlParser.g4
+ alterDatabase
+-    : DATABASE_SYMBOL schemaRef alterDatabaseOption+
++    : DATABASE_SYMBOL schemaRef? alterDatabaseOption+
+     ;
+
+--- a/debezium-connector-mysql/.../CreateAndAlterDatabaseParserListener.java
++++ b/debezium-connector-mysql/.../CreateAndAlterDatabaseParserListener.java
+     public void enterAlterDatabase(MySqlParser.AlterDatabaseContext ctx) {
+-        databaseName = parser.parseName(ctx.schemaRef().identifier());
++        // The database name is optional and defaults to the current database
++        databaseName = ctx.schemaRef() == null ? parser.currentSchema() : parser.parseName(ctx.schemaRef().identifier());
+         charsetSpecified = false;</div>
+<p>테스트는 두 개를 넣었어요. <code>BinlogAntlrDdlParserTest#shouldParseAlterDatabaseWithoutDatabaseName</code> 은 MySQL 과 MariaDB 테스트 클래스가 함께 상속하는 공통 테스트이고, <code>ALTER DATABASE CHARACTER SET ...</code> 과 <code>ALTER SCHEMA CHARSET ...</code> 뒤에 현재 데이터베이스의 문자셋을 확인합니다. <code>MySqlAntlrDdlParserTest#shouldParseAlterDatabaseWithDefaultCharsetWithoutDatabaseName</code> 은 <code>DEFAULT CHARACTER SET</code> 과 <code>DEFAULT CHARSET ... DEFAULT COLLATE ...</code> 형태를 다뤄요.</p>
+<p>리스너 한 줄에는 사연이 하나 있어요. main 에 rebase 할 때 dbz#373 의 변경이 같은 메서드(<code>enterAlterDatabase</code>)에 <code>charsetSpecified = false;</code> 를 넣어 두어서 충돌이 났습니다. 두 변경이 서로 다른 일을 하므로 둘 다 남겼고, 위 diff 의 마지막 줄이 그 결과예요.</p>
+
+<h2>4. 다시 돌려 본 재현</h2>
+<p>이번 회고를 쓰면서 머지된 커밋(<code>8787caaa</code>)을 받아 같은 테스트를 다시 돌렸어요. CI 의 Java 설정 기본값이 Temurin 21 이라 JDK 21 을 썼고, 통합 테스트는 Docker 가 필요해서 빼고 DDL 파서 단위 테스트만 골랐습니다. 처음 한 번은 의존 모듈을 함께 설치해야 해서 17분 38초가 걸렸고, 그 뒤 테스트 실행은 9초였어요.</p>
+<div class="obsv-code">$ ./mvnw -B -pl debezium-connector-mysql test ... \
+    -Dtest='MySqlAntlrDdlParserTest#shouldParseAlterDatabaseWithoutDatabaseName+shouldParseAlterDatabaseWithDefaultCharsetWithoutDatabaseName'
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS</div>
+<p>다음에는 <code>.g4</code> 의 <code>schemaRef?</code> 만 <code>schemaRef</code> 로 되돌렸어요. 리스너와 테스트는 그대로 두고 <code>debezium-ddl-parser</code> 모듈을 다시 설치해 파서 코드를 새로 생성했습니다.</p>
+<div class="obsv-code">$ ./mvnw -B -pl debezium-ddl-parser clean install -Dquick -DskipTests ...
+$ ./mvnw -B -pl debezium-connector-mysql test ... (같은 테스트)
+[ERROR] Tests run: 2, Failures: 0, Errors: 2, Skipped: 0
+io.debezium.text.ParsingException:
+DDL statement couldn't be parsed. ... with the statement 'ALTER DATABASE CHARACTER SET utf8mb4;'
+mismatched input 'CHARACTER' expecting {ACCOUNT_SYMBOL, ACTION_SYMBOL, ADDDATE_SYMBOL, ...</div>
+<p>파서는 <code>DATABASE</code> 다음에 이름이 될 수 있는 토큰을 기다리는데 <code>CHARACTER</code> 가 와서 멈췄다는 뜻이에요. 두 번째 테스트도 <code>mismatched input 'DEFAULT'</code> 로 같은 자리에서 실패했습니다. PR 본문에 적은 "문법 변경이 없으면 두 테스트가 이슈의 <code>ParsingException</code> 으로 실패한다"와 같은 결과예요.</p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 문법을 되돌릴 때는 clean 부터</div>처음에는 <code>clean</code> 없이 <code>install</code> 만 했어요. 그랬더니 테스트가 <code>ALTER</code> 가 아니라 첫 줄인 <code>CREATE DATABASE db1 ...</code> 에서 <code>mismatched input 'CREATE'</code> 로 실패했습니다. 생성된 코드가 바뀐 문법과 어긋난 상태였어요. <code>clean install</code> 로 다시 만들고 나서야 의도한 문장에서만 실패했습니다. 문법을 바꾼 실험에서 실패한 위치가 바꾼 규칙과 맞는지 먼저 봐야 하는 이유예요.</div>
+
+<h2>5. 리뷰: "상류 문법과 맞춰 두고 싶다"</h2>
+<p>첫 리뷰는 Naros 가 남겼어요. 두 테스트에 <code>@FixFor("debezium/dbz#2829")</code> 를 붙이라는 제안과 main 에 rebase 해 달라는 요청이었고, 반영 뒤 <i>"LGTM, I'd like to get feedback from @vsantonastaso before merging."</i> 으로 승인했습니다.</p>
+<p>vsantonastaso 는 질문 두 개를 남겼어요. 실제 MySQL 에서 시험한 증거가 있는지, 그리고 이 문법을 상류 ANTLR 문법과 맞춰 두려 하니 상류에서도 이 문제를 논의할 수 있는지였습니다. 첫 번째는 2장의 세 버전 실행 결과를 PR 본문에 붙여 답했어요. 두 번째를 위해 상류 문법을 열어 보니 <code>sql/mysql/Oracle/MySQLParser.g4</code> 의 규칙도 <code>DATABASE_SYMBOL schemaRef alterDatabaseOption+</code> 로 같은 제약을 갖고 있었습니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 상류 (upstream)와 vendored 문법</div>Debezium 의 <code>debezium-ddl-parser/README.md</code> 는 MySQL 문법 파일을 grammars-v4 에서 복사해 왔고, 올릴 때는 다시 내려받아 덮어쓴다고 적어 둬요. 이렇게 다른 저장소의 파일을 자기 저장소에 복사해 두는 것을 vendoring 이라고 하고, 원본 저장소를 상류라고 부릅니다.</div>
+<p>그래서 grammars-v4 에 이슈 #5036 을 열고, 같은 한 토큰 변경을 PR #5037 로 올렸어요. Debezium PR 에는 이 README 내용을 들어 "상류에서 고쳐야 다음 동기화 때 이 변경이 덮어써지지 않는다"고 남겼습니다. 이 PR 이 먼저 머지돼도 같은 한 토큰이라 상류가 머지되면 그대로 맞춰진다는 점도 적었어요. vsantonastaso 는 상류 피드백을 며칠 기다려 보고, 없으면 먼저 머지한 뒤 상류 리뷰를 따라 필요하면 조정하자고 답했습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="dbz1-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs>
+<path d="M30 40 C110 37,190 42,262 40 C265 80,263 120,262 160 C190 163,110 159,31 161 C28 120,30 80,30 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" />
+<text x="146" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">grammars-v4 (상류)</text>
+<text x="146" y="104" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5">sql/mysql/Oracle/</text>
+<text x="146" y="122" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5">MySQLParser.g4</text>
+<text x="146" y="148" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">#5037 머지 10-20</text>
+<path d="M438 40 C520 37,600 42,670 40 C673 80,671 120,670 160 C600 163,520 159,439 161 C436 120,438 80,438 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" />
+<text x="554" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">Debezium (복사본)</text>
+<text x="554" y="104" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5">mysql/generated/</text>
+<text x="554" y="122" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5">MySqlParser.g4</text>
+<text x="554" y="148" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">#8220 머지 10-21</text>
+<path d="M272 80 C330 74,380 74,428 80" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#dbz1-arr)" />
+<text x="350" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">문법 동기화 때 덮어씀</text>
+<path d="M428 130 C380 137,330 137,272 130" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#dbz1-arr)" />
+<text x="350" y="158" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">리뷰 요청으로 같은 수정을 상류에</text>
+<path d="M150 205 C300 202,420 206,560 204" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" />
+<text x="350" y="236" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">문법은 양쪽이 같은 한 토큰: schemaRef?</text>
+<text x="350" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">리스너 대체 처리와 테스트는 Debezium 에만 남는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 복사해 온 문법은 상류에서 고쳐야 다음 동기화 뒤에도 남는다</div>
+
+<h2>6. 상류 PR 에서 확인한 것</h2>
+<p>grammars-v4 는 문법 폴더마다 <code>examples/</code> 의 SQL 파일을 모두 파싱해 보는 방식으로 시험해요. 그래서 #5037 에는 문법 한 토큰과 함께 <code>examples/ddl_alter.sql</code> 에 세 줄을 넣었습니다.</p>
+<div class="obsv-code">alter database character set = utf8;
+alter database default character set = utf8;
+alter schema default character set = utf8;</div>
+<p>PR 본문에는 모호성에 대한 설명도 넣었어요. 이름을 선택으로 만들면 <code>DEFAULT</code> 가 식별자로 쓰일 수 있는 문법에서는 <code>ALTER DATABASE DEFAULT CHARACTER SET x</code> 의 <code>DEFAULT</code> 를 이름으로 읽을 위험이 있습니다. Oracle 문법에서는 <code>schemaRef</code> 가 <code>identifier</code> 로 내려가고 <code>DEFAULT_SYMBOL</code> 이 <code>identifierKeyword</code> 에 없어서 그 위험이 없다는 내용이에요. 반대로 legacy MySQL 과 MariaDB 문법은 <code>DEFAULT</code> 를 식별자로 허용했고, 이 차이가 2편의 출발점입니다.</p>
+<p>이번에 grammars-v4 의 머지 커밋(<code>a5802dc9</code>)에서 MySQL Oracle 문법 폴더 하나만 시험해 봤어요. 그대로는 예제 24개 파일이 모두 파싱돼 10초 만에 통과했고, 문법만 <code>schemaRef</code> 로 되돌리자 추가한 세 줄에서 정확히 실패했습니다.</p>
+<div class="obsv-code">$ ./mvnw -B -f sql/mysql/Oracle/pom.xml clean test
+line 61:15 mismatched input 'character' expecting {ACCOUNT_SYMBOL, ...
+line 62:15 mismatched input 'default' expecting {ACCOUNT_SYMBOL, ...
+line 63:13 mismatched input 'default' expecting {ACCOUNT_SYMBOL, ...
+[INFO] BUILD FAILURE</div>
+<p>상류에는 리뷰 코멘트 없이 10월 20일에 teverett 이 머지하고 "thanks!" 한 줄을 남겼어요.</p>
+
+<h2>7. 결과와 남은 것</h2>
+<p>상류 머지 다음 날 Debezium PR 에 "상류 #5037 이 머지됐고 문법 변경이 이 PR 의 <code>schemaRef?</code> 와 같으니 복사본이 상류와 맞춰졌다, 리스너 대체 처리와 회귀 테스트는 Debezium 쪽 변경으로 남는다"고 알렸습니다. vsantonastaso 가 같은 날(10월 21일) <i>"Applied 🚀"</i> 와 함께 머지했어요. PR 을 연 10월 10일부터 11일이 걸렸고, 그중 대부분은 상류를 기다린 시간이었습니다.</p>
+<p>CI 에서는 MariaDB 12.3 잡 하나가 실패한 상태였어요. 실패한 것은 <code>ReadOnlyIncrementalSnapshotIT</code>, <code>MariaDbConnectorIT</code> 같은 통합 테스트였고, 다른 35개 체크는 통과했습니다. 이 PR 은 그 상태로 머지됐어요. 같은 패턴이 2편의 PR 에서 다시 나와서, 이 PR 탓인지 가리는 과정은 2편에 적었습니다.</p>
+<div class="obsv-callout"><div class="obsv-ct">💡 이번 재현이 말해 주지 않는 것</div>&bull; 이번에는 파서 단위 테스트만 돌렸고, 실제 MySQL 서버를 띄운 binlog 처리는 돌리지 않았어요. 서버 동작의 근거는 PR 에 붙인 세 버전 실행 결과입니다.<br>&bull; 리스너의 현재 스키마 대체는 Debezium 이 추적하는 현재 스키마 값에 의존해요. <code>USE</code> 없이 이 문장이 들어오는 경우를 따로 시험하지는 않았습니다.</div>
+
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div><b>생성된 MySQL 문법이 데이터베이스 이름을 필수로 요구해서 <code>ALTER DATABASE CHARACTER SET ...</code> 가 커넥터를 멈췄고, <code>schemaRef?</code> 한 토큰과 현재 스키마 대체로 고쳤어요.</b><br><br>되돌려 보면 같은 테스트가 <code>ParsingException</code> 으로 실패하고, 상류 예제 세 줄도 같은 자리에서 실패합니다. 복사해 온 문법을 고칠 때는 상류에도 같은 변경이 들어가야 다음 동기화 뒤에도 수정이 남아요.</div>
+</div>

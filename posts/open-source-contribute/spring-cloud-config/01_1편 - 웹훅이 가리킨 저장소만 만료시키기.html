@@ -1,0 +1,216 @@
+<!-- tags: Spring Cloud Config, refresh-rate, 웹훅, monitor 엔드포인트, JGit -->
+<!-- lead: Spring Cloud Config Server에 refresh-rate를 걸면 /monitor 웹훅으로 알림을 받은 애플리케이션이 이전 커밋을 받을 수 있어요. 만료를 넣었다가 모든 저장소를 만료시킨다는 리뷰를 받고, 웹훅이 가리킨 저장소만 고르게 바꾼 과정을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 오픈소스 기여 회고 · Spring Cloud Config</div>
+  <b>1편. 웹훅이 가리킨 저장소만 만료시키기</b> &larr; 지금 이 글<br>
+  2편. 매칭은 느슨하게, lastRefresh는 그대로 둔 이유
+</div>
+
+<p>설정 저장소에 커밋을 푸시합니다. Git 호스팅 서비스가 Config Server의 <code>/monitor</code>로 웹훅을 보내고, Config Server는 그 설정을 쓰는 애플리케이션들에게 "설정이 바뀌었으니 다시 받아 가라"고 알립니다. 애플리케이션은 곧바로 설정을 다시 요청해요. 그런데 돌려받은 설정이 방금 푸시한 커밋이 아니라 그 이전 커밋일 수 있습니다.</p>
+<p><code>spring.cloud.config.server.git.refresh-rate</code>를 켜 둔 서버에서 생기는 일이에요. 이 글은 <a href="https://github.com/spring-cloud/spring-cloud-config/pull/3342">spring-cloud/spring-cloud-config #3342</a>의 회고 1편입니다. <b>웹훅을 받으면 refresh-rate를 만료시키는 첫 구현을 어떻게 만들었고, "모든 저장소를 만료시키지 말라"는 설계 지적을 받아 웹훅이 가리킨 저장소만 고르도록 어떻게 바꿨는지</b>를 적었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Spring Cloud Config Server</div>여러 애플리케이션의 설정 파일을 Git 저장소 같은 곳에 모아 두고 HTTP로 나눠 주는 서버예요. 애플리케이션은 기동할 때나 갱신 알림을 받았을 때 이 서버에 설정을 요청합니다.</div>
+
+<p>이 PR은 이슈 gh-2249와 관련된 작업이고, 2026-10-09에 열었어요. 이 글을 쓰는 2026-10-22 현재 아직 열려 있고 머지되지 않았습니다. 글에 적은 과정은 PR의 커밋·본문·리뷰 기록과, 리뷰에 대응한 날 남긴 작업 기록에서 가져왔어요.</p>
+
+<h2>1. 웹훅은 왔는데 설정은 이전 커밋</h2>
+<p>Config Server가 Git 저장소를 쓰면, 설정 요청이 올 때마다 원격 저장소에서 fetch할지를 먼저 판단해요. refresh-rate를 0보다 크게 주면 마지막 fetch 뒤로 그 시간이 지나기 전에는 원격에 가지 않습니다. 요청이 많은 서버에서 원격 호출을 줄이려는 설정이에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: refresh-rate</div><code>spring.cloud.config.server.git.refresh-rate</code>, 초 단위예요. 마지막 fetch 이후 이 시간이 지나야 다음 요청에서 원격 저장소를 다시 fetch합니다. 음수면 fetch를 아예 하지 않아요.</div>
+
+<p>판단은 <code>JGitEnvironmentRepository.shouldPull()</code>이 해요. 마지막 fetch 시각을 담은 필드가 <code>lastRefresh</code>입니다.</p>
+
+<div class="obsv-code">protected boolean shouldPull(Git git) throws GitAPIException {
+    boolean shouldPull;
+
+    if (this.refreshRate &lt; 0 || (this.refreshRate &gt; 0
+            &amp;&amp; System.currentTimeMillis() - this.lastRefresh &lt; (this.refreshRate * 1000))) {
+        return false;
+    }
+    ...</div>
+
+<p>여기에 웹훅이 끼어들면 순서가 어긋나요. 푸시 직후 웹훅이 오면 Config Server는 애플리케이션에 갱신 알림을 보내지만, 자기 자신은 아직 refresh-rate 안에 있어서 원격을 fetch하지 않습니다. 알림을 받고 설정을 다시 요청한 애플리케이션은 서버가 가진 이전 커밋을 받아요. 첫 커밋 메시지에 적은 문제가 바로 이것이었습니다.</p>
+
+<div class="obsv-code">When spring.cloud.config.server.git.refresh-rate is set, the config
+server does not fetch from the remote until the refresh rate has
+elapsed. A webhook sent to /monitor notifies the applications, which
+then fetch their configuration from the config server, but the config
+server may still serve the previous commit to them.</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: /monitor 엔드포인트</div><code>spring-cloud-config-monitor</code> 모듈이 여는 웹훅 수신 주소예요. GitHub·GitLab·Bitbucket 같은 서비스가 보낸 푸시 페이로드에서 바뀐 파일 경로를 뽑고, 그 경로로 영향을 받는 애플리케이션 이름을 추정해 갱신 알림을 보냅니다. 코드에서는 <code>PropertyPathEndpoint</code> 클래스예요.</div>
+
+<h2>2. 첫 구현: lastRefresh를 0으로</h2>
+<p>해결 방향은 단순했어요. 웹훅을 받으면 <code>lastRefresh</code>를 0으로 되돌려서, 다음 요청의 <code>shouldPull()</code>이 refresh-rate가 지났다고 판단하게 만들면 됩니다. 2026-10-09 첫 커밋 <code>3d9beb42</code>의 핵심은 아래와 같아요.</p>
+
+<div class="obsv-code">// JGitEnvironmentRepository
++	public void expireRefreshRate() {
++		this.lastRefresh = 0;
++	}
+
+// MultipleJGitEnvironmentRepository
++	@Override
++	public void expireRefreshRate() {
++		super.expireRefreshRate();
++		this.repos.values().forEach(JGitEnvironmentRepository::expireRefreshRate);
++		new ArrayList&lt;&gt;(this.placeholders.values()).forEach(JGitEnvironmentRepository::expireRefreshRate);
++	}
+
+// PropertyPathEndpoint: 알림을 보내기 전에
++				for (JGitEnvironmentRepository repository : this.gitRepositories) {
++					repository.expireRefreshRate();
++				}</div>
+
+<p>만료를 알림보다 먼저 호출한 것은 의도한 순서예요. 애플리케이션이 알림을 받고 설정을 요청할 때 서버는 이미 만료된 상태여야 하기 때문입니다. 커밋 메시지에는 <code>Fixes gh-2249</code>를 달았어요.</p>
+
+<h2>3. "모든 저장소를 만료시키지 마라"</h2>
+<p>2026-10-20에 메인테이너 ryanjbaxter가 코드를 보기 전에 설계부터 이야기하자는 코멘트를 남겼어요. 요지는 이 한 문장이었습니다.</p>
+
+<div class="obsv-code">We should really only be expiring the refresh for the repo that was updated.</div>
+
+<p>첫 구현에서는 웹훅 한 건이 들어오면 Config Server에 설정된 Git 저장소를 전부 만료시켜요. Config Server는 기본 저장소 하나만 쓰는 게 아니라, 애플리케이션 이름 패턴마다 다른 저장소를 붙이거나 URI에 <code>{application}</code> 같은 자리표시자를 넣어 저장소를 여러 개 다룰 수 있습니다. 저장소 A에 푸시가 들어왔는데 B와 C까지 다음 요청에서 원격을 fetch하게 되는 셈이에요. refresh-rate를 켠 이유가 원격 호출을 줄이려는 것이니, 웹훅이 잦은 환경에서는 웹훅이 올 때마다 그 설정과 상관없는 저장소까지 원격을 다시 fetch하게 됩니다.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 패턴 저장소와 자리표시자 저장소</div><code>MultipleJGitEnvironmentRepository</code>가 다루는 두 가지 추가 저장소예요. 패턴 저장소(<code>repos</code>)는 애플리케이션 이름이 패턴에 맞을 때 쓰는 저장소이고, 자리표시자 저장소(<code>placeholders</code>)는 <code>{application}</code> 같은 자리표시자가 든 URI를 요청마다 실제 값으로 풀어서 만든 저장소예요. 자리표시자 저장소는 요청이 올 때마다 새로 생길 수 있습니다.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="scc1a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <text x="175" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#b3502f">첫 구현 (3d9beb42)</text>
+  <text x="525" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#2e6b41">리뷰 후 (3ba94c12)</text>
+  <path d="M350 18 C 351 100, 349 200, 350 318" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8"/>
+  <path d="M70 48 C 120 46, 230 50, 280 48 C 282 62, 281 74, 280 86 C 230 88, 120 85, 72 87 C 69 74, 70 60, 70 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="175" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">📟 웹훅: 저장소 A에 푸시</text>
+  <path d="M420 48 C 470 46, 580 50, 630 48 C 632 62, 631 74, 630 86 C 580 88, 470 85, 422 87 C 419 74, 420 60, 420 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4"/>
+  <text x="525" y="74" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">📟 웹훅: 저장소 A에 푸시</text>
+  <path d="M130 92 C 110 120, 90 140, 75 165" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#scc1a)"/>
+  <path d="M175 92 C 176 120, 174 140, 175 165" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#scc1a)"/>
+  <path d="M220 92 C 240 120, 260 140, 275 165" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#scc1a)"/>
+  <path d="M30 172 C 60 170, 90 173, 118 171 C 120 190, 119 205, 118 222 C 90 224, 60 221, 32 223 C 29 205, 30 190, 30 172 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="74" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">기본 A</text>
+  <text x="74" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">만료</text>
+  <path d="M131 172 C 160 170, 190 173, 219 171 C 221 190, 220 205, 219 222 C 190 224, 160 221, 133 223 C 130 205, 131 190, 131 172 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="175" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">패턴 B</text>
+  <text x="175" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">만료</text>
+  <path d="M232 172 C 262 170, 292 173, 320 171 C 322 190, 321 205, 320 222 C 292 224, 262 221, 234 223 C 231 205, 232 190, 232 172 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
+  <text x="276" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">자리표시자 C</text>
+  <text x="276" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">만료</text>
+  <text x="175" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">다음 요청에서 셋 다 원격 fetch 🔥</text>
+  <text x="175" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 푸시와 무관한 B, C의 refresh-rate도 사라진다</text>
+  <path d="M480 92 C 460 120, 440 140, 425 165" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#scc1a)"/>
+  <path d="M380 172 C 410 170, 440 173, 468 171 C 470 190, 469 205, 468 222 C 440 224, 410 221, 382 223 C 379 205, 380 190, 380 172 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+  <text x="424" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">기본 A</text>
+  <text x="424" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">URL 일치, 만료</text>
+  <path d="M481 172 C 510 170, 540 173, 569 171 C 571 190, 570 205, 569 222 C 540 224, 510 221, 483 223 C 480 205, 481 190, 481 172 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="525" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">패턴 B</text>
+  <text x="525" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">그대로</text>
+  <path d="M582 172 C 612 170, 642 173, 670 171 C 672 190, 671 205, 670 222 C 642 224, 612 221, 584 223 C 581 205, 582 190, 582 172 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2"/>
+  <text x="626" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">자리표시자 C</text>
+  <text x="626" y="215" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">그대로</text>
+  <text x="525" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">페이로드의 저장소 URL과 맞는 것만</text>
+  <text x="525" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">= 맞는 URL이 없으면 아무것도 만료하지 않는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 웹훅 한 건이 만료시키는 범위를 "전부"에서 "페이로드가 가리킨 저장소"로 줄였어요</div>
+
+<p>지적이 맞았어요. 그래서 2026-10-21 커밋 <code>3ba94c12</code>에서 방향을 바꿨습니다. 웹훅 페이로드에 들어 있는 저장소 URL을 꺼내고, 그 URL이 각 저장소에 설정된 원격 URL과 같을 때만 만료시킵니다. 메서드 시그니처도 <code>expireRefreshRate(String repositoryUri)</code>로 바뀌었어요.</p>
+
+<h2>4. 웹훅마다 저장소 URL이 다른 곳에 있다</h2>
+<p>"페이로드에서 저장소 URL을 꺼낸다"는 말은 쉽지만, 서비스마다 그 URL을 두는 자리가 달랐어요. <code>/monitor</code>는 이미 GitHub, GitLab, Bitbucket, Gitea, Gitee, Gogs의 페이로드를 각각 해석하는 추출기를 갖고 있습니다. 그런데 기존 추출기들은 바뀐 파일 경로만 뽑았고 저장소 URL은 보지 않았어요. <code>3ba94c12</code>에서 읽도록 만든 위치는 아래와 같습니다.</p>
+
+<div class="obsv-code">GitHub, Gitea, Gitee, Gogs   repository.clone_url / ssh_url / git_url
+GitLab                       project.git_http_url / git_ssh_url
+                             (레거시 페이로드) repository.url
+Bitbucket Cloud              repository.links.html.href   (clone 링크 없음)
+Bitbucket Server pr:merged   pullRequest.toRef.repository.links.clone[].href
+Bitbucket Server 푸시        저장소 URL 없음</div>
+
+<p>까다로운 지점이 두 군데 있었어요. 첫째는 <code>repository.url</code>이에요. 레거시 GitLab 페이로드에서는 이 필드가 clone URL이지만, GitHub 페이로드에서는 같은 이름의 필드가 API 주소입니다. 그래서 이 필드는 <code>X-Gitlab-Event: Push Hook</code> 헤더가 있을 때만 읽었어요. 둘째는 Bitbucket이에요. Bitbucket Cloud는 clone URL 대신 저장소 웹 페이지 주소만 주고, Bitbucket Server의 기본 푸시 페이로드에는 저장소 URL이 아예 없습니다.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 웹훅 페이로드 (webhook payload)</div>Git 호스팅 서비스가 푸시 같은 이벤트가 일어났을 때 지정한 주소로 POST하는 JSON 본문이에요. 어떤 저장소의 어떤 커밋에서 어떤 파일이 바뀌었는지가 들어 있지만, 필드 이름과 위치는 서비스마다 다릅니다.</div>
+
+<p>URL이 없는 페이로드를 어떻게 다룰지가 실제 결정이었어요. 선택지는 두 가지였습니다. URL을 못 찾으면 예전처럼 전부 만료시키거나, 아무것도 만료시키지 않거나요. 앞쪽을 고르면 리뷰에서 지적받은 동작이 Bitbucket Server에서는 그대로 남아요. 그래서 뒤쪽을 골랐습니다. <span class="obsv-mark">저장소를 식별할 수 없으면 만료는 하지 않고, 애플리케이션 알림은 예전대로 보냅니다.</span> 애플리케이션 이름이나 저장소 이름의 끝부분으로 저장소를 짐작하는 방식도 쓰지 않았어요.</p>
+
+<p>그러면 원래 이슈에 들어 있던 Bitbucket Server 사례는 이 PR로 해결되지 않아요. 그래서 커밋과 PR 본문의 이슈 연결을 <code>Fixes gh-2249</code>에서 <code>Related to gh-2249</code>로 바꾸고, 문서에 이 한계를 적었습니다. 리뷰어에게 남긴 답에도 같은 내용을 쓰고, 저장소 정보가 부족한 서비스를 어떻게 다루면 좋을지 의견을 물었어요.</p>
+
+<div class="obsv-code">One limitation worth calling out is that native Bitbucket Server push
+payloads do not include a repository URL. I documented that limitation
+and changed the issue link from "Fixes" to "Related to" ...</div>
+
+<h2>5. 저장소 쪽: 기본, 패턴, 자리표시자</h2>
+<p>받는 쪽에서는 <code>MultipleJGitEnvironmentRepository</code>가 자기 자신(기본 저장소)과 패턴 저장소, 이미 만들어진 자리표시자 저장소에 같은 URL을 넘겨요. 각 저장소는 자기 원격 URL과 비교해서 맞을 때만 <code>lastRefresh</code>를 0으로 만듭니다.</p>
+
+<div class="obsv-code">-	private Map&lt;String, JGitEnvironmentRepository&gt; placeholders = new LinkedHashMap&lt;&gt;();
++	private Map&lt;String, JGitEnvironmentRepository&gt; placeholders = new ConcurrentHashMap&lt;&gt;();
+
++	public void expireRefreshRate(String repositoryUri) {
++		super.expireRefreshRate(repositoryUri);
++		this.repos.values().forEach(repository -&gt; repository.expireRefreshRate(repositoryUri));
++		this.placeholders.values().forEach(repository -&gt; repository.expireRefreshRate(repositoryUri));
++	}
+
+-		if (!this.placeholders.containsKey(key)) {
+-			this.placeholders.put(key, getRepository(repository, key));
+-		}
+-		return this.placeholders.get(key);
++		return this.placeholders.computeIfAbsent(key, uri -&gt; getRepository(repository, uri));</div>
+
+<p>자리표시자 저장소 맵을 <code>ConcurrentHashMap</code>으로 바꾼 이유도 여기서 생겼어요. 웹훅을 처리하는 스레드가 이 맵을 순회하는 동안 설정 요청을 처리하는 스레드가 새 항목을 넣을 수 있기 때문입니다. PR 본문에는 이 변경을 "설정 요청이 항목을 만드는 동안에도 자리표시자 캐시를 안전하게 순회할 수 있게 했다"고 적었어요. 이 커밋에서 <code>lastRefresh</code>도 <code>volatile</code>로 선언해서 웹훅 스레드가 쓴 0을 요청 스레드가 보게 했습니다.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: volatile</div>Java 필드에 붙이는 키워드예요. 한 스레드가 쓴 값을 다른 스레드가 바로 읽을 수 있도록 보장합니다. 여기서는 웹훅을 처리하는 스레드가 쓴 <code>lastRefresh = 0</code>을 설정 요청을 처리하는 스레드가 놓치지 않게 하려고 썼어요.</div>
+
+<p>URL 비교 규칙은 이 커밋에서 일부러 엄격하게 잡았어요. 기본 포트와 HTTP 자격 증명, HTTP URL 끝의 <code>.git</code>은 무시했지만, SSH 사용자 이름과 경로의 대소문자, 프로토콜과 기본이 아닌 포트는 다르면 다른 저장소로 봤습니다. 이 규칙은 두 번째 리뷰에서 다시 논의됐습니다.</p>
+
+<div class="obsv-code">	private URIish normalizeRepositoryUri(String uri) throws URISyntaxException {
+		URIish parsed = new URIish(uri).setPass(null);
+		...
+		String scheme = parsed.getScheme() == null ? "ssh" : parsed.getScheme().toLowerCase(Locale.ROOT);
+		if (!"ssh".equals(scheme)) {
+			parsed = parsed.setUser(null);
+		}
+		String path = parsed.getPath();
+		if (path.endsWith("/")) {
+		...</div>
+
+<h2>6. 무엇으로 확인했나</h2>
+<p><code>3ba94c12</code>에는 회귀 테스트를 여럿 붙였어요. 저장소가 여러 개일 때 맞는 것만 만료되는지, 기본·패턴·자리표시자 저장소 각각에서 동작하는지, 만료가 알림보다 먼저 일어나는지, 페이로드에 저장소 정보가 없거나 형식이 깨졌을 때 아무것도 만료하지 않는지를 확인합니다. 서비스별 URL 필드와 무시 경로, 음수 refresh-rate도 테스트에 넣었어요.</p>
+<p>실제 Git 저장소를 쓰는 통합 테스트도 하나 추가했어요. refresh-rate를 60초로 둔 상태에서 원격에 새 커밋을 만든 뒤, 다른 저장소 URL로 만료를 부르면 이전 커밋이 그대로 나오고 같은 URL로 부르면 새 커밋을 가져오는지 봅니다.</p>
+
+<div class="obsv-code">+		repository.expireRefreshRate(repository.getUri() + "-other");
++		environment = repository.findOne("bar", "staging", "master");
++		assertThat(environment.getVersion()).isEqualTo(startingRemoteVersion);
++
++		repository.expireRefreshRate(repository.getUri());</div>
+
+<p>PR 본문에 남긴 이 시점의 검증 결과는 Java 21에서 client·server·monitor 모듈을 함께 돌려 1,370개 테스트 통과(스킵 16), 이어서 Git 저장소·엔드포인트·추출기 관련 테스트만 골라 다시 돌려 282개 통과(스킵 5)였어요. 두 번 모두 실패와 오류는 0건이었고, 포맷과 Checkstyle 검사도 통과했습니다. 같은 날(UTC 기준) 저녁에 리뷰가 다시 왔어요. 이번에는 변경 요청 여섯 건이었습니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>refresh-rate 안에서는 웹훅 알림을 받은 애플리케이션이 이전 커밋을 받을 수 있어서, 알림 전에 <code>lastRefresh</code>를 0으로 만드는 만료를 넣었어요.</b><br><br>
+  첫 구현은 웹훅 한 건에 모든 저장소를 만료시켰고, 리뷰를 받아 페이로드가 가리킨 저장소만 만료하도록 바꿨습니다. 저장소 URL이 서비스마다 다른 자리에 있고 아예 없는 경우도 있어서, 찾지 못하면 만료하지 않는다는 원칙을 세우고 그 한계를 문서와 이슈 연결에 그대로 적었어요. 만료 범위를 좁히는 일은 결국 "어떤 저장소가 바뀌었는지를 누가 확실히 아는가"를 정하는 일이었습니다.
+</div>
+
+</div>

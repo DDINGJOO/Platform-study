@@ -1,0 +1,226 @@
+<!-- tags: Keycloak, AccessTokenContext, Objects.requireNonNull, 기여 가이드, 이슈 템플릿, 첫 기여자 CI 승인, 영역 라벨 -->
+<!-- lead: Keycloak의 AccessTokenContext가 grantType을 두 번 검사해서 rawTokenId의 null이 통과했어요. 고친 PR이 이틀 동안 리뷰를 받지 못한 이유와, 이슈를 연결한 뒤 머지된 과정을 적었어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 오픈소스 기여 회고 · Keycloak</div>
+  <b>1편. 검증 버그를 고쳤는데 리뷰가 오지 않던 이유</b> &larr; 지금 이 글
+</div>
+
+<p>Keycloak에 PR을 열고 이틀이 지났는데, 알림이 하나도 오지 않았어요. 사람의 코멘트도, 라벨도, 리뷰 요청도 없었습니다. PR 아래의 CI 워크플로 6개는 전부 <code>action_required</code> 상태로 멈춰 있었고, 누군가 승인해 주기를 기다리고 있었어요.</p>
+<p>이 글은 <a href="https://github.com/keycloak/keycloak/pull/53990">keycloak/keycloak #53990</a>의 회고예요. 고친 버그는 생성자의 검증 한 줄이었고, 코드 변경은 한 줄이었습니다. 그런데 머지까지 걸린 시간의 대부분은 코드가 아니라 <b>리뷰가 시작되기를 기다리는 데</b> 쓰였어요. 그 원인으로 PR에 이슈가 연결되어 있지 않다는 점을 짚었습니다. 버그가 무엇이었는지, 어떻게 재현했는지, 그리고 리뷰가 오지 않던 이유를 어떻게 확인하고 풀었는지를 차례로 적었습니다. 시각은 따로 적지 않으면 모두 UTC예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Keycloak, AccessTokenContext</div>Keycloak은 로그인과 토큰 발급을 맡는 오픈소스 인증 서버예요. <code>AccessTokenContext</code>는 발급한 액세스 토큰이 어떤 세션과 어떤 방식으로 만들어졌는지(세션 종류, 토큰 종류, 그랜트 타입, 원본 토큰 id)를 담는 작은 클래스입니다. 이 값들은 토큰 id 문자열 앞부분에 약어로 인코딩돼요.</div>
+
+<h2>1. 메시지는 rawTokenId를 말하는데 검사는 grantType을 했다</h2>
+<p><code>AccessTokenContext</code>의 생성자는 인자 네 개를 받고, 첫머리에서 네 개가 null이 아닌지 검사해요. 수정 전 코드는 아래와 같았습니다.</p>
+
+<div class="obsv-code">@JsonCreator
+public AccessTokenContext(@JsonProperty("sessionType") SessionType sessionType, @JsonProperty("tokenType") TokenType tokenType, @JsonProperty("grantType") String grantType, @JsonProperty("rawTokenId") String rawTokenId) {
+    Objects.requireNonNull(sessionType, "Null sessionType not allowed");
+    Objects.requireNonNull(tokenType, "Null tokenType not allowed");
+    Objects.requireNonNull(grantType, "Null grantType not allowed");
+    Objects.requireNonNull(grantType, "Null rawTokenId not allowed");
+    this.sessionType = sessionType;
+    ...
+    this.rawTokenId = rawTokenId;
+}</div>
+
+<p>네 번째 줄의 메시지는 <code>rawTokenId</code>를 말하지만, 검사하는 변수는 바로 윗줄과 같은 <code>grantType</code>이에요. <code>grantType</code>이 null이면 윗줄에서 이미 예외가 나기 때문에, 네 번째 줄은 어떤 입력에서도 실패하지 않습니다. 결국 <code>rawTokenId</code>는 아무도 검사하지 않는 인자였어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: @JsonCreator</div>JSON을 객체로 바꿀 때 Jackson이 호출할 생성자를 지정하는 어노테이션이에요. 이 생성자에는 <code>@JsonProperty</code>로 JSON 필드 이름이 붙어 있어서, 직렬화된 토큰 컨텍스트 JSON을 읽을 때도 같은 생성자를 거칩니다. 그래서 코드에서 직접 호출하는 경로와 JSON을 읽는 경로가 같은 검증을 공유해요.</div>
+
+<p>네 줄은 길이와 들여쓰기가 같고, 메시지는 기대한 내용을 말해요. <span class="obsv-mark">검증 코드가 있다는 사실과 그 검증이 동작한다는 사실은 별개</span>라서, 실패해야 하는 입력으로 한 번은 실행해 봐야 알 수 있었어요.</p>
+<p>이 버그가 어느 버전에 있는지도 확인했어요. 세션 기록에는 최신 릴리스 26.8.1과 main 양쪽에 같은 줄이 있다는 점을 소스에서 확인한 내용이 남아 있습니다. 재현 코드에 쓴 열거형 상수(<code>SessionType.ONLINE</code>, <code>TokenType.REGULAR</code>)와 생성자 시그니처도 이때 실제 소스와 대조했어요.</p>
+
+<h2>2. 통과한 null은 어디로 가나</h2>
+<p>null이 생성자를 통과해도, 그 순간에는 아무 일도 일어나지 않아요. 문제는 그 객체가 쓰이는 곳에서 생깁니다. PR 본문에는 <code>DefaultTokenContextEncoderProvider</code>에서 토큰 id에 이어 붙을 때 문자열 <code>null</code>이 그대로 들어간다고 적어 두었어요. 이 글을 쓰려고 2026-10-22에 저장소를 새로 받아, 수정 전 상태에서 이 경로를 직접 실행해 봤습니다. 사본에서만 돌린 임시 테스트가 출력한 내용이에요.</p>
+
+<div class="obsv-code">// 되돌린 상태(rawTokenId 검사 없음)
+PROBE constructor: accepted, getRawTokenId()=null
+PROBE encodeTokenId=onrtro:null
+PROBE json: accepted, encodeTokenId=onrtro:null</div>
+
+<p>첫 줄은 <code>rawTokenId</code>가 null인 채로 생성자가 끝났다는 뜻이에요. 둘째 줄은 그 객체로 <code>encodeTokenId</code>를 호출한 결과이고, 토큰 id 뒷부분이 <code>:null</code>이라는 문자열이 됐어요. 앞의 <code>onrtro</code>는 세션 종류(<code>on</code>, 온라인), 토큰 종류(<code>rt</code>, 일반), 그랜트 타입(<code>ro</code>, 임시 테스트가 password에 붙인 약어)를 이어 붙인 문자열입니다. 셋째 줄은 <code>"rawTokenId":null</code>이 들어 있는 JSON을 읽어도 똑같이 통과한다는 확인이에요.</p>
+<p>수정 후 상태에서 같은 임시 테스트를 돌리면 결과가 달라져요.</p>
+
+<div class="obsv-code">// 머지 커밋 상태
+PROBE constructor: java.lang.NullPointerException: Null rawTokenId not allowed
+PROBE json: ValueInstantiationException root=java.lang.NullPointerException: Null rawTokenId not allowed</div>
+
+<p>생성자가 바로 <code>Null rawTokenId not allowed</code> 메시지의 NPE를 던지고, JSON을 읽는 쪽은 Jackson이 이 예외를 <code>ValueInstantiationException</code>으로 감싸서 올려요. 수정 전에는 이 null이 아무 예외 없이 <code>onrtro:null</code>이라는 문자열로 바뀌어 토큰 id에 섞였고, 수정 후에는 값을 만드는 자리에서 실패합니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="kc1-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs>
+<text x="40" y="28" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">수정 전</text>
+<path d="M40 40 C100 38,165 41,224 39 C226 62,225 85,224 106 C165 108,100 105,41 106 C39 84,41 62,40 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" />
+<text x="132" y="68" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">new AccessTokenContext(</text>
+<text x="132" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">..., rawTokenId = null)</text>
+<path d="M232 73 C242 72,252 74,262 73" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#kc1-arr)" />
+<path d="M270 40 C330 38,392 41,452 39 C454 62,453 85,452 106 C392 108,330 105,271 106 C269 84,271 62,270 40 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round" />
+<text x="361" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">검증 통과</text>
+<text x="361" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">grantType을 두 번 검사</text>
+<path d="M460 73 C470 74,480 72,490 73" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#kc1-arr)" />
+<path d="M498 40 C560 38,622 41,680 39 C682 62,681 85,680 106 C622 108,560 105,499 106 C497 84,499 62,498 40 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round" />
+<text x="589" y="66" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">토큰 id 문자열</text>
+<text x="589" y="90" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#b3502f">onrtro:null</text>
+<text x="40" y="150" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">수정 후 (#53990)</text>
+<path d="M40 162 C100 160,165 163,224 161 C226 184,225 207,224 228 C165 230,100 227,41 228 C39 206,41 184,40 162 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" />
+<text x="132" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">new AccessTokenContext(</text>
+<text x="132" y="210" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">..., rawTokenId = null)</text>
+<path d="M232 195 C242 194,252 196,262 195" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#kc1-arr)" />
+<path d="M270 162 C400 160,550 163,680 161 C682 184,681 207,680 228 C550 230,400 227,271 228 C269 206,271 184,270 162 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round" />
+<text x="475" y="192" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">생성자에서 바로 실패</text>
+<text x="475" y="214" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">NullPointerException: Null rawTokenId not allowed</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 입력이 수정 전에는 문자열 null이 되었고, 수정 후에는 생성자에서 멈춰요</div>
+
+<h2>3. 고친 한 줄과 네 개의 테스트</h2>
+<p>본 코드의 수정은 검사 대상을 바로잡는 한 줄이었어요.</p>
+
+<div class="obsv-code">--- a/services/src/main/java/org/keycloak/protocol/oidc/encode/AccessTokenContext.java
++++ b/services/src/main/java/org/keycloak/protocol/oidc/encode/AccessTokenContext.java
+@@ -111,7 +111,7 @@ public class AccessTokenContext {
+         Objects.requireNonNull(tokenType, "Null tokenType not allowed");
+         Objects.requireNonNull(grantType, "Null grantType not allowed");
+-        Objects.requireNonNull(grantType, "Null rawTokenId not allowed");
++        Objects.requireNonNull(rawTokenId, "Null rawTokenId not allowed");</div>
+
+<p>테스트는 <code>AccessTokenContextTest</code>를 새 파일로 추가했어요(54줄). 네 인자를 하나씩 null로 바꿔서, 각각 <code>NullPointerException</code>이 나는지 확인하는 테스트 네 개입니다. 이 이름의 테스트 클래스는 원래 없었어요.</p>
+
+<div class="obsv-code">@Test
+public void shouldRejectNullRawTokenId() {
+    Assert.assertThrows(NullPointerException.class, () -&gt; new AccessTokenContext(
+            AccessTokenContext.SessionType.ONLINE, AccessTokenContext.TokenType.REGULAR,
+            OAuth2Constants.AUTHORIZATION_CODE, null));
+}</div>
+
+<p>다만 이 테스트는 예외의 타입만 확인하고 메시지는 확인하지 않아요. 검사 대상 변수가 바뀌었는지는 잡지만, 메시지가 엉뚱한 변수를 말하는 실수는 잡지 못합니다. 이번 PR에서 이 부분은 바꾸지 않았어요.</p>
+
+<h2>4. 재현: 머지 커밋에서 통과, 본 코드만 되돌리면 실패</h2>
+<p>PR 본문에는 테스트 결과가 적혀 있었어요. 이 글을 쓰기 전에 머지 커밋 <code>082ead23</code>을 얕게 받아서 같은 결과가 나오는지 다시 돌렸습니다. CI의 기본 JDK가 25(<code>.github/actions/java-setup</code>의 기본값, temurin)여서 로컬의 OpenJDK 25.0.4로 실행했고, 배포판만 달라요. 데이터베이스나 컨테이너는 필요 없는 단위 테스트라서 <code>services</code> 모듈과 그 의존 모듈만 컴파일했어요.</p>
+
+<div class="obsv-code">$ export JAVA_HOME=/opt/homebrew/Cellar/openjdk@25/25.0.4/libexec/openjdk.jdk/Contents/Home MAVEN_OPTS=-Xmx2g
+$ ./mvnw -B -pl services -am test -Dtest='AccessTokenContextTest,*TokenContext*' \
+    -Dsurefire.failIfNoSpecifiedTests=false -Dcheckstyle.skip -Dlicense.skip
+
+# (1) 머지 커밋 082ead23
+Tests run: 4, Failures: 0  (AccessTokenContextTest)
+Tests run: 6, Failures: 0  (DefaultTokenContextEncoderProviderTest)
+Tests run: 10, Failures: 0   BUILD SUCCESS            (35.3 s, 첫 컴파일 포함)
+
+# (2) 본 코드만 직전 커밋으로 되돌림, 테스트는 그대로
+$ git checkout HEAD^ -- services/src/main/java/org/keycloak/protocol/oidc/encode/AccessTokenContext.java
+Tests run: 4, Failures: 1   (AccessTokenContextTest)
+AccessTokenContextTest.shouldRejectNullRawTokenId:49
+java.lang.AssertionError: expected java.lang.NullPointerException to be thrown, but nothing was thrown
+BUILD FAILURE                                          (11.9 s)</div>
+
+<p><code>expected ... to be thrown, but nothing was thrown</code>은 예외가 나야 하는 코드가 아무 일 없이 끝났다는 JUnit의 실패 메시지예요. 수정 전 코드에서 <code>rawTokenId</code>에 null을 넣은 생성자 호출이 그대로 통과했다는 뜻입니다.</p>
+<p>결과는 PR 본문의 기록과 같았어요. 본문에는 <code>before: Tests run: 4, Failures: 1</code>과 <code>after: Tests run: 4, Failures: 0</code>, 그리고 <code>*TokenContext*</code> 패턴으로 돌린 <code>Tests run: 10, Failures: 0</code>이 적혀 있습니다. 되돌린 상태에서 실패한 테스트는 <code>shouldRejectNullRawTokenId</code> 하나뿐이고, 나머지 세 인자의 테스트는 두 상태 모두 통과했어요. 세 인자의 검사는 원래 맞았기 때문에 예상한 결과입니다.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 확인한 것</div>&bull; 수정 전 코드에서 null 한 줄이 통과하는 것은 단위 테스트와 임시 프로브로 직접 확인했어요.<br>&bull; 이 null이 실제 서버 코드의 어느 경로에서 들어오는지는 조사하지 않았어요. 확인한 범위는 생성자와 JSON 역직렬화, 그리고 <code>encodeTokenId</code>까지예요.</div>
+
+<h2>5. 리뷰가 오지 않은 이유를 CONTRIBUTING에서 찾았다</h2>
+<p>코드는 한 줄이었고 테스트도 통과했는데 이틀 동안 사람의 반응이 없었어요. PR을 열고 2분 안에 자동 리뷰 봇이 코멘트를 남기긴 했지만, 사람의 코멘트나 라벨, 담당자는 없었고 CI 워크플로 6개는 모두 <code>action_required</code>였습니다.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 첫 기여자 워크플로 승인 (action_required)</div>GitHub는 처음 기여하는 사람의 PR에서는 CI 워크플로를 자동으로 돌리지 않아요. 저장소 쓰기 권한이 있는 사람이 승인 버튼을 눌러야 돌아가고, 그 전에는 <code>action_required</code> 상태로 멈춰 있습니다. 승인할 사람이 PR을 보지 않으면 CI가 영원히 시작되지 않아요.</div>
+
+<p>원인을 찾으려고 저장소의 <code>CONTRIBUTING.md</code>를 읽었어요. 거기에 이런 문장이 있었습니다.</p>
+
+<div class="obsv-code">Each PR, no matter how small, should have a GitHub issue associated with it.
+Issues are important for administrative purposes such as generating a changelog and handling backports.</div>
+
+<p>앞 단락에는 작은 변경이면 디스커션 없이 바로 PR을 보내도 된다는 문장이 있어요. 그 문장은 디스커션을 생략해도 된다는 뜻이고, 이슈는 크기와 상관없이 필요하다는 규칙이 바로 아래에 따로 있었습니다. 커밋 메시지의 마지막 줄에는 <code>Closes #이슈번호</code>를 넣으라는 안내도 있었고요.</p>
+<p>이 규칙이 왜 필요한지는 이슈의 이벤트 기록으로 확인했어요. 이슈에 라벨을 붙이는 주체와 시각을 조회하니 이런 순서였습니다.</p>
+
+<div class="obsv-code">2026-10-16T03:45:19Z  이슈 #54051 생성 (웹 양식, Bug Report)
+03:45:20  labeled  kind/bug        (DDINGJOO, 양식이 붙임)
+03:45:21  labeled  status/triage   (DDINGJOO, 양식이 붙임)
+03:45:22  labeled  area/oidc       (keycloak-github-bot)
+03:45:24  labeled  team/core-protocols (keycloak-github-bot)
+...
+2026-10-19T13:42  mposolda 가 action/priority-low, 봇이 status/triage 제거 후 priority/low 부착</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 이슈 양식(템플릿)과 영역 라벨</div>Keycloak의 이슈 만들기 화면에는 Bug Report 같은 양식이 있어요. 양식으로 이슈를 열면 <code>kind/bug</code>와 <code>status/triage</code> 같은 라벨이 자동으로 붙고, 양식에서 고른 영역(Area)에 따라 봇이 <code>area/oidc</code> 같은 영역 라벨과 담당 팀 라벨(<code>team/core-protocols</code>)을 이어서 붙입니다.</div>
+
+<p>이슈를 만들고 5초 안에 영역 라벨과 팀 라벨이 붙었어요. 반면 PR 자체에는 지금도 라벨이 하나도 없습니다. <span class="obsv-mark">Keycloak에서 담당 팀을 정하는 라벨은 PR이 아니라 이슈에 붙는다</span>는 점이 보였어요. 이슈가 없던 제 PR은 어느 팀에도 분류되지 않았고, 그래서 이슈 목록을 보고 일하는 사람의 눈에 들어올 자리가 없었다고 판단했습니다. 승인 대기 중인 워크플로를 누가 열어 줄지도 같은 이유로 정해지지 않았을 것이라고 봤어요. 다만 유지보수자들의 내부 분류 절차는 제가 볼 수 없어서, 이 부분은 공개된 규칙과 이벤트 기록에서 세운 판단이에요.</p>
+
+<h2>6. 이슈를 두 번 만든 이유</h2>
+<p>먼저 이슈를 연결하기로 하고 10-16 03:39에 GitHub API로 이슈 #54050을 만들었어요. PR에도 이 이슈를 연결했어요. 그런데 #54050에는 라벨이 하나도 없었어요. API로 만든 이슈는 이슈 양식을 거치지 않기 때문에 <code>kind/bug</code>와 <code>status/triage</code>가 붙지 않았고, 외부 기여자인 저는 라벨을 직접 붙일 권한이 없었어요. 유지보수자가 붙여 달라는 코멘트를 이슈에 남겼지만, 곧 웹의 Bug Report 양식으로 같은 내용을 다시 열기로 했습니다. 이때 Area를 <code>oidc</code>로 골랐어요. <code>AccessTokenContext</code>가 <code>org.keycloak.protocol.oidc.encode</code> 패키지에 있기 때문입니다. 이렇게 만든 이슈가 #54051이고, 위 이벤트 기록처럼 라벨이 곧바로 붙었어요. 03:45:37에 커밋 메시지를 <code>Closes #54051</code>로 바꿔 올렸고(코드 변경 없음), PR 본문도 고쳤습니다. #54050에는 #54051의 중복이라고 적고 닫았어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="kc2-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" /></marker></defs>
+<text x="30" y="28" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">이슈 없이 연 PR (10-14 ~ 10-16)</text>
+<path d="M30 40 C80 38,135 41,184 39 C186 62,185 85,184 106 C135 108,80 105,31 106 C29 84,31 62,30 40 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" />
+<text x="107" y="68" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">PR #53990</text>
+<text x="107" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">이슈 연결 없음</text>
+<path d="M192 73 C202 72,212 74,222 73" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#kc2-arr)" />
+<path d="M230 40 C300 38,370 41,438 39 C440 62,439 85,438 106 C370 108,300 105,231 106 C229 84,231 62,230 40 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round" />
+<text x="334" y="68" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">영역 라벨과 팀 라벨 없음</text>
+<text x="334" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">분류되지 않음</text>
+<path d="M446 73 C456 74,466 72,476 73" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#kc2-arr)" />
+<path d="M484 40 C550 38,615 41,680 39 C682 62,681 85,680 106 C615 108,550 105,485 106 C483 84,485 62,484 40 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round" />
+<text x="582" y="68" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">CI 6개 승인 대기</text>
+<text x="582" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">사람 반응 없음</text>
+<text x="30" y="160" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">이슈 #54051을 연결한 뒤 (10-16 ~ 10-19)</text>
+<path d="M30 172 C80 170,135 173,184 171 C186 194,185 217,184 238 C135 240,80 237,31 238 C29 216,31 194,30 172 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round" />
+<text x="107" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Bug Report 양식</text>
+<text x="107" y="222" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">kind/bug, status/triage</text>
+<path d="M192 205 C202 204,212 206,222 205" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#kc2-arr)" />
+<path d="M230 172 C300 170,370 173,438 171 C440 194,439 217,438 238 C370 240,300 237,231 238 C229 216,231 194,230 172 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round" />
+<text x="334" y="198" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">봇이 4초 안에</text>
+<text x="334" y="222" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">area/oidc, team/core-protocols</text>
+<path d="M446 205 C456 206,466 204,476 205" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#kc2-arr)" />
+<path d="M484 172 C550 170,615 173,680 171 C682 194,681 217,680 238 C615 240,550 237,485 238 C483 216,485 194,484 172 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round" />
+<text x="582" y="198" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">10-19 담당자 지정</text>
+<text x="582" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">승인 후 같은 날 머지</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 같은 PR이 이슈 연결 뒤에는 라벨, 담당자, 머지 순서로 이어졌어요</div>
+
+<h2>7. 담당자 지정부터 머지까지</h2>
+<p>이슈가 연결된 뒤 반응은 10-19에 왔어요. 13:41에 유지보수자 <code>mposolda</code>가 PR의 담당자로 지정됐고, 같은 시각에 사람의 첫 리뷰로 "Thanks!"가 남았습니다. 이슈에는 13:42에 <code>status/triage</code>가 빠지고 <code>priority/low</code> 라벨이 붙었어요.</p>
+<p>그 사이 CI가 한 번 실패했어요. 새로 추가한 테스트 파일의 import 순서가 Spotless 규칙에 맞지 않았기 때문입니다.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Spotless</div>코드 서식을 검사하고 자동으로 고쳐 주는 Maven 플러그인이에요. CI가 이 검사를 포함하고 있어서, import 순서나 공백이 규칙과 다르면 테스트와 상관없이 빌드가 실패합니다. <code>mvn spotless:apply</code>를 실행하면 규칙대로 고쳐 줘요.</div>
+
+<p>14:01에 <code>mvn spotless:apply</code>로 서식을 고치고, 커밋 하나를 amend해서 다시 올렸어요. 바뀐 내용은 <code>org.keycloak</code> import를 파일 맨 위로 옮긴 것뿐이고 커밋은 여전히 하나였습니다. 이 사실은 PR에 코멘트로 남겼어요. 그런데 force push로 커밋이 바뀌자, 방금 받은 mposolda의 승인이 dismissed 처리됐습니다. 17:05에 승인이 다시 달렸고, 17:06에 머지됐어요.</p>
+<p>리뷰어가 코드의 설계나 구현을 고치라고 요청한 적은 없었어요. 코드 리뷰 코멘트(인라인 코멘트)는 0개였고, 리뷰 과정에서 바뀐 것은 import 위치 하나였습니다. 이 PR에서 시간을 쓴 쪽은 리뷰 내용이 아니라 리뷰가 시작되기까지의 대기였어요.</p>
+
+<h2>8. 결과와 남은 한계</h2>
+<p>머지 커밋은 <code>082ead23</code>이에요. PR은 10-14 22:39에 열어서 10-19 17:06에 머지됐고, 이슈 #54051은 같은 시각에 닫혔습니다. 닫힌 뒤에 이슈에는 <code>release/27.0.0</code> 라벨이 붙었어요. 변경 이력과 백포트를 이슈 기준으로 관리한다는 CONTRIBUTING의 설명이 이 라벨과 맞아떨어졌습니다.</p>
+<p>남은 한계도 적어 둘게요.</p>
+<p>첫째, 리뷰가 늦은 원인은 이슈가 없었기 때문이라고 판단했지만, 이슈를 연결한 것 말고는 바꾼 조건이 없어서 다른 요인이 없었다고 단정할 수는 없어요. 유지보수자의 분류 절차는 제가 볼 수 없습니다.</p>
+<p>둘째, 이 PR은 <code>AccessTokenContext</code> 한 곳만 고쳤어요. 같은 모양의 실수가 저장소의 다른 곳에 있는지는 찾아보지 않았습니다.</p>
+<p>셋째, null이 실제 서버 코드에서 어느 경로로 들어오는지는 조사하지 않았어요. 재현은 생성자와 JSON 역직렬화, <code>encodeTokenId</code>를 직접 호출하는 데까지만 했습니다.</p>
+<p>넷째, 이 글의 재현은 머지된 코드를 2026-10-22에 다시 돌린 결과예요. 당시의 작업 과정은 PR 본문, 커밋, 이벤트 기록, 그리고 10-16에 적어 둔 메모에 남은 범위까지만 적었습니다.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 PR을 열기 전에</div>&bull; CONTRIBUTING에서 "작은 변경은 바로 보내도 된다"는 문장이 어느 절차를 생략해도 된다는 뜻인지 끝까지 읽어요. 이 저장소에서는 디스커션만 생략할 수 있었어요.<br>&bull; 이슈는 웹의 양식으로 열어요. API로 만든 이슈에는 양식이 붙이는 라벨이 빠졌고, 외부 기여자는 그 라벨을 직접 붙일 수 없었어요.<br>&bull; 커밋 메시지 끝에 <code>Closes #이슈번호</code>를 넣고, <code>Signed-off-by</code> 줄은 그 아래에 둬요.</div>
+
+<p><small>소스 기준: <a href="https://github.com/keycloak/keycloak/pull/53990">keycloak/keycloak #53990</a>, 이슈 <a href="https://github.com/keycloak/keycloak/issues/54051">#54051</a>, 머지 커밋 <code>082ead23</code>. 재현 명령과 출력은 <code>labs/open-source-contribute/keycloak/repro.md</code>에 남겼어요.</small></p>
+
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div><b>AccessTokenContext가 grantType을 두 번 검사해서 rawTokenId의 null이 통과했고, 한 줄을 바로잡자 생성자에서 NPE로 실패하게 됐어요.</b><br><br>PR에 이슈가 없으면 영역 라벨과 담당 팀 라벨이 붙지 않았고, 이틀 동안 사람의 반응도 CI 승인도 오지 않았어요. 웹 양식으로 연 이슈 #54051을 커밋에 연결하자 라벨이 붙었고, 사흘 뒤 승인과 머지가 이어졌습니다. 작은 수정에도 이슈가 필요한지는 코드가 아니라 저장소의 분류 절차가 정해요.</div>
+</div>
