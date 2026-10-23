@@ -1,5 +1,5 @@
 <!-- tags: Debezium, MariaDB, ANTLR 파스 트리, keywordsCanBeId, ALTER DATABASE DEFAULT CHARSET -->
-<!-- lead: MariaDB 와 legacy MySQL 문법이 ALTER DATABASE DEFAULT CHARSET 의 DEFAULT 를 데이터베이스 이름으로 읽어 문자셋 변경이 조용히 빠졌어요. 규칙 순서를 바꾼 수정, 상류가 MariaDB 문법만 받은 이유, CI 실패를 PR 과 분리한 과정을 적었어요. -->
+<!-- lead: MariaDB 와 legacy MySQL 문법이 DEFAULT 를 데이터베이스 이름으로 읽어 문자셋 변경이 빠졌어요. ALTER DATABASE 규칙 수정과 상류 반영 범위, CI 실패를 구분한 근거를 적었어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -28,7 +28,7 @@
 </div>
 
 <p>1편의 PR 을 시험하던 중에 이상한 결과가 하나 나왔어요. MariaDB 문법에서 <code>ALTER DATABASE DEFAULT CHARSET latin2</code> 는 오류 없이 파싱되는데, 현재 데이터베이스의 문자셋이 바뀌지 않았습니다. 같은 문장에서 <code>DEFAULT</code> 를 빼거나 이름을 붙이면 제대로 바뀌었어요. <code>DEFAULT</code> 가 데이터베이스 이름으로 소비되는 것처럼 보였습니다.</p>
-<p>원인이 1편과 달라서 그 PR 에는 넣지 않고 본문에 따로 적어 두었어요. Naros 가 별도 이슈와 PR 로 이 차이를 닫아 주면 좋겠다고 해서 시작한 것이 dbz#2842 와 PR #8225 입니다. 이 글은 <b>오류 없이 틀리게 파싱되는 문제를 어떻게 확인하고 고쳤는지</b>, 상류가 한 문법만 받아 준 이유, 그리고 머지 충돌과 CI 실패를 이 PR 탓인지 가린 과정을 적은 기록이에요. 이 PR 은 2026년 10월 22일 현재 아직 열려 있습니다.</p>
+<p>원인이 1편과 달라서 그 PR 에는 넣지 않고 본문에 따로 적어 두었어요. Naros 가 별도 이슈와 PR 로 이 차이를 닫아 주면 좋겠다고 해서 시작한 것이 dbz#2842 와 PR #8225 입니다. 이 글은 <b>오류 없이 틀리게 파싱되는 문제를 어떻게 확인하고 고쳤는지</b>, 상류가 한 문법만 받아 준 이유, 그리고 머지 충돌과 CI 실패를 이 PR 탓인지 가린 과정을 적은 기록이에요. 이 PR 은 2026-10-23 현재 아직 열려 있습니다. 날짜와 시각은 따로 적지 않으면 모두 UTC예요.</p>
 
 <h2>1. 파싱은 성공했는데 값이 틀린 문제</h2>
 <p>1편의 문제는 파서가 예외를 내고 멈추는 것이었어요. 적어도 무언가 잘못됐다는 것은 바로 드러납니다. 이번 문제는 반대였어요. 파싱이 성공하니 커넥터는 계속 돌고, 문자셋은 <code>DEFAULT</code> 라는 이름의 데이터베이스에 기록되며, 실제 현재 데이터베이스는 예전 문자셋으로 남습니다. 이후 그 데이터베이스에서 문자셋을 따로 지정하지 않은 테이블을 만들면 커넥터가 추적하는 기본 문자셋이 서버와 달라질 수 있어요.</p>
@@ -127,7 +127,7 @@ expected: "utf8mb4"
 <p>10월 21일 1편의 PR 이 머지된 직후 vsantonastaso 가 이 PR 에 두 가지를 요청했어요. 충돌을 풀고, MariaDB 와 MySQL CI 오류를 확인해 달라는 것이었습니다.</p>
 <p>충돌은 main 을 병합하는 커밋(<code>73aa4a2a</code>)으로 풀었어요. 이번에 그 병합을 <code>git merge-tree</code> 로 다시 만들어 보니 충돌 파일은 <code>MySqlPtAntlrDdlParserTest</code> 하나였습니다. 이 PR 의 두 테스트와 main 에 들어온 dbz#2217 의 <code>shouldApplyRealHandlingMode</code> 테스트가 같은 자리에 추가되면서 생긴 텍스트 충돌이었고, 병합 커밋은 둘 다 남겼어요. 10월 11일 rebase 때도 <code>MariaDbOnlyAntlrDdlParserTest</code> 에서 dbz#373 의 테스트와 같은 종류의 충돌이 있었고 그때도 둘 다 남겼습니다.</p>
 <div class="obsv-term"><div class="obsv-tt">📖 용어: 통합 테스트 (IT)</div>Debezium 에서 이름이 <code>IT</code> 로 끝나는 테스트는 컨테이너로 실제 데이터베이스를 띄우고 커넥터를 돌려 보는 테스트예요. 시간이 오래 걸리고 타이밍에 따라 결과가 흔들릴 수 있습니다.</div>
-<p>CI 는 <code>gh</code> 로 병합 뒤 실행 결과를 읽어 확인했어요. 건너뛴 잡을 빼면 통과 30개, 실패 6개였고, 실패한 MariaDB·MySQL 잡의 내용은 아래와 같았습니다. MariaDB 12.3 잡도 같은 테스트 클래스에서 Failures 12 로 실패했어요.</p>
+<p>당시 CI 는 <code>gh</code> 로 병합 뒤 실행 결과를 읽어 확인했어요. 그때 확인한 잡 범위에서 건너뛴 잡을 빼면 통과 30개, 실패 6개였고, 실패한 MariaDB·MySQL 잡의 내용은 아래와 같았습니다. 이 수치는 아래 7절의 최신 head 전체 체크 집계와 범위가 달라요. MariaDB 12.3 잡도 같은 테스트 클래스에서 Failures 12 로 실패했어요.</p>
 <div class="obsv-code">MariaDB 11.8 - mariadb-ci
 [ERROR] Tests run: 52, Failures: 10, Errors: 1 ... in io.debezium.connector.mariadb.ReadOnlyIncrementalSnapshotIT
 [ERROR] ...ReadOnlyIncrementalSnapshotIT.inserts4Pks -- Time elapsed: 182.6 s &lt;&lt;&lt; FAILURE!
@@ -142,7 +142,9 @@ MySQL 9.7 - mysql-ci-ssl
 <p>MySQL 쪽 실패는 따로 봤어요. 앞선 실행의 MySQL 실패를 보고 남긴 코멘트에서, 기대한 변환 오류는 로그에 찍혔지만 테스트가 완료 콜백이 끝나기 전에 예외를 확인하는 것으로 보인다고 적었습니다. <code>waitForConnectorShutdown()</code> 은 스트리밍이 멈출 때까지 기다리는데, 그 시점이 콜백 실행보다 앞설 수 있다는 내용이에요. 테스트 수정이 필요하면 후속 PR 에서 맡겠다고 덧붙였습니다. 나머지 실패 셋(Debezium Server, Platform conductor 의 컴파일 오류, MongoDB 컨테이너 시작 실패)은 이 PR 이 건드린 모듈과 관계가 없었어요.</p>
 
 <h2>7. 지금 상태와 남은 것</h2>
-<p>2026년 10월 22일에 <code>gh</code> 로 다시 확인한 상태는 열림(OPEN)이에요. 리뷰는 Naros 의 <code>@FixFor</code> 제안 네 건이 반영된 상태이고, 아직 승인은 없습니다. 병합 커밋 뒤에 github-actions 봇이 커밋 메시지에 이슈 키 접두사를 붙이라는 코멘트를 남겼는데, 같은 head 의 Commit message 체크는 통과했어요.</p>
+<p>2026-10-23에 GitHub API로 다시 확인한 <a href="https://github.com/debezium/debezium/pull/8225">#8225</a>는 열림(OPEN)이고, head도 <code>73aa4a2a</code>로 그대로예요. 리뷰는 Naros 의 <code>@FixFor</code> 제안 네 건이 반영된 상태이고, 아직 승인은 없습니다. 상류 grammars-v4의 #5039는 머지된 상태를 유지하고 있어요. 이번 재확인에서 코드 변경이나 새 승인은 없었습니다.</p>
+<p>새로 추가된 것은 10월 22일 09:10:20에 제가 남긴 <a href="https://github.com/debezium/debezium/pull/8225#issuecomment-6337086657">CI 설명 코멘트</a>예요. 실패한 잡의 Quarkus engine runtime 컴파일 오류가 <code>ArcInstanceResolver</code>와 <code>ArcServiceProviderContributor</code>에서 발생하고, 이 PR이 수정한 MySQL·MariaDB 문법과 파서 테스트의 범위 밖이라고 설명했어요. 또 github-actions 봇의 접두사 요청에 대해 모든 커밋에 <code>debezium/dbz#2842</code>가 있다고 적었습니다. 이것은 작성자의 설명이며, 메인테이너가 원인을 확인하거나 승인한 답변은 아니에요. 같은 head의 Commit message 체크는 성공이에요.</p>
+<p>같은 조회에서 최신 head의 전체 체크 58개는 성공 36개·실패 6개·건너뜀 16개였어요. 반면 <a href="https://github.com/debezium/debezium/actions/runs/39574509122">단일 실행 <code>39574509122</code></a>의 잡 55개만 세면 성공 33개·실패 6개·건너뜀 16개예요. 전체 체크와 한 실행의 잡은 집계 범위가 다르고, 6절의 당시 통과 30개와도 같은 기준이 아니므로 이 숫자 차이를 CI 개선이나 새 실패로 해석하지 않았어요.</p>
 <div class="obsv-callout"><div class="obsv-ct">💡 이번 재현의 범위</div>&bull; 파서 단위 테스트와 grammars-v4 의 예제 파싱만 직접 돌렸어요. 통합 테스트는 Docker 가 필요해서 돌리지 않았고, CI 판단은 공개 로그를 읽은 것입니다.<br>&bull; <code>MysqlDefaultValueIT</code> 의 타이밍 설명은 코멘트에 적은 추정이고, 테스트를 고쳐 확인하지는 않았습니다.<br>&bull; 서버 동작의 근거는 PR 에 붙인 다섯 버전의 실행 결과예요.</div>
 
 <div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div><b><code>uid?</code> 가 옵션보다 앞에 있고 <code>DEFAULT</code> 가 식별자로 허용돼서, <code>ALTER DATABASE DEFAULT CHARSET x</code> 가 오류 없이 엉뚱한 데이터베이스에 기록됐어요. 옵션만 있는 대안을 앞에 두어 고쳤습니다.</b><br><br>상류는 MariaDB 문법만 받았고, deprecated 인 Positive-Technologies 문법의 수정은 Debezium 테스트가 지키는 패치로 남아요. 파싱이 성공하는 버그는 예제 코퍼스로 막을 수 없어서, 파스 트리와 값 검증으로 확인해야 합니다.</div>

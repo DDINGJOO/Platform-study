@@ -1,5 +1,5 @@
 <!-- tags: Spring Cloud Config, 코드 리뷰, 경쟁 조건, lastRefresh, 웹훅 -->
-<!-- lead: Spring Cloud Config PR의 두 번째 리뷰에서 변경 요청 여섯 건을 받았어요. 저장소 URL 매칭을 관대하게 바꾼 이유와, lastRefresh를 fetch 성공 뒤에 쓰자는 제안을 근거와 테스트로 반박한 과정을 시간순으로 적었어요. -->
+<!-- lead: Spring Cloud Config PR에서 URL 매칭과 lastRefresh에 관한 변경 요청을 받았어요. 당시 판단과 테스트를 보존하고, 후속 리뷰에서 추가한 미매칭 로그와 Bitbucket Server 설명 정정을 최신 커밋 기준으로 나눠 적었어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -33,7 +33,7 @@
 <div class="obsv-term"><div class="obsv-tt">📖 용어: CHANGES_REQUESTED</div>GitHub 리뷰의 상태 중 하나로, 리뷰어가 "이대로는 머지하기 어렵고 수정이 필요하다"고 표시한 것이에요. 작성자가 수정을 올려도 리뷰어가 다시 승인하거나 리뷰를 해제하기 전까지 이 상태가 남습니다.</div>
 
 <h2>1. 변경 요청 여섯 건</h2>
-<p>여섯 건을 먼저 정리하면 아래와 같아요. 대응은 2026-10-22 커밋 <code>53b59abc</code> 하나에 모았습니다.</p>
+<p>처음 받은 여섯 건을 먼저 정리하면 아래와 같아요. 이때 받아들인 다섯 건의 수정과 6번에 대한 테스트는 2026-10-22 커밋 <code>53b59abc</code>에 모았습니다. 1~7절의 코드와 실행 결과는 이 시점 기록이고, 이후 받은 세 건과 최신 대응은 8절에 구분했어요.</p>
 
 <div class="obsv-code">1  PropertyPathEndpoint     URI 추출 로직을 PropertyPathNotificationExtractor 구현으로 옮겨라
 2  JGitEnvironmentRepository  NPE가 날 수 있다
@@ -272,7 +272,7 @@ public void failedFetchKeepsRefreshRateBackoff() throws Exception {
 <p>두 테스트는 지금의 동작을 고정하는 테스트예요. 제안대로 코드를 옮긴 상태에서 이 테스트들이 실패하는지까지 돌려 본 기록은 없어서, 여기서는 현재 코드에서 통과한 결과만 적습니다.</p>
 
 <h2>7. JDK 17로 돌린 결과와 기대값 실수</h2>
-<p>테스트는 CI와 같은 JDK 17로 돌렸어요. 저장소의 <code>.sdkmanrc</code>와 CI 설정의 <code>java-version</code>이 둘 다 17이었습니다. 이번 변경과 관련된 테스트 클래스만 골라 server와 monitor 모듈을 실행했어요.</p>
+<p>아래는 <code>53b59abc</code>를 올리기 전에 CI와 같은 JDK 17로 돌린 기록이에요. 저장소의 <code>.sdkmanrc</code>와 CI 설정의 <code>java-version</code>이 둘 다 17이었습니다. 이번 변경과 관련된 테스트 클래스만 골라 server와 monitor 모듈을 실행했어요.</p>
 
 <div class="obsv-code">JAVA_HOME=&lt;temurin-17&gt; ./mvnw -B -q -pl spring-cloud-config-server,spring-cloud-config-monitor -am \
   -Dtest='JGitEnvironmentRepositoryTests,MultipleJGitEnvironmentRepositoryTests,JGitEnvironmentRepositoryIntegrationTests,PropertyPathEndpointTests,*PropertyPathNotificationExtractorTests,EnvironmentMonitorAutoConfigurationTests' \
@@ -303,7 +303,13 @@ but some elements were not expected:
 that starts after the webhook already sees the push. I'm happy to change it if
 I'm missing a path.</div>
 
-<p>2026-10-22에 PR을 다시 확인했을 때 상태는 열림(OPEN)이고, 리뷰어가 남긴 마지막 리뷰는 여전히 CHANGES_REQUESTED였어요. 마지막 활동은 제가 남긴 이 코멘트이고, 메인테이너는 아직 답하지 않았습니다. 그래서 이 반박이 맞았는지는 여기서 결론 내지 않아요. 제가 따라가 본 경로 밖에서 만료가 덮어써지는 길이 있다면 코드를 바꾸겠다고 남겨 두었고, 응답을 기다리는 중입니다.</p>
+<h3>후속 리뷰 세 건과 f6c23d31</h3>
+<p>위 답글 뒤인 2026-10-22 13:24~13:29 UTC에 새 인라인 지적 세 건이 왔고, 13:31 UTC에 변경 요청 리뷰가 남았어요. <a href="https://github.com/spring-cloud/spring-cloud-config/commit/f6c23d31cfd52a38d2395c4b126b718be1d70a93">2026-10-23 커밋 <code>f6c23d31</code></a>에 대응을 모아 각 항목에 답했습니다. 날짜와 시각은 이 절에서 모두 UTC 기준이에요.</p>
+<p>첫째, <a href="https://github.com/spring-cloud/spring-cloud-config/pull/3342#discussion_r4348858407">URI 공통 헬퍼를 별도 클래스 대신 인터페이스에 두자는 요청</a>을 받아들였어요. <code>WebhookRepositoryUris</code>를 삭제하고 <code>addCloneUris</code>와 <code>addUri</code>를 <code>PropertyPathNotificationExtractor</code>의 정적 메서드로 옮겼습니다. 추출기들은 자신들이 구현하는 인터페이스의 메서드를 호출해요.</p>
+<p>둘째, <a href="https://github.com/spring-cloud/spring-cloud-config/pull/3342#discussion_r4348888372">URI는 있는데 설정 저장소와 하나도 맞지 않을 때도 debug 로그를 남기라는 요청</a>이었어요. <code>expireRefreshRate(String)</code>가 일치 여부를 <code>boolean</code>으로 반환하도록 바꿨습니다. <code>MultipleJGitEnvironmentRepository</code>는 기본·패턴·이미 만들어진 자리표시자 저장소를 모두 순회하며 <code>|=</code>로 결과를 누적해요. 하나가 일치했다고 뒤쪽 호출을 생략하면 같은 원격을 쓰는 다른 저장소가 만료되지 않을 수 있기 때문입니다. 엔드포인트는 하나도 일치하지 않았고 예외도 없었을 때만 미매칭 debug를 남겨요. 예외가 나면 기존 warn을 남기고, 그 실패를 미매칭이라고 단정하는 debug는 추가하지 않습니다.</p>
+<p>셋째, <a href="https://github.com/spring-cloud/spring-cloud-config/pull/3342#discussion_r4348914110">Bitbucket Server 문서와 추출기 코드가 어긋난다는 지적</a>이었어요. 당시 샘플에 clone 링크가 없었던 것을 Server 푸시 전체의 성질로 일반화한 문서가 잘못됐습니다. <a href="https://github.com/jenkinsci/atlassian-bitbucket-server-integration-plugin/blob/41c40fcdcf852fe9f3b3d7897780a281b8d1a590/src/test/resources/webhook/refs_changed_body.json#L29-L39">Atlassian 지원 Jenkins 플러그인 샘플</a>에는 clone 링크가 있어요. 문서를 링크 유무에 따라 설명하도록 고치고, <code>repo:refs_changed</code>에 HTTP·SSH clone 링크가 있는 경우를 검사하는 테스트를 추가했습니다. 기존의 링크 없는 샘플은 빈 URI 배열을 기대하는 테스트로 남겼어요. <code>pr:merged</code>는 대상 저장소인 <code>pullRequest.toRef.repository</code>의 clone 링크를 읽고, 링크가 없으면 역시 만료 없이 알림만 보냅니다. 이 변경은 링크 처리 전체를 처음 구현한 것이 아니라 기존 처리에 맞게 문서를 정정하고 테스트를 보강한 것입니다.</p>
+<p>2026-10-23 재확인에서 최신 head는 <code>f6c23d31</code>이고, PR은 열림(OPEN), 리뷰 상태는 CHANGES_REQUESTED이며 승인은 없어요. 최신 head에 공개된 체크는 DCO 성공 한 개뿐이었습니다. <a href="https://github.com/dcoapp/app#how-it-works">DCO는 기여 권리를 선언하는 <code>Signed-off-by</code> 표기를 확인하는 검사</a>예요. 코드 테스트나 암호학적 서명 검증 결과는 아닙니다. 7절의 테스트 수치는 <code>53b59abc</code> 당시 결과이고, 새 head에서 전체 테스트를 직접 다시 돌린 기록은 이번 확인에 포함하지 않았어요. PR 본문에는 예전의 엄격한 URL 비교 설명이 남아 있어서, 현재 동작은 최신 코드와 위 수정 커밋을 기준으로 적었습니다.</p>
+<p><code>lastRefresh</code> 배치에 관한 답글에는 새 승인이나 반박이 없어요. 이후 리뷰가 왔다는 사실과 그 논점에 대한 합의 여부는 별개입니다. 제가 따라가 본 경로 밖에서 만료가 덮어써지는 길이 있다면 코드를 바꾸겠다고 남겨 두었고, 이 판단이 받아들여졌다고 결론 내리지는 않습니다.</p>
 
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>

@@ -28,7 +28,7 @@
 </div>
 
 <p>1편의 #8174는 리뷰어의 승인과 함께 머지됐지만, 승인 코멘트에는 "남은 항목" 8개가 적혀 있었어요. 어떤 항목은 이 PR의 범위 밖이었고, 어떤 항목은 고치는 편이 맞아 보였고, 어떤 항목은 아무 조치도 필요 없다는 결론이 이미 적혀 있었어요.</p>
-<p>이 글은 그 8개를 코드와 대조해서 이슈 하나(<a href="https://github.com/spinnaker/spinnaker/issues/8207">#8207</a>)와 PR 둘(<a href="https://github.com/spinnaker/spinnaker/pull/8208">#8208</a>, <a href="https://github.com/spinnaker/spinnaker/pull/8209">#8209</a>)로 나눈 과정을 적어요. 2026-10-22에 <code>gh</code>로 읽은 현재 상태는 셋 모두 열려 있고, #8208과 #8209에는 리뷰도 코멘트도 아직 없어요. 그래서 이 글은 머지된 결과가 아니라 열려 있는 작업의 기록이에요. 시각은 따로 적지 않으면 모두 UTC예요.</p>
+<p>이 글은 그 8개를 코드와 대조해서 이슈 하나(<a href="https://github.com/spinnaker/spinnaker/issues/8207">#8207</a>)와 PR 둘(<a href="https://github.com/spinnaker/spinnaker/pull/8208">#8208</a>, <a href="https://github.com/spinnaker/spinnaker/pull/8209">#8209</a>)로 나눈 과정을 적어요. 2026-10-23에 GitHub API로 다시 확인한 현재 상태는 셋 모두 열려 있고, #8208과 #8209에는 리뷰도 코멘트도 아직 없어요. 그래서 이 글은 머지된 결과가 아니라 열려 있는 작업의 기록이에요. 시각은 따로 적지 않으면 모두 UTC예요.</p>
 
 <h2>1. 승인 코멘트의 8개 항목</h2>
 
@@ -78,7 +78,7 @@ retried StartExecution done  execution=RUNNING     canceled=false canceledBy=nul
 
 <p>(2)는 마지막 스테이지가 성공한 뒤 <code>CompleteExecution</code>이 실행을 읽었는데 사용자가 취소한 경우예요. 취소가 저장한 <code>CANCELED</code>를 핸들러의 복사본(<code>SUCCEEDED</code>, <code>canceled=false</code>)이 덮어써서, 취소한 기록이 사라지고 <code>ExecutionComplete</code> 이벤트도 <code>CANCELED</code>와 <code>SUCCEEDED</code> 두 개가 나가요. (1)은 같은 <code>CompleteExecution</code>의 오래된 복사본이 스테이지 재시작을 되돌려서 실행이 <code>TERMINAL</code>에 영구히 남는 경우이고, (3)은 3장에서 다룰 롤백이에요. 이 글을 쓰면서 이 세 건 중 (3)만 #8208의 테스트로 다시 돌렸고, (1)과 (2)는 이슈 본문의 출력을 인용했어요. 이 둘을 돌리는 테스트는 열린 PR에 들어 있지 않아서, 로컬에 받은 저장소에서는 실행할 수 없었어요.</p>
 <p>이슈에는 실행 단위 쓰기를 전부 훑은 표도 있어요. 시작 경로는 #8174가 고쳤고, 롤백은 #8208이 고치고, <code>CompleteExecutionHandler</code>와 <code>RestartStageHandler</code>는 같은 모양이라고 적었어요. <code>SqlExecutionRepository</code>의 <code>cancel</code>, <code>pause</code>, <code>resume</code>은 트랜잭션 안에서 읽고 쓰지만 행 잠금이 없어요(승인 코멘트의 항목 2). 기본 구현(Redis)이 원자적이지 않다는 항목 5는 이 이슈를 추적 이슈로 삼는다고 적었어요. 초기 스테이지가 없는 <code>TERMINAL</code> 경로와 <code>ConfigurationErrorHandler</code>는 실행이 시작되기 전의 쓰기라서 위험이 낮다고 분류했어요. 스테이지 단위 쓰기(<code>storeStage</code>, 호출 지점 약 30곳)는 범위에서 뺐어요. 스테이지별로 메시지 흐름이 순서를 지키고 <code>RunTask</code>가 스테이지 잠금을 잡기 때문이라고 적었어요.</p>
-<p>이슈 끝에는 해결 방향 세 가지를 적고 리뷰어에게 물었어요. 하나는 핸들러마다 읽었던 상태를 기대값으로 <code>updateStatusIfExpected</code>를 쓰는 것이에요. 다른 하나는 저장소의 <code>doForeignAware</code>에서 행을 잠가서 <code>cancel</code>, <code>pause</code>, <code>resume</code>도 원자적으로 만드는 것이에요. 마지막은 비교가 <code>status</code>만 보고 쓰기는 본문 전체를 한다는 점을 줄이는 방법(상태만 갱신하거나 <code>canceled</code>도 비교)이에요. 리뷰어가 큐 시스템을 더 크게 바꿀 계획을 비친 적이 있어서, 더 진행하기 전에 어느 방향을 원하는지 물었어요. 같은 날 12:51에 "롤백 수정과 잠금에 의존하는 테스트부터 하고, 방향이 정해지면 다른 핸들러를 이어서 하겠다"고 코멘트를 남겼어요. 2026-10-22 02:03에는 리뷰어를 지목해서 두 PR이 올라와 있다고 알리고 방향을 다시 물었어요. 2026-10-22 현재 이 이슈의 코멘트는 제 것 두 개뿐이고, 리뷰어의 답은 없어요.</p>
+<p>이슈 끝에는 해결 방향 세 가지를 적고 리뷰어에게 물었어요. 하나는 핸들러마다 읽었던 상태를 기대값으로 <code>updateStatusIfExpected</code>를 쓰는 것이에요. 다른 하나는 저장소의 <code>doForeignAware</code>에서 행을 잠가서 <code>cancel</code>, <code>pause</code>, <code>resume</code>도 원자적으로 만드는 것이에요. 마지막은 비교가 <code>status</code>만 보고 쓰기는 본문 전체를 한다는 점을 줄이는 방법(상태만 갱신하거나 <code>canceled</code>도 비교)이에요. 리뷰어가 큐 시스템을 더 크게 바꿀 계획을 비친 적이 있어서, 더 진행하기 전에 어느 방향을 원하는지 물었어요. 같은 날 12:51에 "롤백 수정과 잠금에 의존하는 테스트부터 하고, 방향이 정해지면 다른 핸들러를 이어서 하겠다"고 코멘트를 남겼어요. 2026-10-22 02:03에는 리뷰어를 지목해서 두 PR이 올라와 있다고 알리고 방향을 다시 물었어요. 2026-10-23 현재 이 이슈의 코멘트는 제 것 두 개뿐이고, 리뷰어의 답은 없어요.</p>
 
 <h2>3. #8208: 롤백이 취소를 되돌리던 경로</h2>
 
@@ -110,7 +110,7 @@ retried StartExecution done  execution=RUNNING     canceled=false canceledBy=nul
 <p>PR 본문이 스스로 적은 한계가 있어요. 비교는 <code>status</code>만 보기 때문에, 초기 스테이지가 여러 개이고 일부가 이미 푸시된 뒤에 실패하면 취소가 상태를 <code>RUNNING</code>인 채로 <code>canceled=true</code>만 바꿀 수 있어요. 그 경우 롤백은 여전히 <code>canceled</code>를 덮어써요. 이건 이슈의 세 번째 방향(비교는 상태, 쓰기는 본문 전체)이라서 이 PR에서는 건드리지 않았어요. 같은 PR의 두 번째 커밋은 <code>updateStatusIfExpected</code>의 TODO가 "추적 이슈가 없다"고 적은 문장을 #8207을 가리키는 문장으로 고쳤어요. 승인 코멘트의 항목 5가 요청한 것이에요.</p>
 <p>테스트는 두 곳이에요. <code>StartExecutionHandlerTest</code>에 두 케이스를 더해서, 롤백이 <code>updateStatusIfExpected(pipeline, RUNNING)</code>를 쓰고 <code>updateStatus</code>를 부르지 않는 것을 확인해요. 새 파일 <code>StartExecutionHandlerSqlTest</code>는 실제 <code>StartExecutionHandler</code>와 <code>CancelExecutionHandler</code>를 MySQL의 <code>SqlExecutionRepository</code> 위에서 돌려요. 큐를 감싼 객체가 <code>StartStage</code> 푸시를 막아 두고, 그 사이에 테스트가 취소하고, 푸시를 실패시킨 뒤 <code>StartExecution</code>을 다시 배달해요.</p>
 
-<p>PR head(<code>d91a2724c3</code>)에서 돌렸어요. 모듈 둘에서 해당 클래스만 골랐고, Gradle 옵션과 JDK는 1편과 같아요.</p>
+<p>당시 PR head(<code>d91a2724c3</code>)에서 돌렸어요. 모듈 둘에서 해당 클래스만 골랐고, Gradle 옵션과 JDK는 1편과 같아요.</p>
 
 <div class="obsv-code">./gradlew --no-daemon --max-workers=2 -Dorg.gradle.jvmargs=-Xmx2g \
   :orca:orca-queue:test --tests '*StartExecutionHandlerTest*' \
@@ -150,7 +150,7 @@ StartExecutionHandlerTest        tests=51 failures=2
 
 <div class="obsv-term"><div class="obsv-tt">📖 용어: 갱신 손실(lost update)</div>두 트랜잭션이 같은 값을 읽고 각자 고쳐서 저장할 때, 나중에 저장한 쪽이 먼저 저장한 쪽의 변경을 모르고 덮어써서 변경 하나가 없어지는 현상이에요. 행을 잠그고 읽으면 나중 트랜잭션이 먼저 커밋된 값을 읽게 돼서 생기지 않아요.</div>
 
-<p>PR head(<code>92bd5f89b3</code>)에서 확인했어요.</p>
+<p>당시 PR head(<code>92bd5f89b3</code>)에서 확인했어요.</p>
 
 <div class="obsv-code">./gradlew --no-daemon --max-workers=2 -Dorg.gradle.jvmargs=-Xmx2g \
   :orca:orca-sql:test --tests '*SqlExecutionRepositoryTest*'
@@ -166,9 +166,11 @@ tests=22 failures=1
 
 <h2>5. 현재 상태와 남은 것</h2>
 
-<p>2026-10-22에 <code>gh</code>로 읽은 상태예요. #8207, #8208, #8209는 모두 열려 있어요. #8208과 #8209는 리뷰 결정이 <code>REVIEW_REQUIRED</code>이고 리뷰도 코멘트도 0건이에요. 두 PR 모두 10월 16일에 열었고, 이후에 main을 합치는 병합 커밋이 각각 10번 들어가 있어요. 이 병합 커밋은 제가 낸 코드 변경이 아니라 브랜치를 main에 맞춘 기록이에요. #8207에는 제 코멘트만 있어요.</p>
+<p>2026-10-23에 GitHub API로 다시 확인했어요. #8207, #8208, #8209는 모두 열려 있고, 두 PR의 리뷰 결정은 <code>REVIEW_REQUIRED</code>예요. 두 PR의 리뷰·인라인 리뷰 댓글·일반 코멘트는 각각 0건이고, #8207의 코멘트 두 개도 제 것뿐이에요.</p>
+<p>10월 22일에 main을 합치는 병합 커밋이 각 PR에 두 개씩 더 들어왔어요. 최신 head는 <a href="https://github.com/spinnaker/spinnaker/commit/9e5c3b7255196d3cbc0fe340248904a8f5f69c36">#8208의 <code>9e5c3b725519</code></a>와 <a href="https://github.com/spinnaker/spinnaker/commit/182ca9d32ac30e797cd202f8a5cfe980d0a24bb4">#8209의 <code>182ca9d32ac3</code></a>이에요. 두 PR에서 고친 파일은 합계 다섯 개(#8208 네 개, #8209 한 개)이고, 당시 재현 SHA와 최신 head 사이에 대조하니 원문 바이트의 SHA-256이 모두 같았어요. 새 기능 수정이나 새 회귀 테스트를 추가한 것은 아닙니다. 위 실행 결과는 당시 SHA에서 얻은 기록이고, 최신 head를 로컬에서 다시 실행하지는 않았어요.</p>
+<p>최신 head의 공개 체크에서는 각 PR의 <code>build</code> 두 개와 Gradle wrapper 검증이 성공했어요. 다만 Mergify의 자동 브랜치 갱신 규칙은 실패했어요(<a href="https://github.com/spinnaker/spinnaker/runs/120011285504">#8208 체크</a>, <a href="https://github.com/spinnaker/spinnaker/runs/120011372486">#8209 체크</a>). 체크 설명에 따르면 Mergify 앱에 <code>workflows</code> 권한이 없어 GitHub가 워크플로 파일 갱신을 거절했어요. 기여 코드의 테스트 실패와는 구분되는 앱 권한 문제예요. Mergify Merge Queue는 <code>NEUTRAL</code>, Summary는 성공이므로, 전체 체크 통과나 머지 준비 완료로 볼 수는 없어요.</p>
 <p>그래서 이 작업은 두 가지가 정해지지 않았어요. 하나는 #8208과 #8209가 리뷰를 받아 머지될지예요. 다른 하나는 #8207의 세 방향 중 어느 쪽으로 갈지예요. 방향이 정해지지 않았으니 <code>CompleteExecutionHandler</code>와 <code>RestartStageHandler</code>의 수정은 시작하지 않았어요. 두 핸들러의 재현은 이슈에 있지만 고치는 PR은 없어요.</p>
 <p>정리하면 승인 코멘트의 항목 1과 3에는 PR이 있고, 항목 2, 5, 6에는 이슈가 있어요. 승인 코멘트의 항목 2(<code>cancel</code>이 잠금 없이 읽는 경쟁)와 #8208 본문이 적은 한계(상태는 같은데 <code>canceled</code>만 다른 경우)는 어느 PR에서도 고쳐지지 않아요. 항목 7의 이미 <code>RUNNING</code>에 갇힌 39건을 정리하는 일은 코드 변경이 아니라 운영 작업이라서 이 작업에 들어 있지 않아요.</p>
 
-<div class="obsv-summary"><div class="obsv-st2">✍️ 요약</div><p>#8174의 승인 코멘트에는 남은 항목 8개가 있었어요. 롤백이 취소를 덮어쓰는 문제는 #8208로, 잠금을 증명하지 못하는 테스트는 #8209로, 같은 모양의 쓰기와 기본 구현의 한계는 이슈 #8207로 옮겼어요. 로컬에서 #8208은 롤백 코드를 되돌리면 취소가 <code>RUNNING</code>으로 바뀌며 실패했고, #8209는 <code>.forUpdate()</code>를 지우면 새 테스트만 실패하고 기존 순차 테스트는 통과했어요. 2026-10-22 현재 셋 모두 열려 있고 메인테이너의 답은 아직 없어요.</p></div>
+<div class="obsv-summary"><div class="obsv-st2">✍️ 요약</div><p>#8174의 승인 코멘트에는 남은 항목 8개가 있었어요. 롤백이 취소를 덮어쓰는 문제는 #8208로, 잠금을 증명하지 못하는 테스트는 #8209로, 같은 모양의 쓰기와 기본 구현의 한계는 이슈 #8207로 옮겼어요. 로컬에서 #8208은 롤백 코드를 되돌리면 취소가 <code>RUNNING</code>으로 바뀌며 실패했고, #8209는 <code>.forUpdate()</code>를 지우면 새 테스트만 실패하고 기존 순차 테스트는 통과했어요. 2026-10-23 현재 셋 모두 열려 있고 메인테이너의 답은 아직 없어요.</p></div>
 </div>

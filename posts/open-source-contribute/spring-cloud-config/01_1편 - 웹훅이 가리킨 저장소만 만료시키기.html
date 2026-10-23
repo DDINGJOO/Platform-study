@@ -1,5 +1,5 @@
 <!-- tags: Spring Cloud Config, refresh-rate, 웹훅, monitor 엔드포인트, JGit -->
-<!-- lead: Spring Cloud Config Server에 refresh-rate를 걸면 /monitor 웹훅으로 알림을 받은 애플리케이션이 이전 커밋을 받을 수 있어요. 만료를 넣었다가 모든 저장소를 만료시킨다는 리뷰를 받고, 웹훅이 가리킨 저장소만 고르게 바꾼 과정을 적었어요. -->
+<!-- lead: Spring Cloud Config Server에 refresh-rate를 걸면 웹훅 알림 뒤에도 이전 커밋을 받을 수 있어요. 만료 대상을 해당 저장소로 좁힌 과정을 적고, Bitbucket Server 샘플을 모든 페이로드로 일반화했던 설명을 정정했어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -28,16 +28,16 @@
 </div>
 
 <p>설정 저장소에 커밋을 푸시합니다. Git 호스팅 서비스가 Config Server의 <code>/monitor</code>로 웹훅을 보내고, Config Server는 그 설정을 쓰는 애플리케이션들에게 "설정이 바뀌었으니 다시 받아 가라"고 알립니다. 애플리케이션은 곧바로 설정을 다시 요청해요. 그런데 돌려받은 설정이 방금 푸시한 커밋이 아니라 그 이전 커밋일 수 있습니다.</p>
-<p><code>spring.cloud.config.server.git.refresh-rate</code>를 켜 둔 서버에서 생기는 일이에요. 이 글은 <a href="https://github.com/spring-cloud/spring-cloud-config/pull/3342">spring-cloud/spring-cloud-config #3342</a>의 회고 1편입니다. <b>웹훅을 받으면 refresh-rate를 만료시키는 첫 구현을 어떻게 만들었고, "모든 저장소를 만료시키지 말라"는 설계 지적을 받아 웹훅이 가리킨 저장소만 고르도록 어떻게 바꿨는지</b>를 적었어요.</p>
+<p><code>spring.<wbr>cloud.<wbr>config.<wbr>server.<wbr>git.<wbr>refresh-rate</code>를 켜 둔 서버에서 생기는 일이에요. 이 글은 <a href="https://github.com/spring-cloud/spring-cloud-config/pull/3342">spring-cloud/spring-cloud-config #3342</a>의 회고 1편입니다. <b>웹훅을 받으면 refresh-rate를 만료시키는 첫 구현을 어떻게 만들었고, "모든 저장소를 만료시키지 말라"는 설계 지적을 받아 웹훅이 가리킨 저장소만 고르도록 어떻게 바꿨는지</b>를 적었어요.</p>
 
 <div class="obsv-term"><div class="obsv-tt">📖 용어: Spring Cloud Config Server</div>여러 애플리케이션의 설정 파일을 Git 저장소 같은 곳에 모아 두고 HTTP로 나눠 주는 서버예요. 애플리케이션은 기동할 때나 갱신 알림을 받았을 때 이 서버에 설정을 요청합니다.</div>
 
-<p>이 PR은 이슈 gh-2249와 관련된 작업이고, 2026-10-09에 열었어요. 이 글을 쓰는 2026-10-22 현재 아직 열려 있고 머지되지 않았습니다. 글에 적은 과정은 PR의 커밋·본문·리뷰 기록과, 리뷰에 대응한 날 남긴 작업 기록에서 가져왔어요.</p>
+<p>이 PR은 이슈 gh-2249와 관련된 작업이고, 2026-10-09에 열었어요. 2026-10-23(UTC 기준) 재확인에서도 열림(OPEN)이고, 변경 요청(CHANGES_REQUESTED)이 남아 있으며 아직 머지되지 않았습니다. 글의 주된 구현·검증 기록은 <code>3ba94c12</code> 시점이에요. 이후 URL 매칭과 메서드 반환값은 달라졌고, Bitbucket 설명도 정정했어요. 최신 대응은 2편에 구분해 적었습니다.</p>
 
 <h2>1. 웹훅은 왔는데 설정은 이전 커밋</h2>
 <p>Config Server가 Git 저장소를 쓰면, 설정 요청이 올 때마다 원격 저장소에서 fetch할지를 먼저 판단해요. refresh-rate를 0보다 크게 주면 마지막 fetch 뒤로 그 시간이 지나기 전에는 원격에 가지 않습니다. 요청이 많은 서버에서 원격 호출을 줄이려는 설정이에요.</p>
 
-<div class="obsv-term"><div class="obsv-tt">📖 용어: refresh-rate</div><code>spring.cloud.config.server.git.refresh-rate</code>, 초 단위예요. 마지막 fetch 이후 이 시간이 지나야 다음 요청에서 원격 저장소를 다시 fetch합니다. 음수면 fetch를 아예 하지 않아요.</div>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: refresh-rate</div><code>spring.<wbr>cloud.<wbr>config.<wbr>server.<wbr>git.<wbr>refresh-rate</code>, 초 단위예요. 마지막 fetch 이후 이 시간이 지나야 다음 요청에서 원격 저장소를 다시 fetch합니다. 음수면 fetch를 아예 하지 않아요.</div>
 
 <p>판단은 <code>JGitEnvironmentRepository.shouldPull()</code>이 해요. 마지막 fetch 시각을 담은 필드가 <code>lastRefresh</code>입니다.</p>
 
@@ -139,29 +139,31 @@ server may still serve the previous commit to them.</div>
 <p>지적이 맞았어요. 그래서 2026-10-21 커밋 <code>3ba94c12</code>에서 방향을 바꿨습니다. 웹훅 페이로드에 들어 있는 저장소 URL을 꺼내고, 그 URL이 각 저장소에 설정된 원격 URL과 같을 때만 만료시킵니다. 메서드 시그니처도 <code>expireRefreshRate(String repositoryUri)</code>로 바뀌었어요.</p>
 
 <h2>4. 웹훅마다 저장소 URL이 다른 곳에 있다</h2>
-<p>"페이로드에서 저장소 URL을 꺼낸다"는 말은 쉽지만, 서비스마다 그 URL을 두는 자리가 달랐어요. <code>/monitor</code>는 이미 GitHub, GitLab, Bitbucket, Gitea, Gitee, Gogs의 페이로드를 각각 해석하는 추출기를 갖고 있습니다. 그런데 기존 추출기들은 바뀐 파일 경로만 뽑았고 저장소 URL은 보지 않았어요. <code>3ba94c12</code>에서 읽도록 만든 위치는 아래와 같습니다.</p>
+<p>"페이로드에서 저장소 URL을 꺼낸다"는 말은 쉽지만, 서비스마다 그 URL을 두는 자리가 달랐어요. <code>/monitor</code>는 이미 GitHub, GitLab, Bitbucket, Gitea, Gitee, Gogs의 페이로드를 각각 해석하는 추출기를 갖고 있습니다. 그런데 기존 추출기들은 바뀐 파일 경로만 뽑았고 저장소 URL은 보지 않았어요. <code>3ba94c12</code>에서 읽도록 만든 위치를 정리하면 아래와 같아요. Bitbucket Server 푸시 행은 뒤에 확인한 clone 링크 유무를 반영해 정정했습니다.</p>
 
 <div class="obsv-code">GitHub, Gitea, Gitee, Gogs   repository.clone_url / ssh_url / git_url
 GitLab                       project.git_http_url / git_ssh_url
                              (레거시 페이로드) repository.url
 Bitbucket Cloud              repository.links.html.href   (clone 링크 없음)
 Bitbucket Server pr:merged   pullRequest.toRef.repository.links.clone[].href
-Bitbucket Server 푸시        저장소 URL 없음</div>
+Bitbucket Server 푸시        repository.links.clone[].href (있을 때만)</div>
 
-<p>까다로운 지점이 두 군데 있었어요. 첫째는 <code>repository.url</code>이에요. 레거시 GitLab 페이로드에서는 이 필드가 clone URL이지만, GitHub 페이로드에서는 같은 이름의 필드가 API 주소입니다. 그래서 이 필드는 <code>X-Gitlab-Event: Push Hook</code> 헤더가 있을 때만 읽었어요. 둘째는 Bitbucket이에요. Bitbucket Cloud는 clone URL 대신 저장소 웹 페이지 주소만 주고, Bitbucket Server의 기본 푸시 페이로드에는 저장소 URL이 아예 없습니다.</p>
+<p>까다로운 지점이 두 군데 있었어요. 첫째는 <code>repository.url</code>이에요. 레거시 GitLab 페이로드에서는 이 필드가 clone URL이지만, GitHub 페이로드에서는 같은 이름의 필드가 API 주소입니다. 그래서 이 필드는 <code>X-Gitlab-Event: Push Hook</code> 헤더가 있을 때만 읽었어요. 둘째는 Bitbucket이에요. Bitbucket Cloud 샘플에는 clone URL 대신 저장소 웹 페이지 주소가 있었고, 당시 본 Bitbucket Server 푸시 샘플에는 clone 링크가 없었습니다. 이 샘플 하나를 근거로 Server 푸시 전체에 저장소 URL이 없다고 판단한 것은 잘못이었어요.</p>
 
 <div class="obsv-term"><div class="obsv-tt">📖 용어: 웹훅 페이로드 (webhook payload)</div>Git 호스팅 서비스가 푸시 같은 이벤트가 일어났을 때 지정한 주소로 POST하는 JSON 본문이에요. 어떤 저장소의 어떤 커밋에서 어떤 파일이 바뀌었는지가 들어 있지만, 필드 이름과 위치는 서비스마다 다릅니다.</div>
 
 <p>URL이 없는 페이로드를 어떻게 다룰지가 실제 결정이었어요. 선택지는 두 가지였습니다. URL을 못 찾으면 예전처럼 전부 만료시키거나, 아무것도 만료시키지 않거나요. 앞쪽을 고르면 리뷰에서 지적받은 동작이 Bitbucket Server에서는 그대로 남아요. 그래서 뒤쪽을 골랐습니다. <span class="obsv-mark">저장소를 식별할 수 없으면 만료는 하지 않고, 애플리케이션 알림은 예전대로 보냅니다.</span> 애플리케이션 이름이나 저장소 이름의 끝부분으로 저장소를 짐작하는 방식도 쓰지 않았어요.</p>
 
-<p>그러면 원래 이슈에 들어 있던 Bitbucket Server 사례는 이 PR로 해결되지 않아요. 그래서 커밋과 PR 본문의 이슈 연결을 <code>Fixes gh-2249</code>에서 <code>Related to gh-2249</code>로 바꾸고, 문서에 이 한계를 적었습니다. 리뷰어에게 남긴 답에도 같은 내용을 쓰고, 저장소 정보가 부족한 서비스를 어떻게 다루면 좋을지 의견을 물었어요.</p>
+<p>당시에는 원래 이슈에 들어 있던 Bitbucket Server 사례 전체를 해결했다고 주장할 수 없다고 판단했어요. 그래서 커밋과 PR 본문의 이슈 연결을 <code>Fixes gh-2249</code>에서 <code>Related to gh-2249</code>로 바꾸고, 문서에 이 한계를 적었습니다. 리뷰어에게 남긴 답에도 같은 내용을 쓰고, 저장소 정보가 부족한 서비스를 어떻게 다루면 좋을지 의견을 물었어요.</p>
 
 <div class="obsv-code">One limitation worth calling out is that native Bitbucket Server push
 payloads do not include a repository URL. I documented that limitation
 and changed the issue link from "Fixes" to "Related to" ...</div>
 
+<p>위 코멘트는 당시 남긴 설명이지만, 모든 Bitbucket Server 푸시에 URL이 없다는 부분은 과도한 일반화였어요. 2026-10-22(UTC 기준) <a href="https://github.com/spring-cloud/spring-cloud-config/pull/3342#discussion_r4348914110">문서와 추출기가 어긋난다는 새 리뷰</a>를 받고, <a href="https://github.com/jenkinsci/atlassian-bitbucket-server-integration-plugin/blob/41c40fcdcf852fe9f3b3d7897780a281b8d1a590/src/test/resources/webhook/refs_changed_body.json#L29-L39">Atlassian 지원 Jenkins 플러그인의 푸시 샘플</a>에는 HTTP·SSH clone 링크가 있다는 것을 확인했습니다. <a href="https://github.com/spring-cloud/spring-cloud-config/commit/f6c23d31cfd52a38d2395c4b126b718be1d70a93">2026-10-23 커밋 <code>f6c23d31</code></a>에서 문서를 정정하고 링크가 있는 경우의 테스트도 추가했어요. 현재 구현은 <code>repo:refs_changed</code>에서 <code>repository.links.clone[].href</code>를 읽고, <code>pr:merged</code>에서는 <code>pullRequest.toRef.repository</code>의 <code>links.clone[].href</code>를 읽습니다. 링크가 설정 저장소와 일치하면 만료할 수 있고, 링크가 없으면 만료 없이 애플리케이션 알림만 보냅니다. 원래 사례 전체가 해결되었다거나 이슈가 닫혔다는 뜻은 아니에요.</p>
+
 <h2>5. 저장소 쪽: 기본, 패턴, 자리표시자</h2>
-<p>받는 쪽에서는 <code>MultipleJGitEnvironmentRepository</code>가 자기 자신(기본 저장소)과 패턴 저장소, 이미 만들어진 자리표시자 저장소에 같은 URL을 넘겨요. 각 저장소는 자기 원격 URL과 비교해서 맞을 때만 <code>lastRefresh</code>를 0으로 만듭니다.</p>
+<p>아래는 <code>3ba94c12</code> 당시 코드예요. 받는 쪽에서는 <code>MultipleJGitEnvironmentRepository</code>가 자기 자신(기본 저장소)과 패턴 저장소, 이미 만들어진 자리표시자 저장소에 같은 URL을 넘겨요. 각 저장소는 자기 원격 URL과 비교해서 맞을 때만 <code>lastRefresh</code>를 0으로 만듭니다.</p>
 
 <div class="obsv-code">-	private Map&lt;String, JGitEnvironmentRepository&gt; placeholders = new LinkedHashMap&lt;&gt;();
 +	private Map&lt;String, JGitEnvironmentRepository&gt; placeholders = new ConcurrentHashMap&lt;&gt;();
