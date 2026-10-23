@@ -1,0 +1,32 @@
+name: otel-practice-02
+services:
+  app:
+    build: ./app
+    image: otel-practice-02/app:local
+    mem_limit: 192m
+    ports: ["127.0.0.1:27210:8080"]
+    depends_on: [collector]
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/collector.yaml"]
+    mem_limit: 256m
+    volumes: ["./collector.yaml:/etc/collector.yaml:ro", "./out:/out"]
+    ports: ["127.0.0.1:27218:8888", "127.0.0.1:27219:13133"]
+    depends_on: [tempo]
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo.yaml"]
+    mem_limit: 384m
+    volumes: ["./tempo.yaml:/etc/tempo.yaml:ro"]
+    ports: ["127.0.0.1:27201:3200"]
+  grafana:
+    image: grafana/grafana:13.2.3
+    mem_limit: 384m
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes: ["./grafana/provisioning:/etc/grafana/provisioning:ro"]
+    ports: ["127.0.0.1:27200:3000"]

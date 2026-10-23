@@ -1,0 +1,67 @@
+name: otel-practice-03
+x-app: &app
+  image: otel-practice/dual-instrumentation:local
+  build: ./app
+  mem_limit: 512m
+  depends_on: [collector]
+x-env: &env
+  JAVA_TOOL_OPTIONS: -Xmx256m -XX:ActiveProcessorCount=2
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_SAMPLER: always_on
+  OTEL_BSP_SCHEDULE_DELAY: "500"
+  OTEL_METRICS_EXPORTER: none
+  OTEL_LOGS_EXPORTER: none
+services:
+  agent:
+    <<: *app
+    environment:
+      <<: *env
+      JAVA_TOOL_OPTIONS: -Xmx256m -XX:ActiveProcessorCount=2 -javaagent:/otel/agent.jar
+      LAB_MODE: agent
+      OTEL_SERVICE_NAME: agent
+      MANAGEMENT_OPENTELEMETRY_ENABLED: "false"
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.micrometer.tracing.autoconfigure.MicrometerTracingAutoConfiguration,org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.OpenTelemetryTracingAutoConfiguration
+    ports: ["127.0.0.1:27381:8080"]
+  micrometer:
+    <<: *app
+    environment:
+      <<: *env
+      LAB_MODE: micrometer
+      OTEL_SERVICE_NAME: micrometer
+    ports: ["127.0.0.1:27382:8080"]
+  both:
+    <<: *app
+    environment:
+      <<: *env
+      JAVA_TOOL_OPTIONS: -Xmx256m -XX:ActiveProcessorCount=2 -javaagent:/otel/agent.jar
+      LAB_MODE: both
+      OTEL_SERVICE_NAME: both
+    ports: ["127.0.0.1:27383:8080"]
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/collector.yaml"]
+    volumes: ["./collector.yaml:/etc/collector.yaml:ro"]
+    mem_limit: 256m
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo.yaml"]
+    user: "0"
+    volumes: ["./tempo.yaml:/etc/tempo.yaml:ro"]
+    ports: ["127.0.0.1:27320:3200"]
+    mem_limit: 384m
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["127.0.0.1:27300:3000"]
+    mem_limit: 1g

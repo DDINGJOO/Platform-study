@@ -225,6 +225,10 @@ IaC 작업일지에서 "코드 밖에 있는 자원을 어떻게 찾나"를 계�
 
 ## 글 쓸 때
 
+### OpenTelemetry 운영 실습 (2026-10-23)
+
+`otel-practice/`에 작은 서비스와 실제 Grafana 캡처를 포함한 네 편을 작성한다. Collector 수락·저장 경계, head/tail sampling 누락, Java agent와 Micrometer의 중복 계측, 개인정보 처리와 baggage·원본 로그의 경계를 다룬다. 코드·원자료는 `labs/observability/otel-practice/`, 글 목록과 후속 배포 시각화 논의는 [운영 실습 로드맵](otel-practice/ROADMAP.md)에 둔다. 기존 `otel/` 구조·설계 시리즈와 별도로 관리한다.
+
 ### 별도 소스 읽기 시리즈 (2026-10-21)
 
 `otel/`에 **OpenTelemetry 구조와 설계 읽기**를 추가한다. 첫 네 편은 API·SDK 분리, 비동기 컨텍스트, 배치 큐와 유실, 샘플링이다. 뒤 네 편은 메트릭 집계, Collector, 자동 계측, 시맨틱 컨벤션·카디널리티를 다룬다. 사용자 요청에 따라 분량 상한 없이 구현·실패 조건·다른 스택의 대안을 비교한다. 공식 문서와 고정 버전 공개 소스의 캡처·분석을 근거로 쓰고, 문서의 원칙과 글쓴이의 해석을 구분한다. 세부 계획과 발행 전 제약은 [OTel 로드맵](otel/ROADMAP.md)에 둔다.

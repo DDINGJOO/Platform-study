@@ -1,0 +1,85 @@
+receivers:
+  otlp/raw:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+  otlp/narrow:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4327
+  otlp/scrubbed:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4337
+processors:
+  attributes/narrow:
+    actions:
+      - key: synthetic.customer
+        action: delete
+  transform/privacy:
+    error_mode: propagate
+    trace_statements:
+      - context: span
+        statements:
+          - delete_key(attributes, "synthetic.customer")
+          - replace_pattern(status.message, "PRIVATE_[A-Z_]+", "[redacted]")
+      - context: spanevent
+        statements:
+          - replace_pattern(attributes["exception.message"], "PRIVATE_[A-Z_]+", "[redacted]") where attributes["exception.message"] != nil
+          - delete_key(attributes, "exception.stacktrace")
+    log_statements:
+      - context: log
+        statements:
+          - delete_key(attributes, "synthetic.customer")
+          - replace_pattern(body, "PRIVATE_[A-Z_]+", "[redacted]") where IsString(body)
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+  file/raw_traces:
+    path: /out/raw-traces.jsonl
+    flush_interval: 100ms
+  file/raw_logs:
+    path: /out/raw-logs.jsonl
+    flush_interval: 100ms
+  file/narrow_traces:
+    path: /out/narrow-traces.jsonl
+    flush_interval: 100ms
+  file/narrow_logs:
+    path: /out/narrow-logs.jsonl
+    flush_interval: 100ms
+  file/scrubbed_traces:
+    path: /out/scrubbed-traces.jsonl
+    flush_interval: 100ms
+  file/scrubbed_logs:
+    path: /out/scrubbed-logs.jsonl
+    flush_interval: 100ms
+service:
+  pipelines:
+    traces/raw:
+      receivers: [otlp/raw]
+      processors: []
+      exporters: [otlp/tempo, file/raw_traces]
+    logs/raw:
+      receivers: [otlp/raw]
+      processors: []
+      exporters: [otlphttp/loki, file/raw_logs]
+    traces/narrow:
+      receivers: [otlp/narrow]
+      processors: [attributes/narrow]
+      exporters: [otlp/tempo, file/narrow_traces]
+    logs/narrow:
+      receivers: [otlp/narrow]
+      processors: []
+      exporters: [otlphttp/loki, file/narrow_logs]
+    traces/scrubbed:
+      receivers: [otlp/scrubbed]
+      processors: [transform/privacy]
+      exporters: [otlp/tempo, file/scrubbed_traces]
+    logs/scrubbed:
+      receivers: [otlp/scrubbed]
+      processors: [transform/privacy]
+      exporters: [otlphttp/loki, file/scrubbed_logs]

@@ -1,0 +1,129 @@
+<!-- lead: Java agent와 Micrometer Tracing을 함께 켜자 같은 요청에 7개 스팬이 남았어요. 간단한 Spring Boot 서비스로 scope와 부모 관계, 로그의 span ID를 대조하고 실제 Grafana 화면에서 겹치는 계측을 확인했어요. -->
+<!-- tags: Micrometer Tracing, Java agent, 중복 계측, 로그 상관관계 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 OpenTelemetry 운영 실습 · 3편</div>
+  1편. Collector가 받았다고 한 스팬은 정말 저장됐을까<br>
+  2편. 에러 트레이스만 남기면 장애를 놓치지 않을까<br>
+  <b>3편. Java agent와 Micrometer Tracing을 같이 켜면 어떻게 될까</b> &larr; 지금 이 글
+</div>
+<p>같은 주문 API에 요청을 보냈어요. Java agent만 켜면 스팬이 3개, Micrometer Tracing만 켜면 4개, 둘 다 켜면 7개가 저장됐어요. 그런데 7개라는 숫자보다 눈에 띈 것은, 사용자 정의 구간 안에서 찍은 로그가 그 구간의 스팬을 가리키지 않았다는 점이에요.</p>
+<p><b>두 계측을 함께 켰을 때 무엇이 겹치고, 무엇이 연결되는지</b> 확인해 볼게요. Spring Boot 서비스 하나에서 HTTP 자기 호출을 만들고, 실제 Tempo 데이터와 Grafana 화면, 애플리케이션 로그를 비교했어요.</p>
+
+<h2>1. 같은 요청을 세 가지 구성으로 보내요</h2>
+<p>실습 서비스는 <code style="overflow-wrap:anywhere;">/checkout</code>에서 <code style="overflow-wrap:anywhere;">checkout.quote</code>라는 Observation을 시작하고, Spring이 제공한 <code style="overflow-wrap:anywhere;">RestClient.Builder</code>로 <code style="overflow-wrap:anywhere;">/inventory</code>를 호출해요. 별도 DB나 외부 서비스는 없어요. 직접 만든 업무 구간과 HTTP 경계를 함께 관찰하기 위한 최소 구성이에요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Observation</div>작업의 시작과 종료, 속성을 Micrometer에 알리는 기록 단위예요. 이 실습에서는 HTTP 요청과 견적 계산 구간을 표현해요. 트레이싱 처리가 연결되어야 스팬으로 내보낼 수 있어요.</div>
+<p>Boot 4.1.1과 Micrometer Tracing 1.7.1, Java agent 2.32.0을 사용했어요. 같은 jar를 세 번 띄우되, agent 기준군에서는 Spring의 트레이싱 자동 설정을 제외했어요. Micrometer 기준군은 agent 없이 <code style="overflow-wrap:anywhere;">spring-boot-starter-opentelemetry</code>를 사용하고, both는 두 경로를 모두 켰어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 트레이싱 브리지</div>Micrometer의 관찰 기록을 OpenTelemetry 스팬으로 연결하는 구현이에요. 여기서는 Boot 스타터에 포함된 OTel 브리지를 사용해요.</div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 235" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="dual-flow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.5"/></marker></defs>
+<path d="M23 45 C90 43,170 47,225 44 C227 75,226 111,224 144 C151 147,80 143,24 146 C21 108,23 76,23 45Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5"/>
+<text x="123" y="75" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">/checkout</text>
+<text x="123" y="108" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5">checkout.quote</text>
+<text x="123" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#8a8272">Observation</text>
+<path d="M233 95 C269 93,298 97,332 94" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#dual-flow)"/>
+<text x="282" y="71" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21">HTTP 호출</text>
+<path d="M345 46 C410 43,475 47,538 44 C540 76,537 111,539 145 C468 147,408 143,346 146 C342 110,346 78,345 46Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5"/>
+<text x="442" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25">/inventory</text>
+<text x="442" y="121" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">같은 서비스의 HTTP 입구</text>
+
+<text x="350" y="193" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f">세 구성 모두 Collector → Tempo → Grafana로 보내요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 같은 HTTP 동작에서 계측 설정만 바꿔요.</div>
+<p>로그는 Docker 표준 출력으로 확인하고, 스팬은 Collector contrib 0.162.0을 거쳐 Tempo 2.10.8에 저장해요. Grafana 13.2.3이 그 데이터를 읽어요. 샘플링은 전부 기록하도록 고정하고 외부 <code style="overflow-wrap:anywhere;">traceparent</code> 없이 요청을 시작했어요.</p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ SDK만 끄면 기준군이 달라져요</div><code style="overflow-wrap:anywhere;">management.opentelemetry.enabled=false</code>만 설정하면 Micrometer의 트레이싱 처리와 전파 효과까지 모두 사라졌다고 볼 수 없어요. agent 기준군은 <code style="overflow-wrap:anywhere;">MicrometerTracingAutoConfiguration</code>과 <code style="overflow-wrap:anywhere;">OpenTelemetryTracingAutoConfiguration</code>도 제외했어요. 정확한 클래스명과 전체 설정은 실습 compose에 있어요.</div>
+
+<h2>2. 7개가 생겼다는 사실만으로 중복을 판단하지 않아요</h2>
+<p>2026-10-23 실행에서 구성별로 3번씩 요청했어요. 요청별 고유 스팬은 agent 3개, Micrometer 4개, both 7개였고, 각 요청의 스팬은 같은 trace ID에 속했어요. 하지만 업무 구간이 추가되어도 개수는 늘어요. 그래서 누가 어떤 동작을 기록했는지 확인해야 해요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 계측 범위 (instrumentation scope)</div>스팬을 만든 계측 코드의 이름과 버전이에요. 서비스 이름이 같아도 scope를 보면 Tomcat 계측이 만든 스팬인지, Spring의 관찰 기록에서 만든 스팬인지 구분할 수 있어요.</div>
+<div class="obsv-code">구성          SERVER  CLIENT  INTERNAL  요청별 합계
+agent              2       1         0           3
+micrometer         2       1         1           4
+both               4       2         1           7
+
+각 구성 3회 모두 같은 분류와 개수를 확인했어요.</div>
+<p>agent의 scope는 <code style="overflow-wrap:anywhere;">io.opentelemetry.tomcat-10.0</code>과 <code style="overflow-wrap:anywhere;">io.opentelemetry.java-http-client</code>였어요. Micrometer 경로는 <code style="overflow-wrap:anywhere;">org.springframework.boot</code>였고요. both에서는 <code style="overflow-wrap:anywhere;">/checkout</code>과 <code style="overflow-wrap:anywhere;">/inventory</code> 각각에 SERVER 스팬이 두 개씩 있었어요. 서로 다른 scope가 같은 HTTP 작업을 겹치는 시간에 기록했어요.</p>
+<p>CLIENT도 두 개였어요. 자동 검증은 이름이 비슷한지만 보지 않고, 대상 URL이 같으며 실행 시간이 겹치는지 확인해요. 반면 <code style="overflow-wrap:anywhere;">checkout.quote</code>는 견적 계산이라는 별도 의미를 가진 INTERNAL 스팬 한 개이므로 HTTP 중복으로 세지 않았어요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-03/results.png" alt="실제 검증 출력. 구성별 3요청에서 agent 3개, Micrometer 4개, both 7개 스팬과 의미 중복 및 부모 관계 검사가 통과했다." style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 2. 개수와 함께 trace ID, 부모, HTTP 대상, 실행 구간을 검사한 실제 출력이에요.</div>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: SDK</div>만들어진 스팬의 처리와 전송을 담당하는 구현이에요. 같은 프로세스에 agent SDK와 애플리케이션 SDK가 함께 있으면 어느 쪽에서 처리하고 내보내는지도 확인해야 해요.</div>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ agent의 중복 억제가 모든 경로를 합쳐 주지는 않아요</div>공식 문서는 agent 내부에서 겹치는 계측을 억제하는 기본 동작을 설명해요. 이번 both에는 agent의 SDK 1.66.0과 Boot의 SDK 1.62.0에서 내보낸 스팬이 함께 있었어요. agent 내부 억제만 보고 별도 Boot 경로까지 조정되리라 가정하면 안 돼요.</div>
+
+<h2>3. 같은 trace ID여도 부모 관계는 달랐어요</h2>
+<p>Micrometer 단독 화면에서는 <code style="overflow-wrap:anywhere;">/checkout → checkout.quote → HTTP client → /inventory</code> 순서로 이어졌어요. 이 연결을 통해 HTTP 호출이 견적 계산 안에서 실행됐다는 사실을 읽을 수 있어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 컨텍스트 전파</div>현재 trace와 부모 스팬 정보를 다음 작업이나 HTTP 요청에 전달하는 과정이에요. 같은 trace ID인지와 올바른 부모 아래 놓였는지를 함께 확인해야 해요.</div>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-03/micrometer-trace.png" alt="실제 Grafana Tempo 화면. Micrometer 단독의 4개 스팬은 checkout, checkout.quote, HTTP client, inventory 순서로 연결된다." style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 3. Micrometer 단독에서는 견적 계산이 HTTP 호출의 부모예요.</div>
+<p>both에서도 trace ID는 하나였어요. 그런데 Tempo의 실제 <code style="overflow-wrap:anywhere;">parentSpanId</code>를 대조하면 <code style="overflow-wrap:anywhere;">checkout.quote</code>와 Spring HTTP client가 모두 agent의 <code style="overflow-wrap:anywhere;">GET /checkout</code> 바로 아래에 있었어요. Micrometer 단독에서 보였던 견적 계산과 HTTP client의 직접 부모 관계가 사라졌어요.</p>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<path d="M23 30 C113 28,218 32,321 29 C324 119,322 227,323 305 C219 308,113 304,24 307 C21 224,24 121,23 30Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
+<path d="M346 31 C445 28,561 32,675 29 C677 120,674 226,676 305 C557 308,446 304,347 307 C343 224,347 121,346 31Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.4"/>
+<text x="172" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#2e6b41">Micrometer 단독</text>
+<text x="510" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#c07f18">both에서 관찰한 부모</text>
+<path d="M52 104 C50 151,54 199,52 247 M52 143 C64 142,71 145,82 143 M84 149 C83 183,86 218,84 247 M84 191 C96 189,101 193,113 191 M116 197 C114 216,118 230,116 247 M116 240 C127 239,133 242,144 240" stroke="#5a9e6f" stroke-width="2" fill="none"/>
+<text x="48" y="102" font-family="Menlo, monospace" font-size="13">/checkout</text>
+<text x="88" y="150" font-family="Menlo, monospace" font-size="13">checkout.quote</text>
+<text x="118" y="198" font-family="Menlo, monospace" font-size="13">HTTP client</text>
+<text x="149" y="247" font-family="Menlo, monospace" font-size="13">/inventory</text>
+<path d="M374 105 C372 155,376 203,374 247 M374 143 C388 142,397 145,410 143 M374 190 C388 188,397 192,410 190 M374 240 C388 238,397 242,410 240" stroke="#e5a33c" stroke-width="2" fill="none"/>
+<text x="370" y="102" font-family="Menlo, monospace" font-size="13">GET /checkout (agent)</text>
+<text x="416" y="150" font-family="Menlo, monospace" font-size="13">checkout.quote</text>
+<text x="416" y="197" font-family="Menlo, monospace" font-size="13">HTTP client (Spring)</text>
+<text x="416" y="247" font-family="Menlo, monospace" font-size="13">GET client (agent)</text>
+<text x="350" y="330" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">trace ID 일치만으로 업무 구간의 부모 관계를 보장하지 못해요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 오른쪽은 차이가 드러나는 구간만 그렸어요. 전체 7개는 아래 화면에서 확인해요.</div>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-03/both-trace.png" alt="실제 Grafana Tempo 화면의 both 구성 7개 스팬. Spring HTTP 스팬과 Tomcat 및 JDK HTTP client 스팬이 같은 트레이스에 함께 표시된다." style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 5. 이름과 계층을 함께 보면 같은 HTTP 동작을 두 경로가 기록한 것을 볼 수 있어요.</div>
+<p><span class="obsv-mark">이번 실험은 trace가 둘로 갈라진 사례가 아니라, 같은 trace 안에서 HTTP 의미가 겹치고 부모 관계가 달라진 사례예요.</span> 비동기 작업이나 다른 Boot·agent 버전에서도 반드시 이 모양이 된다는 뜻은 아니에요.</p>
+
+<h2>4. 로그에 ID가 있다고 원하는 스팬을 가리키지는 않아요</h2>
+<p><code style="overflow-wrap:anywhere;">checkout.quote</code> 안에서 찍은 로그도 대조했어요. Micrometer 단독에서는 로그의 <code style="overflow-wrap:anywhere;">spanId</code>가 quote의 실제 스팬 ID였어요. both에서는 agent가 만든 바깥 <code style="overflow-wrap:anywhere;">GET /checkout</code>의 ID였어요. 로그에서 트레이스를 찾는 데는 문제가 없었지만, 로그를 찍은 업무 구간과 스팬의 대응은 달라졌어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: MDC</div>로그에 함께 출력할 요청 정보를 보관하는 문맥 정보예요. Micrometer의 기본 키는 <code style="overflow-wrap:anywhere;">traceId</code>와 <code style="overflow-wrap:anywhere;">spanId</code>이고, Java agent의 기본 로그 계측 키는 <code style="overflow-wrap:anywhere;">trace_id</code>와 <code style="overflow-wrap:anywhere;">span_id</code>예요.</div>
+<p>agent 단독은 애플리케이션에서 <code style="overflow-wrap:anywhere;">MDC.get("trace_id")</code>를 읽으면 비어 있었는데 실제 출력에는 <code style="overflow-wrap:anywhere;">trace_id</code>가 있었어요. agent가 Logback의 LoggingEvent를 읽는 시점에 값을 추가하기 때문이에요. 그래서 검증 스크립트는 응답에 담은 MDC 값과 Docker 로그에 출력된 값을 따로 확인해요. 실제 로그의 ID는 해당 요청의 Tempo 스팬 집합과 대조했어요.</p>
+<div class="obsv-callout"><div class="obsv-ct">💡 실무에서는 원하는 스팬까지 확인해요</div>로그에 trace ID가 있는지, 그 trace를 찾을 수 있는지, span ID가 내보낸 스팬에 속하는지, 그리고 그 스팬이 의도한 업무 구간인지를 순서대로 봐요. 앞의 세 검사가 통과해도 마지막 대응은 다를 수 있어요.</div>
+
+<h2>5. 재현한 뒤 계측의 담당 범위를 정해요</h2>
+<p>Docker Desktop과 Python 3만 있으면 서비스를 빌드하고 실행할 수 있어요. 저장소 루트에서 아래 순서로 실행해요. Java와 Gradle은 빌드 컨테이너 안에서 실행돼요.</p>
+<div class="obsv-code">cd labs/observability/otel-practice/dual-instrumentation
+python3 run.py
+cat out/results.txt
+
+# 각각의 서비스에 직접 요청하기
+curl 'http://localhost:27381/checkout?request=demo-agent'
+curl 'http://localhost:27382/checkout?request=demo-micrometer'
+curl 'http://localhost:27383/checkout?request=demo-both'
+
+# Grafana: http://localhost:27300
+# 이 실습 프로젝트만 종료하기
+docker compose down</div>
+<p><code style="overflow-wrap:anywhere;">run.py</code>는 준비 완료를 확인한 뒤 구성별로 3번 요청하고, 응답의 <code style="overflow-wrap:anywhere;">receivedTraceparent</code>에서 이번 trace ID를 얻어요. Tempo에 스팬이 도착할 때까지 조회하며 고유 ID, 부모, 의미, 로그를 검사해요. 이전 실행의 <code style="overflow-wrap:anywhere;">out/</code> 증거는 교체하므로 보관하려면 먼저 복사해야 해요.</p>
+<p>원시 응답은 <code style="overflow-wrap:anywhere;">out/*-tempo.json</code>, scope와 부모를 정리한 자료는 <code style="overflow-wrap:anywhere;">out/*-spans.json</code>, 로그는 <code style="overflow-wrap:anywhere;">out/application.log</code>에 있어요. 실제 브라우저 캡처 절차와 전체 설정은 <a href="../../../../labs/observability/otel-practice/dual-instrumentation/README.md">실습 README</a>에 정리했어요. 이미지의 짧은 실행 시간은 예시 요청의 결과이며 성능 비교 자료가 아니에요.</p>
+<p>이번 범위에서 HTTP와 업무 Observation을 하나의 관계로 읽으려면 Micrometer 단독이 명확했어요. agent 단독도 HTTP 경계는 정상 추적했지만 직접 만든 quote Observation은 스팬으로 남기지 않았어요. 둘 중 하나를 고를 때는 필요한 라이브러리의 자동 계측 범위와 업무 구간 작성 방식을 함께 따져야 해요. 병행한다면 HTTP·DB·업무 구간을 어느 경로가 기록할지 정하고, 실제 결과를 다시 확인해요.</p>
+<p>동기 HTTP 자기 호출만 검증했어요. JDBC, 비동기 전파, 오류 요청, 외부 traceparent가 있는 요청, CPU·메모리·지연 비용은 이번 결론에 포함하지 않았어요.</p>
+<p>설정 의미는 <a href="https://docs.spring.io/spring-boot/reference/actuator/tracing.html">Spring Boot Tracing 문서</a>와 <a href="https://docs.spring.io/spring-boot/reference/actuator/observability.html">Observability 문서</a>, agent 내부 억제는 <a href="https://opentelemetry.io/docs/zero-code/java/agent/disable/">OpenTelemetry 공식 문서</a>, 로그 주입 시점은 <a href="https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/v2.32.0/instrumentation/logback/logback-mdc-1.0/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/logback/mdc/v1_0/LoggingEventInstrumentation.java">agent 2.32.0의 고정 소스</a>를 확인했어요. 버전별 확인 범위는 실습의 references.md에 남겼어요.</p>
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div><b>두 계측을 함께 켜고 스팬이 늘었다면, 개수보다 scope와 HTTP 의미부터 비교해요.</b><br><br>이번 3/4/7 실험에서는 같은 trace ID 안에서 HTTP 기록이 겹쳤고 부모와 로그의 대응도 달라졌어요. 계측 설정의 검증은 원하는 업무 구간과 실제 스팬이 연결되는지 확인하는 데까지 이어져야 해요.</div>
+</div>

@@ -1,0 +1,45 @@
+name: otel-practice-01
+services:
+  app:
+    image: python:3.12-slim
+    command: python -u /app/service.py
+    environment: {ROLE: app}
+    volumes: ['./service.py:/app/service.py:ro']
+    ports: ['127.0.0.1:27100:8080']
+  backend:
+    image: python:3.12-slim
+    command: python -u /app/service.py
+    environment: {ROLE: backend}
+    volumes: ['./service.py:/app/service.py:ro', 'capture:/data']
+    ports: ['127.0.0.1:27180:8080']
+  memory:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ['--config=/etc/collector.yaml']
+    volumes: ['./memory.yaml:/etc/collector.yaml:ro']
+    ports: ['127.0.0.1:27131:4318', '127.0.0.1:27191:13133']
+  disk:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    user: '0:0'
+    command: ['--config=/etc/collector.yaml']
+    volumes: ['./disk.yaml:/etc/collector.yaml:ro', 'queue:/queue']
+    ports: ['127.0.0.1:27132:4318', '127.0.0.1:27192:13133']
+  tempo:
+    image: grafana/tempo:2.10.8
+    user: '0:0'
+    command: ['-config.file=/etc/tempo.yaml']
+    volumes: ['./tempo.yaml:/etc/tempo.yaml:ro', 'tempo:/var/tempo']
+    ports: ['127.0.0.1:27110:3200']
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+    volumes: ['./grafana/provisioning:/etc/grafana/provisioning:ro']
+    ports: ['127.0.0.1:27120:3000']
+volumes:
+  queue: {}
+  capture: {}
+  tempo: {}

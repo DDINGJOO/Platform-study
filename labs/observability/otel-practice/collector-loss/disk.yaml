@@ -1,0 +1,36 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  otlp_http:
+    endpoint: http://backend:8080
+    encoding: json
+    compression: none
+    timeout: 2s
+    retry_on_failure:
+      initial_interval: 1s
+      max_interval: 2s
+      max_elapsed_time: 0s
+    sending_queue:
+      enabled: true
+      sizer: requests
+      queue_size: 100
+      num_consumers: 1
+      wait_for_result: false
+      block_on_overflow: false
+      storage: file_storage
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  file_storage:
+    directory: /queue
+    create_directory: true
+    fsync: true
+service:
+  extensions: [health_check, file_storage]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp_http]

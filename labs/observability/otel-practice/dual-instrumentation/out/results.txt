@@ -1,0 +1,17 @@
+OTel practice 03: Java agent + Micrometer
+UTC: 2026-10-23T13:17:49.605798+00:00
+Boot 4.1.1 | Micrometer Tracing 1.7.1 | agent 2.32.0
+Trace identity + parent graph + semantic overlap + log correlation
+
+agent      requests=3 spans/request=3 graph=PASS
+micrometer requests=3 spans/request=4 graph=PASS
+both       requests=3 spans/request=7 graph=PASS
+
+agent: SERVER 2 + CLIENT 1; no checkout.quote span
+micrometer: SERVER 2 + CLIENT 1 + INTERNAL 1
+both: SERVER 4 + CLIENT 2 + INTERNAL 1
+both: /checkout and /inventory overlap across scopes: PASS
+both: HTTP CLIENT target + interval overlap: PASS
+all: single trace, known parents, log IDs exported: PASS
+both: checkout log span differs from checkout.quote: CONFIRMED
+Note: synchronous self-call only; no async/JDBC/overhead claim.

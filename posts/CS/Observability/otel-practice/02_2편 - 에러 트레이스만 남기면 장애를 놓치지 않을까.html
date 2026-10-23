@@ -1,0 +1,141 @@
+<!-- lead: 오류 요청 10건을 보냈는데 Head sampling 뒤에는 3건만 남았어요. 작은 HTTP 서비스와 Collector·Tempo로 오류·지연 조건을 비교하고, 앞에서 버린 기록과 늦게 도착한 오류 스팬이 빠지는 경우를 직접 확인해요. -->
+<!-- tags: Tail sampling, Head sampling, decision_wait, 샘플링 유실, Tempo -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 OpenTelemetry 운영 실습 · 2편</div>
+  1편. Collector가 받았다고 한 스팬은 정말 저장됐을까<br>
+  <b>2편. 에러 트레이스만 남기면 장애를 놓치지 않을까</b> &larr; 지금 이 글
+</div>
+
+<p>에러 요청을 10번 보냈는데 Tempo에 남은 트레이스는 3개였어요. 애플리케이션은 10번 모두 HTTP 500을 반환했고, 요청 로그도 남았습니다. 저장 비용을 줄이려고 SDK에서 25%만 선택했더니, 실패한 요청의 기록도 함께 줄었어요.</p>
+<p>그러면 Collector에서 에러를 확인한 뒤 남기면 될까요? 작은 주문 서비스를 만들어 정상·오류·느린 요청을 보냈어요. <b>오류를 알아보는 시점과 스팬이 도착하는 시점</b>을 바꾸며, 어떤 장애 기록이 남고 어떤 기록이 빠지는지 확인해요.</p>
+<div class="obsv-callout"><div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+&bull; 시작할 때 25%를 선택하면 오류 요청은 몇 개 남을까요?<br>
+&bull; 오류와 느린 요청을 Collector에서 골라 남길 수 있을까요?<br>
+&bull; 앞에서 버린 요청과 늦게 도착한 오류 스팬은 어떻게 될까요?
+</div>
+
+<h2>1. 오류가 나기 전에 이미 선택이 끝났어요</h2>
+<p>한 요청에 <code>checkout</code>과 그 안에서 실행하는 <code>inventory.lookup</code>을 기록해요. 정상은 약 15ms, 오류는 같은 정도의 작업 뒤 HTTP 500, 느린 요청은 재고 조회에서 실제로 320ms를 기다리게 했어요. 회사 서비스나 운영 데이터는 쓰지 않았습니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 트레이스와 스팬</div>트레이스는 한 요청의 실행 기록이고, 스팬은 그 안의 작업 하나예요. 이 실습은 요청마다 부모 작업과 자식 작업, 두 스팬을 만들어요.</div>
+<p>SDK에서 <code>ParentBased(TraceIdRatioBased(0.25))</code>를 설정하면 요청을 시작할 때 trace ID를 기준으로 선택해요. 자식 스팬은 부모의 결정을 따릅니다. 이때는 재고 조회가 실패할지, 320ms가 걸릴지 아직 알 수 없어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Head sampling</div>스팬을 시작할 때 수집 여부를 정하는 방식이에요. 이 실습에서는 0.25를 확률로 지정하지만, 작은 요청 집합의 결과가 정확히 25%일 필요는 없어요.</div>
+<p>확률 선택 자체가 잘못된 것은 아니에요. 애플리케이션에서 내보내는 데이터를 줄이는 데 쓸 수 있습니다. 다만 <span class="obsv-mark">요청을 시작할 때 미래의 오류 여부까지 판단할 수는 없어요.</span> 선택되지 않은 요청도 실제로 실행되고, 서비스의 응답 로그에는 남습니다.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 245" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="sampArr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3 6 4 8.5 5 C6 6 4 7 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.5"/></marker></defs>
+<path d="M25 45 C80 43 150 46 210 44 C213 76 211 105 210 132 C150 135 80 131 27 133 C24 105 26 75 25 45 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
+<path d="M255 45 C310 43 380 46 440 44 C443 76 441 105 440 132 C380 135 310 131 257 133 C254 105 256 75 255 45 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.6"/>
+<path d="M485 45 C540 43 610 46 674 44 C677 76 675 105 674 132 C610 135 540 131 487 133 C484 105 486 75 485 45 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
+<path d="M214 87 C230 85 239 90 249 87 M444 87 C460 85 470 90 479 87" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#sampArr1)"/>
+<g font-family="'Nanum Pen Script', cursive" text-anchor="middle" fill="#3d3a34" font-size="23">
+<text x="118" y="80">요청 시작</text><text x="118" y="110">SDK에서 선택</text><text x="348" y="80">재고 조회 실행</text><text x="348" y="110">이제 결과를 알아요</text><text x="580" y="80">일부 요청 실패</text><text x="580" y="110">HTTP 500</text>
+<text x="350" y="190" fill="#b3502f">처음 선택하지 않은 스팬은 뒤에서 복구할 수 없어요</text></g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 확률 선택은 오류가 드러나기 전에 이뤄져요.</div>
+
+<h2>2. 작은 서비스를 세 경로로 보냈어요</h2>
+<p>Python 표준 HTTP 서버에 OpenTelemetry Python SDK 1.38.0을 직접 붙였어요. Collector contrib 0.162.0, Tempo 2.10.8, Grafana 13.2.3을 Docker Compose로 띄웁니다. 자동 계측이 무엇을 만드는지 비교하는 실험은 아니고, 두 스팬과 선택 조건을 직접 통제하는 실험이에요.</p>
+<p>같은 코드에 세 모드를 두었어요. <code>head</code>는 SDK에서 25%를 선택하고 저장소로 바로 보내요. <code>tail</code>은 SDK에서 모두 기록한 뒤 Collector가 선택해요. <code>head-tail</code>은 SDK의 25% 선택 뒤 Collector의 조건을 적용합니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Tail sampling</div>Collector가 일정 시간 모은 스팬을 보고 보관할 트레이스를 정하는 방식이에요. 오류 상태와 관측된 실행 시간을 판단에 쓸 수 있어요.</div>
+<div class="obsv-code">cd labs/observability/otel-practice/tail-sampling
+python3 run.py --build
+cat out/results.txt
+
+# 실행한 요청의 trace ID와 SDK 선택 여부
+python3 -m json.tool out/requests.json
+
+# 화면과 관측 데이터는 이 실습 전용 포트를 써요
+# Grafana: http://127.0.0.1:27200
+# Tempo:   http://127.0.0.1:27201</div>
+<p>실행기는 이 Compose 프로젝트만 재생성하고 이전 실행의 생성 파일을 교체해요. 서비스의 준비 상태를 확인한 뒤 모드마다 정상 40건·오류 10건·느린 요청 10건을 보냅니다. 뒤에서 사용할 지연 전송 두 건까지 실제 HTTP 요청은 182건이에요. 실행이 끝나면 화면을 확인할 수 있도록 스택을 유지합니다.</p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 개수를 먼저 정해 둬야 해요</div>실행한 요청 목록을 분모로 삼고, SDK의 선택 여부·Collector 전후의 파일·Tempo의 trace ID를 대조해요. 화면의 검색 결과 개수만으로 유실을 판단하면 아직 검색되지 않은 기록과 선택하지 않은 기록을 구분하기 어려워요.</div>
+
+<h2>3. 에러와 지연을 조건으로 남겨 봤어요</h2>
+<p>Collector에는 <b>ERROR 상태이거나, 관측된 트레이스 시간이 200ms를 초과하면 남기는 정책</b>을 넣었어요. 아래 두 정책 중 하나라도 충족하면 선택하는 구성이에요. 일반 경로의 판단 대기는 2초로 지정했습니다.</p>
+<div class="obsv-code">tail_sampling/short:
+  decision_wait: 2s
+  num_traces: 1000
+  decision_cache:
+    sampled_cache_size: 1000
+    non_sampled_cache_size: 1000
+  policies:
+    - name: keep-errors
+      type: status_code
+      status_code: {status_codes: [ERROR]}
+    - name: keep-slow
+      type: latency
+      latency: {threshold_ms: 200}</div>
+<p><code>status_code</code>는 HTTP 응답 코드가 아니라 <b>스팬에 기록된 OTel 상태</b>를 읽어요. 서비스 코드가 오류 요청에 <code>set_status(Status(StatusCode.ERROR, ...))</code>를 직접 호출합니다. HTTP 500을 반환했다는 사실만으로 이 정책이 작동했다고 판단하지 않았어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 스팬 상태</div>스팬이 성공·오류 등의 결과를 표현하는 값이에요. 이 실습의 오류 정책은 OTel의 ERROR 상태를 검사해요.</div>
+<p>지연 정책은 모은 스팬의 가장 이른 시작부터 가장 늦은 종료까지를 봐요. 부모 320ms와 자식 320ms를 더해서 640ms로 보지는 않습니다. 실제 저장 화면에서 느린 요청 한 건은 약 323ms였어요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-02/grafana-slow-trace.png" alt="실제 Grafana Tempo 화면: checkout-tail의 checkout과 inventory.lookup 두 스팬, 약 323ms인 느린 요청" style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">화면 1. Collector가 남긴 느린 요청을 실제 Grafana Explore에서 열었어요.</div>
+<p>기본 실행 ID <code>sampling-seed-a</code>로 실행한 결과예요. 표의 숫자는 Tempo에 저장된 트레이스 수를 요청 수로 나눈 값입니다.</p>
+<table style="width:100%;border-collapse:collapse;text-align:center;"><thead><tr><th>경로</th><th>정상</th><th>오류</th><th>느린 요청</th></tr></thead><tbody>
+<tr><td>Head 25%</td><td>10 / 40</td><td>3 / 10</td><td>1 / 10</td></tr>
+<tr><td>Tail만 적용</td><td>0 / 40</td><td>10 / 10</td><td>10 / 10</td></tr>
+<tr><td>Head 25% → Tail</td><td>0 / 40</td><td>5 / 10</td><td>1 / 10</td></tr>
+</tbody></table>
+<p>이번 입력에서는 Tail만 적용한 경로가 오류와 느린 요청 20건을 모두 남겼어요. 정상 기록은 남기지 않았습니다. <span class="obsv-mark">조건에 필요한 스팬이 판단 전에 도착했을 때의 결과예요.</span> 모든 장애를 항상 보존한다는 뜻은 아니에요.</p>
+
+<h2>4. 앞에서 버린 오류는 Tail도 되살리지 못해요</h2>
+<p><code>head-tail</code>의 오류 요청 10건 중 SDK가 기록한 것은 5건이었어요. Collector는 이 5건을 모두 남겼지만, SDK가 기록하지 않은 나머지 5건은 입력 자체가 없었습니다. 느린 요청도 SDK가 선택한 1건만 남았어요. 정상 요청은 SDK가 선택한 13건도 Collector에서 제외됐습니다.</p>
+<p>여기서 Head 단독의 오류 3건과 Head→Tail의 5건을 비교해 "Tail이 2건을 추가로 살렸다"고 읽으면 안 돼요. <b>모드 사이에 트레이스가 합쳐지지 않도록 서로 다른 ID를 사용했어요.</b> 각 경로의 확률 선택 결과는 달라요. 복구할 수 없다는 근거는 한 경로 안에서 SDK가 기록하지 않은 ID가 Collector와 Tempo에도 없다는 대조입니다.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-02/results.png" alt="실제 실행 출력: Head와 Tail별 요청 수 및 저장 수, Collector와 Tempo의 고유 트레이스 41개 및 스팬 82개 일치, 검증 통과" style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">화면 2. 서비스 응답·Collector 파일·Tempo 조회를 대조한 실제 출력이에요.</div>
+<p>전체 저장 결과는 고유 트레이스 41개, 스팬 82개였고 Collector 출력과 Tempo가 일치했어요. 요청 로그에는 선택 여부와 무관하게 응답이 남습니다. 오류율을 계산하려면 이 표의 저장된 기록만 분모로 쓰면 안 돼요. 특히 이번 Tail 정책은 정상 요청을 모두 제외하므로, 수집된 트레이스의 오류 비율을 서비스 오류율로 해석할 수 없습니다.</p>
+<div class="obsv-callout"><div class="obsv-ct">💡 실무에서는</div>선택된 트레이스는 오류 원인과 호출 경로를 살펴보는 데 쓰고, 전체 요청 수·오류 수·지연 지표는 별도로 수집해요. 이 실습은 전체 요청 응답과 로그를 보존했지만, 요청 지표를 위한 Prometheus까지 추가하지는 않았어요.</div>
+
+<h2>5. 오류 스팬이 5초 늦으면 결과가 달라져요</h2>
+<p>마지막 두 요청은 조금 다르게 만들었어요. 부모와 오류 자식의 작업을 약 15ms로 기록해요. 부모를 먼저 전송하고, 자식은 종료 시각을 기록해 둔 다음 <b>전송만 5초 지연</b>시킵니다. 트레이스에 기록된 실행 시간이 5초인 것은 아니므로, 지연 정책이 대신 남기는 경우를 피할 수 있어요. 이 조건을 통제하려고 부모 스팬을 수동으로 먼저 끝냈고, HTTP 응답은 지연 전송 뒤 반환하므로 약 5초가 걸려요. 실제 비동기 서버의 자동 계측을 재현한 코드는 아닙니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: decision_wait</div>첫 스팬을 받은 뒤 Collector가 판단하기까지 기다리는 시간이에요. 이번 비교에서는 2초와 8초로 설정해요.</div>
+<p>2초 대기 경로는 오류 자식이 오기 전에 정상 부모만 보고 제외했어요. 8초 대기 경로는 오류 자식까지 받은 뒤 두 스팬을 남겼습니다. 지연 전송 요청의 저장 결과는 각각 <b>0/1, 1/1</b>이었어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 결정 캐시 (decision cache)</div>이미 선택하거나 제외한 trace ID의 결정을 기억하는 곳이에요. 이 실습은 두 캐시 크기를 각각 1,000으로 지정해, 늦은 스팬에도 앞서 내린 결정을 적용했어요.</div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 265" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="sampArr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3 6 4 8.5 5 C6 6 4 7 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.5"/></marker></defs>
+<path d="M45 65 C230 63 450 68 650 65 M45 155 C230 153 450 158 650 155" fill="none" stroke="#8a8272" stroke-width="2.4" marker-end="url(#sampArr2)"/>
+<path d="M60 52 C57 61 59 71 62 78 M210 52 C208 61 209 71 212 78 M425 52 C423 61 424 71 427 78 M60 142 C57 151 59 161 62 168 M425 142 C423 151 424 161 427 168 M635 142 C633 151 634 161 637 168" fill="none" stroke="#3d3a34" stroke-width="3"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">
+<text x="35" y="32">2초 대기</text><text x="175" y="32" fill="#b3502f">정상만 보고 제외</text><text x="390" y="32">오류 자식 도착</text>
+<text x="35" y="115">0초</text><text x="190" y="115">2초</text><text x="410" y="115">약 5초</text>
+<text x="35" y="203">8초 대기</text><text x="377" y="203">오류 자식 도착</text><text x="570" y="203" fill="#2e6b41">선택</text>
+<text x="350" y="248" text-anchor="middle" fill="#b3502f">두 트레이스는 약 15ms로 기록, 자식 전송은 약 5초 뒤예요</text></g>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 기다리는 동안 어떤 스팬이 도착했는지가 정책의 입력을 바꿔요.</div>
+<p>Collector의 비선택 결정 캐시 적중 지표도 1이었어요. 이번 설정에서 늦은 오류 자식이 기존 제외 결정을 바꾸지 못했다는 결과와 맞습니다. 기대한 기록이 도착한 뒤 10초를 더 관찰해 추가 기록이 없는지도 확인했어요. 캐시를 끄거나, 수용량·종료·재시작 조건을 바꾸면 다른 실험이 필요합니다.</p>
+
+<h2>6. 보관 조건과 관측의 한계를 같이 정해요</h2>
+<p>판단 대기를 늘리면 이번 지연 전송은 보존할 수 있었어요. 대신 아직 판단하지 않은 트레이스를 더 오래 유지해야 합니다. 이 실습은 메모리나 처리량을 측정하지 않았으므로 8초가 운영 환경의 적정값이라고 제안하지는 않아요.</p>
+<p>오류 조건도 서비스의 실패 정의와 맞아야 해요. 예외를 처리하고 정상 응답을 주는 코드가 ERROR 상태를 남기는지, 다른 서비스가 전송을 늦추는지 확인해야 합니다. 여러 Collector로 나누는 환경에서는 같은 트레이스의 스팬이 같은 판단 인스턴스에 모이는지도 별도로 확인해야 해요. 이번 실험은 서비스 하나와 Collector 하나에서 실행했습니다.</p>
+<p>재현 코드는 <code>labs/observability/otel-practice/tail-sampling</code>에 있고, 원자료는 그 아래 <code>out/</code>에 있어요. 확인을 마치면 같은 디렉터리에서 <code>docker compose down</code>으로 이 실습만 종료할 수 있습니다.</p>
+<p>기술 근거는 <a href="https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.162.0/processor/tailsamplingprocessor/README.md">Collector 0.162.0 Tail sampling 문서</a>, <a href="https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.162.0/processor/tailsamplingprocessor/internal/sampling/latency.go">같은 버전의 지연 계산 코드</a>, <a href="https://github.com/open-telemetry/opentelemetry-python/blob/v1.38.0/opentelemetry-sdk/src/opentelemetry/sdk/trace/sampling.py">Python SDK 1.38.0 샘플러</a>를 확인했어요. 앞단 선택과 뒷단 선택의 관계는 <a href="https://opentelemetry.io/docs/concepts/sampling/">OpenTelemetry 공식 샘플링 설명</a>도 함께 볼 수 있어요.</p>
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div>
+<b>Tail sampling은 판단 전에 받은 오류·지연 정보를 기준으로 기록을 남겨요.</b> SDK에서 기록하지 않은 스팬은 되살릴 수 없고, 이번 설정에서는 판단 뒤 도착한 오류 스팬도 제외됐어요.<br><br>
+보관할 조건뿐 아니라, 그 조건을 판단할 데이터가 언제 어디까지 도착하는지도 확인해야 해요.
+</div>
+</div>

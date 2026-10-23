@@ -1,0 +1,136 @@
+<!-- tags: 개인정보 마스킹, OTTL, baggage, Loki -->
+<!-- lead: Collector에서 고객 속성을 지웠는데 예외 메시지와 로그에는 같은 값이 남았어요. 가상 표식을 넣은 두 서비스를 실행해 Tempo·Loki·HTTP baggage·원본 콘솔을 대조하고, 수집 후 변환과 발생 지점 최소화의 차이를 확인했어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+<div class="obsv-series"><div class="obsv-st">📚 OpenTelemetry 운영 실습 · 4편</div>
+2편. 에러 트레이스만 남기면 장애를 놓치지 않을까<br>
+3편. Java agent와 Micrometer Tracing을 같이 켜면 어떻게 될까<br>
+<b>4편. Collector에서 지운 개인정보는 어디까지 사라졌을까</b> &larr; 지금 이 글<br>
+</div>
+<p>Collector에 고객 속성을 지우는 설정을 넣었어요. Tempo에서 그 속성은 사라졌는데, 같은 요청의 예외 메시지에는 값이 남아 있었어요. Loki 로그 본문에서도 같은 문자열이 보였습니다.</p>
+<p>그래서 작은 HTTP 서비스 두 개를 만들고, <b>같은 값이 서로 다른 위치에 들어갔을 때 어디까지 지워지는지</b> 직접 확인했어요. 실제 개인정보 대신 <code>PRIVATE_CUSTOMER_ALPHA</code>라는 가상 표식만 사용했습니다. 이메일 형식 탐지나 개인정보 판별 정확도를 시험하는 글은 아니에요.</p>
+<h2>1. 같은 값을 네 경로에 넣었어요</h2>
+<p><code>front</code>가 요청을 받고 <code>downstream</code>을 호출해요. Python OTel SDK 1.39.1로 서버 스팬 두 개와 클라이언트 스팬 한 개를 만들었어요. 서비스마다 로그를 한 번씩 기록하고, front는 예외 이벤트도 남깁니다. Java agent의 자동 계측과 달리, 이번에는 어떤 필드에 값을 넣었는지 코드에서 보이도록 직접 계측했어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 스팬 (span)</div>요청 처리나 외부 호출 한 구간을 기록한 데이터예요. 하나의 요청을 따라가는 트레이스 안에 서버·클라이언트 스팬을 함께 남겨요.</div>
+<p>표식은 스팬의 <code>synthetic.customer</code> 속성, 예외 메시지와 스택 추적, 로그 본문에 넣었어요. 예외의 내용을 스팬 상태 설명에도 넣었습니다. 별도로 요청 헤더에는 <code>private.customer</code> baggage를 보냈어요. 로그는 OTel 수집과 원본 콘솔 출력에 동시에 기록해요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 예외 이벤트 (exception event)</div>예외 종류·메시지·스택 추적을 스팬 안에 남기는 기록이에요. 스팬의 일반 속성과 다른 위치라 각각 확인해야 해요.</div>
+<p>Collector contrib 0.162.0이 스팬을 Tempo 2.10.8로, 로그를 Loki 3.7.8로 보냅니다. Grafana 13.2.3에서는 Loki 로그를 조회해요. <code>raw</code>는 원본 대조군, <code>narrow</code>는 스팬 속성만 삭제, <code>scrubbed</code>는 필드별 변환, <code>minimized</code>는 발생 지점에서도 기록과 전파를 줄인 모드예요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: OTLP</div>OTel SDK가 Collector로 스팬과 로그를 보내는 전송 규약이에요. 서비스 사이의 업무 HTTP 요청과 별도로 전송해요.</div><div class="obsv-fig"><svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="서비스의 HTTP baggage 전달과 Collector의 텔레메트리 후처리가 서로 다른 경로임을 보여준다">
+<defs><marker id="privacy-arr-one" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M1 1.5 C4 3 6 4 8.5 5 C6 6 4 7 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6"/></marker></defs>
+<path d="M30 45 C90 43 156 47 215 44 C218 70 216 112 214 137 C150 140 86 137 31 139 C28 108 31 73 30 45Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.5"/>
+<text x="122" y="80" text-anchor="middle" font-size="22" font-family="'Nanum Pen Script',cursive" fill="#3d3a34">front 서비스</text><text x="122" y="110" text-anchor="middle" font-size="13" fill="#3d3a34">속성 · 예외 · 로그 생성</text>
+<path d="M473 45 C535 43 596 47 666 44 C668 73 666 108 664 137 C602 140 535 137 474 139 C471 111 474 71 473 45Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.5"/>
+<text x="569" y="80" text-anchor="middle" font-size="22" font-family="'Nanum Pen Script',cursive" fill="#3d3a34">downstream 서비스</text><text x="569" y="110" text-anchor="middle" font-size="13" fill="#3d3a34">헤더의 baggage 수신</text>
+<path d="M222 88 C303 85 380 91 464 87" fill="none" stroke="#b3502f" stroke-width="2.3" marker-end="url(#privacy-arr-one)"/><text x="347" y="68" text-anchor="middle" font-size="14" fill="#b3502f">HTTP 업무 요청</text>
+<path d="M122 145 C122 174 145 194 188 213 M567 145 C565 175 538 195 499 214" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#privacy-arr-one)"/>
+<text x="350" y="170" text-anchor="middle" font-size="13" fill="#3d3a34">OTLP는 별도 수집 경로</text>
+<path d="M200 202 C290 200 392 204 490 201 C493 222 490 250 489 272 C393 275 288 271 201 274 C198 249 201 222 200 202Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5"/>
+<text x="345" y="232" text-anchor="middle" font-size="22" font-family="'Nanum Pen Script',cursive" fill="#3d3a34">Collector에서 변환</text><text x="345" y="257" text-anchor="middle" font-size="13" fill="#3d3a34">처리 후 Tempo · Loki로 전송</text>
+<text x="350" y="302" text-anchor="middle" font-size="17" font-family="'Nanum Pen Script',cursive" fill="#b3502f">Collector에서 바꿔도 이미 전달한 HTTP 헤더는 그대로예요</text>
+</svg></div><div class="obsv-figcap">그림 1. 업무 요청의 헤더와 관측 데이터의 전송 경로를 따로 확인해요</div>
+<h2>2. 속성 하나를 지워도 예외와 로그는 남았어요</h2>
+<p>먼저 narrow 모드의 트레이스 파이프라인에 아래 설정만 넣었어요. 같은 baggage를 단 요청을 모드마다 세 번 보냈고, 실행마다 고유한 <code>lab.run</code> 값을 남겼어요.</p>
+<div class="obsv-code">processors:
+  attributes/narrow:
+    actions:
+      - key: synthetic.customer
+        action: delete
+
+# traces/narrow 파이프라인의 processors에 연결해요.
+# logs/narrow 파이프라인에는 이 처리를 연결하지 않았어요.</div>
+<p><code>synthetic.customer</code> 키만 스팬 속성에서 삭제하라는 뜻이에요. <a href="https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.162.0/processor/attributesprocessor/README.md">고정 버전 attributes processor 문서</a>를 기준으로 설정하고 실제 결과를 확인했어요.</p>
+<p>원본에서는 서버 스팬 여섯 개에 표식이 있었어요. narrow에서는 그 수가 0개가 됐지만 예외 이벤트 세 개, 상태 설명 세 개, 로그 여섯 개에는 그대로 남았어요. <span class="obsv-mark">속성 삭제가 성공했다는 결과와 그 요청의 다른 필드도 정리됐다는 결과는 별개였어요.</span></p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 주의: 검색 결과 0건만으로 판정하지 않아요</div>특정 속성 검색에서 결과가 없어도 예외 이벤트나 로그 본문에는 같은 값이 있을 수 있어요. 이번에는 스팬 속성·이벤트·상태·로그 본문을 나눠 세고, 원본 대조군도 함께 확인했어요.</div>
+<h2>3. 예외와 로그는 문맥을 나눠 바꿨어요</h2>
+<p>scrubbed에서는 Transform processor로 처리 범위를 넓혔어요. 스팬 속성은 지우고, 상태 설명과 예외 메시지의 표식은 <code>[redacted]</code>로 바꿨어요. 예외 스택 추적은 통째로 삭제하고, 로그에서도 속성과 문자열 본문을 각각 처리했습니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: OTTL</div>Collector에서 데이터를 읽고 바꾸는 표현식 언어예요. 여기서는 span·spanevent·log 문맥을 나눠서 각 위치를 처리해요.</div><div class="obsv-code">transform/privacy:
+  error_mode: propagate
+  trace_statements:
+    - context: span
+      statements:
+        - delete_key(attributes, &quot;synthetic.customer&quot;)
+        - replace_pattern(status.message, &quot;PRIVATE_[A-Z_]+&quot;, &quot;[redacted]&quot;)
+    - context: spanevent
+      statements:
+        - replace_pattern(attributes[&quot;exception.message&quot;], &quot;PRIVATE_[A-Z_]+&quot;, &quot;[redacted]&quot;) where attributes[&quot;exception.message&quot;] != nil
+        - delete_key(attributes, &quot;exception.stacktrace&quot;)
+  log_statements:
+    - context: log
+      statements:
+        - delete_key(attributes, &quot;synthetic.customer&quot;)
+        - replace_pattern(body, &quot;PRIVATE_[A-Z_]+&quot;, &quot;[redacted]&quot;) where IsString(body)</div>
+<p>이 설정은 알려진 표식과 이 실습의 필드만 처리해요. 문자열이 아닌 구조화된 로그 본문에는 위 <code>IsString</code> 조건이 적용되지 않아요. 실제 서비스의 다른 속성·이벤트·URL·DB 문장도 각각 점검해야 합니다. 문맥과 오류 처리 방식은 <a href="https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.162.0/processor/transformprocessor/README.md">Transform processor 0.162.0 문서</a>에서 확인했어요.</p>
+<p>처리 후에는 해당 모드의 Tempo 트레이스와 Loki 로그에서 표식이 0건이었어요. 예외 종류와 치환한 메시지는 남지만 스택 추적은 사라져요. 디버깅 정보가 줄어드는 비용도 함께 생겼습니다.</p>
+<div class="obsv-callout"><div class="obsv-ct">💡 실무에서는: 변환 실패 정책도 같이 정해요</div><code>error_mode: propagate</code>는 변환 오류를 상위 처리에 전달해요. 오류가 발생한 데이터를 그대로 보내는 일을 피하려고 선택했지만, 해당 데이터 전송이 실패할 수 있어요. 재시도·유실·경보를 함께 검토해야 하고, 이번에는 변환 오류 자체를 주입하지 않았어요.</div>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-04/grafana-privacy.png" alt="실제 Grafana의 Loki 로그 네 패널. raw와 narrow에는 가상 표식이 남고 scrubbed는 redacted, minimized는 omitted로 표시돼요" style="max-width:100%;border:2px solid #d8cfba;border-radius:10px;"></div>
+<div class="obsv-figcap">그림 2. 같은 실행의 실제 Loki 로그 24개를 모드별로 조회했어요</div>
+<h2>4. 하위 서비스 헤더와 원본 콘솔은 그대로였어요</h2>
+<p>scrubbed의 저장 결과만 보면 정리가 끝난 것 같지만, downstream 응답은 다른 결과를 보여줬어요. 세 요청 모두 <code style="overflow-wrap:anywhere;">private.customer=PRIVATE_CUSTOMER_ALPHA</code>를 받았어요. 원본 콘솔 로그 여섯 개에도 표식이 남았습니다.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: baggage</div>현재 요청의 문맥에 넣은 키와 값을 하위 호출의 HTTP 헤더로 전달하는 규약이에요. 관측 저장소에 보낼 스팬 속성과는 별개예요.</div>
+<p><a href="https://opentelemetry.io/docs/concepts/signals/baggage/">OTel baggage 문서</a>에서도 baggage는 스팬 속성과 독립적이고 개인정보를 담을 위험이 있다고 설명해요. 이번 코드는 baggage를 자동으로 속성으로 바꾼 것이 아니에요. 스팬 속성 생성 코드와 헤더 전파 코드를 따로 작성하고 따로 확인했어요.</p>
+<p>Collector는 이미 전송된 업무 HTTP 헤더나 다른 handler가 출력한 콘솔을 바꾸지 못해요. <span class="obsv-mark">scrubbed에서 확인한 0건은 그 파이프라인이 처리한 신규 관측 데이터의 결과예요.</span> 같은 실행의 raw·narrow 자료는 Tempo와 Loki에 여전히 남아 있어요. 과거 저장 자료를 삭제하는 실험도 하지 않았습니다.</p>
+<div class="obsv-fig"><svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="Collector 처리 범위와 서비스 발생 지점 최소화의 차이를 비교한다">
+<path d="M24 35 C121 32 224 37 329 33 C332 91 329 168 330 222 C223 225 116 220 25 224 C22 161 25 91 24 35Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5"/>
+<text x="177" y="72" text-anchor="middle" font-size="24" font-family="'Nanum Pen Script',cursive" fill="#3d3a34">scrubbed</text>
+<text x="47" y="112" font-size="15" fill="#3d3a34">Tempo · Loki 표식 0건</text><text x="47" y="148" font-size="15" fill="#b3502f">downstream baggage 3건</text><text x="47" y="184" font-size="15" fill="#b3502f">source console 표식 6건</text>
+<path d="M367 35 C467 32 571 37 674 33 C677 91 674 168 675 222 C571 225 465 220 368 224 C365 161 368 91 367 35Z" fill="#f1f5fa" stroke="#5a9e6f" stroke-width="2.5"/>
+<text x="522" y="72" text-anchor="middle" font-size="24" font-family="'Nanum Pen Script',cursive" fill="#3d3a34">minimized</text>
+<text x="390" y="112" font-size="15" fill="#3d3a34">Tempo · Loki 표식 0건</text><text x="390" y="148" font-size="15" fill="#2e6b41">downstream baggage 0건</text><text x="390" y="184" font-size="15" fill="#2e6b41">source console 표식 0건</text>
+<text x="350" y="261" text-anchor="middle" font-size="18" font-family="'Nanum Pen Script',cursive" fill="#3d3a34">발생 지점에서 생략하고 전파할 키만 명시했을 때 경로 전체가 달라졌어요</text>
+</svg></div><div class="obsv-figcap">그림 3. 같은 Collector를 거쳐도 애플리케이션에서 생성한 값과 전파한 키에 따라 결과가 달라져요</div>
+<h2>5. 발생 지점에서 생략하고, 전파할 키만 남겼어요</h2>
+<p>minimized에서는 스팬 속성에 표식을 기록하지 않고 예외와 로그를 만들 때도 표식을 생략했어요. 들어온 baggage는 <code>tier</code>만 남긴 문맥으로 바꾼 뒤 하위 호출을 진행했습니다. Collector는 scrubbed와 같은 설정을 사용해요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 허용 목록 (allowlist)</div>전파해도 되는 키를 먼저 명시하는 방식이에요. 이번에는 tier만 남기며, 키의 허용 여부 외에 값과 출처를 검증하는 정책은 별도로 필요해요.</div><div class="obsv-code">ctx = extract({key.lower(): value for key, value in self.headers.items()})
+allowed = baggage.get_baggage(&quot;tier&quot;, context=ctx)
+ctx = baggage.clear(context=ctx)  # trace context는 보존하고 baggage만 비워요.
+if allowed is not None:
+    ctx = baggage.set_baggage(&quot;tier&quot;, allowed, context=ctx)
+token = context.attach(ctx)
+try:
+    # 표식을 넣지 않고 계측한 뒤, inject(headers)로 하위 호출해요.
+    handle_request()
+finally:
+    context.detach(token)</div>
+<p>선택한 baggage를 넣은 문맥을 요청 중에만 적용하고, 마지막에는 원래 문맥을 복원하는 코드의 핵심 부분이에요. 실제 HTTP 헤더는 대소문자를 구분하지 않지만 파서에 넘기는 Python 사전의 키는 구분하므로 소문자로 맞췄어요. <a href="https://github.com/open-telemetry/opentelemetry-python/blob/v1.39.1/opentelemetry-api/src/opentelemetry/baggage/__init__.py">SDK 1.39.1의 baggage API</a>를 사용했어요.</p>
+<p>결과는 downstream의 비공개 표식 0건, 원본 콘솔 표식 0건이었어요. 허용한 <code>tier=gold</code>는 세 요청 모두 전달됐고, 요청마다 서버·클라이언트 스팬 세 개도 같은 트레이스에 남았습니다. 모든 baggage를 버리면서 추적 연결까지 끊은 결과가 아닌지 확인한 거예요.</p>
+<p><a href="https://opentelemetry.io/docs/security/handling-sensitive-data/">공식 민감정보 처리 가이드</a>의 수집 최소화 원칙을 이 서비스에 적용한 결과입니다. 중앙 변환만으로 해결되는 범위와 애플리케이션에서 줄여야 하는 범위를 함께 확인할 수 있었어요.</p>
+<h2>6. 모드별 숫자로 다시 판정했어요</h2>
+<p>2026-10-23에 실행한 검증 결과예요. 각 모드에 요청 세 개를 보내 스팬 아홉 개, 예외 이벤트 세 개, 로그 여섯 개를 확인했어요. 아래 숫자는 표식이 포함된 레코드 수이고, baggage 열은 표식을 받은 요청 수예요.</p>
+<table style="width:100%;border-collapse:collapse;font-size:14px;"><thead><tr><th>모드</th><th>스팬 속성</th><th>예외</th><th>상태</th><th>Loki 로그</th><th>baggage</th><th>원본 콘솔</th></tr></thead><tbody>
+<tr><td>raw</td><td>6</td><td>3</td><td>3</td><td>6</td><td>3</td><td>6</td></tr>
+<tr><td>narrow</td><td>0</td><td>3</td><td>3</td><td>6</td><td>3</td><td>6</td></tr>
+<tr><td>scrubbed</td><td>0</td><td>0</td><td>0</td><td>0</td><td>3</td><td>6</td></tr>
+<tr><td>minimized</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td></tr></tbody></table>
+<p>실행하려면 Docker Desktop과 Python 3.9 이상이 필요해요. 저장소 루트에서 아래 명령을 사용해요. 검증 스크립트는 이 실습의 Compose 프로젝트만 새로 만들고 기존 증거는 out-history에 보관해요.</p>
+<div class="obsv-code">python3 labs/observability/otel-practice/sensitive-data/run.py
+cat labs/observability/otel-practice/sensitive-data/out/results.txt
+# 실제 Grafana 로그 화면
+open http://localhost:27400/d/privacy-boundaries
+# 실습 종료
+# docker compose -f labs/observability/otel-practice/sensitive-data/compose.yaml down</div>
+<p>서비스와 저장소가 준비될 때까지 확인한 뒤 요청을 보내고, file exporter 결과와 Tempo·Loki API가 기대 레코드 수를 반환할 때까지 조회해요. 각 로그의 trace ID가 요청의 trace 집합에 속하는지, Tempo의 각 트레이스에 스팬이 세 개 있는지도 assert합니다. <code>timeout: Loki raw</code> 같은 오류가 나오면 로그가 기대한 수만큼 조회되지 않았다는 뜻이에요. 성공으로 처리하지 않고 해당 컨테이너 로그와 out 원자료를 확인하면 돼요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-04/results.png" alt="실제 검증 스크립트 실행 결과. 모드별 속성·예외·상태·로그·baggage·원본 콘솔 표식 수와 모든 assert 통과를 표시해요" style="max-width:100%;"></div>
+<div class="obsv-figcap">그림 4. 처리한 저장 자료와 우회 경로를 함께 세었을 때 차이가 보여요</div>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 주의: 이번 실험에서 증명한 범위</div>정해 둔 가상 문자열과 필드만 검사했어요. resource·scope 속성, span link, 구조화된 로그 본문, URL, DB 문장, 메트릭 레이블과 다른 전송 경로는 별도 검사가 필요해요. 여기의 정규식을 실제 개인정보 탐지기로 사용할 수는 없어요. 성능이나 과거 데이터 삭제도 검증하지 않았습니다.</div>
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div>
+<b>스팬 속성을 지워도 예외·상태·로그의 같은 값은 남을 수 있어요.</b> 필드별 Collector 변환은 Tempo와 Loki의 신규 관측 데이터를 정리했지만, HTTP baggage와 원본 콘솔에는 표식이 남았어요.<br><br>
+발생 지점에서 기록을 생략하고 전파할 baggage 키를 명시했을 때 두 우회 경로도 달라졌어요. 저장소의 검색 결과와 서비스가 실제로 전달한 값을 함께 확인해야 해요.
+</div></div>
