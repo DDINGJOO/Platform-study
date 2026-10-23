@@ -1,0 +1,81 @@
+A/B Fixed-window Analysis · 자체 분석 보고서
+
+Python standard library · Saved event analysis · Synthetic fixtures · Not a Netflix/Grafana UI
+
+합성 시나리오의 판정 경로를 검증한 화면이에요. 실제 제품 전환율 개선을 증명하지 않아요.
+사전 계획: 50:50 · 그룹당 최소 2,000명 · 노출 10/1~10/7 미만 · 전환 24시간 · 10/8 종료 후 1회 분석
+SRM p ≥ .001 · 오류율 ≤ 1% · p95 ≤ 250 ms & B/A ≤ 1.2 · 관측 차이 ≥ 3 pp & Newcombe95 하한 > 0
+
+실행: 2026-10-23T13:49:03+00:00 · Python 3.12.15 · 의미 있는 회귀 테스트 14개 통과 · 고정 fixture 5개
+
+Scenario	Observed A/B	Expected A/B	Conversions A/B	Rate A/B	B - A	Newcombe 95% CI	SRM p	Decision
+healthy_equal	2000 / 2000	2000 / 2000	200 / 200	10.00% / 10.00%	+0.00 pp	[-1.86 pp, +1.86 pp]	1	HOLD_EFFECT
+healthy_effect	2000 / 2000	2000 / 2000	200 / 280	10.00% / 14.00%	+4.00 pp	[+1.99 pp, +6.02 pp]	1	PASS_FIXED_RULES
+insufficient	100 / 100	100 / 100	5 / 20	5.00% / 20.00%	+15.00 pp	[+5.92 pp, +24.33 pp]	1	HOLD_SAMPLE
+srm	2800 / 1200	2000 / 2000	280 / 168	10.00% / 14.00%	+4.00 pp	[+1.81 pp, +6.33 pp]	3.34e-141	INVALID_SRM
+guardrail_bad	2000 / 2000	2000 / 2000	200 / 280	10.00% / 14.00%	+4.00 pp	[+1.99 pp, +6.02 pp]	1	STOP_GUARDRAIL
+healthy_equal HOLD_EFFECT
+data_quality: PASSwindow_complete: PASSsrm: PASSsample: PASSguardrails_observed: PASSguardrails: PASSeffect: HOLD
+-5 pp
++30 pp
+
+A errors 10/2000 (0.50%), p95 147 ms · B errors 10/2000 (0.50%), p95 147 ms
+
+dedup: event retries 20, repeat exposure 20, repeat conversion 10, excluded temporal conversions 4
+
+healthy_effect PASS_FIXED_RULES
+data_quality: PASSwindow_complete: PASSsrm: PASSsample: PASSguardrails_observed: PASSguardrails: PASSeffect: PASS
+-5 pp
++30 pp
+
+A errors 10/2000 (0.50%), p95 147 ms · B errors 10/2000 (0.50%), p95 147 ms
+
+dedup: event retries 20, repeat exposure 20, repeat conversion 10, excluded temporal conversions 4
+
+insufficient HOLD_SAMPLE
+data_quality: PASSwindow_complete: PASSsrm: PASSsample: HOLDguardrails_observed: PASSguardrails: PASSeffect: PASS
+-5 pp
++30 pp
+
+A errors 0/100 (0.00%), p95 147 ms · B errors 0/100 (0.00%), p95 147 ms
+
+dedup: event retries 20, repeat exposure 20, repeat conversion 10, excluded temporal conversions 4
+
+srm INVALID_SRM
+data_quality: PASSwindow_complete: PASSsrm: HOLDsample: HOLDguardrails_observed: PASSguardrails: PASSeffect: PASS
+-5 pp
++30 pp
+
+A errors 14/2800 (0.50%), p95 147 ms · B errors 6/1200 (0.50%), p95 147 ms
+
+dedup: event retries 20, repeat exposure 20, repeat conversion 10, excluded temporal conversions 4
+
+guardrail_bad STOP_GUARDRAIL
+data_quality: PASSwindow_complete: PASSsrm: PASSsample: PASSguardrails_observed: PASSguardrails: HOLDeffect: PASS
+-5 pp
++30 pp
+
+A errors 10/2000 (0.50%), p95 147 ms · B errors 100/2000 (5.00%), p95 447 ms
+
+dedup: event retries 20, repeat exposure 20, repeat conversion 10, excluded temporal conversions 4
+
+2편 실제 HTTP 이벤트 · 기술 연결 확인
+
+표본계획을 사후에 바꾸지 않기 위해 추론 판정에서 제외했어요. 원자료 사용자 분모만 독립 대조해요.
+
+{
+  "A": {
+    "assigned_users": 202,
+    "exposed_users": 160,
+    "converted_users": 46,
+    "conversion_rate_display": "28.750%"
+  },
+  "B": {
+    "assigned_users": 198,
+    "exposed_users": 160,
+    "converted_users": 37,
+    "conversion_rate_display": "23.125%"
+  }
+}
+Wilson95: 각 그룹 · Newcombe95: 독립 두 비율 차이의 근사 구간 · SRM: Pearson chi-square(df=1)
+Guardrail은 관측값에 대한 운영 정책이에요. 통계적 비열등성 증명이 아니에요. PASS는 이 고정 규칙의 충족을 뜻해요.

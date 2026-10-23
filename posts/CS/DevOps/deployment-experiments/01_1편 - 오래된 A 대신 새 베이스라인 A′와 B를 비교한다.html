@@ -1,0 +1,129 @@
+<!-- tags: Kayenta, Spinnaker, 카나리 분석, 베이스라인, Grafana -->
+<!-- lead: 같은 코드도 캐시와 프로세스 나이가 다르면 지연이 달라져요. 새 베이스라인 A′와 새 B의 조건을 맞추고, 실제 Kayenta 판정과 Spinnaker Deck·Grafana 화면으로 비교를 검증했어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 배포 관측과 A/B 실험 · 1편</div>
+  <b>1편. 오래된 A 대신 새 베이스라인 A′와 B를 비교한다</b> &larr; 지금 이 글<br>
+</div>
+<p>같은 v1 코드를 실행했는데, 먼저 띄워 둔 A는 약 13ms이고 새로 띄운 A′는 약 78ms였어요. 이 차이만으로 코드 변경에 따른 회귀라고 단정할 수 없어요. 이번에는 새 프로세스의 빈 캐시가 원인이었어요.</p>
+<p>이 차이를 먼저 확인하고, 새 A′와 새 B를 같은 조건으로 실행했어요. 실제 HTTP 요청을 보내고 Prometheus로 수집한 값을 Netflix Kayenta에 넣었어요. Spinnaker Deck의 실제 판정 화면까지 연결하면서 <b>무엇을 비교해야 배포 영향을 구분할 수 있는지</b> 확인했어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 카나리 분석 (canary analysis)</div>변경본에 일부 요청을 보내고 기준 버전과 지표를 비교하는 절차예요. 이 실습에서는 로컬 요청을 별도로 보내며, 운영 트래픽 분할은 구현하지 않아요.</div>
+
+<h2>1. 같은 코드도 프로세스 상태가 다르면 느려져요</h2>
+<p>기존 A와 변경본 B를 바로 비교하면 코드 외의 차이도 함께 측정해요. A에는 캐시가 차 있고 B에는 없을 수 있어요. JVM 서비스라면 실행 중 최적화 상태도 달라질 수 있죠. 그래서 새 v1인 A′를 B와 함께 만들고, 주 판정은 A′와 B를 비교하도록 정했어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 베이스라인 (baseline)</div>변경본과 비교할 기준 실행이에요. 여기서는 기존 A와 같은 v1을 새로 시작한 A′가 베이스라인이고, 먼저 시작한 A는 재시작 영향을 확인하는 보조 대상이에요.</div>
+<p>작은 Python HTTP 서비스를 세 개 띄웠어요. 요청 키 128개를 순환하며 실제 메모리 캐시를 채워요. 캐시가 없으면 65ms를 추가로 기다리고, 있으면 기본 10~14ms만 기다려요. 실제 데이터베이스 대신 대기 시간을 주입한 합성 부하이며, 지표는 해당 코드가 실제로 실행된 시간을 측정해요.</p>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="먼저 실행한 A는 캐시가 찬 상태이고 동시에 새로 시작한 A프라임과 B를 주 비교 대상으로 사용한다" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="canary-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3 6 4 8.5 5 C6 6 4 7 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.5"/></marker></defs>
+<g stroke-linecap="round" stroke-linejoin="round" font-family="'Nanum Pen Script',cursive" text-anchor="middle">
+<path d="M30 40 C95 38 145 42 210 40 C212 75 210 106 211 140 C145 143 90 138 31 141 C29 105 32 75 30 40Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5"/>
+<path d="M260 40 C325 38 375 42 440 40 C442 75 440 106 441 140 C375 143 320 138 261 141 C259 105 262 75 260 40Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5"/>
+<path d="M490 40 C555 38 605 42 670 40 C672 75 670 106 671 140 C605 143 550 138 491 141 C489 105 492 75 490 40Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5"/>
+<text x="120" y="75" fill="#a86b12" font-size="27">A · 먼저 실행한 v1</text><text x="120" y="111" fill="#3d3a34" font-size="22">캐시 128개</text>
+<text x="350" y="75" fill="#4a7fb5" font-size="27">A′ · 새 v1</text><text x="350" y="111" fill="#3d3a34" font-size="22">빈 캐시로 시작</text>
+<text x="580" y="75" fill="#2e6b41" font-size="27">B · 새 후보 버전</text><text x="580" y="111" fill="#3d3a34" font-size="22">빈 캐시로 시작</text>
+<path d="M217 91 C230 89 242 93 254 91" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="3 6"/>
+<path d="M446 91 C460 89 472 93 484 91" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#canary-arr1)"/>
+<text x="233" y="170" fill="#8a8272" font-size="21">재시작 영향 진단</text>
+<path d="M273 192 C380 194 525 190 657 193" fill="none" stroke="#5a9e6f" stroke-width="2.5"/>
+<text x="465" y="228" fill="#2e6b41" font-size="26">같은 워밍업 뒤 A′와 B를 주 판정</text>
+<text x="350" y="275" fill="#8a8272" font-size="21">A도 이 실습에서 먼저 띄운 로컬 복제본이에요.</text>
+</g></svg>
+</div><div class="obsv-figcap">그림 1. 배포 변경과 새 프로세스의 영향을 나눠 확인해요.</div>
+<p>첫 실행의 초기 20초 구간에서 A는 13.183ms, 같은 코드의 A′는 78.448ms였어요. 이는 시계열 11개 지점의 평균이며 진단용이에요. <span class="obsv-mark">이 값을 새 코드의 실패 판정이나 Kayenta의 오탐 결과로 제시하지 않았어요.</span> 오래된 상태와 새로운 상태를 바로 비교했을 때 생기는 차이만 확인했어요.</p>
+
+<h2>2. A′와 B의 조건을 먼저 고정해요</h2>
+<p>먼저 같은 v1끼리 비교하고, 다음에는 B에만 40ms를 추가하는 v2 설정을 넣었어요. 두 경우 모두 같은 이미지와 서비스 코드를 사용해요. 변경 변수는 B의 버전 라벨과 지연 설정이에요. 실제 제품 코드 배포를 재현한 실험은 아니에요.</p>
+<div class="obsv-code">A′ / B 공통 조건
+자원 제한: 각 0.5 CPU, 96MiB
+시작: 두 프로세스의 기동 차이 3초 미만을 검사
+요청: 같은 키 순서로 각 초당 4건
+워밍업: 46초, 캐시 128개가 모두 찼는지 확인
+관측: 동일한 절대 시각의 120초
+수집 / 조회 간격: 2초 / 2초 → 각 61개 지점</div>
+<p>요청은 양쪽의 별도 스레드에서 같은 일정으로 시작해요. 실제 처리 건수도 확인해서 목표 요청률만 맞다고 가정하지 않았어요. 이 작은 부하에서는 다음 요청 전까지 응답이 끝났어요. 과부하 상황에서 이 생성기가 같은 요청률을 유지한다고 보장하지는 않아요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 워밍업 (warmup)</div>주 관측 전에 서비스를 실행해 캐시 등 초기 상태를 준비하는 구간이에요. 양쪽에 같은 46초를 주고, 지표의 최근 10초 조회에도 초기 느린 요청이 섞이지 않도록 했어요.</div>
+<p>판정에는 실제 Kayenta를 사용했어요. 공식 Spinnaker 2026.1.3 이미지의 Deck·Gate·Kayenta·Front50과 Redis를 띄웠어요. 전체 배포 시스템을 구성한 것은 아니고, 실제 분석 실행과 보고서에 필요한 범위예요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Kayenta와 judge</div>Kayenta는 두 실행의 지표를 가져와 비교 분석을 실행하는 도구예요. judge는 그 안에서 지표를 분류하고 점수를 계산하는 부분이며, 여기서는 공식 NetflixACAJudge-v1.0을 사용해요.</div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 295" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Docker Compose가 실제 프로세스를 재시작하고 Prometheus 지표를 Kayenta 내장 Orca가 가져와 판정한 뒤 Deck에 표시한다" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="canary-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3 6 4 8.5 5 C6 6 4 7 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.5"/></marker></defs>
+<g stroke-linecap="round" stroke-linejoin="round" font-family="'Nanum Pen Script',cursive" text-anchor="middle">
+<path d="M25 30 C105 28 175 33 245 30 C248 65 244 103 246 135 C170 138 99 133 26 136 C23 100 28 63 25 30Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5"/>
+<text x="136" y="63" font-size="27" fill="#4a7fb5">run.py + Compose</text><text x="136" y="95" font-size="23" fill="#3d3a34">A′ / B를 실제 재생성</text><text x="136" y="122" font-size="20" fill="#8a8272">외부 배포 제어</text>
+<path d="M286 30 C390 28 530 33 671 30 C674 65 670 103 672 135 C530 138 390 133 287 136 C284 100 289 63 286 30Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5"/>
+<text x="480" y="63" font-size="27" fill="#2e6b41">Kayenta 내장 Orca</text><text x="480" y="95" font-size="23" fill="#3d3a34">fetch control / experiment → judge</text><text x="480" y="122" font-size="20" fill="#8a8272">실제 분석 단계 실행</text>
+<path d="M32 195 C97 193 165 198 226 195 C229 218 226 250 227 270 C165 273 100 268 33 271 C30 246 35 218 32 195Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5"/>
+<text x="130" y="227" font-size="25" fill="#a86b12">Prometheus</text><text x="130" y="255" font-size="21" fill="#3d3a34">실제 HTTP 측정값</text>
+<path d="M460 195 C525 193 594 198 671 195 C674 218 670 250 672 270 C594 273 527 268 461 271 C458 246 463 218 460 195Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5"/>
+<text x="566" y="227" font-size="25" fill="#4a7fb5">Gate → Deck</text><text x="566" y="255" font-size="21" fill="#3d3a34">실제 판정 보고서</text>
+<path d="M135 143 C134 160 136 176 135 187" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#canary-arr2)"/>
+<path d="M235 222 C320 220 323 159 365 144" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#canary-arr2)"/>
+<path d="M566 143 C565 161 567 177 566 187" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#canary-arr2)"/>
+<text x="331" y="262" font-size="21" fill="#8a8272">같은 시각 / 61개 지점</text>
+</g></svg>
+</div><div class="obsv-figcap">그림 2. 프로세스 재시작은 실습 스크립트가, 분석 단계는 Kayenta 내장 Orca가 실행해요.</div>
+<p>Prometheus에는 처리 시간 누적값과 처리 건수를 수집해요. 아래 쿼리는 최근 10초의 건당 평균 처리 시간을 ms로 계산해요. Kayenta가 <code>${scope}</code>를 <code>baseline</code> 또는 <code>canary</code>로 바꿔 같은 시작·종료 시각을 조회해요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: PromQL</div>Prometheus에 저장한 시계열을 조회하는 언어예요. 여기서는 누적 시간의 증가율을 누적 건수의 증가율로 나눠, 각 실행의 평균 처리 시간을 구해요.</div>
+<div class="obsv-code">1000 * sum(rate(orders_duration_seconds_sum{role="${scope}"}[10s]))
+     / sum(rate(orders_duration_seconds_count{role="${scope}"}[10s]))</div>
+<p>이는 서비스 내부에서 측정한 평균 시간이에요. 네트워크를 포함한 사용자 응답 시간이나 p99 지연을 대신하지 않아요. 상세 설정은 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/deployment-experiments/canary">실습 디렉터리</a>에 있어요.</p>
+
+<h2>3. 같은 버전은 통과하고 지연을 넣은 B는 실패했어요</h2>
+<p>실행 전 허용할 평균 지연 증가를 20%로 정했어요. <code>meanRatio</code>의 <code>allowedIncrease</code>와 <code>criticalIncrease</code>를 모두 1.20으로 설정하고 두 실행에 그대로 사용했어요. Kayenta의 통계 분류와 이 효과 크기 조건을 함께 적용하며, 관측 평균만 20%와 단순 비교하는 코드로 대체하지 않았어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 판정 점수 (score)</div>Kayenta가 지표별 분류와 그룹 가중치로 계산하는 점수예요. 여기서는 지연 지표 하나에 가중치 100을 줬어요. 점수 100은 신뢰도 100%나 배포 전체의 안전을 뜻하지 않아요.</div>
+<table style="width:100%;border-collapse:collapse;text-align:left;">
+<thead><tr><th>비교</th><th>A′ 평균</th><th>B 평균</th><th>실제 판정</th></tr></thead>
+<tbody><tr><td>v1 대 v1</td><td>13.001ms</td><td>13.005ms</td><td>Pass · 100</td></tr>
+<tr><td>v1 대 v2 설정</td><td>13.484ms</td><td>53.807ms</td><td>Fail · 0</td></tr></tbody></table>
+<p>각 주 관측 구간에서 A′와 B가 처리한 요청은 각각 480건이에요. judge에 들어간 값은 양쪽 각각 61개예요. <a href="https://spinnaker.io/docs/guides/user/canary/best-practices/">공식 가이드의 최소 50개 시계열 지점 권고</a>를 넘기도록 정했지만, 이 61개는 독립 사용자 61명을 뜻하지 않아요. 최근 10초 구간이 겹치는 값이라 인접 지점끼리 상관이 있어요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-01/deck-same-version.png" alt="실제 Spinnaker Deck의 같은 v1 비교 보고서에서 Kayenta 점수 100과 Pass를 확인한 화면" style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 3. 새 v1끼리의 비교는 실제 NetflixACAJudge에서 통과했어요.</div>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-01/deck-regression.png" alt="실제 Spinnaker Deck의 추가 지연40ms 후보 보고서에서 Kayenta 점수0과 Fail을 확인한 화면" style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 4. 같은 조건에서 B에만 지연을 추가하자 지표가 High로 분류되고 최종 판정은 실패했어요.</div>
+<p>Grafana에는 평균 지연, 실제 요청률, 프로세스 나이, 캐시 개수를 함께 표시했어요. A′와 B의 나이가 함께 초기화되고 캐시가 같은 과정으로 채워지는지 확인할 수 있어요. 관측이 끝난 뒤 임의로 그린 그래프가 아니라 같은 Prometheus에 연결한 실제 화면이에요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-01/grafana-rollout.png" alt="실제 Grafana에서 baseline과 canary의 재시작 시점, 캐시 채움, 초당4건 요청률과 B v2의 지연 증가를 함께 확인한 화면" style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 5. 결과와 함께 실행 조건도 시각화해야 비교가 적절했는지 확인할 수 있어요.</div>
+
+<h2>4. 응답을 받은 것과 분석을 마친 것을 구분해요</h2>
+<p>첫 연결에서 Kayenta가 분석을 끝냈는데도 실습 스크립트가 기다리는 문제가 있었어요. 원인은 판정이 아니라 응답 처리였어요. 실제 상태 문자열은 소문자인데 대문자와 비교했어요.</p>
+<div class="obsv-code">실제 응답: {"complete": true, "status": "succeeded"}
+수정한 종료 확인: str(result.get("status", "")).upper() == "SUCCEEDED"
+
+cd labs/devops/deployment-experiments/canary
+python3 run.py
+python3 verify.py
+cat out/results.txt</div>
+<p>이 수정은 API 상태 확인만 바꿨어요. 완료된 첫 보고서를 보존하고 전체 실험을 다시 실행했으며, 표의 수치는 재실행 결과예요. <code>run.py</code>는 자기 Compose 프로젝트와 볼륨을 초기화하고 기존 <code>out/</code>은 <code>history/</code>에 보관해요. 같은 결과를 재검할 때는 초기화하지 않는 <code>verify.py</code>를 사용해요.</p>
+<div class="obsv-callout"><div class="obsv-ct">💡 저장한 값과 judge 입력을 대조해요</div>검증기는 양쪽 요청 수·기동 시점·이미지·자원 제한을 확인해요. Kayenta가 실제 사용한 각 61개 값도 저장한 Prometheus 조회 결과와 대조해요. Prometheus 쿼리 로그에서 Kayenta 컨테이너가 보낸 쿼리와 시각·간격을 확인하고, Gate의 실제 보고서 응답까지 다시 조회해요.</div>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-01/judge-checks.png" alt="실제 verify.py 검증 출력으로 두 Kayenta 판정, 각61개 입력값, 각480건 요청과 쿼리 출처 검증 통과를 확인한 화면" style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 6. 원자료와 실행 조건을 다시 확인한 결과예요.</div>
+<p>Deck은 <code>http://localhost:28100</code>, Grafana는 <code>http://localhost:28105/d/fresh-baseline</code>에서 열어요. 각 실행의 Deck 보고서 전체 주소는 <code>out/summary.json</code>에 있어요. Playwright가 설치된 기존 환경에서는 <code>capture.py</code>로 화면을 다시 찍을 수 있어요.</p>
+
+<h2>5. 통과 결과의 적용 범위를 남겨요</h2>
+<p>이 실습에서 실제 실행한 것은 Docker Compose의 프로세스 재생성과 Kayenta 내장 Orca의 지표 수집·판정 단계예요. 외부 Orca의 배포 파이프라인, 클라우드 리소스 생성, 트래픽 승격, 자동 롤백까지 만들지는 않았어요. Deck은 실제 분석 보고서를 보여 주며, Grafana의 재시작 그래프가 Spinnaker 배포 파이프라인 화면을 뜻하지는 않아요.</p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 데모 저장소와 화면의 한계가 있어요</div>Kayenta의 공식 memory 계정을 사용해서 컨테이너를 재시작하면 설정과 보고서가 사라져요. 호스트의 원자료는 남지만 해당 Deck 보고서는 재실행해야 해요. 생략한 Clouddriver·Echo·외부 Orca를 호출하는 일부 메뉴 요청은 실패해요. 가짜 응답을 붙이지 않았으며 실제 canary 보고서 API가 성공하는 범위만 확인했어요.</div>
+<p>또한 짧은 합성 부하, 실행별 인스턴스 하나, 평균 지연 지표 하나만 사용했어요. 실제 서비스에서는 오류율과 꼬리 지연, 충분한 운영 관측 구간, 요청 특성의 균형도 확인해야 해요. A′와 B의 조건을 맞췄다는 사실만으로 모든 차이의 원인이 코드라고 확정할 수도 없어요.</p>
+<p>비교 설계는 <a href="https://netflixtechblog.com/automated-canary-analysis-at-netflix-with-kayenta-3260bc7acc69">Netflix의 Kayenta 소개</a>를 참고했어요. 실행 범위는 <a href="https://github.com/spinnaker/spinnaker/blob/a59b1887bb66ae3e5d92b98782abbde7e2eef70e/kayenta/docs/kayenta-standalone.md">해당 버전의 standalone 문서</a>, 판정 설정은 <a href="https://github.com/spinnaker/spinnaker/blob/a59b1887bb66ae3e5d92b98782abbde7e2eef70e/kayenta/kayenta-judge/src/main/scala/com/netflix/kayenta/judge/NetflixACAJudge.scala">고정된 소스의 NetflixACAJudge</a>와 대조했어요.</p>
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div><b>오래된 A와 새 B의 차이에는 프로세스 초기 상태도 포함될 수 있어요.</b><br><br>새 A′와 새 B의 자원·워밍업·부하·관측 시각을 맞추고 실제 Kayenta 판정과 입력값을 함께 확인했어요. 판정 결과를 해석하기 전에 비교 대상의 조건부터 확인해야 해요.</div>
+</div>

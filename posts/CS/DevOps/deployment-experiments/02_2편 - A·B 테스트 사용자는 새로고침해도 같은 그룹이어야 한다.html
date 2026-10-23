@@ -1,0 +1,118 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<!-- title: 2편 - A/B 테스트 사용자는 새로고침해도 같은 그룹이어야 한다 -->
+<!-- lead: 가상 사용자 400명의 A/B 고정 할당을 실제 HTTP 서비스로 확인해요. SQLite에 진입·노출·전환을 저장하고 재시도와 재기동 뒤의 그룹 유지, 사용자 중복 제거, 노출 사용자 분모를 Grafana 수집값과 대조해요. -->
+<!-- tags: A/B테스트,고정할당,사용자분모,SQLite,Prometheus,Grafana -->
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 배포 관측과 A/B 실험 · 2편</div>
+  1편. 오래된 A 대신 새 베이스라인 A′와 B를 비교한다<br>
+  <b>2편. A/B 테스트 사용자는 새로고침해도 같은 그룹이어야 한다</b> &larr; 지금 이 글
+</div>
+<p>가상 사용자 400명이 실험에 진입하는 작은 HTTP 서비스를 만들었어요. 새로고침과 재시도로 진입 요청은 1,600번이 됐지만 사용자는 여전히 400명이에요. 요청마다 그룹을 다시 뽑거나 요청 수를 분모로 쓰면 비교가 어떻게 달라질까요?</p>
+<p>이번 실습은 <b>같은 사용자가 같은 그룹에 남고, 노출된 사용자와 전환한 사용자를 한 번씩만 세는지</b> 확인해요. Python 표준 라이브러리와 SQLite로 이벤트를 저장하고, Prometheus와 실제 Grafana 화면에서 수집값을 대조했어요. 모두 가상 식별자와 합성 전환이에요.</p>
+
+<h2>1. 사용자 할당과 기능 노출을 따로 기록해요</h2>
+<p>서비스가 사용자에게 A를 배정했다고 해서 해당 기능을 실제로 사용했다는 뜻은 아니에요. 사용자는 결제 화면에 오기 전에 나갈 수도 있어요. Netflix 엔지니어링 팀의 <a href="https://medium.com/netflix-techblog/its-all-a-bout-testing-the-netflix-experimentation-platform-4e1ca458c15" target="_blank" rel="noopener">실험 플랫폼 소개</a>도 실험에 할당된 구성원이 모두 대상 기능을 경험하는 것은 아니라고 설명해요. 이 글에서는 그 구분을 작은 서비스로 확인해요. Netflix 내부 플랫폼을 실행하는 실습은 아니에요.</p>
+<p>세 가지 HTTP 이벤트를 만들었어요. <code>/entry</code>는 그룹을 배정하고 진입을 기록해요. <code>/exposure</code>는 기능을 노출했다는 확인을 받아요. <code>/conversion</code>은 노출 이후의 전환을 기록해요. 이 실습의 노출은 테스트 클라이언트가 보낸 확인이에요. 실제 브라우저에서 화면이 그려졌는지까지 검사하지는 않아요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 할당과 노출 (Assignment / Exposure)</div>할당은 사용자가 속할 실험 그룹을 정하는 일이에요. 노출은 그 사용자가 실험 대상 경험을 접했음을 기록하는 일이에요. 두 사용자 집합이 다를 수 있어 따로 저장해요.</div>
+<div class="obsv-fig"><svg viewBox="0 0 700 235" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="진입400명, 노출320명, 전환83명을 별개 사용자 집합으로 기록하는 흐름">
+<path d="M22 42 Q125 36 205 43 L206 143 Q118 150 24 143 Z M255 42 Q354 36 443 43 L445 143 Q350 150 256 143 Z M493 42 Q590 36 678 43 L680 143 Q590 150 495 143 Z" fill="#fff3d0" stroke="#665b4a" stroke-width="2.5"/>
+<path d="M212 92 Q230 87 248 92 M239 84 L248 92 L239 100 M451 92 Q468 87 487 92 M478 84 L487 92 L478 100" fill="none" stroke="#a76b30" stroke-width="3"/>
+<text x="113" y="78" text-anchor="middle" font-size="19" fill="#3d3a34">진입 · 할당</text><text x="113" y="116" text-anchor="middle" font-size="25" fill="#3d3a34">400명</text>
+<text x="350" y="78" text-anchor="middle" font-size="19" fill="#3d3a34">노출 확인</text><text x="350" y="116" text-anchor="middle" font-size="25" fill="#3d3a34">320명</text>
+<text x="587" y="78" text-anchor="middle" font-size="19" fill="#3d3a34">전환</text><text x="587" y="116" text-anchor="middle" font-size="25" fill="#3d3a34">83명</text>
+<text x="350" y="199" text-anchor="middle" font-size="18" fill="#746b5e">HTTP 요청 수와 사용자 수를 각각 확인해요</text></svg></div>
+<div class="obsv-figcap">그림 1. 400명이 진입했지만 전환율의 노출 사용자 분모는 320명이에요.</div>
+<p>이번 글의 집계값은 <b>노출된 사용자 중 한 번 이상 전환한 사용자의 비율</b>로 미리 정했어요. 할당된 전체 사용자를 기준으로 보는 분석과는 다른 값이에요. 노출이 실험 그룹의 영향을 받는 경우에는 노출 사용자만 비교하면 편향이 생길 수 있어요. 이 집계 정의만으로 제품 효과를 판단할 수는 없어요.</p>
+
+<h2>2. 그룹을 정하는 입력을 고정해요</h2>
+<p>같은 사용자 식별자에는 같은 A 또는 B를 돌려줘야 해요. 요청마다 난수를 뽑으면 한 사용자가 두 경험을 모두 보게 돼요. <a href="https://docs.getunleash.io/concepts/stickiness" target="_blank" rel="noopener">Unleash의 stickiness 문서</a>는 사용자 문맥과 그룹 식별자를 함께 해시해 일관된 결과를 만드는 방식을 설명해요. Unleash는 MurmurHash를 사용해요. 이 실습에서는 구조를 직접 확인하기 위해 Python의 SHA-256을 사용했어요. Unleash를 설치한 것은 아니에요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 고정 할당 (Stickiness)</div>같은 실험과 같은 사용자에게 같은 그룹을 계속 주는 성질이에요. 식별자나 실험 설정이 바뀌면 같은 사람이더라도 그룹이 달라질 수 있어요.</div>
+<div class="obsv-code">material = json.dumps(
+    [experiment_id, salt, user_id],
+    ensure_ascii=False, separators=(',', ':')
+).encode('utf-8')
+bucket = int.from_bytes(
+    hashlib.sha256(material).digest()[:8], 'big'
+) % 10000
+variant = 'A' if bucket &lt; 5000 else 'B'</div>
+<p>SHA-256 결과의 앞 8바이트를 정수로 읽고 10,000으로 나눈 나머지를 사용해요. 0~4,999는 A, 5,000~9,999는 B예요. 입력 문자열의 결합 방식도 결과의 일부라 JSON 배열과 UTF-8 직렬화 규칙을 함께 고정했어요. <span class="obsv-mark">50:50 설정이 실제 사용자 수도 정확히 반반으로 만든다는 뜻은 아니에요.</span> 이번 실행의 할당은 A 202명, B 198명이었어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: salt와 실험 식별자</div>salt는 이 실습에서 해시 입력을 구분하는 고정 설정값이에요. 실험 식별자는 어느 실험의 할당인지 구분해요. 이 값들은 비밀키나 개인정보 익명화 수단으로 쓰지 않아요.</div>
+<p>salt를 바꿔 같은 400명을 다시 계산하니 182명의 그룹이 달라졌어요. DB에 저장된 사용자만 예전 그룹에 남고 새 사용자만 새 규칙을 따르면 한 실험 안에 서로 다른 할당 규칙이 섞여요. 그래서 기존 실험 식별자에 다른 salt를 넣으면 서비스 기동을 거부하도록 했어요. 바꿔야 한다면 새로운 실험 식별자로 시작해요. 사용자 식별자를 브라우저 세션마다 새로 만들거나 기기별로 다르게 주면 이 서비스도 같은 사람임을 알 수 없어요.</p>
+
+<h2>3. 재시도는 요청을 늘려도 사용자 수를 늘리지 않아요</h2>
+<p>SQLite에는 할당과 이벤트를 따로 저장해요. 할당의 고유 키는 실험과 사용자예요. 이벤트의 고유 키에는 이벤트 종류까지 들어가요. 전환을 두 번 보내도 같은 사용자의 전환 기록은 하나예요. 이 글에서 세는 것은 구매 건수가 아니라 전환한 사용자 수이기 때문이에요.</p>
+<div class="obsv-code">assignments: PRIMARY KEY(experiment_id, user_id)
+events: UNIQUE(experiment_id, user_id, event_type)
+
+BEGIN IMMEDIATE;
+-- 기존 할당 확인 또는 새 할당 저장
+-- 노출 전 전환이면 HTTP 409
+INSERT OR IGNORE INTO events (...);
+-- 수락된 제출 횟수는 별도로 증가
+COMMIT;</div>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 사용자 단위 중복 제거 (Deduplication)</div>같은 사용자가 같은 실험 이벤트를 여러 번 보내도 한 번만 세는 처리예요. 이 실습은 요청 ID가 달라진 재시도도 사용자 단위로 합쳐요. 결제 요청 자체의 중복 실행 방지와는 목적이 달라요.</div>
+<p>첫 요청과 같은 요청 ID로 다시 보내는 경우, 새 요청 ID로 새로고침하는 경우를 모두 보냈어요. <code>request_id</code>는 진단 정보로 남기고 중복 제거의 기준으로 쓰지 않아요. 서버가 <code>inserted:false</code>를 돌려주면 요청은 수락했지만 새 사용자 이벤트를 추가하지 않았다는 뜻이에요. 첫 이벤트의 시각도 유지해요.</p>
+<p>순서가 잘못된 이벤트도 실제 HTTP로 확인했어요. 진입 없이 노출하면 409, 노출 없이 전환해도 409예요. 사용자 식별자가 없거나 클라이언트가 직접 그룹을 지정하면 400이에요. 식별자가 없는 요청을 임의의 그룹으로 처리하지 않아요.</p>
+<p>저장소는 Docker의 SQLite 볼륨이에요. 서비스 프로세스를 재시작한 뒤 할당과 이벤트 전체를 내보내 이전 값과 비교했어요. 재기동 직후와 이후 400명의 진입 재시도 뒤에도 export가 같았어요. 400명 모두 같은 그룹을 유지했어요. 트랜잭션과 고유 제약으로 이 단일 서비스의 쓰기를 정리했으며, 여러 서버에서 운영하는 분산 이벤트 저장소까지 구현한 것은 아니에요.</p>
+<div class="obsv-fig"><svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="반복HTTP요청은 증가하지만 SQLite고유제약으로 사용자 이벤트는 한 번 저장되고 재기동 후에도 유지됨">
+<path d="M25 38 Q112 33 200 39 L201 166 Q112 174 27 167 Z M270 38 Q356 32 440 39 L443 167 Q355 173 271 167 Z M510 38 Q594 32 677 40 L678 168 Q594 173 512 167 Z" fill="#eef3f9" stroke="#5a7190" stroke-width="2.5"/>
+<path d="M208 102 Q236 96 260 102 M250 94 L260 102 L250 110 M450 102 Q474 96 499 102 M489 94 L499 102 L489 110" fill="none" stroke="#6d7e91" stroke-width="3"/>
+<text x="114" y="80" text-anchor="middle" font-size="18" fill="#3d3a34">같은 사용자</text><text x="114" y="115" text-anchor="middle" font-size="20" fill="#3d3a34">진입 요청 4번</text><text x="114" y="146" text-anchor="middle" font-size="15" fill="#665e52">재시도 · 새로고침</text>
+<text x="356" y="80" text-anchor="middle" font-size="18" fill="#3d3a34">SQLite</text><text x="356" y="115" text-anchor="middle" font-size="20" fill="#3d3a34">진입 사용자 1명</text><text x="356" y="146" text-anchor="middle" font-size="15" fill="#665e52">UNIQUE 제약</text>
+<text x="595" y="80" text-anchor="middle" font-size="18" fill="#3d3a34">서비스 재기동</text><text x="595" y="115" text-anchor="middle" font-size="20" fill="#3d3a34">같은 그룹 유지</text><text x="595" y="146" text-anchor="middle" font-size="15" fill="#665e52">같은 볼륨 재연결</text>
+<text x="350" y="222" text-anchor="middle" font-size="18" fill="#746b5e">요청 1,600번 / 진입 사용자 400명</text></svg></div>
+<div class="obsv-figcap">그림 2. 새 요청 ID와 서비스 재기동이 사용자 분모를 증가시키지 않아요.</div>
+
+<h2>4. Grafana에는 집계값을, DB에는 사용자 이벤트를 둬요</h2>
+<p>Prometheus는 서비스의 <code>/metrics</code>를 1초마다 수집해요. <code>ab_users</code>에는 그룹별 할당·진입·노출·전환 사용자 수를 내보내요. DB에서 읽은 현재 사용자 수라 gauge로 표시했어요. <code style="overflow-wrap:anywhere;">ab_event_attempts_total</code>은 중복을 포함한 수락 요청 수예요. 거부된 400·409 요청은 이 값에 포함하지 않아요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: gauge와 counter</div>gauge는 현재 상태를 나타내는 값이에요. counter는 누적된 횟수를 나타내요. 여기서는 사용자 집합의 현재 크기와 수락한 제출 횟수를 구분하는 데 사용해요.</div>
+<p>레이블은 실험 식별자, A/B 그룹, 이벤트 단계처럼 제한된 값만 사용해요. 사용자 ID나 요청 ID는 넣지 않아요. <a href="https://prometheus.io/docs/practices/naming/" target="_blank" rel="noopener">Prometheus 공식 지침</a>도 사용자 ID처럼 많은 값을 갖는 레이블을 피하도록 안내해요. 사용자별 기록은 SQLite와 JSON export에서 확인해요. 새 실험마다 식별자 레이블도 늘어나므로 실험을 많이 운영할 때는 보관 기간과 집계 설계를 따로 정해야 해요.</p>
+<div class="obsv-code"># 그룹별 전환한 사용자 / 노출된 사용자
+ab_users{stage="conversion"}
+  / ignoring(stage)
+ab_users{stage="exposure"}</div>
+<p>실측 결과는 A의 노출 160명 중 전환 46명, B의 노출 160명 중 전환 37명이에요. 각각 28.75%, 23.125%예요. Grafana는 B를 23.13%로 표시하고 Python 텍스트의 소수 둘째 자리 형식은 23.12%로 표시해요. 두 출력의 반올림 방식 차이이며 분자와 분모는 같아요. 노출 수가 양쪽 모두 160명이 된 것은 이번 입력과 할당에서 나온 결과예요. 그룹별 노출 수를 맞추는 코드는 없어요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-02/grafana-users.png" alt="실제 Grafana 수집 화면. A할당202 노출160 전환46, B할당198 노출160 전환37, 수락 요청은 진입1600 노출640 전환166" style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 3. 실제 Prometheus 수집값을 사용한 Grafana 대시보드예요.</div>
+<p>진입 요청은 1,600번이지만 진입 사용자는 400명이에요. 노출 요청은 640번이지만 노출 사용자는 320명이에요. 전환 요청 166번은 전환 사용자 83명이에요. 요청 수로 사용자 분모를 대신하면 재시도가 많은 그룹의 비율이 달라져요. <span class="obsv-mark">화면에 비율을 그리기 전에 어떤 집합의 크기인지 확인해야 해요.</span></p>
+<div class="obsv-callout"><div class="obsv-ct">💡 이 숫자로 승자를 고르지 않아요</div>전환은 가상 사용자 번호에 적용한 조건으로 만들었어요. 제품을 사용한 사람의 반응을 관측한 결과가 아니에요. 표본 계획, 할당 비율 이상, 오류와 지연 같은 보호 지표도 여기서는 판정하지 않아요. 이 화면은 이벤트 집계와 연결이 맞는지 확인하는 자료예요.</div>
+
+<h2>5. 실제 실행과 실패 조건을 다시 확인해요</h2>
+<p>실습 경로는 저장소의 <code style="overflow-wrap:anywhere;">labs/devops/deployment-experiments/sticky-ab</code>예요. 앱은 Python 3.12.15, Prometheus는 3.15.0, Grafana는 13.2.3을 사용했어요. Python 패키지는 추가하지 않았어요. Docker Compose와 Python 3.9 이상으로 검증을 실행할 수 있어요. Python 이미지는 이번 실행에 사용한 manifest digest를 Compose에 고정했어요.</p>
+<div class="obsv-code">cd labs/devops/deployment-experiments/sticky-ab
+python3 run.py
+
+# 실제 Grafana 화면: http://127.0.0.1:28200/d/sticky-ab/sticky-ab
+# DB 집계: http://127.0.0.1:28280/summary
+# 이벤트: http://127.0.0.1:28280/export
+
+cat out/results.txt
+cat out/summary.json</div>
+<p>실행기는 400명의 진입·노출·전환 요청을 보내고 HTTP 응답을 검사해요. 이후 앱을 실제로 재시작해 전체 export를 대조하고, Prometheus의 노출 사용자 수가 DB 집계와 같은지도 확인해요. salt를 바꾼 별도 기동은 실패해야 통과해요. 실패 로그는 <code style="overflow-wrap:anywhere;">out/salt-rejection.txt</code>에 남아요.</p>
+<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-02/http-sqlite-checks.png" alt="실제 HTTP통합 검증 저장 출력. 400명 할당 유지와 DB재기동 동일성, 잘못된 이벤트400·409, 변경salt182명 재할당 위험과 기동거부, Prometheus일치 모두통과" style="max-width:100%;height:auto;"></div>
+<div class="obsv-figcap">그림 4. 실제 실행 후 저장한 results.txt를 터미널 형식으로 렌더링한 이미지예요.</div>
+<p>새 실행은 이전 <code>out/</code>을 <code>history/</code> 아래로 옮기고 새로운 실험 식별자를 사용해요. 같은 실행 안에서는 salt와 식별자가 유지되지만 다른 실행의 그룹별 수치는 달라질 수 있어요. 기존 증거를 열 때는 저장된 실험 식별자로 다시 띄워야 해요. README에 재기동 명령과 Playwright 캡처 명령을 함께 적었어요.</p>
+<p>400 오류는 식별자와 JSON 입력, 클라이언트가 보낸 그룹 필드를 먼저 확인해요. 409 오류는 진입→노출→전환 순서를 확인해요. 화면에 데이터가 없다면 앱의 <code>/metrics</code>, Prometheus의 수집 대상 상태, Grafana 데이터 소스 순서로 점검해요. 메모리 상한은 앱 128MiB, Prometheus 256MiB, Grafana 1GiB예요. 캡처를 마친 뒤에는 이 프로젝트만 <code>docker compose down</code>으로 종료하고 SQLite 볼륨은 유지했어요.</p>
+<p>기록의 형태와 계산은 <a href="https://docs.python.org/3.12/library/hashlib.html" target="_blank" rel="noopener">Python hashlib 문서</a>, <a href="https://docs.python.org/3.12/library/sqlite3.html#transaction-control" target="_blank" rel="noopener">sqlite3 트랜잭션 문서</a>, 앞서 연결한 Unleash·Netflix·Prometheus 공식 자료를 함께 참고했어요. 이 예제는 단일 노드의 합성 이벤트 실습이에요. 실제 개인정보나 운영 트래픽을 받는 서비스로 사용하지 않아요.</p>
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div><b>같은 실험과 사용자는 같은 그룹을 유지하고, 같은 사용자의 반복 이벤트는 한 번만 세요.</b><br><br>할당 400명, 노출 320명, 전환 83명을 실제 HTTP와 SQLite, Prometheus, Grafana로 대조했어요. 사용자 분모를 먼저 고정해야 화면의 비율이 무엇을 뜻하는지 설명할 수 있어요.</div>
+</div>

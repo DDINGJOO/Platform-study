@@ -1,0 +1,26 @@
+"""Render saved analysis as our own local report, never as a vendor dashboard."""
+import html,json,pathlib
+
+def pct(value):return 'n/a' if value is None else f'{value*100:.2f}%'
+def pp(value):return 'n/a' if value is None else f'{value*100:+.2f} pp'
+def pvalue(value):return 'n/a' if value is None else f'{value:.3g}'
+def render(summary, destination):
+    rows=[];cards=[]
+    for name,r in summary['scenarios'].items():
+        a,b=r['groups']['A'],r['groups']['B'];lo,hi=r['difference95_newcombe'];s=r['srm']
+        rows.append(f'<tr><th>{name}</th><td>{a["exposed_users"]} / {b["exposed_users"]}</td><td>{s["expected"]["A"]:.0f} / {s["expected"]["B"]:.0f}</td><td>{a["converted_users"]} / {b["converted_users"]}</td><td>{pct(a["conversion_rate"])} / {pct(b["conversion_rate"])}</td><td>{pp(r["difference"])}</td><td>[{pp(lo)}, {pp(hi)}]</td><td>{pvalue(s["p_value"])}</td><td class="{r["decision"]}">{r["decision"]}</td></tr>')
+        gates=''.join(f'<span class="gate {"yes" if passed else "no"}">{html.escape(key)}: {"PASS" if passed else "HOLD"}</span>' for key,passed in r['gates'].items())
+        # Draw the actual estimate and interval on a shared -5..30 pp axis.
+        position=lambda x:50+(x+.05)/.35*580
+        xlo,xhi,xd=map(position,[lo,hi,r['difference']]);zero=position(0)
+        chart=f'<svg viewBox="0 0 700 80" aria-label="{name} measured difference and Newcombe95 interval"><path d="M{zero:.2f} 7 V62" stroke="#a39983" stroke-dasharray="3 4"/><path d="M{xlo:.2f} 35 H{xhi:.2f} M{xlo:.2f} 25 V45 M{xhi:.2f} 25 V45" stroke="#f2c76d" stroke-width="3"/><path d="M{xd:.2f} 25 L{xd+9:.2f} 35 L{xd:.2f} 45 L{xd-9:.2f} 35 Z" fill="#e47e63"/><text x="50" y="76" fill="#aaa">-5 pp</text><text x="630" y="76" fill="#aaa" text-anchor="end">+30 pp</text></svg>'
+        cards.append(f'<section><h2>{name} <small>{r["decision"]}</small></h2><div>{gates}</div>{chart}<p>A errors {a["errors"]}/{a["requests"]} ({pct(a["error_rate"])}), p95 {a["p95_ms"]} ms · B errors {b["errors"]}/{b["requests"]} ({pct(b["error_rate"])}), p95 {b["p95_ms"]} ms</p><p>dedup: event retries {r["dedup"]["duplicate_event_ids"]}, repeat exposure {r["dedup"]["repeat_exposure_events"]}, repeat conversion {r["dedup"]["repeat_conversion_events"]}, excluded temporal conversions {r["dedup"]["excluded_conversion_events"]}</p></section>')
+    integration=''
+    source=pathlib.Path(destination).parent/'source-integration.json'
+    if source.exists():
+        data=json.loads(source.read_text());integration='<section><h2>2편 실제 HTTP 이벤트 · 기술 연결 확인</h2><p>표본계획을 사후에 바꾸지 않기 위해 추론 판정에서 제외했어요. 원자료 사용자 분모만 독립 대조해요.</p><pre>'+html.escape(json.dumps(data['groups'],ensure_ascii=False,indent=2))+'</pre></section>'
+    template='''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A/B Fixed-window Analysis | Own Report</title><style>
+body{margin:0;background:#181b21;color:#eee;font:15px/1.6 system-ui,sans-serif}main{max-width:1500px;margin:auto;padding:28px}h1{font-size:29px;margin:0}h2{font-size:20px;margin:0 0 10px}small{font-size:13px;color:#b5bdc9}p{margin:8px 0}.notice{background:#33301f;border-left:4px solid #f2c76d;padding:14px;margin:18px 0}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}section{background:#242831;border:1px solid #414751;border-radius:10px;padding:18px}table{border-collapse:collapse;width:100%;font-size:13px;background:#242831}td,th{border-bottom:1px solid #424852;text-align:left;padding:11px 8px;white-space:nowrap}th{color:#d5dfed}.scroll{overflow:auto;margin:20px 0}.PASS_FIXED_RULES{color:#8ed3a5}.INVALID_SRM,.STOP_GUARDRAIL{color:#f19e86}.gate{display:inline-block;border:1px solid #515963;border-radius:4px;padding:2px 6px;margin:3px;font-size:12px}.yes{color:#a6dcba}.no{color:#f3b594}svg{max-height:90px;width:100%}footer{color:#aab1bd;margin-top:20px}@media(max-width:900px){.grid{grid-template-columns:1fr}main{padding:15px}}
+</style><main><h1>A/B Fixed-window Analysis · 자체 분석 보고서</h1><p>Python standard library · Saved event analysis · Synthetic fixtures · Not a Netflix/Grafana UI</p><div class="notice"><b>합성 시나리오의 판정 경로를 검증한 화면이에요. 실제 제품 전환율 개선을 증명하지 않아요.</b><br>사전 계획: 50:50 · 그룹당 최소 2,000명 · 노출 10/1~10/7 미만 · 전환 24시간 · 10/8 종료 후 1회 분석<br>SRM p ≥ .001 · 오류율 ≤ 1% · p95 ≤ 250 ms &amp; B/A ≤ 1.2 · 관측 차이 ≥ 3 pp &amp; Newcombe95 하한 &gt; 0</div><p>실행: EXECUTED · Python PYTHON · 의미 있는 회귀 테스트 TESTS개 통과 · 고정 fixture 5개</p><div class="scroll"><table><thead><tr><th>Scenario</th><th>Observed A/B</th><th>Expected A/B</th><th>Conversions A/B</th><th>Rate A/B</th><th>B - A</th><th>Newcombe 95% CI</th><th>SRM p</th><th>Decision</th></tr></thead><tbody>ROWS</tbody></table></div><div class="grid">CARDS</div>INTEGRATION<footer>Wilson95: 각 그룹 · Newcombe95: 독립 두 비율 차이의 근사 구간 · SRM: Pearson chi-square(df=1)<br>Guardrail은 관측값에 대한 운영 정책이에요. 통계적 비열등성 증명이 아니에요. PASS는 이 고정 규칙의 충족을 뜻해요.</footer></main></html>'''
+    content=template.replace('EXECUTED',summary['executed_at']).replace('PYTHON',summary['python']).replace('TESTS',str(summary['test_count'])).replace('ROWS',''.join(rows)).replace('CARDS',''.join(cards)).replace('INTEGRATION',integration)
+    pathlib.Path(destination).write_text(content)

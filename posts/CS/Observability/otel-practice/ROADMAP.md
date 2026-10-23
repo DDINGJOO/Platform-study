@@ -25,3 +25,9 @@
 - 배포 안전성 판정과 기능 A/B 실험을 구분한다. 기능 실험은 사용자 할당 유지, 노출 이벤트와 전환의 분모, 표본 부족, 할당 비율 이상, 에러·지연 가드레일을 다룬다. 샘플링한 트레이스 수를 사용자 수나 전환율의 분모로 쓰지 않는다. 모의 전환 데이터는 방법 검증으로 한정한다.
 
 세 그룹을 설명하는 공개 근거: [Netflix의 Kayenta 소개](https://medium.com/netflix-techblog/automated-canary-analysis-at-netflix-with-kayenta-3260bc7acc69). 이는 공개된 당시 설계의 근거이며 현재 Netflix 내부 운영 전체를 재현했다는 뜻은 아니다.
+
+### 실제로 연결한 후속 실습
+
+후속 세 편과 실제 화면 8장을 작성했다. 공식 Spinnaker Deck·Gate·Kayenta·Front50와 Prometheus·Grafana를 실행해 새 A′와 B를 비교했다. 같은 v1은 Kayenta Pass100, 지연40ms를 주입한 B는 Fail0으로 판정됐다. A의 프로세스 나이·캐시와 A′/B의 재시작도 Grafana에서 확인했다. Atlas/Spectator는 이번 구성에 추가하지 않았다.
+
+실제 Deck 화면은 Kayenta 분석 보고서다. 복제본 재생성은 Compose 실행기가 담당하고, 분석 단계는 Kayenta 내장 Orca가 실행했다. 외부 Spinnaker 배포 파이프라인·트래픽 승격·자동 롤백은 구현하지 않았다. 사용자 고정 할당과 노출·전환, 고정 표본 판정은 별도 두 실습으로 확인했다. 합성 데이터의 숫자를 운영 배포 안전성이나 제품 효과의 증명으로 확대하지 않는다.

@@ -1,0 +1,24 @@
+{
+  "name": "fresh-baseline-latency-budget",
+  "description": "Fresh v1 vs equally fresh candidate. A predeclared 20 percent mean latency regression budget.",
+  "applications": ["deployment-experiments"],
+  "judge": {"name": "NetflixACAJudge-v1.0", "judgeConfigurations": {}},
+  "metrics": [{
+    "name": "mean-request-latency-ms",
+    "query": {
+      "type": "prometheus",
+      "metricName": "orders_duration_seconds_sum",
+      "customInlineTemplate": "PromQL:1000 * sum(rate(orders_duration_seconds_sum{role=\"${scope}\"}[10s])) / sum(rate(orders_duration_seconds_count{role=\"${scope}\"}[10s]))"
+    },
+    "analysisConfigurations": {
+      "canary": {
+        "direction": "increase",
+        "critical": true,
+        "effectSize": {"measure": "meanRatio", "allowedIncrease": 1.20, "allowedDecrease": 0.80, "criticalIncrease": 1.20, "criticalDecrease": 0.80}
+      }
+    },
+    "groups": ["latency"],
+    "scopeName": "default"
+  }],
+  "classifier": {"groupWeights": {"latency": 100}, "scoreThresholds": {"marginal": 75, "pass": 95}}
+}

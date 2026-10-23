@@ -1,0 +1,38 @@
+name: deployment-experiments-02
+services:
+  app:
+    image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+    command: [python, /app/app.py]
+    volumes:
+      - ./app.py:/app/app.py:ro
+      - events:/data
+    environment:
+      EXPERIMENT_ID: ${EXPERIMENT_ID:-checkout-copy-v1}
+      ASSIGNMENT_SALT: synthetic-lab-salt-v1
+    ports: ['127.0.0.1:28280:8080']
+    mem_limit: 128m
+    cpus: 0.5
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+    ports: ['127.0.0.1:28290:9090']
+    mem_limit: 256m
+    cpus: 0.5
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_PLUGINS_PREINSTALL_DISABLED: 'true'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ['127.0.0.1:28200:3000']
+    mem_limit: 1g
+    cpus: 1
+volumes:
+  events:
