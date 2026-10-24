@@ -2,8 +2,8 @@
   MySQL 교착 6편: 같은 요청이 동시에 두 번 올 때 없으면 넣기를 교착 없이 짜는 다섯 가지 방법
   tistory-sketch-post 스타일 · 단일 HTML
 ============================================================ -->
-<!-- tags: INSERT IGNORE, ON DUPLICATE KEY UPDATE, SELECT FOR UPDATE, 갭 잠금, 중복 요청, Retryable -->
-<!-- lead: 같은 키로 요청이 동시에 들어올 때 없으면 넣기 다섯 패턴을 MySQL 8.4 에서 360건씩 돌렸어요. INSERT IGNORE 다음 FOR UPDATE 는 180건, 없는 행에 FOR UPDATE 먼저는 270건이 교착이었고, 교착 없이 판정까지 맞는 방법과 재시도 위치를 정리했어요. -->
+<!-- tags: INSERT IGNORE, ON DUPLICATE KEY UPDATE, useAffectedRows, RetryTemplate -->
+<!-- lead: 같은 키의 동시 요청 360건으로 MySQL의 없으면 넣기 다섯 패턴을 비교했어요. 교착 횟수와 저장·중복 판정, 격리 수준에 따른 잠금 차이를 확인하고 트랜잭션 바깥 재시도의 효과와 한계를 살펴봤어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -28,31 +28,27 @@
 
 <div class="obsv-series">
   <div class="obsv-st">🔒 MySQL 교착 · 6편</div>
-  1편. INSERT IGNORE 다음 SELECT … FOR UPDATE가 교착을 만드는 이유<br>
-  2편. ON DUPLICATE KEY UPDATE 반환값으로 중복을 판정하면 안 된다<br>
-  3편. LATEST DETECTED DEADLOCK 읽는 법과 data_locks로 원인을 확정하는 순서<br>
-  4편. 교착 알람이 조용해졌다고 교착이 사라진 건 아니다<br>
-  5편. 교착(1213)과 lock wait timeout(1205)은 롤백 범위가 다르다<br>
-  <b>6편. 같은 요청이 동시에 두 번 올 때 없으면 넣기를 교착 없이 짜는 다섯 가지 방법</b> &larr; 지금 이 글<br>
-  7편. 동시성 테스트가 통과한 게 아니라 실행되지 않았을 때
+  <a href="https://dding-shark.tistory.com/677" style="color:inherit">4편. MySQL 교착 카운터와 연속 구간 알람의 탐지 범위</a><br>
+  <a href="https://dding-shark.tistory.com/678" style="color:inherit">5편. 교착(1213)과 lock wait timeout(1205)의 롤백 범위와 Spring 예외 처리</a><br>
+  <b>6편. 같은 키의 동시 INSERT: 다섯 패턴의 교착·중복 판정과 재시도 비교</b> &larr; 지금 이 글
 </div>
 
-<p>앱이 응답을 늦게 받으면 클라이언트는 같은 본문을 다시 보냅니다. 로드밸런서는 그 재전송을 다른 인스턴스로 넘기고요. 그래서 "처음 온 사람이면 한 줄 넣는다"는 코드에 같은 키가 몇 ms 차이로 네 번 들어옵니다. 테스트에서 한 번씩 부를 때는 멀쩡하던 코드가 이때 <code>Deadlock found when trying to get lock</code> 을 냅니다.</p>
+<p>응답을 기다리던 클라이언트가 같은 본문으로 요청을 다시 보내면, 재전송된 요청이 로드밸런서를 거쳐 다른 인스턴스에 도착할 수 있어요. 그러면 "처음 온 사용자라면 한 행 넣는다"는 코드가 같은 키를 동시에 처리하게 됩니다. 요청을 한 번씩 보낼 때는 통과하던 코드도 이 상황에서는 <code>Deadlock found when trying to get lock</code> 오류를 낼 수 있어요.</p>
 
-<p>"없으면 넣기"를 짜는 방법은 여럿입니다. <code>INSERT IGNORE</code> 후 다시 읽기, <code>ON DUPLICATE KEY UPDATE</code>, 그냥 넣고 중복 예외 잡기, 먼저 읽고 분기하기, 먼저 <code>SELECT … FOR UPDATE</code> 로 잠그기. 이 글은 다섯 가지를 <b>같은 키 4건 동시 × 90라운드 = 360건</b>으로 MySQL 8.4 에서 돌려, 몇 건이 실패하는지, 교착이 몇 번 나는지, "내가 넣었다/이미 있었다"를 맞게 판정하는지, 무엇을 얼마나 잠그는지를 숫자로 비교합니다.</p>
+<p>"없으면 넣기"에는 <code>INSERT IGNORE</code> 후 다시 읽기, <code>ON DUPLICATE KEY UPDATE</code>, INSERT 후 중복 예외 처리, 먼저 조회하고 분기하기, <code>SELECT … FOR UPDATE</code>로 먼저 잠그기 같은 선택지가 있어요. 이 다섯 가지를 MySQL 8.4에서 <b>같은 키 4건 동시 × 90라운드 = 360건</b>으로 비교했어요. 실패와 교착 건수뿐 아니라 "내가 넣었다/이미 있었다"는 판정이 맞는지, 어떤 잠금을 유지하는지도 확인했습니다.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
-  &bull; 다섯 패턴 중 동시 요청에서 교착이 나는 것은 어느 것이고, 왜 나나?<br>
-  &bull; 격리 수준을 READ COMMITTED 로 내리면 해결되나?<br>
-  &bull; 교착은 안 나는데 저장/중복 판정이 틀리는 패턴은 무엇인가?<br>
-  &bull; 재시도는 어디에 두어야 하나? Spring 7 의 <code>@Retryable</code> 과 <code>@Transactional</code> 을 같이 붙이면 어느 쪽이 바깥인가?<br>
-  &bull; 내 코드에서는 무엇으로 바꾸면 되나?
+  <div class="obsv-ct">🧭 비교할 항목</div>
+  &bull; 동시 요청에서 교착이 발생한 패턴과 잠금 대기 원인<br>
+  &bull; 격리 수준을 READ COMMITTED로 낮췄을 때 달라지는 결과<br>
+  &bull; 교착 없이 끝나도 저장/중복 판정이 틀리는 경우<br>
+  &bull; 재시도 위치와 Spring 7의 <code>@Retryable</code>, <code>@Transactional</code> 적용 순서<br>
+  &bull; 중복 비율과 트랜잭션 구조에 맞는 선택 기준
 </div>
 
 <h2>1. 실험: 같은 키 4건을 동시에, 90번</h2>
 
-<p>표 하나에 키 하나당 한 행만 있어야 합니다. 키에는 보조 유니크 인덱스가 있고, 기본 키는 따로 있는 AUTO_INCREMENT 입니다. 가장 흔한 모양이에요. 무작위 키 1000행을 미리 넣어 두어서 새 키는 기존 행 사이 아무 틈에나 떨어집니다.</p>
+<p>실험에 쓴 테이블은 키 하나당 한 행만 저장해야 해요. 키에는 보조 유니크 인덱스를 두고, 기본 키는 별도의 AUTO_INCREMENT로 구성했어요. 무작위 키 1000행을 미리 넣어 새 키가 기존 인덱스 레코드 사이에 들어가도록 했습니다.</p>
 
 <div class="obsv-code">CREATE TABLE visit (
   id          BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -62,7 +58,7 @@
   UNIQUE KEY uk_user_key (user_key)
 );</div>
 
-<p>한 라운드는 새 키 하나에 같은 본문 요청 4건입니다. 연결 4개는 풀을 공유하지 않아서 서로 다른 인스턴스에 도착한 재전송과 같고, 배리어로 출발을 맞춥니다. 요청 하나가 트랜잭션 하나이고 재시도는 없어요. 요청마다 패턴이 스스로 내린 판정(<code>SAVED</code> 내가 넣었다 / <code>DUPLICATE</code> 이미 있었다)을 <code>inserted_by</code> 와 대조해 채점합니다.</p>
+<p>한 라운드에서는 새 키 하나로 같은 본문 요청 4건을 보내요. 서로 다른 인스턴스가 요청을 받는 상황을 흉내 내려고 풀을 공유하지 않는 연결 4개를 쓰고, 배리어로 시작 시점을 맞췄어요. 요청 하나가 트랜잭션 하나이며 이 비교에는 재시도가 없어요. 각 패턴이 내린 판정(<code>SAVED</code>: 내가 넣었다 / <code>DUPLICATE</code>: 이미 있었다)을 실제 삽입 요청이 기록된 <code>inserted_by</code>와 대조했습니다.</p>
 
 <div class="obsv-code">① INSERT IGNORE → 같은 행 SELECT … FOR UPDATE      판정: IGNORE 반환값 1/0
 ② INSERT … ON DUPLICATE KEY UPDATE payload=payload  판정: 반환값 1 이면 저장
@@ -75,10 +71,10 @@
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 교착 (deadlock, ERROR 1213)</div>
-  두 트랜잭션이 서로 상대가 쥔 잠금을 기다려 둘 다 영영 못 끝나는 상태예요. InnoDB 는 이걸 바로 찾아내 한쪽을 골라 트랜잭션 전체를 롤백하고 <code>1213</code> 을 돌려줍니다. 남은 쪽은 계속 진행해요.
+  트랜잭션들이 서로 상대의 잠금이 해제되기를 기다려 진행할 수 없는 상태예요. InnoDB는 교착을 감지하면 한 트랜잭션을 골라 전체를 롤백하고 <code>1213</code>을 반환해요. 남은 트랜잭션은 계속 진행할 수 있어요.
 </div>
 
-<p>MySQL 8.4.11, Spring Boot 4.1.1(Spring Framework 7.0.9), Connector/J 9.7.0, Java 25 로 돌렸습니다. 패턴은 드라이버 기본값 그대로의 JDBC 로 짰고, 재시도와 Spring 동작만 Spring 으로 봤어요. 전체를 세 바퀴 돌렸고, 재시도 없는 패턴 비교에서는 세 바퀴의 실패 수와 판정 수가 한 건도 다르지 않았습니다.</p>
+<p>실행 환경은 MySQL 8.4.11, Spring Boot 4.1.1(Spring Framework 7.0.9), Connector/J 9.7.0, Java 25였어요. 패턴 비교에는 별도 옵션을 명시한 경우를 제외하고 드라이버 기본값의 JDBC를 썼고, 재시도와 Spring의 트랜잭션 동작은 따로 확인했어요. 전체를 세 차례 반복했으며, 재시도 없는 패턴 비교의 실패 수와 판정 수는 세 차례 모두 같았습니다.</p>
 
 <div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
 cd Platform-study/labs/db/dl-06-upsert-patterns
@@ -101,34 +97,34 @@ docker compose down -v</div>
 READ COMMITTED 에서 달라진 것
 ① 그대로 180 (1213)    ④' 판정 불가 0    ⑤ 교착 0, 대신 1062 가 270</div>
 
-<p>"맞은 라운드"는 4건이 모두 예외 없이 끝나고 판정이 전부 맞고 행이 정확히 한 개인 라운드입니다. 실패한 요청이 있어도 행은 매번 한 개였어요(0행 라운드 0). 즉 <span class="obsv-mark">교착은 데이터를 망가뜨리지 않고, 같은 요청을 받은 클라이언트 일부에게 에러를 돌려줍니다.</span> 사용자에게는 "가끔 실패하는 첫 방문"으로 보여요. 지연은 성공한 패턴끼리 큰 차이가 없었습니다. 중앙값이 ③ 1.6~2.3ms, ④ 2.9~3.3ms 로 ④ 가 조회 한 번만큼 느렸어요.</p>
+<p>"맞은 라운드"는 4건이 모두 예외 없이 끝나고, 판정이 전부 맞으며, 저장된 행이 정확히 한 개인 라운드예요. 실패한 요청이 있는 라운드도 행은 한 개였어요(0행 라운드 0). <span class="obsv-mark">이 실험에서는 행이 중복되거나 사라지는 대신 일부 요청이 교착 오류로 끝났어요.</span> API에서 이 오류를 처리하지 않으면 클라이언트도 실패 응답을 받게 돼요. 지연은 성공한 패턴끼리 큰 차이가 없었어요. 중앙값은 ③이 1.6~2.3ms, ④가 2.9~3.3ms였고, 먼저 조회하는 ④가 더 느렸습니다.</p>
 
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-06/bench-rr.png" alt="upsert.jar bench 를 일곱 패턴에 RR 90라운드씩 돌린 화면. p1 은 fail_1213 180건, p2 는 SAVED 360건에 wrong_verdict 270, p2a·p3·p4 는 correct_rounds 90/90, p4b 는 UNKNOWN 270, p5 는 fail_1213 270건. Innodb_deadlocks 상태 변수는 -1(없음)" style="max-width:100%">
 
-<p>숫자가 이렇게 딱 떨어지는 데는 이유가 있습니다. 이 구성(풀을 공유하지 않는 독립 연결 4개, 배리어로 동시 출발)에서 ① 은 라운드마다 정확히 2건, ⑤ 는 정확히 3건이 실패했어요. 다음 장에서 잠금을 보면 왜 그런지 나옵니다.</p>
+<p>풀을 공유하지 않는 연결 4개를 배리어로 동시에 시작한 이번 구성에서는 ①이 라운드마다 2건, ⑤가 3건씩 실패했어요. 두 패턴의 잠금 대기를 보면 이 결과를 설명할 수 있어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">⚠️ 주의: 교착 카운터는 상태 변수에 없었다</div>
-  교착 수는 <code>information_schema.INNODB_METRICS</code> 의 <code>lock_deadlocks</code> 로 셌고, 실패한 1213 건수와 정확히 같았어요. 같이 본 <code>SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks'</code> 는 MySQL 8.4.11 에서 빈 결과였습니다. 대시보드가 이 이름을 읽고 있다면 0 이 아니라 "없음"인지 확인해 보세요.
+  <div class="obsv-ct">⚠️ 주의: 교착 상태 변수의 존재 여부 확인</div>
+  교착 수는 <code>information_schema.INNODB_METRICS</code>의 <code>lock_deadlocks</code>로 셌고, 1213 실패 건수와 같았어요. 함께 조회한 <code>SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks'</code>는 MySQL 8.4.11에서 빈 결과였어요. 대시보드에서 이 이름을 읽는다면 값이 0인지, 상태 변수 자체가 없는 것인지 구분해 확인해야 해요.
 </div>
 
-<h2>3. 교착이 나는 두 패턴: 잠금을 올리거나, 빈 틈을 잠그거나</h2>
+<h2>3. 공유 잠금의 배타 전환과 없는 키의 갭 잠금</h2>
 
-<p>① 은 <a href="https://dding-shark.tistory.com/674">1편</a>에서 자세히 다뤘으니 짧게 짚겠습니다. 중복 키 때문에 <code>INSERT IGNORE</code> 가 행을 넣지 못하면 InnoDB 는 그 인덱스 레코드에 공유(S) 잠금을 겁니다. 이어지는 <code>FOR UPDATE</code> 는 같은 행에 배타(X) 잠금을 원해요. 중복을 맞은 요청이 둘 이상이면 서로 상대의 S 때문에 X 를 못 받습니다. 4건 중 3건이 중복이니, 교착 감지가 한 명을 롤백시켜도 남은 둘이 다시 같은 모양이 되어 한 번 더 롤백됩니다. 그래서 라운드마다 2건이에요.</p>
+<p>①은 <a href="https://dding-shark.tistory.com/674">1편</a>에서 확인한 공유 잠금에서 배타 잠금으로의 전환 문제예요. 중복 키 때문에 <code>INSERT IGNORE</code>가 행을 넣지 못하면 InnoDB는 해당 인덱스 레코드에 공유(S) 잠금을 설정해요. 이어지는 <code>FOR UPDATE</code>는 같은 행에 배타(X) 잠금을 요청합니다. 중복 요청이 둘 이상이면 각자가 유지하는 S 잠금 때문에 다른 요청이 X 잠금을 받지 못해요. 이번 실험에서는 4건 중 3건이 중복이었고, 한 트랜잭션이 롤백된 뒤에도 남은 둘이 서로 기다려 한 번 더 롤백됐어요. 이렇게 라운드마다 2건이 실패했습니다.</p>
 
-<p>READ COMMITTED 로 내려도 ① 은 똑같이 180건이었습니다. MySQL 문서는 READ COMMITTED 에서 갭 잠금을 끄지만 "외래 키 제약 검사와 중복 키 검사에는 쓴다"고 적어 두었어요. ① 의 S 잠금은 바로 그 중복 키 검사에서 나옵니다.</p>
+<p>READ COMMITTED에서도 ①의 교착 실패는 180건이었어요. MySQL 문서는 READ COMMITTED에서 갭 잠금을 사용하지 않더라도 외래 키 제약 검사와 중복 키 검사에는 예외가 있다고 설명해요. ①의 S 잠금은 중복 키 검사 과정에서 생기므로 격리 수준을 낮춰도 이 대기는 없어지지 않았어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 갭 잠금 (gap lock)</div>
-  인덱스 레코드 자체가 아니라 두 레코드 사이의 빈 구간을 잠그는 잠금이에요. 그 구간에 다른 트랜잭션이 행을 넣지 못하게 막는 것이 유일한 목적입니다. MySQL 문서에 따르면 갭 잠금끼리는 충돌하지 않아서, 두 트랜잭션이 같은 갭을 동시에 잠글 수 있어요.
+  인덱스 레코드 자체가 아니라 두 레코드 사이의 빈 구간을 잠그는 잠금이에요. 다른 트랜잭션이 그 구간에 행을 삽입하지 못하게 해요. MySQL 문서에 따르면 갭 잠금끼리는 충돌하지 않아서, 두 트랜잭션이 같은 갭을 동시에 잠글 수 있어요.
 </div>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: insert intention 잠금</div>
-  <code>INSERT</code> 가 행을 넣기 직전에 그 갭에 거는 특수한 갭 잠금이에요. 같은 갭이라도 서로 다른 위치에 넣는 INSERT 끼리는 기다리지 않지만, 다른 트랜잭션이 쥔 일반 갭 잠금과는 충돌합니다.
+  <code>INSERT</code>가 행을 넣기 직전에 해당 갭에 요청하는 특수한 갭 잠금이에요. 같은 갭이라도 서로 다른 위치에 삽입하는 요청끼리는 기다리지 않지만, 다른 트랜잭션이 설정한 일반 갭 잠금에는 대기해요.
 </div>
 
-<p>⑤ 는 "먼저 잠그고 확인하면 안전하다"는 직관이 어긋나는 경우입니다. REPEATABLE READ 에서 없는 키를 <code>FOR UPDATE</code> 로 찾으면, 잠글 레코드가 없으니 InnoDB 는 그 키가 들어갈 자리의 갭을 잠급니다. 갭 잠금끼리는 충돌하지 않으니 4건이 모두 같은 갭 잠금을 받고 "없다"는 답을 들어요. 그다음 각자 <code>INSERT</code> 를 하면 insert intention 이 다른 세 트랜잭션의 갭 잠금에 막힙니다. 네 명이 서로를 기다리니 셋이 롤백되고 하나만 넣습니다. 그래서 라운드마다 3건이에요. 시드 행 <code>k100 k200 k300</code> 사이에 <code>k150</code> 을 넣는 두 세션으로 찍은 <code>data_locks</code> 입니다.</p>
+<p>⑤에서는 없는 행에 먼저 잠금을 요청한 것이 교착으로 이어졌어요. REPEATABLE READ에서 없는 키를 <code>FOR UPDATE</code>로 찾으면 InnoDB는 그 키가 들어갈 갭을 잠가요. 갭 잠금끼리는 충돌하지 않으므로 이번 실험에서는 요청 4건이 모두 같은 갭의 잠금을 얻고, 조회 결과로는 행이 없다는 응답을 받았어요. 이후 각 요청이 <code>INSERT</code>를 실행하면 insert intention 잠금이 다른 세 트랜잭션의 갭 잠금에 막힙니다. 교착 감지로 셋이 롤백되고 하나가 행을 넣어 라운드마다 3건이 실패했어요. 아래는 시드 행 <code>k100 k200 k300</code> 사이에 <code>k150</code>을 넣는 두 세션에서 확인한 <code>data_locks</code>예요.</p>
 
 <div class="obsv-code">A&gt; SELECT id FROM visit WHERE user_key='k150' FOR UPDATE   =&gt; rows=0
 B&gt; SELECT id FROM visit WHERE user_key='k150' FOR UPDATE   =&gt; rows=0
@@ -139,7 +135,7 @@ A&gt; INSERT INTO visit(...) VALUES ('k150', ...)             =&gt; (waiting)
 B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
    =&gt; ERROR 1213 Deadlock found when trying to get lock</div>
 
-<p><code>LOCK_DATA</code> 가 <code>'k200', 2</code> 인 것은 "k200 바로 앞의 갭", 즉 k100 과 k200 사이를 뜻해요. 행이 없는 <code>k150</code> 을 찾았는데 잠긴 건 그 이웃 구간입니다. 같은 갭에 떨어지는 다른 키(예를 들어 <code>k120</code>)의 INSERT 도 이 잠금에 막힌다는 뜻이기도 해요.</p>
+<p>이 덤프에서 <code>LOCK_DATA</code>가 <code>'k200', 2</code>이고 잠금 모드가 X,GAP인 것은 k200 바로 앞, 즉 k100과 k200 사이의 갭을 잠갔다는 뜻이에요. 조회한 <code>k150</code> 행은 없지만 그 키가 들어갈 구간에는 잠금이 설정됐어요. 같은 갭에 들어가는 다른 키(예를 들어 <code>k120</code>)의 INSERT도 이 잠금에 대기할 수 있어요.</p>
 
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-06/deadlock-p5.png" alt="upsert.jar deadlock p5 RR 실행 화면. A 와 B 가 없는 k150 에 FOR UPDATE 를 걸어 둘 다 uk_user_key 의 k200 앞 X,GAP 을 받고, A 의 INSERT 는 X,GAP,INSERT_INTENTION WAITING, B 의 INSERT 는 ERROR 1213, 남은 행은 A 가 넣은 하나" style="max-width:100%">
 
@@ -184,30 +180,30 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
   <text x="388" y="385" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">RC 에선 교착 0, 대신 1062 가 270건</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 1. ① 은 같은 행의 잠금을 S 에서 X 로 올리다가, ⑤ 는 갭 잠금 위에 INSERT 하다가 서로를 기다린다</div>
+<div class="obsv-figcap">그림 1. ①은 S에서 X로 전환할 때, ⑤는 갭 잠금이 설정된 구간에 INSERT할 때 교착이 발생했어요</div>
 
-<p>READ COMMITTED 에서 ⑤ 는 교착이 0 이었습니다. 없는 행에 대한 <code>FOR UPDATE</code> 가 갭을 잠그지 않아서 아무것도 잠그지 않아요. 그 대신 4건이 모두 "없다"를 보고 INSERT 를 하니, 3건이 <code>1062 Duplicate entry</code> 로 실패해 360건 중 270건이 실패한 건 같았습니다. <span class="obsv-mark">RC 로 내리면 ⑤ 의 교착은 사라지지만 "없으면 넣기"가 원자적이지 않다는 사실은 그대로입니다.</span> 결국 1062 를 잡는 코드가 필요하고, 그러면 ③ 이 됩니다.</p>
+<p>READ COMMITTED에서 ⑤의 교착은 0건이었어요. 이 구성에서는 없는 행에 대한 <code>FOR UPDATE</code>가 갭 잠금을 설정하지 않았어요. 요청 4건은 모두 행이 없다고 조회한 뒤 INSERT를 시도했고, 3건이 <code>1062 Duplicate entry</code>로 끝났어요. 따라서 360건 중 270건이 실패한 점은 같아요. <span class="obsv-mark">RC에서 ⑤의 교착은 없어졌지만, 조회와 삽입 사이의 중복 경쟁은 남았어요.</span> 이 방식에도 ③처럼 1062를 처리하는 코드가 필요해요.</p>
 
-<h2>4. 교착이 없는 패턴 사이의 차이: 판정, 잠금 범위, 코드</h2>
+<h2>4. 교착 0건인 패턴의 판정과 잠금 범위 비교</h2>
 
-<p>②, ③, ④ 는 교착이 0 이었지만 같은 수준이 아니었어요.</p>
+<p>②, ③, ④에서는 교착이 0건이었지만, 저장 여부의 판정과 중복 요청의 잠금 범위에는 차이가 있었어요.</p>
 
-<p><b>② ODKU 무변경은 판정이 깨집니다.</b> 360건이 전부 <code>SAVED</code> 였어요. MySQL 문서상 ODKU 의 영향 행 수는 새로 넣으면 1, 바꾸면 2, 같은 값이라 안 바뀌면 0 입니다. 그런데 Connector/J 는 기본값(<code>useAffectedRows=false</code>)에서 접속할 때 <code>CLIENT_FOUND_ROWS</code> 를 켜고, 그러면 무변경도 1 이 됩니다(<a href="https://dding-shark.tistory.com/675">2편</a>). <code>useAffectedRows=true</code> 로 바꾼 ②' 는 90/90 이었지만, 이 옵션은 연결 전체의 UPDATE 반환값 의미를 바꿉니다. Connector/J 문서도 "JDBC 규약에 맞지 않고, found rows 에 기대는 대부분의 애플리케이션을 깨뜨린다"고 적어 두었어요. 판정 하나 때문에 켜기에는 영향 범위가 넓습니다.</p>
+<p>②의 무변경 ODKU는 360건을 모두 <code>SAVED</code>로 판정했어요. MySQL 문서에서 ODKU의 영향 행 수는 새 행이면 1, 변경한 행이면 2, 같은 값이라 변경하지 않았으면 0이에요. 그런데 Connector/J는 기본값(<code>useAffectedRows=false</code>)에서 <code>CLIENT_FOUND_ROWS</code>를 켜므로, 무변경 중복도 1을 반환해요(<a href="https://dding-shark.tistory.com/675">2편</a>). <code>useAffectedRows=true</code>를 쓴 ②'는 90/90라운드에서 판정이 맞았어요. 다만 이 옵션은 연결 전체의 UPDATE 반환값 의미를 바꿔요. Connector/J 문서도 JDBC 규약과 다르며 found rows에 의존하는 애플리케이션에 영향을 준다고 경고해요. 저장 여부 판정을 위해 옵션을 바꾼다면 같은 연결을 쓰는 다른 코드도 확인해야 해요.</p>
 
-<p><b>③ 은 가장 짧고 정확합니다.</b> 중복을 맞으면 S 잠금을 받지만 바로 롤백해서 놓기 때문에 그 잠금을 쥔 채 다른 잠금을 기다릴 일이 없어요. 대신 중복일 때마다 INSERT 를 시도하고 롤백합니다. 이미 있는 키로 들어오는 요청이 대부분인 경로라면(재방문, 재전송) 매번 1062 와 롤백을 치르는 셈이에요.</p>
+<p>③은 INSERT를 시도하고 1062가 나면 롤백 후 중복으로 끝내는 방식이에요. 중복 검사로 S 잠금을 받더라도 곧바로 롤백해 해제하므로, 이후 문장에서 X 잠금을 요청하지 않아요. 이번 비교에서는 코드가 짧고 판정도 맞았어요. 다만 이미 있는 키로 요청이 올 때마다 INSERT와 롤백을 실행하므로, 재방문이나 재전송이 많은 경로에서는 그 처리가 반복돼요.</p>
 
-<p><b>④ 는 이미 저장된 중복에서 잠금을 하나도 잡지 않습니다.</b> 잠금 없는 조회로 같은 값이 있으면 그대로 중복으로 끝나요. 동시에 들어와서 조회 시점에는 없었던 경우만 INSERT 까지 가고, 그때 1062 가 나면 ③ 과 같이 롤백합니다. 코드는 셋 중 가장 길지만 재전송이 많은 경로에서 잠금이 가장 적습니다.</p>
+<p>④는 이미 저장된 값이 같으면 잠금 없는 조회만으로 중복 판정을 마쳐요. 조회 시점에 행이 없었던 요청만 INSERT를 시도하고, 그때 1062가 나면 ③처럼 롤백한 뒤 새 트랜잭션에서 값을 확인해요. 코드와 분기는 더 길지만, 이미 저장된 중복 요청이 많을 때 INSERT와 중복 검사 잠금을 줄일 수 있어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 잠금 없는 읽기 (consistent read)</div>
-  <code>FOR UPDATE</code>/<code>FOR SHARE</code> 없는 평범한 SELECT 예요. 잠금을 걸지 않고 스냅숏에서 읽습니다. REPEATABLE READ 에서는 트랜잭션의 첫 읽기가 만든 스냅숏을 트랜잭션 끝까지 씁니다.
+  <code>FOR UPDATE</code>/<code>FOR SHARE</code>가 없는 일반 SELECT예요. 행 잠금을 설정하지 않고 스냅숏에서 읽어요. REPEATABLE READ에서는 첫 일관 읽기가 만든 스냅숏을 트랜잭션 끝까지 사용해요.
 </div>
 
-<p>④' 가 그 스냅숏의 함정입니다. 조회로 "없다"를 본 뒤 INSERT 가 1062 를 받고, 같은 트랜잭션에서 다시 읽으면 RR 에서는 첫 조회의 스냅숏을 쓰므로 방금 남이 넣은 행이 안 보여요. "중복이라는데 행이 없다"가 270건이었습니다. 중복 키 검사는 최신 데이터를 보고, 잠금 없는 읽기는 옛 스냅숏을 보기 때문이에요. RC 에서는 읽을 때마다 새 스냅숏이라 0건이었습니다. <span class="obsv-mark">1062 뒤 확인 조회는 롤백한 다음 새 트랜잭션에서 해야 합니다.</span></p>
+<p>④'에서는 1062 뒤에 같은 트랜잭션으로 재조회한 것이 문제가 됐어요. RR에서는 첫 조회에서 행이 없다고 본 스냅숏을 계속 쓰므로, 다른 트랜잭션이 삽입한 행을 재조회해도 보지 못했어요. 이렇게 중복 오류가 났는데 행을 찾지 못한 요청이 270건이었어요. 중복 키 검사는 최신 데이터를 확인하지만 잠금 없는 읽기는 기존 스냅숏을 사용하기 때문이에요. 읽을 때마다 새 스냅숏을 쓰는 RC에서는 이 요청이 0건이었어요. <span class="obsv-mark">RR에서 1062 뒤 값을 확인하려면 롤백 후 새 트랜잭션으로 조회해야 해요.</span></p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 395" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">커밋 직전까지 쥐고 있는 잠금 (RR, 보조 유니크 키)</text>
+  <text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">처리 후 유지하는 잠금 (RR, 보조 유니크 키)</text>
   <text x="100" y="62" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">패턴</text>
   <text x="300" y="62" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">키가 없을 때 (내가 넣음)</text>
   <text x="530" y="62" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">키가 이미 있을 때 (중복)</text>
@@ -222,7 +218,7 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
   <text x="28" y="157" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">② ODKU 무변경</text>
   <text x="205" y="157" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">넣은 행 (암묵 X)</text>
   <text x="425" y="150" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">X next-key (보조 유니크)</text>
-  <text x="425" y="168" font-family="Menlo, monospace" font-size="11" fill="#c07f18">반환값 1 → 판정이 깨짐</text>
+  <text x="425" y="168" font-family="Menlo, monospace" font-size="11" fill="#c07f18">반환값 1 → 저장으로 오판</text>
   <path d="M20 180 C 200 178, 480 182, 680 179" fill="none" stroke="#d8cfba" stroke-width="1.4" stroke-dasharray="1 7" stroke-linecap="round"/>
 
   <text x="28" y="212" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">③ INSERT, 1062 잡기</text>
@@ -242,12 +238,12 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
   <text x="205" y="322" font-family="Menlo, monospace" font-size="12" fill="#b3502f">다음 행 앞 갭 X,GAP ⚠</text>
   <text x="425" y="322" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">찾은 행 X</text>
 
-  <text x="350" y="375" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">⚠ 두 칸이 교착 자리, 중복 쪽이 비어 있는 건 ④ 하나</text>
+  <text x="350" y="375" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">⚠ 표시한 두 패턴에서 교착, ④의 중복 조회는 잠금 없음</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 2. 중복 요청이 커밋까지 쥐는 잠금. 아무것도 쥐지 않는 건 ④ 뿐이다</div>
+<div class="obsv-figcap">그림 2. 이미 저장된 중복을 조회만으로 처리한 ④에서는 행 잠금이 관찰되지 않았어요</div>
 
-<p>그림 2 는 세션 하나가 커밋 직전까지 쥔 잠금을 <code>performance_schema.data_locks</code> 로 찍은 것입니다(<code>results/footprint-*.txt</code>). 새로 넣은 행은 암묵 잠금이라 <code>data_locks</code> 에 따로 안 보이고, 다른 트랜잭션이 그 행을 건드릴 때 명시 잠금으로 바뀌어 나타나요. 그림에 다 넣지 못한 관찰이 하나 더 있습니다. RR 에서 ①·②·③ 의 중복 요청은 보조 유니크 키 잠금 말고도 기본 키의 <code>supremum pseudo-record</code>(인덱스 맨 끝)에 X 잠금을 쥐고 있었어요. 기본 키가 AUTO_INCREMENT 라 새 행은 늘 맨 끝에 들어가니, 이 잠금이 있는 동안에는 다른 키의 INSERT 도 기다릴 수 있습니다(이 실습에서 따로 재지는 않았습니다). ④ 의 중복 요청에는 이 잠금도 없었어요. 정리하면 이렇습니다.</p>
+<p>그림 2는 세션 하나가 삽입이나 중복 처리를 한 뒤 유지하는 잠금을 <code>performance_schema.data_locks</code>로 확인한 결과예요(<code>results/footprint-*.txt</code>). 새로 넣은 행의 암묵 잠금은 <code>data_locks</code>에 따로 표시되지 않다가, 다른 트랜잭션이 접근해 명시 잠금으로 전환되면 나타나요. RR에서 ①·②·③의 중복 요청에는 보조 유니크 키 잠금 외에 기본 키의 <code>supremum pseudo-record</code>(인덱스 맨 끝)에 대한 X 잠금도 있었어요. 기본 키가 AUTO_INCREMENT라 새 행이 맨 끝에 추가되므로 다른 키의 INSERT도 이 잠금을 기다릴 수 있지만, 이번 실습에서 그 대기를 따로 측정하지는 않았어요. ④의 중복 요청에서는 이 잠금도 관찰되지 않았습니다.</p>
 
 <div class="obsv-code">            교착(360건)  판정        중복일 때 잠금            코드
 ① IGNORE+FU  180         맞음        S 를 쥔 채 X 로 올림       2문장
@@ -258,11 +254,11 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
               0 (RC)                  RC: 대신 1062 270건
 (FU = SELECT … FOR UPDATE)</div>
 
-<p>교착이 없는 쪽에도 한계가 있습니다. ③ 과 ④ 가 교착이 0 이었던 것은 이 실습에서 먼저 넣은 요청이 늘 커밋했기 때문이에요. MySQL 문서의 <code>INSERT</code> 잠금 설명에는 세 세션이 같은 키를 넣다가 첫 세션이 <b>롤백</b>하면, 중복 검사로 S 를 받고 기다리던 두 세션이 서로 X 를 못 받아 교착이 나는 예가 그대로 있습니다. 넣은 쪽이 같은 트랜잭션의 뒤 작업에서 실패해 롤백하는 구조라면 ③·④ 도 드물게 1213 을 받을 수 있다는 뜻이에요. 이 실습에서는 넣은 쪽이 롤백하는 경우를 재현하지 않았습니다. 그리고 ④ 에서 1062 를 받은 뒤 같은 트랜잭션에서 그 행을 UPDATE 하면 ① 과 같은 S→X 모양으로 돌아갑니다. 그래서 다음 장의 재시도는 교착이 0 인 패턴에도 붙여 둡니다.</p>
+<p>③과 ④에서 교착이 0건이었다는 결과에는 조건이 있어요. 이번 실습에서는 먼저 행을 넣은 요청이 항상 커밋했어요. MySQL 문서의 <code>INSERT</code> 잠금 설명에는 첫 삽입 트랜잭션이 <b>롤백</b>할 때, 같은 키의 중복 검사를 기다리던 두 세션이 S 잠금을 받은 뒤 서로 X 잠금을 얻지 못해 교착이 생기는 예가 있어요. 삽입 뒤의 다른 작업이 실패해 롤백되는 구조라면 ③·④도 1213을 받을 수 있다는 뜻이에요. 이 조건은 이번 실습에서 재현하지 않았어요. 또 ④에서 1062 뒤 같은 트랜잭션으로 행을 UPDATE하면 ①과 같은 S→X 잠금 전환이 생겨요. 따라서 이번 비교에서 교착이 없었던 패턴에도 트랜잭션 전체를 재시도할 준비는 필요해요.</p>
 
 <h2>5. 재시도는 트랜잭션 바깥에</h2>
 
-<p>MySQL 문서의 교착 대응 목록에는 "교착으로 실패하면 트랜잭션을 다시 낼 준비를 항상 해 두라"는 항목이 있습니다. 핵심은 <b>무엇을</b> 다시 내느냐예요. 1213 은 문장이 아니라 트랜잭션 전체를 롤백합니다(<a href="https://dding-shark.tistory.com/678">5편</a>). 그러니 재시도도 트랜잭션 전체를 처음부터 다시 해야 합니다. 메서드 안에서 실패한 문장만 다시 돌리면 앞 문장의 결과는 이미 사라진 채 남은 문장만 실행됩니다.</p>
+<p>MySQL 문서는 교착으로 실패한 트랜잭션을 재시도할 수 있도록 준비하라고 안내해요. 1213이 발생하면 문장 하나가 아닌 트랜잭션 전체가 롤백되므로(<a href="https://dding-shark.tistory.com/678">5편</a>), 재시도도 전체 트랜잭션을 처음부터 실행해야 해요. 실패한 문장만 메서드 안에서 다시 실행하면 앞서 수행한 문장의 결과가 사라진 상태로 나머지 작업을 진행할 수 있어요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -271,7 +267,7 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
       <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
     </marker>
   </defs>
-  <text x="175" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#2e6b41">재시도가 바깥 (맞다)</text>
+  <text x="175" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#2e6b41">트랜잭션 밖 재시도</text>
   <path d="M30 45 C 120 42, 230 47, 322 44 C 325 120, 324 200, 323 270 C 230 273, 120 269, 32 272 C 29 200, 31 120, 30 45 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round"/>
   <text x="48" y="72" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">🔁 재시도 (최대 3번 더)</text>
   <path d="M55 85 C 130 83, 220 87, 300 84 C 302 140, 301 190, 300 250 C 220 252, 130 249, 57 251 C 54 190, 56 140, 55 85 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round"/>
@@ -282,7 +278,7 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
   <text x="75" y="225" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">다음 시도는 잠금 없이 시작</text>
   <text x="175" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">Spring 7 @Retryable 은 기본이 이 순서</text>
 
-  <text x="525" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#b3502f">재시도가 안쪽 (틀리다)</text>
+  <text x="525" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#b3502f">실패한 문장만 재시도</text>
   <path d="M378 45 C 470 42, 580 47, 672 44 C 675 120, 674 200, 673 270 C 580 273, 470 269, 380 272 C 377 200, 379 120, 378 45 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round"/>
   <text x="396" y="72" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">트랜잭션 하나</text>
   <path d="M403 85 C 480 83, 570 87, 650 84 C 652 140, 651 190, 650 250 C 570 252, 480 249, 405 251 C 402 190, 404 140, 403 85 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round"/>
@@ -291,12 +287,12 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
   <text x="423" y="167" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">앞 문장 결과도 사라짐</text>
   <text x="423" y="197" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">남은 문장만 다시 돌리면</text>
   <text x="423" y="225" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">앞 문장 없이 커밋될 수 있다</text>
-  <text x="525" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">메서드 안 try/catch 반복이 이 모양</text>
+  <text x="525" y="300" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">같은 트랜잭션 안의 문장 반복</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 3. 재시도 한 번이 트랜잭션 하나를 처음부터 다시 여는 구조여야 한다</div>
+<div class="obsv-figcap">그림 3. 매 재시도에서 새 트랜잭션으로 전체 작업을 다시 실행해야 해요</div>
 
-<p>Spring Framework 7.0 부터는 Spring Retry 없이 코어에 재시도가 들어 있어요. 프로그램 방식은 <code>RetryTemplate</code> 입니다. 실습의 재시도는 이렇게 짰습니다. 1213 과 1205 만 다시 하고, 최대 3번 더, 20ms 에 지터 10ms 예요.</p>
+<p>Spring Framework 7.0부터는 별도의 Spring Retry 없이 코어의 재시도 기능을 사용할 수 있어요. 프로그램 방식은 <code>RetryTemplate</code>이에요. 실습에서는 오류 코드 1213과 1205만 최대 3번 더 시도하도록 설정했어요. 지연은 20ms이고 지터는 10ms예요.</p>
 
 <div class="obsv-code">RetryTemplate retry = new RetryTemplate(RetryPolicy.builder()
         .includes(PessimisticLockingFailureException.class)   // 교착·잠금 대기만
@@ -308,7 +304,7 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
 Verdict v = retry.invoke(() -&gt; tx.execute(s -&gt; firstVisit(key, payload)));
 //          ↑ 바깥: 재시도            ↑ 안쪽: 시도마다 새 트랜잭션</div>
 
-<p>(실습 코드는 원시 JDBC 라 예외 클래스 대신 오류 코드로 거르는 <code>predicate</code> 를 썼습니다.) 결과는 다음과 같아요.</p>
+<p>아래 결과를 낸 실습 코드는 원시 JDBC를 사용하므로 예외 클래스 대신 오류 코드로 재시도 여부를 정하는 <code>predicate</code>를 썼어요.</p>
 
 <div class="obsv-code">                     실패   재시도한 요청   추가 시도     p50          p99
 ① 재시도 없음         180    0              0            2.4~2.8ms    5.4~11.1ms
@@ -317,9 +313,9 @@ Verdict v = retry.invoke(() -&gt; tx.execute(s -&gt; firstVisit(key, payload)));
 ⑤ RetryTemplate      0      270            270          30.8~31.5ms  40.5~42.5ms
 (세 바퀴의 범위, 각 360건, 판정 오류 0)</div>
 
-<p>재시도로 실패는 0 이 됐고 판정도 전부 맞았어요. 다시 해 보면 행이 이미 있으니 ① 은 IGNORE 가 0 을, ⑤ 는 조회가 행을 돌려주기 때문입니다. 다만 ① 은 추가 시도가 실패 수보다 많았어요(180건에 188~199번). 재시도끼리 다시 교착한 경우입니다. <code>lock_deadlocks</code> 증가분도 재시도 없을 때 180 이던 것이 재시도를 붙이자 188~199 로 오히려 늘었어요. 지연도 p99 가 5~11ms 에서 65~71ms 로 늘었어요. <span class="obsv-mark">재시도는 교착을 숨길 뿐 줄이지 않습니다.</span> 패턴을 바꾸는 것이 먼저이고, 재시도는 남은 드문 경우를 위한 것입니다.</p>
+<p>재시도를 적용한 비교에서는 실패가 0건이었고 판정도 모두 맞았어요. 다시 시도할 때 이미 행이 있으면 ①은 IGNORE가 0을 반환하고, ⑤는 조회 결과로 행을 확인해요. 다만 ①은 재시도한 요청 180건에 추가 시도가 188~199번 필요했어요. 재시도 중에도 교착이 생긴 거예요. <code>lock_deadlocks</code> 증가분도 재시도 전 180에서 188~199로 늘었고, p99 지연은 5~11ms에서 65~71ms로 증가했어요. <span class="obsv-mark">이번 실험에서 재시도는 최종 실패를 없앴지만 교착 횟수와 지연은 늘었어요.</span> 먼저 교착을 줄이는 패턴을 선택하고, 남을 수 있는 실패에 재시도를 적용하는 편이 좋아요.</p>
 
-<p>어노테이션 방식은 <code>@Retryable</code> 이고 <code>@EnableResilientMethods</code> 로 켭니다. 레퍼런스 문서의 기본값은 "모든 예외에 대해 최대 3번 더, 간격 1초"라서 <code>includes</code> 로 좁혀야 해요. 문제는 <code>@Transactional</code> 과 같은 메서드에 붙일 때의 순서입니다. 이 실습이 쓴 7.0.9 레퍼런스 문서에는 이 순서가 없고, 개발 중인 7.1 문서(7.1.0-M2)의 "With @Transactional" 절에 "Retry (OUTER) → Transaction (INNER)", "Each retry attempt starts a fresh transaction"으로 명시되어 있어요. 7.0.9 소스를 보면 <code>RetryAnnotationBeanPostProcessor</code> 생성자가 <code>setBeforeExistingAdvisors(true)</code> 를 켜요. 이 플래그의 Javadoc 은 "이미 어드바이스가 붙은 객체를 만나면 기존 어드바이저를 감싸게 한다"입니다. 재시도가 트랜잭션 바깥에 온다는 뜻이에요. 실습의 <code>order</code> 모드로 확인했습니다. 첫 시도만 실패하게 만든 메서드입니다.</p>
+<p>어노테이션 방식은 <code>@Retryable</code>이며 <code>@EnableResilientMethods</code>로 활성화해요. 실습에서 참고한 레퍼런스의 기본값은 모든 예외를 최대 3번 더, 1초 간격으로 시도하는 것이어서 <code>includes</code>로 대상을 좁혔어요. <code>@Transactional</code>과 같은 메서드에 붙일 때는 적용 순서도 확인해야 해요. 당시 7.0.9 레퍼런스에는 이 순서가 없었고, 개발 중이던 7.1 문서(7.1.0-M2)의 "With @Transactional" 절에는 "Retry (OUTER) → Transaction (INNER)"와 "Each retry attempt starts a fresh transaction"으로 명시돼 있었어요. 7.0.9 소스의 <code>RetryAnnotationBeanPostProcessor</code> 생성자는 <code>setBeforeExistingAdvisors(true)</code>를 설정해요. 이 플래그의 Javadoc은 기존 어드바이스가 붙은 객체를 만나면 그 어드바이저 바깥에 새 어드바이저를 배치한다고 설명해요. 실습에서도 재시도가 트랜잭션 바깥에 적용되는지 <code>order</code> 모드로 확인했어요. 아래 메서드는 첫 시도에서만 실패하도록 만들었습니다.</p>
 
 <div class="obsv-code">@Retryable(includes = PessimisticLockingFailureException.class, maxRetries = 3, delay = 20)
 @Transactional
@@ -331,11 +327,11 @@ public String failOnce(String key) { ... }
   attempt 2 tx completed: COMMITTED
   rows left: [order-2]</div>
 
-<p>시도마다 트랜잭션이 열리고 닫혔고, 첫 시도가 넣은 <code>order-1</code> 은 롤백으로 사라졌습니다. ① 을 <code>JdbcTemplate</code> 으로 짜서 같은 4건 동시 × 90라운드로 돌리면 재시도 없이는 360건 중 169~172건이 실패했고, <code>@Retryable</code> 을 붙이면 0건이었어요. 이 비교는 독립 연결 4개가 아니라 Spring 의 Hikari 공유 풀(최대 8개)을 거쳐서, 실패 수가 원시 JDBC 의 180 과 조금 다릅니다. 시도 수는 547~558번인데 이건 첫 시도를 포함한 수라, 앞 표의 "추가 시도"로 바꾸면 187~198번이에요. 주의할 점은 이 동작이 프록시를 거치는 호출에만 적용된다는 것입니다. 같은 클래스 안에서 <code>this.firstVisit()</code> 로 부르면 재시도도 트랜잭션도 붙지 않습니다.</p>
+<p>각 시도에서 트랜잭션이 시작하고 종료됐으며, 첫 시도가 넣은 <code>order-1</code>은 롤백으로 사라졌어요. ①을 <code>JdbcTemplate</code>으로 구현해 같은 4건 동시 × 90라운드로 비교했을 때는 재시도 없이 360건 중 169~172건이 실패했고, <code>@Retryable</code> 적용 후에는 0건이었어요. 이 비교는 독립 연결 4개 대신 Spring의 Hikari 공유 풀(최대 8개)을 사용해서 원시 JDBC의 실패 수 180건과 조금 달랐어요. 전체 시도 수 547~558번에서 첫 시도 360번을 빼면 앞 표와 같은 기준의 추가 시도는 187~198번이에요. 이 동작은 프록시를 거치는 호출에 적용돼요. 같은 클래스 안에서 <code>this.firstVisit()</code>로 호출하면 해당 호출에 재시도와 트랜잭션 어드바이스가 새로 적용되지 않아요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">⚠️ 주의: 재시도 조건은 공통 부모 예외로</div>
-  이 실습(Spring Framework 7.0.9, <code>JdbcTemplate</code>)에서 교착 실패는 <code>CannotAcquireLockException</code> 으로 올라왔습니다. 클래스패스 루트에 <code>sql-error-codes.xml</code> 을 두지 않으면 <code>SQLExceptionSubclassTranslator</code> 가 쓰이고, 이 번역기는 SQLSTATE 40001 을 <code>CannotAcquireLockException</code> 으로 바꾸기 때문이에요. 루트에 그 파일을 두면 deprecated 인 <code>DeadlockLoserDataAccessException</code> 이 오고, <code>EntityManager</code> 를 직접 쓰는 빈에서는 Spring 예외가 아닌 JPA 예외가 옵니다(<a href="https://dding-shark.tistory.com/678">5편</a> 실측). 그래서 재시도 조건은 두 Spring 예외의 공통 부모인 <code>PessimisticLockingFailureException</code> 으로 거는 편이 안전합니다.
+  이 실습(Spring Framework 7.0.9, <code>JdbcTemplate</code>)에서는 교착 오류가 <code>CannotAcquireLockException</code>으로 전달됐어요. 클래스패스 루트에 <code>sql-error-codes.xml</code>이 없으면 <code>SQLExceptionSubclassTranslator</code>를 쓰고, 이 번역기가 SQLSTATE 40001을 <code>CannotAcquireLockException</code>으로 바꾸기 때문이에요. 루트에 그 파일을 둔 비교에서는 사용 중단 권고(deprecated) 상태인 <code>DeadlockLoserDataAccessException</code>이 전달됐고, <code>EntityManager</code>를 직접 쓰는 빈에서는 JPA 예외가 전달됐어요(<a href="https://dding-shark.tistory.com/678">5편</a> 실측). 두 Spring 예외를 함께 처리하려면 공통 부모인 <code>PessimisticLockingFailureException</code>을 재시도 조건으로 지정할 수 있어요.
 </div>
 
 <div class="obsv-term">
@@ -343,39 +339,39 @@ public String failOnce(String key) { ... }
   같은 요청을 여러 번 보내도 결과가 한 번 보낸 것과 같게 만들기 위해 요청마다 붙이는 고유 값이에요. 서버는 이 키로 "이미 처리한 요청인가"를 판단합니다.
 </div>
 
-<p>재시도가 안전했던 이유는 이 작업이 "키 하나에 행 하나"라서, 두 번 해도 두 번째는 중복으로 끝나기 때문입니다. 요청이 외부 결제 호출이나 메시지 발행처럼 DB 밖의 일을 같이 한다면 재시도가 그 일까지 반복합니다. 그럴 때는 클라이언트가 보낸 멱등 키를 유니크 키로 둔 표를 먼저 "없으면 넣기"로 차지하고, 차지한 요청만 바깥 일을 하게 만듭니다. 그 표에 넣는 방법이 다시 이 글의 ③ 이나 ④ 예요.</p>
+<p>이번 실습에서는 같은 키로 다시 실행해도 두 번째는 중복으로 끝나므로 재시도 뒤에도 행이 하나였어요. 외부 결제 호출이나 메시지 발행처럼 DB 밖의 작업은 비교에 포함하지 않았어요. 그런 작업까지 반복해도 안전한지는 이 결과만으로 판단할 수 없어요. 클라이언트의 멱등 키를 유니크 키로 저장하는 데에는 ③이나 ④를 검토할 수 있지만, 외부 작업을 포함한 전체 흐름의 중복 처리는 별도로 확인해야 해요.</p>
 
-<h2>6. 실제로 겪은 일: 360건 중 195건에서 0건으로</h2>
+<h2>6. 기존 운영 사례와 API 시험 기록</h2>
 
-<p>운영 DB 의 교착 알람을 따라가 보니, 첫 교착은 같은 사용자의 첫 방문 요청 3개가 동시에 들어온 데서 났습니다. 코드는 ① 이었어요.</p>
+<p>기존 운영 사례에서는 같은 사용자의 첫 방문 요청 3개가 동시에 들어왔을 때 교착이 발생했어요. 당시 코드는 ① 방식이었어요.</p>
 
-<p>수정 방법으로 ODKU 를 제안받았지만 쓰지 않았습니다. 무변경 갱신일 때 Connector/J 기본값에서 중복이어도 1 이 돌아와, 그 코드가 의존하던 저장/중복 판정이 깨지기 때문입니다. 이 글의 ② 가 270건을 틀린 것과 같은 이유예요. 2차 수정은 같은 값으로 이미 저장된 중복을 잠금 없는 조회로 확인하고 중복으로 끝내는 방식이었습니다. 같은 본문 4건을 동시에 재전송하는 시험을 360건 돌리자 2차 수정 전에는 195건이 실패했고, 2차 수정 뒤에는 0건이었어요.</p>
+<p>ODKU로 바꾸는 제안도 있었지만 채택하지 않았어요. 무변경 갱신에서도 Connector/J 기본값은 1을 반환하므로, 기존 코드가 의존하던 저장/중복 판정을 유지할 수 없었기 때문이에요. 이번 비교에서 ②의 판정이 270건 틀린 것과 같은 문제예요. 2차 수정에서는 같은 값이 이미 저장돼 있으면 잠금 없는 조회로 확인하고 중복으로 끝내도록 바꿨어요. 당시 기록에는 같은 본문 요청 4건을 동시에 보내는 시험 360건에서 수정 전 195건이 실패했고 수정 뒤에는 0건이었다고 남아 있어요. 이 수치는 이번 패턴 비교의 180건과 구분해야 해요. 기존 글에는 같은 결과가 있지만, 당시 API 시험의 원출력은 이번에 대조한 로컬 실습 자료에 포함돼 있지 않았어요.</p>
 
-<p>함정이 하나 더 있었습니다. 실패한 요청의 응답 코드가 500 이 아니라 400 이었어요. 공통 예외 핸들러가 처리하지 않은 예외를 400 으로 돌려주고 있었습니다. 교착이 "클라이언트가 잘못 보낸 요청"으로 기록된 셈이에요. 재시도 정책이 4xx 는 다시 보내지 않는 클라이언트라면, 교착 한 번이 그대로 사용자 실패가 됩니다.</p>
+<p>당시 실패 응답은 500이 아닌 400으로 기록됐어요. 공통 예외 핸들러가 처리하지 않은 예외를 400으로 돌려주던 것이 원인이었어요. 4xx 응답을 재시도하지 않는 클라이언트라면 이 교착 요청도 재전송 대상에서 빠질 수 있어요. 이 HTTP 응답 역시 기존 운영 기록에 따른 설명이며, 이번 DB 패턴 실험으로 다시 확인한 결과는 아니에요.</p>
 
-<h2>7. 고르는 법</h2>
+<h2>7. 중복 비율과 트랜잭션 범위에 맞춰 선택하기</h2>
 
-<p>반례부터 정리하면 이렇습니다. "먼저 <code>FOR UPDATE</code> 로 잠그면 안전하다"는 RR 에서 없는 행에 대해 거꾸로였어요(⑤, 270건). "RC 로 내리면 된다"는 ① 에는 효과가 없었고 ⑤ 는 교착을 1062 로 바꿨을 뿐이었습니다. "ODKU 한 문장이면 끝난다"는 교착은 맞지만 판정이 드라이버 설정에 달려 있었어요(②, 270건 오판).</p>
+<p>이번 비교에서는 <code>FOR UPDATE</code>를 먼저 실행해도 없는 행에 대한 삽입 경쟁을 막지 못했어요(⑤, RR에서 교착 270건). RC로 낮춰도 ①의 교착은 그대로였고, ⑤는 1062로 실패한 요청 수가 270건이었어요. ODKU는 교착 없이 끝났지만 저장 여부의 판정이 드라이버 설정에 따라 달라졌어요(②, 270건 오판). 선택할 때는 교착 여부와 중복 판정을 함께 봐야 해요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">💡 내 코드에서 바꿀 것</div>
-  &bull; <code>INSERT IGNORE</code> 나 1062 다음 같은 트랜잭션에서 그 행에 <code>FOR UPDATE</code>, <code>UPDATE</code> 를 하는 곳을 찾으세요. ① 모양입니다. 행을 잠가야 하는 이유가 없다면 잠금 없는 조회로 바꾸세요<br>
-  &bull; 없는 행에 <code>SELECT … FOR UPDATE</code> 를 걸고 INSERT 하는 곳도 찾으세요. RR 에서는 ⑤ 모양이고, RC 라도 1062 처리가 필요합니다<br>
-  &bull; 중복이 흔한 경로(재전송, 재방문)는 ④: 잠금 없는 조회 → 없으면 INSERT → 1062 면 롤백 후 새 트랜잭션에서 다시 읽어 같은 값인지 확인. 드문 경로는 ③ 으로 충분합니다<br>
-  &bull; 저장/중복 판정에 ODKU 반환값을 쓰고 있다면 <code>useAffectedRows</code> 설정부터 확인하세요. 기본값에서는 무변경 중복도 1 입니다<br>
-  &bull; 재시도는 트랜잭션 바깥에, <code>PessimisticLockingFailureException</code> 만, 지터를 넣어서. <code>@Retryable</code> 과 <code>@Transactional</code> 을 같은 메서드에 붙이면 Spring 7 에서는 재시도가 바깥입니다. 다만 프록시를 거치는 호출이어야 합니다<br>
-  &bull; 이 부모 예외는 1205(잠금 대기 시간 초과)도 잡습니다. 1205 를 덜 재시도하려면 원인 예외의 errorCode 로 거르는 <code>predicate</code> 를 쓰세요(<a href="https://dding-shark.tistory.com/678">5편</a>). <code>EntityManager</code> 를 직접 쓰는 경로라면 <code>jakarta.persistence.PessimisticLockException</code>, <code>LockTimeoutException</code> 은 이 부모의 자식이 아니니 따로 넣어야 합니다<br>
-  &bull; 교착을 공통 예외 핸들러가 4xx 로 바꾸고 있지 않은지 보세요. 클라이언트가 재시도하지 않는 이유가 됩니다<br>
-  &bull; 시험은 "같은 키 N건 동시"로 쓰세요. 한 번씩 부르는 테스트로는 다섯 패턴이 모두 통과합니다
+  &bull; <code>INSERT IGNORE</code>나 1062 뒤에 같은 트랜잭션으로 <code>FOR UPDATE</code>, <code>UPDATE</code>를 실행하는 부분부터 확인하세요. ①과 같은 잠금 전환이 생길 수 있어요. 행을 잠글 필요가 없다면 잠금 없는 조회를 검토하세요.<br>
+  &bull; 없는 행을 <code>SELECT … FOR UPDATE</code>로 조회한 뒤 INSERT하는 부분도 확인하세요. RR에서는 ⑤처럼 갭 잠금이 생기고, RC에서도 1062 처리는 필요해요.<br>
+  &bull; 중복이 흔한 경로라면 ④를 검토하세요. 먼저 잠금 없이 조회하고, 없으면 INSERT하며, 1062가 나면 롤백 후 새 트랜잭션에서 같은 값인지 확인하는 방식이에요. 중복이 드물고 예외로 판정을 마칠 수 있으면 ③을 검토할 수 있어요.<br>
+  &bull; 저장/중복 판정에 ODKU 반환값을 쓰고 있다면 <code>useAffectedRows</code> 설정을 확인하세요. 기본값에서는 무변경 중복도 1을 반환해요.<br>
+  &bull; Spring JDBC에서는 <code>PessimisticLockingFailureException</code>처럼 재시도할 예외를 좁히고, 지터를 포함한 재시도를 트랜잭션 바깥에 두세요. 실습의 Spring 7.0.9에서는 같은 메서드의 <code>@Retryable</code>이 <code>@Transactional</code> 바깥에 적용됐어요. 프록시를 거치는 호출이어야 해요.<br>
+  &bull; 이 부모 예외에는 1205(잠금 대기 시간 초과)도 포함돼요. 1205의 재시도를 구분하려면 원인 예외의 errorCode를 확인하는 <code>predicate</code>를 사용하세요(<a href="https://dding-shark.tistory.com/678">5편</a>). <code>EntityManager</code>를 직접 쓸 때 발생하는 <code>jakarta.persistence.PessimisticLockException</code>, <code>LockTimeoutException</code>은 이 부모의 하위 예외가 아니므로 따로 처리해야 해요.<br>
+  &bull; 공통 예외 핸들러가 교착 오류를 4xx로 바꾸는지도 확인하세요. 클라이언트의 재시도 정책에 영향을 줄 수 있어요.<br>
+  &bull; 같은 키로 N건을 동시에 보내는 테스트를 포함하세요. 요청을 한 번씩 실행하는 테스트만으로는 이번에 확인한 경쟁을 검증하기 어려워요.
 </div>
 
 <p>참고한 공개 자료: MySQL 8.4 Reference Manual 의 <a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-locks-set.html">Locks Set by Different SQL Statements in InnoDB</a>, <a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html">InnoDB Locking</a>, <a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html">Transaction Isolation Levels</a>, <a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html">How to Minimize and Handle Deadlocks</a>, <a href="https://dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html">INSERT … ON DUPLICATE KEY UPDATE</a>, Connector/J 의 <a href="https://dev.mysql.com/doc/connector-j/en/connector-j-connp-props-connection.html">연결 속성(useAffectedRows)</a>, Spring Framework 의 <a href="https://docs.spring.io/spring-framework/reference/core/resilience.html">Resilience Features</a>(7.0.9, 그리고 <code>@Transactional</code> 순서가 명시된 <a href="https://docs.spring.io/spring-framework/reference/7.1/core/resilience.html">7.1 개발판</a>) 와 <a href="https://github.com/spring-projects/spring-framework/blob/main/spring-context/src/main/java/org/springframework/resilience/annotation/RetryAnnotationBeanPostProcessor.java">RetryAnnotationBeanPostProcessor 소스</a>, <a href="https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/aop/framework/AbstractAdvisingBeanPostProcessor.html">AbstractAdvisingBeanPostProcessor Javadoc</a>. 실습 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/db/dl-06-upsert-patterns">labs/db/dl-06-upsert-patterns</a> 에 있습니다.</p>
 
 <div class="obsv-summary">
-  <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>같은 키 4건 동시 × 90라운드에서 교착이 난 것은 INSERT IGNORE 다음 FOR UPDATE(360건 중 180건)와 없는 행에 FOR UPDATE 먼저(270건)였고, READ COMMITTED 는 앞의 것을 못 고치고 뒤의 것을 1062 로 바꿀 뿐이었습니다.</b><br><br>
-  ODKU 무변경은 교착이 0 이지만 드라이버 기본값에서 중복도 1 이 돌아와 판정이 270건 틀렸어요. INSERT 후 1062 잡기와 잠금 없는 조회 후 분기는 교착 0, 판정 360건 전부 정확이었고, 이미 저장된 중복에서 잠금을 하나도 잡지 않는 건 뒤의 것뿐이었습니다. 재시도는 트랜잭션 바깥에 두면 실패를 0 으로 만들었지만 p99 를 65~71ms 로 늘렸어요.<br><br>
-  "없으면 넣기"에서 고를 것은 잠그는 방법이 아니라, 중복일 때 아무것도 잠그지 않고 끝내는 길이 있느냐입니다.
+  <div class="obsv-st2">✍️ 비교 결과와 적용 범위</div>
+  같은 키 4건 동시 × 90라운드에서 INSERT IGNORE 다음 FOR UPDATE는 360건 중 180건, 없는 행에 FOR UPDATE를 먼저 실행한 패턴은 270건이 교착으로 실패했어요. READ COMMITTED에서도 전자는 그대로였고 후자는 1062로 270건이 실패했어요.<br><br>
+  ODKU 무변경은 드라이버 기본값에서 중복도 1을 반환해 270건을 잘못 판정했어요. INSERT 후 1062 처리와 잠금 없는 조회 후 분기는 이번 비교에서 교착이 0건이고 360건의 판정도 모두 맞았어요. 이미 저장된 중복을 조회만으로 처리하는 후자는 중복 검사 잠금도 없었어요. 다만 먼저 삽입한 트랜잭션이 롤백하는 조건까지 재현한 결과는 아니에요.<br><br>
+  트랜잭션 바깥에 재시도를 둔 비교에서는 최종 실패가 0건이었지만, ①의 p99 지연은 65~71ms로 늘었어요. 중복이 잦으면 조회 후 분기를, 중복이 드물면 INSERT 후 1062 처리를 검토하되, 두 방식 모두 트랜잭션 전체를 다시 실행할 수 있도록 준비해야 해요.
 </div>
 
 </div>

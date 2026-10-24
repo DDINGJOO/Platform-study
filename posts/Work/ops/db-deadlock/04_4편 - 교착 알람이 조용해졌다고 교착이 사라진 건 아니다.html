@@ -2,8 +2,8 @@
   MySQL 교착 4편: 교착 알람이 조용해졌다고 교착이 사라진 건 아니다
   tistory-sketch-post 스타일 · 단일 HTML
 ============================================================ -->
-<!-- tags: lock_deadlocks, INNODB_METRICS, innodb_print_all_deadlocks, 교착 알람, 알람 설계 -->
-<!-- lead: 교착을 고친 뒤 알람이 멈췄는데 교착은 시간당 0.3건 남아 있었어요. MySQL 8.4 에서 교착을 세는 네 자리를 실측하고, "연속 N구간" 알람이 단발 교착을 숨기는 이유와 대안 규칙을 시뮬레이션으로 비교했어요. -->
+<!-- tags: lock_deadlocks, INNODB_METRICS, innodb_print_all_deadlocks, Prometheus 알람 -->
+<!-- lead: 첫 수정 뒤 교착 알람은 멈췄지만 시간당 약 0.3건의 교착은 남아 있었어요. MySQL 8.4의 기존 실습 결과로 카운터와 로그를 대조하고, 연속 구간 조건과 대안 알람 규칙이 드문 교착에 어떻게 반응하는지 비교해요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -28,18 +28,14 @@
 
 <div class="obsv-series">
   <div class="obsv-st">🔒 MySQL 교착 · 4편</div>
-  1편. INSERT IGNORE 다음 SELECT … FOR UPDATE가 교착을 만드는 이유<br>
-  2편. ON DUPLICATE KEY UPDATE 반환값으로 중복을 판정하면 안 된다<br>
-  3편. LATEST DETECTED DEADLOCK 읽는 법과 data_locks로 원인을 확정하는 순서<br>
-  <b>4편. 교착 알람이 조용해졌다고 교착이 사라진 건 아니다</b> &larr; 지금 이 글<br>
-  5편. 교착(1213)과 lock wait timeout(1205)은 롤백 범위가 다르다<br>
-  6편. 같은 요청이 동시에 두 번 올 때 없으면 넣기를 교착 없이 짜는 다섯 가지 방법<br>
-  7편. 동시성 테스트가 통과한 게 아니라 실행되지 않았을 때
+  <a href="https://dding-shark.tistory.com/675" style="color:inherit">2편. Connector/J 기본값에서 ON DUPLICATE KEY UPDATE의 중복 판정이 달라지는 이유</a><br>
+  <a href="https://dding-shark.tistory.com/676" style="color:inherit">3편. LATEST DETECTED DEADLOCK과 data_locks로 잠금과 실행 순서 확인하기</a><br>
+  <b>4편. MySQL 교착 카운터와 연속 구간 알람의 탐지 범위</b> &larr; 지금 이 글
 </div>
 
-<p>교착을 고치는 첫 수정을 배포하고 나서 알람이 멈췄습니다. 그런데 교착 수를 직접 세어 보니 숫자는 계속 오르고 있었어요. 시간당 약 8건이던 것이 약 0.3건으로 줄었을 뿐, 0이 된 게 아니었어요. 남은 교착은 같은 패턴이 다른 테이블에서 나는 것이었습니다(INSERT IGNORE 다음 그 행을 UPDATE 하는데, 두 행을 서로 반대 순서로 잠그는 경우).</p>
+<p>첫 교착 수정을 배포한 뒤 알람이 멈췄어요. 당시 운영 기록을 보면 교착은 시간당 약 8건에서 약 0.3건으로 줄었지만 계속 발생하고 있었어요. 남은 교착도 INSERT IGNORE 다음 그 행을 UPDATE하면서 두 행을 반대 순서로 잠그는 패턴이었고, 다른 테이블에서 나타났어요.</p>
 
-<p>알람 규칙이 틀렸던 것도 아니에요. 그 규칙은 <b>짧은 구간에 교착이 있는 상태가 여러 구간 연속일 때만</b> 울렸고, 그 조건은 시간당 0.3건으로는 거의 채워지지 않습니다. 이 글은 두 질문에 답합니다. MySQL 8.4 에서 교착은 무엇으로 세는가, 그리고 그 숫자에 어떤 알람을 걸어야 "줄었지만 남아 있다"가 보이는가예요.</p>
+<p>당시 규칙은 짧은 구간마다 교착이 발생했는지 보고, 그 상태가 여러 구간 연속일 때만 알람을 냈어요. 시간당 0.3건처럼 드물게 발생하면 이 조건을 채우기 어려워요. 남은 교착을 확인하려면 알람 상태와 별도로 발생 수를 봐야 했어요. 그래서 MySQL 8.4에서 교착을 세는 방법과, 빈도가 줄어든 뒤에도 발생 여부를 확인할 수 있는 규칙을 기존 실습 결과로 비교했어요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
@@ -50,25 +46,25 @@
   &bull; 매뉴얼은 교착을 "다시 시도하면 되는 일"이라고 하는데, 얼마나 잦아야 문제인가?
 </div>
 
-<h2>1. 교착을 세는 네 자리, 8.4 에서 실측</h2>
+<h2>1. MySQL 8.4에서 교착을 셀 수 있는 곳</h2>
 
-<p>교착 숫자를 얻을 수 있는 곳은 네 군데입니다. 서버 카운터(INNODB_METRICS), 상태 변수(SHOW GLOBAL STATUS), 에러 로그, 그리고 애플리케이션이 받은 1213 예외 수예요. 공식 이미지 <code>mysql:8.4</code>(실행 시 8.4.11)에 두 세션이 행 1, 2 를 서로 반대 순서로 잠그는 교착을 한 번씩 내면서 네 자리를 같이 찍었습니다.</p>
+<p>교착 수를 확인할 후보로 서버 카운터(INNODB_METRICS), 상태 변수(SHOW GLOBAL STATUS), 에러 로그, 애플리케이션이 받은 1213 예외 수를 비교했어요. 기존 실습은 공식 이미지 <code>mysql:8.4</code>(실행 시 8.4.11)에서 두 세션이 행 1, 2를 반대 순서로 잠그는 방식이에요. 교착을 한 건씩 내면서 각 결과를 함께 확인했어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: INNODB_METRICS</div>
-  InnoDB 내부 카운터 수백 개를 행으로 보여 주는 INFORMATION_SCHEMA 테이블이에요. 교착 수는 <code>NAME='lock_deadlocks'</code> 행의 <code>COUNT</code> 입니다. 조회하려면 PROCESS 권한이 필요해요.
+  InnoDB 내부 카운터 수백 개를 행으로 보여 주는 INFORMATION_SCHEMA 테이블이에요. 교착 수는 <code>NAME='lock_deadlocks'</code> 행의 <code>COUNT</code>에서 확인해요. 조회하려면 PROCESS 권한이 필요해요.
 </div>
 
-<p>매뉴얼의 교착 예제도 이 행으로 교착 수를 보여 줍니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-example.html">An InnoDB Deadlock Example</a>). 카운터 목록 문서에는 <code>lock_deadlocks</code> 가 <code>enabled</code> 상태로 나오고(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-information-schema-metrics-table.html">InnoDB INFORMATION_SCHEMA Metrics Table</a>), 실습에서도 따로 켜지 않았는데 <code>STATUS = enabled</code> 였어요. 새 컨테이너에서 교착을 한 번 내고 찍은 화면입니다.</p>
+<p>매뉴얼의 교착 예제도 이 행으로 교착 수를 보여 줍니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-example.html">An InnoDB Deadlock Example</a>). 카운터 목록 문서에는 <code>lock_deadlocks</code> 가 <code>enabled</code> 상태로 나오고(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-information-schema-metrics-table.html">InnoDB INFORMATION_SCHEMA Metrics Table</a>), 실습에서도 따로 켜지 않았는데 <code>STATUS = enabled</code> 였어요. 새 컨테이너에서 교착을 한 번 내고 찍은 화면이에요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-04/probe.png" alt="새 컨테이너에서 deadlock_once.sh 로 교착 1건을 낸 뒤 probe.sh 를 실행한 화면. MySQL 8.4.11, lock_deadlocks 는 counter, enabled, COUNT 1. SHOW GLOBAL STATUS LIKE '%dead%' 는 빈 결과, performance_schema.global_status 의 dead 변수 0개, Innodb_row_lock_waits 2, innodb_print_all_deadlocks 기본값 0, log_error 는 stderr" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 1. 8.4 의 교착 수는 INNODB_METRICS 한 곳에 있다. 상태 변수에는 이름에 dead 가 들어간 것이 없다</div>
+<div class="obsv-figcap">그림 1. 실습에서는 INNODB_METRICS에 교착 수가 있었고, 이름에 dead가 들어간 상태 변수는 없었어요</div>
 
-<p>→ <code>SHOW GLOBAL STATUS LIKE '%dead%'</code> 는 빈 결과였고, <code>performance_schema.global_status</code> 에서 이름에 <code>dead</code> 가 들어간 변수를 세어도 0개였어요. 8.4 서버 상태 변수 문서에도 deadlock 이라는 단어가 한 번도 나오지 않습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/server-status-variables.html">Server Status Variables</a>). 상태 변수만 긁는 모니터링을 쓰고 있다면 교착은 처음부터 보이지 않는 숫자예요. 비슷해 보이는 <code>Innodb_row_lock_waits</code> 는 교착 1건에 2가 올랐습니다. 두 세션이 모두 한 번씩 기다렸기 때문이에요. 대기 수는 교착 수가 아닙니다.</p>
+<p><code>SHOW GLOBAL STATUS LIKE '%dead%'</code> 는 빈 결과였고, <code>performance_schema.global_status</code> 에서 이름에 <code>dead</code> 가 들어간 변수를 세어도 0개였어요. 8.4 서버 상태 변수 문서에도 deadlock 이라는 단어가 한 번도 나오지 않습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/server-status-variables.html">Server Status Variables</a>). 상태 변수만 수집한다면 이 교착 카운터를 수집하지 못해요. 비슷해 보이는 <code>Innodb_row_lock_waits</code> 는 교착 1건에 2가 올랐습니다. 두 세션의 대기가 각각 기록된 결과예요. 대기 수를 그대로 교착 수로 읽으면 안 돼요.</p>
 
-<h3>네 자리를 한 건씩 대조하면</h3>
+<h3>설정을 바꿔 교착 한 건의 기록을 대조하기</h3>
 
 <p>같은 교착을 설정을 바꿔 가며 한 건씩 냈어요. 표의 숫자는 각 단계 전후의 누적값입니다(<code>results/steps.txt</code>). 새 컨테이너에서 한 번 더 돌린 <code>results/steps-r2.txt</code> 도 출발값만 0이고 늘어난 양은 같았어요.</p>
 
@@ -86,13 +82,13 @@ innodb_deadlock_detect=OFF, lock_wait_timeout=3  4 → 4             0 → 2    
   에러 로그에 어느 등급까지 남길지 정하는 서버 변수예요. 1 은 ERROR, 2 는 ERROR 와 WARNING, 3 은 INFORMATION(로그에 <code>[Note]</code> 로 찍히는 것)까지 남깁니다. 8.4 기본값은 2 예요.
 </div>
 
-<p>두 번째 줄이 이 실습에서 가장 의외였어요. <code>innodb_print_all_deadlocks</code> 를 켰는데 에러 로그가 반쪽만 남았습니다. 트랜잭션 두 개의 덤프(<code>TRANSACTION 1818, ACTIVE 1 sec</code>, 실행 중이던 <code>UPDATE</code>, <code>RECORD LOCKS ... index PRIMARY of table `lab`.`t` ... lock_mode X locks rec but not gap waiting</code>)는 찍혔는데, 그 앞에 와야 할 <code>[Note] [MY-012468] [InnoDB] Transactions deadlock detected, dumping detailed information.</code> 머리말, <code>*** (1) TRANSACTION:</code> 같은 소제목, 그리고 <code>*** WE ROLL BACK TRANSACTION (2)</code> 줄이 없었어요. 본문 줄에는 시각도 붙어 있지 않았습니다.</p>
+<p>두 번째 줄에서는 <code>innodb_print_all_deadlocks</code>를 켰는데도 에러 로그에 잠금 본문만 남았어요. 트랜잭션 두 개의 덤프(<code>TRANSACTION 1818, ACTIVE 1 sec</code>, 실행 중이던 <code>UPDATE</code>, <code>RECORD LOCKS ... index PRIMARY of table `lab`.`t` ... lock_mode X locks rec but not gap waiting</code>)는 찍혔는데, 그 앞에 와야 할 <code>[Note] [MY-012468] [InnoDB] Transactions deadlock detected, dumping detailed information.</code> 머리말, <code>*** (1) TRANSACTION:</code> 같은 소제목, 그리고 <code>*** WE ROLL BACK TRANSACTION (2)</code> 줄이 없었어요. 본문 줄에는 시각도 붙어 있지 않았어요.</p>
 
-<p>이유는 소스에 있어요. MySQL 8.4 의 <code>storage/innobase/lock/lock0lock.cc</code> 에서 교착을 출력하는 <code>Deadlock_notifier</code> 는 두 경로로 씁니다. 머리말은 <code>start_print()</code> 의 <code>ib::info(ER_IB_MSG_643) &lt;&lt; "Transactions deadlock detected, dumping" ...</code>, 소제목과 희생자 줄은 <code>print(const char *msg)</code> 의 <code>ib::info(ER_IB_MSG_644) &lt;&lt; msg</code> 로 나가요. 반면 트랜잭션과 잠금 본문은 <code>if (srv_print_all_deadlocks) { trx_print_low(stderr, ...); }</code>, <code>lock_rec_print(stderr, lock);</code> 처럼 stderr 에 바로 씁니다(<a href="https://github.com/mysql/mysql-server/blob/8.4/storage/innobase/lock/lock0lock.cc">lock0lock.cc, 8.4 브랜치</a>). <code>ib::info</code> 는 INFORMATION 등급이라 기본값 <code>log_error_verbosity=2</code>(ERROR, WARNING 만 남김)의 필터에 걸리고, stderr 직접 출력은 그 필터를 거치지 않아요(<a href="https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_log_error_verbosity">log_error_verbosity</a>). 같은 문서는 <code>log_filter_internal</code> 컴포넌트를 끄면 <code>log_error_verbosity</code> 가 아무 효과가 없다고도 적습니다. 공식 이미지는 <code>log_error</code> 가 <code>stderr</code> 라 둘이 같은 <code>docker logs</code> 에 섞였어요.</p>
+<p>이 차이는 소스의 출력 경로와 관련이 있어요. MySQL 8.4 의 <code>storage/innobase/lock/lock0lock.cc</code> 에서 교착을 출력하는 <code>Deadlock_notifier</code> 는 두 경로로 씁니다. 머리말은 <code>start_print()</code> 의 <code>ib::info(ER_IB_MSG_643) &lt;&lt; "Transactions deadlock detected, dumping" ...</code>, 소제목과 희생자 줄은 <code>print(const char *msg)</code> 의 <code>ib::info(ER_IB_MSG_644) &lt;&lt; msg</code> 로 나가요. 반면 트랜잭션과 잠금 본문은 <code>if (srv_print_all_deadlocks) { trx_print_low(stderr, ...); }</code>, <code>lock_rec_print(stderr, lock);</code> 처럼 stderr 에 바로 씁니다(<a href="https://github.com/mysql/mysql-server/blob/8.4/storage/innobase/lock/lock0lock.cc">lock0lock.cc, 8.4 브랜치</a>). <code>ib::info</code> 는 INFORMATION 등급이라 기본값 <code>log_error_verbosity=2</code>(ERROR, WARNING 만 남김)의 필터에 걸리고, stderr 직접 출력은 그 필터를 거치지 않아요(<a href="https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_log_error_verbosity">log_error_verbosity</a>). 같은 문서는 <code>log_filter_internal</code> 컴포넌트를 끄면 <code>log_error_verbosity</code> 가 아무 효과가 없다고도 적습니다. 공식 이미지는 <code>log_error</code> 가 <code>stderr</code> 라 둘이 같은 <code>docker logs</code> 에 섞였어요.</p>
 
-<p>그래서 기본값에서 로그를 머리말(<code>MY-012468</code>)로 세면 0건이고, 본문은 남아도 언제 났는지와 어느 쪽이 롤백됐는지는 로그만으로 알 수 없습니다. 어느 테이블, 어느 인덱스, 어떤 잠금 모드였는지는 본문에 있어요. <code>innodb_print_all_deadlocks</code> 설명은 "에러 로그에 기록한다"고만 적고 이 차이는 말하지 않습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_print_all_deadlocks">innodb_print_all_deadlocks</a>). 로그로 교착을 세거나 시각과 희생자까지 남기려면 <code>log_error_verbosity=3</code> 을 같이 켜고, 교착 한 건을 내서 머리말까지 찍히는지 확인하세요. 13분 시계열(verbosity 3)에서는 교착 27건에 머리말 27개와 <code>WE ROLL BACK</code> 27줄이 남았습니다.</p>
+<p>그래서 이 실습의 기본 설정에서 로그를 머리말(<code>MY-012468</code>)로 세면 0건이고, 본문은 남아도 언제 났는지와 어느 쪽이 롤백됐는지는 로그만으로 알기 어려워요. 어느 테이블, 어느 인덱스, 어떤 잠금 모드였는지는 본문에 있어요. <code>innodb_print_all_deadlocks</code> 설명은 "에러 로그에 기록한다"고만 적고 이 차이는 말하지 않습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_print_all_deadlocks">innodb_print_all_deadlocks</a>). 로그로 교착을 세거나 시각과 희생자까지 남기려면 <code>log_error_verbosity=3</code> 을 같이 켜고, 교착 한 건을 내서 머리말까지 찍히는지 확인하세요. 13분 시계열(verbosity 3)에서는 교착 27건에 머리말 27개와 <code>WE ROLL BACK</code> 27줄이 남았습니다.</p>
 
-<p>마지막 줄은 반대 방향의 함정입니다. 교착 감지를 끄면 같은 교착이 교착으로 세어지지 않아요. 두 세션이 서로를 기다리다 둘 다 <code>innodb_lock_wait_timeout</code>(실습은 3초)을 넘겨 1205 를 받았고, <code>lock_deadlocks</code> 는 그대로, <code>lock_timeouts</code> 가 2 올랐습니다. 매뉴얼도 감지를 끄면 교착을 타임아웃으로 푼다고 적어요(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-detection.html">Deadlock Detection</a>). 고동시성 때문에 감지를 끈 서버라면 교착 대시보드가 0인 것은 아무 뜻이 없고, 봐야 할 숫자는 <code>lock_timeouts</code> 예요.</p>
+<p>마지막 줄은 교착 감지를 껐을 때의 결과예요. 교착 감지를 끄면 같은 교착이 교착으로 세어지지 않아요. 두 세션이 서로를 기다리다 둘 다 <code>innodb_lock_wait_timeout</code>(실습은 3초)을 넘겨 1205 를 받았고, <code>lock_deadlocks</code> 는 그대로, <code>lock_timeouts</code> 가 2 올랐습니다. 매뉴얼도 감지를 끄면 교착을 타임아웃으로 푼다고 적어요(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-detection.html">Deadlock Detection</a>). 고동시성 때문에 감지를 끈 서버라면 교착 대시보드가 0이어도 교착이 없다고 판단할 수 없어요. 함께 확인할 값은 <code>lock_timeouts</code> 예요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -120,30 +116,30 @@ innodb_deadlock_detect=OFF, lock_wait_timeout=3  4 → 4             0 → 2    
   <text x="518" y="276" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">ERROR 1213 (40001)</text>
   <text x="518" y="304" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">희생자 한쪽만 받는다</text>
   <text x="518" y="328" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">재시도 전 수와 후 수를 나눠 센다</text>
-  <text x="518" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">사용자 영향은 여기서만 보인다</text>
-  <text x="350" y="392" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 빈도는 카운터로, 원인은 로그로, 영향은 앱에서 센다</text>
+  <text x="518" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">재시도 뒤 실패를 따로 센다</text>
+  <text x="350" y="392" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">빈도는 카운터, 원인은 로그, 실패 여부는 앱에서 확인</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 2. 같은 교착 한 건이라도 어디서 세느냐에 따라 0, 1, 2 가 된다</div>
+<div class="obsv-figcap">그림 2. 교착 한 건의 기록 수는 설정과 수집 대상에 따라 달라요</div>
 
-<h2>2. 카운터는 누적이다: 값이 아니라 증가량에 건다</h2>
+<h2>2. 누적 카운터의 증가량에 알람 걸기</h2>
 
-<p><code>lock_deadlocks</code> 는 서버가 뜬 뒤로 쌓인 수예요. "COUNT 가 100 이상이면 알람" 같은 규칙은 서버가 오래 떠 있을수록 언젠가 반드시 켜지고, 한 번 켜지면 꺼지지 않습니다. 알람은 <b>정해진 창 안에서 얼마나 늘었나</b>에 걸어야 해요. 이때 조심할 것이 둘 있습니다.</p>
+<p><code>lock_deadlocks</code> 는 서버가 뜬 뒤로 누적된 수예요. "COUNT가 100 이상이면 알람"으로 설정하면 교착이 계속 발생해 100을 넘은 뒤에는 새 교착이 없어도 알람이 유지돼요. 알람에는 <b>정해진 시간 구간의 증가량</b>을 쓰고, 재시작과 카운터 리셋도 고려해야 해요.</p>
 
-<p>첫째, 재시작하면 0부터 다시 셉니다. 실습에서 컨테이너를 재시작하자 <code>lock_deadlocks</code> 가 31 에서 0 으로 돌아갔어요. <code>SET GLOBAL</code> 로 켠 <code>innodb_print_all_deadlocks</code> 와 <code>log_error_verbosity</code> 도 0 과 2 로 돌아가 있었습니다. 그래서 "지금 값 − 창 시작 값"을 직접 계산하면 재시작한 창에서 음수가 나옵니다. Prometheus 의 <code>increase()</code>, <code>rate()</code> 는 카운터 리셋을 자동으로 보정하고, 창 끝까지 외삽하기 때문에 정수 카운터에서도 소수가 나올 수 있다고 문서에 적혀 있어요(<a href="https://prometheus.io/docs/prometheus/latest/querying/functions/">Prometheus query functions</a>). 직접 계산한다면 값이 줄어든 표본은 "그 표본 값만큼 늘었다"로 처리합니다. 실습의 <code>rules.py</code> 가 그렇게 해요.</p>
+<p>컨테이너를 재시작하자 <code>lock_deadlocks</code> 가 31 에서 0 으로 돌아갔어요. <code>SET GLOBAL</code> 로 켠 <code>innodb_print_all_deadlocks</code> 와 <code>log_error_verbosity</code>도 각각 0과 2로 돌아가 있었어요. 그래서 "지금 값 − 창 시작 값"을 직접 계산하면 재시작한 창에서 음수가 나옵니다. Prometheus 의 <code>increase()</code>, <code>rate()</code> 는 카운터 리셋을 자동으로 보정하고, 창 끝까지 외삽하기 때문에 정수 카운터에서도 소수가 나올 수 있다고 문서에 적혀 있어요(<a href="https://prometheus.io/docs/prometheus/latest/querying/functions/">Prometheus query functions</a>). 직접 계산한다면 값이 줄어든 표본은 "그 표본 값만큼 늘었다"로 처리합니다. 실습의 <code>rules.py</code> 가 그렇게 해요.</p>
 
-<p>둘째, <code>innodb_monitor_reset</code> 으로는 COUNT 를 0으로 만들 수 없습니다. <code>SET GLOBAL innodb_monitor_reset='lock_deadlocks'</code> 를 실행하자 <code>COUNT_RESET</code> 만 4에서 0이 되고 <code>COUNT</code> 는 4 그대로였어요. 매뉴얼도 <code>_RESET</code> 열은 스톱워치의 랩 카운터로, COUNT 등은 켠 뒤 누적값으로 설명합니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-metrics-table.html">INNODB_METRICS Table</a>). 수집기가 <code>COUNT_RESET</code> 을 읽는다면 누군가 리셋하는 순간 리셋처럼 보이고, <code>COUNT</code> 를 읽는다면 리셋 명령은 수집에 영향이 없어요.</p>
+<p>반면 <code>innodb_monitor_reset</code> 명령은 COUNT를 0으로 만들지 않았어요. <code>SET GLOBAL innodb_monitor_reset='lock_deadlocks'</code> 를 실행하자 <code>COUNT_RESET</code> 만 4에서 0이 되고 <code>COUNT</code> 는 4 그대로였어요. 매뉴얼도 <code>_RESET</code> 열은 리셋 이후 값으로, COUNT 등은 켠 뒤 누적값으로 구분해요(<a href="https://dev.mysql.com/doc/refman/8.4/en/information-schema-innodb-metrics-table.html">INNODB_METRICS Table</a>). 수집기가 <code>COUNT_RESET</code> 을 읽는다면 누군가 리셋하는 순간 리셋처럼 보이고, <code>COUNT</code> 를 읽는다면 리셋 명령은 수집에 영향이 없어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: mysqld_exporter</div>
   MySQL 지표를 Prometheus 형식으로 내보내는 공식 익스포터예요. 소스(<code>collector/info_schema_innodb_metrics.go</code>)를 보면 INNODB_METRICS 의 <code>COUNT</code> 를 읽어 <code>mysql_info_schema_innodb_metrics_&lt;subsystem&gt;_&lt;name&gt;_total</code> 로 내보냅니다. 교착은 <code>mysql_info_schema_innodb_metrics_lock_lock_deadlocks_total</code> 이에요.
 </div>
 
-<p>여기에 함정이 하나 더 있어요. 그 수집기(<code>--collect.info_schema.innodb_metrics</code>)는 README 의 수집기 표에서 "Enabled by default" 표시가 없습니다(2026년 10월 main 브랜치 README, 최신 릴리스 v0.20.0). 기본으로 켜진 <code>collect.global_status</code> 는 SHOW GLOBAL STATUS 를 긁는데, 1절에서 본 대로 거기에는 교착이 없어요. 익스포터를 기본 설정으로 붙였다면 교착 지표가 아예 없을 수 있으니, 지표 이름으로 한 번 검색해 보세요. 이 부분은 문서와 소스로만 확인했고 실습에서 익스포터를 띄우지는 않았습니다.</p>
+<p>수집기 자체가 켜져 있는지도 확인해야 해요. 그 수집기(<code>--collect.info_schema.innodb_metrics</code>)는 README 의 수집기 표에서 "Enabled by default" 표시가 없습니다(2026년 10월 main 브랜치 README, 당시 확인 버전 v0.20.0). 기본으로 켜진 <code>collect.global_status</code>는 SHOW GLOBAL STATUS를 수집하는데, 1절에서 본 대로 거기에는 교착 카운터가 없어요. 익스포터를 기본 설정으로 붙였다면 교착 지표가 아예 없을 수 있으니, 실제로 내보내는 지표 목록에 이 이름이 있는지 확인해 보세요. 이 부분은 문서와 소스로만 확인했고 실습에서 익스포터를 띄우지는 않았어요.</p>
 
-<h2>3. "연속 N구간" 규칙이 단발 교착을 숨기는 이유</h2>
+<h2>3. 연속 구간 조건이 드문 교착을 알리지 못하는 이유</h2>
 
-<p>문제의 규칙은 일반형으로 "짧은 구간마다 교착 증가량을 보고, 교착이 있는 구간이 N번 연속이면 알람"입니다. 잠깐 튄 것에 깨우지 않으려고 흔히 붙이는 조건이에요. 구간 길이와 N 은 환경마다 다르니, 예를 들어 5분 × 3 으로 놓고 계산하면 결과가 분명해집니다. 이 글의 R1 과 시뮬레이션도 이 예시 값을 씁니다.</p>
+<p>문제의 규칙은 일반형으로 "짧은 구간마다 교착 증가량을 보고, 교착이 있는 구간이 N번 연속이면 알람"입니다. 잠깐 발생한 증가만으로 긴급 알림을 보내지 않으려는 조건이에요. 구간 길이와 N 은 환경마다 다르니, 예를 들어 5분 × 3 으로 놓고 계산하면 결과가 분명해집니다. 이 글의 R1 과 시뮬레이션도 이 예시 값을 씁니다.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 포아송 도착 (Poisson arrival)</div>
@@ -154,7 +150,7 @@ innodb_deadlock_detect=OFF, lock_wait_timeout=3  4 → 4             0 → 2    
 시간당 8건   : p = 1 − e^(−0.667) = 48.7%   → 3구간 연속 ≈ p³ = 11.5%   (5분마다 평가하니 자주 울린다)
 시간당 0.3건 : p = 1 − e^(−0.025) =  2.5%   → 3구간 연속 ≈ p³ = 0.0015% (한 달 8,640구간에 약 0.13번)</div>
 
-<p>시간당 0.3건은 하루 7건, 한 달 200건 남짓이에요. 그런데 이 건들은 서로 떨어져서 나기 때문에 한 구간을 채우고 나면 다음 두 구간은 대개 비어 있습니다. <span class="obsv-mark">연속 조건은 "교착이 얼마나 많나"가 아니라 "교착이 얼마나 붙어서 나나"를 묻는 규칙이에요.</span> 그래서 고친 뒤 남은 교착처럼 띄엄띄엄 나는 교착은 이 규칙에 설계상 보이지 않습니다.</p>
+<p>시간당 0.3건은 하루 7건, 한 달 200건 남짓이에요. 그런데 이 모형에서는 교착이 드물게 발생해 한 구간에 교착이 있어도 다음 두 구간은 대개 비어 있어요. <span class="obsv-mark">연속 조건이 충족되려면 교착이 여러 구간에 걸쳐 이어져야 해요.</span> 수정 뒤 드물게 남은 교착은 그 조건을 채우지 못해 알람으로 확인하기 어려워요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -203,27 +199,27 @@ innodb_deadlock_detect=OFF, lock_wait_timeout=3  4 → 4             0 → 2    
   <text x="390" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1</text>
   <text x="390" y="284" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">1연속, 다음 구간에서 0으로</text>
   <text x="560" y="284" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">알람 없음, 하루 7건은 그대로</text>
-  <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 띄엄띄엄 나는 교착 한 건은 혼자서 3구간을 채울 수 없다</text>
+  <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">교착 한 건으로는 겹치지 않는 3구간을 채울 수 없어요</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 3. 연속 조건은 양이 아니라 붙어 있음을 본다. 위는 8건을 예로 든 배치다</div>
+<div class="obsv-figcap">그림 3. 위쪽의 8건 예시에서는 연속 조건을 채우지만, 아래쪽의 단발 교착은 채우지 못해요</div>
 
 <h3>실제 MySQL 에서 13분 동안 돌려 본 결과</h3>
 
-<p>계산만으로는 의심이 남아서, 실제 카운터에 같은 규칙을 걸었어요. 13분 동안 1초마다 <code>lock_deadlocks</code> 를 읽으면서, 시간 축을 1초 = 1분으로 줄였습니다(13분 실행이 13시간 분량). 앞 180초('3시간')는 시간당 8건 꼴로 도착 간격을 무작위로(seed 고정), 뒤 600초('10시간')는 200초마다 1건씩 교착을 냈어요.</p>
+<p>기존 실습에서는 MySQL에서 수집한 카운터에도 같은 규칙을 적용했어요. 13분 동안 1초마다 <code>lock_deadlocks</code> 를 읽으면서, 시간 축을 1초 = 1분으로 줄였습니다(13분 실행이 13시간 분량). 앞 180초('3시간')는 시간당 8건 꼴로 도착 간격을 무작위로(seed 고정), 뒤 600초('10시간')는 200초마다 1건씩 교착을 냈어요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-04/timeline-rules.png" alt="scripts/eval_timeline.py 실행 화면. 781개 표본, lock_deadlocks 증가 27(구간 A 24, 구간 B 3), 앱 1213 예외 27. R1 은 A 에서 1번, B 에서 0번이고 B 평가 120번 중 0번 켜짐. R2 는 A 2번, B 0번. R3 는 A 1번, B 0번, B 평가 120번 중 62번 켜짐. R4 는 A 1번, B 평가 10번 모두 켜짐" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 4. 같은 카운터에 같은 규칙. 앞 구간에선 울리고 뒤 구간에선 교착이 있어도 조용하다</div>
+<div class="obsv-figcap">그림 4. 같은 연속 규칙을 적용해도 앞 구간에만 알람이 켜지고 뒤 구간의 교착 3건에는 켜지지 않았어요</div>
 
-<p>→ 13분 동안 교착이 27건 났고(앞 24, 뒤 3), 세 자리가 정확히 맞았어요. <code>lock_deadlocks</code> 증가 27, 클라이언트가 받은 1213 27, 에러 로그의 교착 머리말 27(이때는 <code>log_error_verbosity=3</code>)입니다. 교착 감지가 켜져 있고 희생자가 한 명인 교착에서는 어느 자리로 세어도 같은 숫자가 나와요.</p>
+<p>13분 동안 교착이 27건 났고(앞 24, 뒤 3), 세 수집 결과가 같았어요. <code>lock_deadlocks</code> 증가 27, 클라이언트가 받은 1213 27, 에러 로그의 교착 머리말 27(이때는 <code>log_error_verbosity=3</code>)입니다. 이번 실행에서는 교착 감지를 켜고 교착마다 한 트랜잭션을 롤백했어요. 카운터·클라이언트 오류·로그 머리말의 수가 일치한 것은 이 조건에서 확인한 결과예요.</p>
 
-<p>규칙은 갈렸습니다. R1(5분 × 3 연속)은 앞 '3시간' 동안 24건에 한 번 울렸고, 뒤 '10시간'에는 평가 120번 중 한 번도 켜지지 않았어요. 뒤 구간에도 교착은 3건 있었습니다. 표의 R2~R4 는 다음 절에서 설명할 대안 규칙이에요. 6시간 창의 R3 가 뒤 구간 평가 120번 중 62번 켜져 있었던 건 창이 앞 구간의 교착을 아직 담고 있었기 때문이고, 그 창이 지나간 뒤로는 다시 켜지지 않았습니다. 24시간 창의 R4 만 뒤 구간 내내(10번 평가 모두) 켜져 있었어요.</p>
+<p>같은 카운터라도 규칙에 따라 알람 결과는 달랐어요. R1(5분 × 3 연속)은 앞 '3시간' 동안 24건에 한 번 울렸고, 뒤 '10시간'에는 평가 120번 중 한 번도 켜지지 않았어요. 뒤 구간에도 교착은 3건 있었습니다. 표의 R2~R4 는 다음 절에서 설명할 대안 규칙이에요. 6시간 창의 R3 가 뒤 구간 평가 120번 중 62번 켜져 있었던 건 창이 앞 구간의 교착을 아직 담고 있었기 때문이고, 그 창이 지나간 뒤로는 다시 켜지지 않았어요. 24시간 창의 R4 만 뒤 구간 내내(10번 평가 모두) 켜져 있었어요.</p>
 
-<h2>4. 비율별로 돌려 보면: 알람 수 대 실제 교착 수</h2>
+<h2>4. 발생 빈도별 시뮬레이션에서 알람 수 비교하기</h2>
 
-<p>규칙 하나만으로는 설계를 고를 수 없어서 대안 규칙 셋을 같이 시뮬레이션했어요. MySQL 없이 1분 해상도 카운터 시계열을 포아송 도착으로 만들고(seed 20개 평균), 같은 <code>rules.py</code> 로 평가합니다. 알람 수는 꺼진 상태에서 켜진 상태로 바뀐 횟수로 세었어요. 켜진 채 이어지는 동안은 한 번입니다.</p>
+<p>연속 조건과 비교하려고 대안 규칙 셋도 시뮬레이션했어요. MySQL 없이 1분 해상도 카운터 시계열을 포아송 도착으로 만들고(seed 20개 평균), 같은 <code>rules.py</code> 로 평가합니다. 알람 수는 꺼진 상태에서 켜진 상태로 바뀐 횟수로 세었어요. 켜진 채 이어지는 동안은 한 번입니다.</p>
 
 <div class="obsv-code">규칙
 R1 연속형  5분 창 증가 &gt;= 1 인 구간이 3번 연속          (5분마다 평가)
@@ -241,9 +237,9 @@ R4 존재    24시간 창 증가 &gt;= 1                         (1시간마다,
 8         1345.2    120.2 (11%)   120.8 (3%)      1.0 (99%)     1.0 (99%)
 20        3342.2    205.8 (53%)   636.9 (23%)     1.0 (100%)    1.0 (99%)</div>
 
-<p>→ R1 은 일주일에 교착이 51건 난 시간당 0.3건에서 0.1번, 173건 난 시간당 1건에서도 0.9번 울렸어요. 시간당 8건에서는 일주일에 120번 울립니다. 이 규칙이 "8건에서는 시끄럽고 0.3건에서는 조용한" 이유가 표에 그대로 있어요. 반대로 R4 는 0.1건만 돼도 시간의 88% 동안 켜져 있습니다. 교착이 있다는 사실만 말하고 많은지는 말하지 않아요. R3 는 시간당 1건, 즉 임계와 실제 비율이 같은 곳에서 일주일에 24번 깜빡였습니다. 임계를 평소 비율 바로 위에 두면 알람이 켜졌다 꺼졌다를 반복해요.</p>
+<p>R1은 일주일에 교착이 51건 난 시간당 0.3건에서 0.1번, 173건 난 시간당 1건에서도 0.9번 울렸어요. 시간당 8건에서는 일주일에 120번 울립니다. 발생 빈도가 시간당 8건에서 0.3건으로 줄면 알람 횟수는 그보다 더 크게 줄었어요. 반대로 R4 는 0.1건만 돼도 시간의 88% 동안 켜져 있습니다. 이 규칙으로는 교착의 존재 여부를 확인할 수 있지만, 발생 수가 늘었는지는 구분하기 어려워요. R3 는 시간당 1건, 즉 임계와 실제 비율이 같은 곳에서 일주일에 약 24번 켜졌어요. 임계를 평소 비율 바로 위에 두면 알람이 켜졌다 꺼졌다를 반복해요.</p>
 
-<p>시간 순서가 있는 세 장면도 돌렸습니다. 변화 뒤 새 알람은 "변화 뒤 처음 꺼짐에서 켜짐으로 바뀐 때"예요. 이미 켜져 있던 알람이 이어지는 건 새 알람으로 치지 않았습니다.</p>
+<p>시간에 따라 빈도가 달라지는 세 시나리오도 비교했어요. 변화 뒤 새 알람은 "변화 뒤 처음 꺼짐에서 켜짐으로 바뀐 때"예요. 이미 켜져 있던 알람이 이어지는 건 새 알람으로 치지 않았습니다.</p>
 
 <div class="obsv-code">S1 수정 전후: 2일 시간당 8건 → 28일 시간당 0.3건   (교착 평균: 전 386.4, 후 201.1)
 규칙       전 알람  후 알람  후 켜져 있던 비율
@@ -262,11 +258,11 @@ R4         못 잡음 (원래 켜져 있었다)
 S3 버스트: 3일 0.3건 → 30분 동안 분당 1건 → 3일 0.3건
 R1         20/20, 14분         R2   20/20, 3분          R3   20/20, 5분          R4   못 잡음</div>
 
-<p>S1 이 처음 이야기와 같은 모양이에요. 수정 뒤 28일 동안 교착이 평균 201건 났는데 R1, R2 는 0.1번 울렸습니다. 이 기간에 "교착이 남아 있다"를 계속 말해 준 건 R4 하나였어요. S2 는 R4 의 약점입니다. 0.3건이 이미 켜 두었기 때문에 비율이 7배가 되어도 새로 알릴 것이 없어요. 여기서 2시간 만에 잡은 건 6시간 창의 R3 였고, R1 은 하루 넘게 걸렸습니다. S3 처럼 몰려서 나는 경우에는 R2 가 3분, R3 가 5분, R1 이 14분 만에 잡았어요. 연속 조건이 몰림에 맞춘 규칙인데도 단순한 버스트 임계보다 늦은 건, 세 구간을 다 지켜본 뒤에야 켜지기 때문입니다.</p>
+<p>S1은 앞서 본 운영 사례와 비슷한 빈도 변화를 가정한 시뮬레이션이에요. 수정 뒤 28일 동안 교착이 평균 201건 났는데 R1, R2 는 0.1번 울렸습니다. 이 기간에 교착 발생 여부를 계속 표시한 규칙은 R4였어요. S2 는 R4 의 약점입니다. 시간당 0.3건일 때 이미 켜져 있어서 빈도가 약 7배로 늘어도 새 알람이 발생하지 않았어요. 여기서 2시간 만에 잡은 건 6시간 창의 R3 였고, R1 은 하루 넘게 걸렸습니다. S3 처럼 몰려서 나는 경우에는 R2 가 3분, R3 가 5분, R1 이 14분 만에 잡았어요. R1이 R2보다 늦게 켜진 것은 세 구간의 연속 조건을 모두 확인해야 하기 때문이에요.</p>
 
-<h2>5. 알람을 세 겹으로 나눈다</h2>
+<h2>5. 몰림·빈도 증가·발생 여부를 따로 확인하기</h2>
 
-<p>표가 말하는 건 규칙 하나로 세 질문에 답할 수 없다는 거예요. "지금 몰려서 나나", "평소보다 많아졌나", "아직 남아 있나"는 창 길이가 다릅니다. 그래서 질문마다 규칙을 따로 두고 받는 쪽도 다르게 했어요.</p>
+<p>시뮬레이션 결과를 바탕으로 짧은 시간의 몰림, 평소보다 늘어난 빈도, 남은 교착의 존재 여부를 따로 확인하는 구성을 생각해 볼 수 있어요. 각 목적에 맞게 시간 구간을 정하고, 긴급 알림과 업무 시간 알림, 티켓을 구분하는 설계예요. 아래는 규칙 예시이며 운영에 적용한 결과는 아니에요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -276,7 +272,7 @@ R1         20/20, 14분         R2   20/20, 3분          R3   20/20, 5분      
   <path d="M26 206 C 200 203, 500 208, 674 205 C 677 226, 675 248, 676 268 C 500 271, 200 267, 28 269 C 25 248, 27 226, 26 206 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
   <text x="44" y="78" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">🔥 지금 몰려서 나나</text>
   <text x="44" y="102" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">5분 창 증가 &gt;= 3  /  재시도 소진 예외 &gt; 0</text>
-  <text x="656" y="78" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">사람을 깨운다</text>
+  <text x="656" y="78" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">긴급 알림</text>
   <text x="656" y="102" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">S3 를 3분에</text>
   <text x="44" y="156" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#c07f18">📈 평소보다 많아졌나</text>
   <text x="44" y="180" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">6시간 창 증가 &gt;= 6, 또는 기준선의 몇 배</text>
@@ -286,12 +282,12 @@ R1         20/20, 14분         R2   20/20, 3분          R3   20/20, 5분      
   <text x="44" y="258" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">24시간 창 증가 &gt;= 1  (또는 일간 건수 보고)</text>
   <text x="656" y="234" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5">티켓, 대시보드</text>
   <text x="656" y="258" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">S1 의 201건을 계속</text>
-  <text x="350" y="310" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 짧은 창은 높은 임계로, 긴 창은 낮은 임계로 묻는다</text>
+  <text x="350" y="310" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">몰림·빈도 증가·발생 여부에 맞게 시간 구간과 임계를 정해요</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 5. 버스트, 증가, 존재를 따로 묻는다. 받는 사람과 시간대도 따로다</div>
+<div class="obsv-figcap">그림 5. 짧은 몰림, 빈도 증가, 발생 여부에 따라 알림의 목적과 전달 방식을 나눈 설계예요</div>
 
-<p>"평소보다 많아졌나"의 임계는 고정값보다 기준선 대비가 낫습니다. R3 처럼 시간당 1건 고정이면 평소가 1건인 서비스에서는 계속 깜빡이고, 평소가 0.1건인 서비스에서는 10배가 되어도 조용해요. 지난주 같은 시간대의 증가량과 비교해 몇 배 이상일 때로 잡고, 0 근처에서 배수가 의미 없어지지 않도록 최소 건수(예: 6시간에 3건 이상)를 같이 둡니다. Prometheus 와 mysqld_exporter 를 쓴다면 세 규칙은 이런 모양이 됩니다.</p>
+<p>평소 발생 빈도가 다른 서비스에는 같은 고정 임계가 잘 맞지 않을 수 있어요. R3처럼 시간당 1건에 해당하는 임계를 쓰면 평소가 1건인 서비스에서는 자주 켜졌다 꺼지고, 평소가 0.1건인 서비스에서는 10배로 늘어야 그 임계 수준에 이르러요. 기준선과 비교하는 규칙도 검토할 수 있어요. 지난주 같은 시간대의 증가량과 비교해 몇 배 이상일 때로 잡고, 0 근처에서 배수가 의미 없어지지 않도록 최소 건수(예: 6시간에 3건 이상)를 같이 둡니다. Prometheus와 mysqld_exporter를 쓸 때의 표현식 예시는 다음과 같아요. 앞서 시뮬레이션한 R3는 6시간 합계가 6건 이상인지 확인할 뿐, 시간당 1건이 매시간 지속되는지 확인하지는 않아요. 아래의 기준선 비교 규칙은 그 R3와 별개이며 이번 실습에서 평가한 대상은 아니에요.</p>
 
 <div class="obsv-code"># D = mysql_info_schema_innodb_metrics_lock_lock_deadlocks_total  (2절)
 
@@ -305,15 +301,15 @@ increase(D[6h]) &gt; 3 * increase(D[6h] offset 7d)
 # 존재: 24시간에 1건이라도. 티켓이나 일간 보고로 보낸다
 increase(D[24h]) &gt; 0</div>
 
-<p>임계를 3 대신 2.5 로 쓴 건 <code>increase()</code> 가 창 끝까지 외삽해서 정수 카운터에서도 2.9 같은 값을 낼 수 있기 때문이에요. 그리고 알람 규칙의 <code>for:</code> 절은 "조건이 그 시간 동안 매 평가마다 참이어야 켠다"는 뜻이라 3절의 연속 조건과 같은 일을 합니다. 몰림 규칙에 붙이면 S3 같은 짧은 몰림을 늦게 잡아요. 존재 규칙은 24시간 창이 이미 한 건을 하루 동안 붙잡아 두기 때문에 <code>for:</code> 를 붙여도 늦어질 뿐 숨겨지지는 않지만, 붙일 이유도 없습니다. 연속 조건이 필요한 건 깜빡임을 줄이고 싶은 증가 규칙 정도예요. 증가 규칙의 <code>offset 7d</code> 는 정확히 7일 전 한 시점의 6시간 증가량이고, 수집을 시작한 지 7일이 안 됐으면 빈 결과라서 그 규칙은 울리지 않습니다.</p>
+<p>임계를 3 대신 2.5 로 쓴 건 <code>increase()</code> 가 창 끝까지 외삽해서 정수 카운터에서도 2.9 같은 값을 낼 수 있기 때문이에요. 그리고 알람 규칙의 <code>for:</code> 절은 조건이 정해진 시간 동안 매 평가마다 참이어야 알람을 켠다는 뜻이에요. 3절과 마찬가지로 연속 충족을 요구하지만, R1의 겹치지 않는 구간 평가와 똑같은 규칙은 아니에요. 몰림 규칙에 붙이면 S3 같은 짧은 몰림을 늦게 잡아요. 존재 규칙은 교착 한 건이 24시간 창 안에 있는 동안 조건이 유지돼요. 여기에 <code>for:</code>를 추가하면 알림이 더 늦어지고, 조건 유지 시간보다 길게 설정하면 알람이 켜지지 않을 수도 있어요. 연속 조건은 빈도 증가 알람의 잦은 전환을 줄이는 데 쓸 수 있지만, 목적에 맞는지 따로 확인해야 해요. 증가 규칙의 <code>offset 7d</code> 는 정확히 7일 전 한 시점의 6시간 증가량이고, 수집을 시작한 지 7일이 안 됐으면 빈 결과라서 그 규칙은 울리지 않습니다.</p>
 
-<p>"아직 남아 있나"는 깨우는 알람이 아니라 기록이에요. 수정을 배포했으면 이 숫자가 0이 되어야 끝난 겁니다. 이 시리즈의 사례에서는 수정 PR 이 머지된 뒤에도 운영 빌드가 수정 전 커밋이었던 적이 있었어요. 그때는 알람이 계속 울려서 드러났지만, "머지했다"가 아니라 "배포 뒤 24시간 증가량"으로 반영을 확인하는 습관이 있었다면 더 빨리 알았을 겁니다. 그리고 1차 수정이 실제로 배포된 뒤 조용해진 알람이 가린 것이 다른 테이블의 같은 패턴이었어요.</p>
+<p>남은 교착의 발생 여부는 긴급 알림과 별도로 기록해 둘 수 있어요. 이번 사례처럼 특정 패턴을 없애려는 수정이라면 배포 뒤 정한 관찰 기간의 증가량으로 효과를 확인해야 해요. 그 기간의 0건이 이후에도 교착이 없다는 뜻은 아니에요. 이 시리즈의 사례에서는 수정 PR 이 머지된 뒤에도 운영 빌드가 수정 전 커밋이었던 적이 있었어요. 그때는 알람이 계속 울려서 드러났지만, 머지 여부와 함께 배포된 커밋과 배포 뒤 24시간 증가량을 확인할 필요가 있었어요. 1차 수정이 실제로 배포된 뒤에도 다른 테이블에서 같은 패턴의 교착이 남았고, 기존 연속 규칙은 이를 거의 알리지 않았어요.</p>
 
 <h2>6. 얼마나 잦아야 문제인가</h2>
 
-<p>매뉴얼은 교착을 위험하게 보지 않아요. "교착은 트랜잭션 데이터베이스의 고전적인 문제지만, 어떤 트랜잭션을 아예 실행할 수 없을 만큼 잦지 않으면 위험하지 않다"고 하고, "교착으로 실패하면 언제든 다시 실행할 준비를 하라. 그냥 다시 시도하면 된다"고도 적습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html">How to Minimize and Handle Deadlocks</a>). <code>innodb_print_all_deadlocks</code> 설명에도 가끔 나는 교착은 반드시 문제는 아니라고 나와요. 그렇다면 시간당 0.3건은 알람이 꺼져 있는 게 맞는 상태일 수도 있습니다.</p>
+<p>매뉴얼은 교착이 발생했다는 사실만으로 심각한 문제로 보지는 않아요. 교착 때문에 트랜잭션을 실행하지 못할 만큼 빈번한지 살펴야 하며, 교착으로 실패한 트랜잭션을 다시 실행할 준비가 필요하다고 설명해요(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html">How to Minimize and Handle Deadlocks</a>). <code>innodb_print_all_deadlocks</code> 설명에도 가끔 나는 교착은 반드시 문제는 아니라고 나와요. 그렇다면 시간당 0.3건에 긴급 알람을 보내지 않는 판단도 가능해요.</p>
 
-<p>저는 이 관점이 맞되 조건이 붙는다고 봐요. "다시 시도하면 된다"가 성립하려면 앱이 실제로 다시 시도하고, 그 재시도가 성공해야 합니다. 사례에서 같은 본문 4건을 동시에 재전송하는 시험을 했더니 360건 중 195건이 실패했어요. 교착이 사용자에게 그대로 실패로 나간 거예요. 게다가 응답 코드는 500 이 아니라 400 이었습니다. 공통 예외 핸들러가 처리하지 못한 예외를 400 으로 응답했기 때문이에요. 5xx 비율에 걸린 알람으로도 보이지 않았다는 뜻입니다. 그래서 판단 기준을 이렇게 잡았어요.</p>
+<p>앱에서 재시도를 구현했는지, 실제로 성공했는지까지 확인해야 이 설명을 운영 판단에 쓸 수 있어요. 사례에서 같은 본문 4건을 동시에 재전송하는 시험을 했더니 360건 중 195건이 실패했어요. 교착이 앱의 실패 응답으로 이어진 사례예요. 응답 코드도 500이 아니라 400이었어요. 당시 기록에서는 공통 예외 핸들러가 처리하지 못한 예외를 400으로 응답한 것을 원인으로 정리했어요. 이 실패는 5xx 비율을 보는 알람에도 잡히지 않았어요. 그래서 판단 기준을 이렇게 잡았어요.</p>
 
 <div class="obsv-code">질문                                      보는 숫자                                  판단
 재시도로 덮이고 있나                      재시도 뒤에도 남은 교착 예외 수            0 이 아니면 바로 문제 (사용자가 실패를 받았다)
@@ -321,7 +317,7 @@ increase(D[24h]) &gt; 0</div>
 같은 교착인가, 새 교착인가                에러 로그의 테이블·인덱스                 새 쌍이 나오면 버그 후보 (3편의 순서로 원인 확정)
 고친 게 반영됐나                          배포 뒤 24시간 증가량                      0 이어야 끝. 줄기만 했으면 남은 패턴을 찾는다</div>
 
-<p>첫 줄이 가장 중요해요. DB 카운터는 재시도가 성공했는지 모릅니다. 교착 1건에 1이 오를 뿐이에요. 사용자가 실패를 받았는지는 앱이 재시도를 다 쓰고도 실패한 수로만 알 수 있으니, 앱 지표를 "시도마다의 잠금 충돌"과 "재시도 소진 뒤 실패"로 나눠 세세요. 깨우는 알람은 뒤의 것에 걸고, DB 카운터는 빈도와 추세를 보는 데 씁니다. Spring 에서 spring-retry 의 <code>org.springframework.retry.support.RetryTemplate</code> 을 쓴다면 대략 이런 자리에서 둘을 나눠 셀 수 있어요. Spring Framework 7 코어에 새로 들어온 <code>org.springframework.core.retry.RetryTemplate</code> 은 이름은 같지만 메서드 모양이 달라서 이 코드 그대로는 맞지 않습니다. <code>PessimisticLockingFailureException</code> 은 교착(1213)뿐 아니라 잠금 대기 초과(1205)가 번역된 예외도 받을 수 있어요. 둘이 어떤 예외로 오고 롤백 범위가 어떻게 다른지는 5편에서 다룹니다.</p>
+<p>재시도 뒤 실패 수를 별도로 봐야 하는 이유는 DB 카운터에 재시도 성공 여부가 나타나지 않기 때문이에요. 교착 1건에 1이 오를 뿐이에요. 사용자에게 전달될 수 있는 실패를 확인하려면 앱이 재시도를 소진한 뒤에도 실패한 수를 따로 기록해야 해요. 따라서 앱 지표를 "시도마다의 잠금 충돌"과 "재시도 소진 뒤 실패"로 나눠 세세요. 긴급 알림은 재시도 뒤 실패에 걸고, DB 카운터는 빈도와 추세를 보는 데 쓸 수 있어요. Spring 에서 spring-retry 의 <code>org.springframework.retry.support.RetryTemplate</code> 을 쓴다면 대략 이런 자리에서 둘을 나눠 셀 수 있어요. Spring Framework 7 코어에 새로 들어온 <code>org.springframework.core.retry.RetryTemplate</code> 은 이름은 같지만 메서드 모양이 달라서 이 코드 그대로는 맞지 않습니다. <code>PessimisticLockingFailureException</code> 은 교착(1213)뿐 아니라 잠금 대기 초과(1205)가 번역된 예외도 받을 수 있어요. 둘이 어떤 예외로 오고 롤백 범위가 어떻게 다른지는 5편에서 다룹니다.</p>
 
 <div class="obsv-code">// 재시도 한 번마다: 교착 또는 잠금 대기 초과가 났다 (1213 만 따로 세면 DB 의 lock_deadlocks 와 비교할 수 있다)
 // 재시도를 다 쓴 뒤: 사용자가 실패를 받았다 (이 숫자에 깨우는 알람을 건다)
@@ -339,16 +335,16 @@ try {
     throw e;   // 공통 예외 핸들러가 이걸 몇 번 코드로 내보내는지도 확인한다
 }</div>
 
-<p>두 숫자를 같이 보면 교착 대응이 어디까지 됐는지가 보여요. attempt 중 1213 만 센 값이 DB 의 <code>lock_deadlocks</code> 증가량보다 훨씬 적으면 교착이 다른 경로(배치, 다른 서비스)에서도 나고 있다는 뜻이고, exhausted 가 0이 아니면 재시도 횟수나 간격이 모자라거나 재시도로 풀리지 않는 교착이라는 뜻입니다.</p>
+<p>두 숫자를 같이 보면 교착 대응이 어디까지 됐는지가 보여요. attempt 중 1213 만 센 값이 DB 의 <code>lock_deadlocks</code> 증가량보다 훨씬 적으면 다른 경로(배치, 다른 서비스)의 교착이나 계측 누락을 확인해 볼 필요가 있어요. exhausted가 0이 아니면 재시도 횟수·간격이나 충돌이 계속되는 원인을 조사해야 해요. 두 수치만으로 원인을 확정할 수는 없어요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">💡 내 환경에서 확인할 것</div>
-  &bull; 교착 지표가 실제로 수집되고 있는지 확인하세요. 상태 변수만 긁는 수집기라면 교착은 없습니다. INNODB_METRICS 수집이 꺼져 있지 않은지, 계정에 PROCESS 권한이 있는지도 봅니다<br>
+  &bull; 교착 지표가 실제로 수집되고 있는지 확인하세요. 상태 변수만 수집한다면 교착 지표가 없을 수 있어요. INNODB_METRICS 수집이 꺼져 있지 않은지, 계정에 PROCESS 권한이 있는지도 봅니다<br>
   &bull; 교착 감지를 끈 서버라면 <code>lock_deadlocks</code> 가 아니라 <code>lock_timeouts</code> 와 1205 를 봅니다<br>
   &bull; 로그로 원인과 시각, 희생자를 남기려면 <code>innodb_print_all_deadlocks=ON</code> 과 <code>log_error_verbosity=3</code> 을 함께 켜고, 교착 한 건을 내서 <code>MY-012468</code> 머리말까지 찍히는지 확인합니다. <code>SET GLOBAL</code> 은 재시작하면 사라지니 설정 파일이나 <code>SET PERSIST</code> 로 남깁니다<br>
   &bull; 누적값에 임계를 건 규칙이 있다면 증가량으로 바꾸고, 재시작해서 값이 줄어든 창을 어떻게 처리하는지 확인합니다<br>
   &bull; "N구간 연속" 조건이 붙은 교착 알람이 있다면 시간당 몇 건부터 울리는지 계산해 보고, 긴 창의 존재 확인(티켓)을 따로 둡니다<br>
-  &bull; 앱 지표를 시도별 1213 과 재시도 소진 뒤 실패로 나누고, 그 실패가 몇 번 상태 코드로 나가는지 확인합니다
+  &bull; 앱 지표를 시도별 1213 과 재시도 소진 뒤 실패로 나누고, 그 실패가 어떤 상태 코드로 나가는지 확인해요
 </div>
 
 <div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
@@ -359,10 +355,10 @@ python3 scripts/simulate.py          # MySQL 없이 비율별, 장면별 시뮬�
 docker compose down -v</div>
 
 <div class="obsv-summary">
-  <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>MySQL 8.4 의 교착 수는 INNODB_METRICS 의 <code>lock_deadlocks</code> 에 있고, 상태 변수에는 없습니다. <code>innodb_print_all_deadlocks</code> 만 켜면 에러 로그에 잠금 본문만 시각 없이 남고 머리말과 희생자 줄은 빠졌어요. 그것까지 남기려면 <code>log_error_verbosity=3</code> 이 같이 있어야 합니다.</b><br><br>
-  "연속 N구간" 규칙을 5분 × 3 으로 놓으면 일주일에 교착이 51건 나는 시간당 0.3건에서 0.1번 울렸고, 수정 뒤 28일 동안 201건이 난 장면에서도 0.1번이었습니다. 연속 조건은 교착의 양이 아니라 몰림을 보기 때문이에요. 몰림은 짧은 창, 증가는 기준선 대비 긴 창, 남아 있음은 24시간 창으로 따로 묻고, 사람을 깨우는 일은 재시도로도 덮지 못한 실패에 맡깁니다.<br><br>
-  알람이 조용하다는 건 규칙의 조건이 채워지지 않았다는 뜻이고, 교착이 0이라는 뜻은 아니에요.
+  <div class="obsv-st2">✍️ 정리</div>
+  MySQL 8.4 실습에서는 INNODB_METRICS의 <code>lock_deadlocks</code>로 교착 수를 확인했고, 상태 변수에서는 확인하지 못했어요. <code>innodb_print_all_deadlocks</code>만 켠 기본 verbosity 2에서는 잠금 본문만 시각 없이 남았고, <code>log_error_verbosity=3</code>일 때 머리말과 희생자 줄도 남았어요.<br><br>
+  "연속 N구간" 규칙을 5분 × 3 으로 놓으면 일주일에 교착이 51건 나는 시간당 0.3건에서 0.1번 울렸고, 수정 뒤 28일 동안 201건이 난 장면에서도 0.1번이었습니다. 이 수치는 seed 20개의 시뮬레이션 평균이에요. 짧은 시간의 몰림, 평소보다 늘어난 빈도, 교착의 존재 여부는 규칙을 나눠 확인하고, 앱에서는 재시도 뒤에도 남은 실패를 별도로 계측하는 구성을 검토했어요.<br><br>
+  실제 운영에 규칙을 적용한 효과는 이번 실습의 확인 범위에 포함되지 않아요. 배포 뒤 교착이 남았는지는 알람 상태만으로 판단하지 않고 카운터 증가량과 앱의 실패 수를 함께 확인해야 해요.
 </div>
 
 </div>

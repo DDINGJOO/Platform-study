@@ -2,8 +2,8 @@
   MySQL 교착 7편: 동시성 테스트가 통과한 게 아니라 실행되지 않았을 때
   tistory-sketch-post 스타일 · 단일 HTML
 ============================================================ -->
-<!-- tags: Testcontainers, disabledWithoutDocker, H2 MySQL 모드, 동시성 테스트, Docker 29 -->
-<!-- lead: 동시성 테스트가 초록인데 리포트에는 SKIPPED 였어요. H2 MySQL 모드는 교착 시나리오를 90/90 통과시켰고, Docker 29 에서 Testcontainers 1.19.8 은 Docker 를 못 찾아 조용히 skip 됐습니다. CI 에서 skip 0 을 강제하는 법까지 실측했어요. -->
+<!-- tags: Testcontainers, disabledWithoutDocker, H2 MySQL 모드, JUnit XML -->
+<!-- lead: 빌드는 성공했지만 Testcontainers 통합 테스트는 SKIPPED로 끝났어요. H2와 MySQL의 교착 재현 결과, Docker 29의 API 버전 문제를 비교하고 JUnit XML로 CI에서 건너뛴 테스트를 검사했어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -28,45 +28,43 @@
 
 <div class="obsv-series">
   <div class="obsv-st">🔒 MySQL 교착 · 7편</div>
-  1편. INSERT IGNORE 다음 SELECT … FOR UPDATE가 교착을 만드는 이유<br>
-  2편. ON DUPLICATE KEY UPDATE 반환값으로 중복을 판정하면 안 된다<br>
-  3편. LATEST DETECTED DEADLOCK 읽는 법과 data_locks로 원인을 확정하는 순서<br>
-  4편. 교착 알람이 조용해졌다고 교착이 사라진 건 아니다<br>
-  5편. 교착(1213)과 lock wait timeout(1205)은 롤백 범위가 다르다<br>
-  6편. 같은 요청이 동시에 두 번 올 때 없으면 넣기를 교착 없이 짜는 다섯 가지 방법<br>
-  <b>7편. 동시성 테스트가 통과한 게 아니라 실행되지 않았을 때</b> &larr; 지금 이 글
+  <a href="https://dding-shark.tistory.com/678" style="color:inherit">5편. 교착(1213)과 lock wait timeout(1205)의 롤백 범위와 Spring 예외 처리</a><br>
+  <a href="https://dding-shark.tistory.com/679" style="color:inherit">6편. 같은 키의 동시 INSERT: 다섯 패턴의 교착·중복 판정과 재시도 비교</a><br>
+  <b>7편. Testcontainers 테스트가 SKIPPED로 끝나도 빌드는 성공하는 이유</b> &larr; 지금 이 글
 </div>
 
-<p>교착을 고치는 PR 에 동시성 테스트를 하나 붙였다고 해 볼게요. 같은 키로 요청 세 개를 동시에 보내고, 셋 다 성공하는지 보는 테스트입니다. 로컬에서 돌리니 <code>BUILD SUCCESSFUL</code> 이 뜨고, 리뷰어도 초록불을 보고 승인해요. 그런데 테스트 리포트를 열어 보면 그 테스트 옆에 적힌 말이 PASSED 가 아니라 SKIPPED 일 수 있습니다. 테스트는 통과한 게 아니라 한 줄도 실행되지 않은 거예요.</p>
+<p>교착을 고치는 PR에 같은 키로 요청 세 개를 동시에 보내는 테스트를 붙였다고 해 볼게요. 로컬 빌드에 <code>BUILD SUCCESSFUL</code>이 표시돼도, 테스트 리포트에는 PASSED 대신 SKIPPED가 남을 수 있어요. 이 경우 빌드는 성공했지만 확인하려던 테스트는 실행되지 않은 거예요.</p>
 
-<p>제 회사에서 겪은 건 이 가운데 skip 부분입니다. 로컬 Docker 는 29 였고 프로젝트의 Testcontainers 는 1.19.8 이었어요. 둘이 맞지 않아 Testcontainers 가 Docker 를 찾지 못했고, 통합 테스트는 실패 대신 skip 으로 끝났습니다. 빌드는 초록이었어요. 그래서 그 통합 테스트들 가운데 이미 깨져 있던 것들도 드러나지 않았습니다. 이 글은 이런 일이 왜 생기는지, 그리고 동시성 테스트가 정말로 돌았는지를 빌드가 확인하게 만드는 방법을 정리합니다.</p>
+<p>아래 실무 경위는 당시 경험을 정리한 것이에요. 과거 실무 빌드와 테스트 결과의 원본은 이번에 대조하지 못했으며, 뒤의 별도 실습 결과와는 구분해야 해요.</p>
+
+<p>실무에서 겪은 일도 테스트가 건너뛰어진 경우였어요. 로컬 Docker는 29, 프로젝트의 Testcontainers는 1.19.8이었어요. 이 조합에서 Testcontainers가 Docker를 찾지 못했고, 통합 테스트는 실패 대신 skip으로 끝났어요. 빌드는 성공했기 때문에 이미 실패하는 통합 테스트도 드러나지 않았어요. 이후 별도 실습에서 DB 엔진과 Testcontainers 버전을 바꾸며 결과를 비교하고, CI에서 테스트 실행 여부를 검사했어요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
-  &bull; H2 의 MySQL 모드로 1편의 교착 시나리오를 돌리면 재현되나?<br>
-  &bull; Testcontainers 는 Docker 를 못 찾으면 실패하나, 건너뛰나? <code>DOCKER_HOST</code> 를 틀리게 주면 어떻게 되나?<br>
-  &bull; Docker 29 에서 옛 Testcontainers 는 왜 Docker 가 "없다"고 하나? 몇 버전부터 되나?<br>
-  &bull; CI 에서 skip 이 0 인지 빌드가 검사하게 하려면?<br>
-  &bull; 동시성 테스트는 어떻게 써야 고치기 전에 빨간불이 나나?
+  &bull; H2의 MySQL 모드로 1편의 교착 시나리오를 돌리면 재현되나?<br>
+  &bull; Testcontainers는 Docker를 못 찾으면 실패하나, 건너뛰나? <code>DOCKER_HOST</code>를 틀리게 주면 어떻게 되나?<br>
+  &bull; Docker 29에서 옛 Testcontainers는 왜 Docker가 "없다"고 하나? 몇 버전부터 되나?<br>
+  &bull; CI에서 skip이 0 인지 빌드가 검사하게 하려면?<br>
+  &bull; 수정 전 코드에서 실패하는 동시성 테스트를 어떻게 구성하나?
 </div>
 
-<h2>1. H2 의 MySQL 모드는 고치기 전 코드도 통과시킨다</h2>
+<h2>1. H2의 MySQL 모드는 고치기 전 코드도 통과시킨다</h2>
 
-<p>동시성 테스트를 처음 쓸 때 가장 쉽게 손이 가는 건 H2 같은 인메모리 DB 예요. Docker 도 필요 없고 빠릅니다. MySQL 문법을 흉내 내는 호환 모드도 있어요. 그래서 1편의 시나리오를 그대로 H2 에 올려 봤습니다.</p>
+<p>H2는 Docker 없이 테스트에 사용할 수 있는 인메모리 DB예요. MySQL 문법 일부를 지원하는 호환 모드도 있어서, 1편의 교착 시나리오를 H2에서도 돌려 봤어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: H2 호환 모드 (MODE=MySQL)</div>
-  JDBC URL 에 <code>MODE=MySQL</code> 을 붙이면 H2 가 MySQL 문법 일부를 받아 주는 설정이에요. <code>INSERT IGNORE</code>, <code>ON DUPLICATE KEY UPDATE</code> 같은 문장이 오류 없이 실행됩니다. 문법을 받아 주는 것이지, 저장 엔진의 동작까지 MySQL 처럼 바뀌는 건 아니에요.
+  JDBC URL에 <code>MODE=MySQL</code>을 붙이면 H2가 MySQL 문법 일부를 받아 주는 설정이에요. <code>INSERT IGNORE</code>, <code>ON DUPLICATE KEY UPDATE</code> 같은 문장이 오류 없이 실행됩니다. 문법을 받아 주는 것이지, 저장 엔진의 동작까지 MySQL 처럼 바뀌는 건 아니에요.
 </div>
 
-<p>시나리오는 1편의 "첫 방문 동시 요청 3개" 입니다. 라운드마다 새 키를 하나 정하고, 스레드 세 개가 동시에 출발해서 각자 한 트랜잭션 안에서 <code>INSERT IGNORE</code> → <code>SELECT … FOR UPDATE</code> → <code>UPDATE cnt = cnt + 1</code> → <code>COMMIT</code> 을 합니다. 30 라운드, 요청 90개를 보내고 "90개가 전부 성공하고 키마다 cnt 가 3" 이면 통과예요. 같은 테스트 클래스를 DB 만 바꿔 돌렸습니다.</p>
+<p>시나리오는 1편의 "첫 방문 동시 요청 3개" 입니다. 라운드마다 새 키를 하나 정하고, 스레드 세 개가 동시에 출발해서 각자 한 트랜잭션 안에서 <code>INSERT IGNORE</code> → <code>SELECT … FOR UPDATE</code> → <code>UPDATE cnt = cnt + 1</code> → <code>COMMIT</code>을 합니다. 30 라운드, 요청 90개를 보내고 "90개가 전부 성공하고 키마다 cnt가 3" 이면 통과예요. 같은 테스트 클래스를 DB만 바꿔 돌렸습니다.</p>
 
 <div class="obsv-code">(results/summary.txt, 고치기 전 코드, 30 라운드 × 스레드 3)
 DB                          성공 / 요청    실패               cnt 가 3 이 아닌 키
 H2 2.4.240 MODE=MySQL         90 / 90      0                  0        → PASSED
 MySQL 8.4 (Testcontainers)    60 / 90      1213 교착 30건      30       → FAILED (세 바퀴 모두 같음)</div>
 
-<p>→ 같은 코드가 H2 에서는 초록, MySQL(기본 격리 수준 REPEATABLE READ 그대로)에서는 30 라운드 전부에서 교착이 났다는 뜻이에요. MySQL 쪽은 라운드마다 정확히 한 요청이 1213 으로 되돌려졌습니다. H2 쪽은 단 한 번도 실패하지 않았어요. 1편의 교착은 중복을 만난 요청 둘이 함께 기다렸다가 둘 다 X 잠금을 요청할 때 납니다. 그 순서를 H2 에서 세 세션으로 그대로 만들어 시각을 찍었어요. B 와 C 가 둘 다 <code>INSERT IGNORE</code> 를 끝낸 것을 배리어로 맞춘 뒤에 둘 다 <code>FOR UPDATE</code> 를 보내게 했습니다.</p>
+<p>같은 코드가 H2에서는 통과했고, MySQL에서는 기본 격리 수준인 REPEATABLE READ를 유지한 상태로 30 라운드 전부에서 교착이 났다는 뜻이에요. MySQL 쪽은 라운드마다 정확히 한 요청이 1213으로 되돌려졌습니다. 이 실습에서 H2 쪽은 90개 요청이 모두 성공했어요. 1편의 교착은 중복을 만난 요청 둘이 함께 기다렸다가 둘 다 X 잠금을 요청할 때 납니다. 그 순서를 H2에서 세 세션으로 그대로 만들어 시각을 찍었어요. B와 C가 둘 다 <code>INSERT IGNORE</code>를 끝낸 것을 배리어로 맞춘 뒤에 둘 다 <code>FOR UPDATE</code>를 보내게 했습니다.</p>
 
 <div class="obsv-code">(results/h2.txt, H2LockProbeTest. A 가 넣고 1초 뒤에 FOR UPDATE, UPDATE, COMMIT)
   +   2ms A INSERT IGNORE -&gt; 1
@@ -83,7 +81,7 @@ MySQL 8.4 (Testcontainers)    60 / 90      1213 교착 30건      30       → F
   +1033ms C COMMIT
   +1035ms 최종 cnt = 3</div>
 
-<p>→ B 와 C 는 A 가 커밋할 때까지 1초를 함께 기다렸다가 둘 다 0행으로 끝났어요. 그다음 둘이 거의 동시에 <code>FOR UPDATE</code> 를 보냈는데, B 가 먼저 끝내고 C 가 1ms 뒤에 이어받았습니다. 세 바퀴 돌려 세 번 다 이 모양이었어요. 1편에서 InnoDB 는 바로 이 지점에서, 중복 검사가 남긴 S 잠금을 B 와 C 가 각자 쥔 채 X 를 요청해 서로를 막았습니다. H2 에서는 둘 다 기다리지 않고 차례로 진행됐어요. 1편의 S 잠금에 해당하는 것이 H2 에는 없거나 다르게 동작한다는 뜻입니다. H2 내부에서 무엇을 쥐는지까지 확인한 건 아니고, 교착의 재료가 되는 동작이 관찰되지 않았다는 데까지가 실측이에요.</p>
+<p>→ B와 C는 A가 커밋할 때까지 1초를 함께 기다렸다가 둘 다 0행으로 끝났어요. 그다음 둘이 거의 동시에 <code>FOR UPDATE</code>를 보냈는데, B가 먼저 끝내고 C가 1ms 뒤에 이어받았습니다. 당시 정리에는 세 차례 실행에서 같은 순서로 끝났다고 적혀 있지만, 보관 결과에서 확인할 수 있는 H2 잠금 조회 실행은 한 차례예요. 세 차례 반복의 독립 기록은 재확인하지 못했어요. 1편의 InnoDB 실습에서는 이 지점에서 B와 C가 중복 검사 후 얻은 S 잠금을 각각 유지한 채 X 잠금을 요청해 서로 기다렸어요. H2에서는 교착 없이 차례로 진행됐어요. H2 내부의 잠금까지 확인한 것은 아니므로, 이 실행에서는 InnoDB와 같은 교착이 관찰되지 않았다고 한정할 수 있어요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -102,8 +100,8 @@ MySQL 8.4 (Testcontainers)    60 / 90      1213 교착 30건      30       → F
   <text x="44" y="166" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">T3 INSERT IGNORE  중복, 기다림</text>
   <text x="44" y="190" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">T1 FOR UPDATE, COMMIT</text>
   <text x="44" y="220" font-family="Menlo, monospace" font-size="12" fill="#b3502f">T2, T3  0행인데 S 잠금을 쥔다</text>
-  <text x="44" y="250" font-family="Menlo, monospace" font-size="12" fill="#b3502f">T2 FOR UPDATE  X 를 원함, T3 의 S 에 막힘</text>
-  <text x="44" y="274" font-family="Menlo, monospace" font-size="12" fill="#b3502f">T3 FOR UPDATE  X 를 원함, T2 의 S 에 막힘</text>
+  <text x="44" y="250" font-family="Menlo, monospace" font-size="12" fill="#b3502f">T2 FOR UPDATE  X를 원함, T3의 S에 막힘</text>
+  <text x="44" y="274" font-family="Menlo, monospace" font-size="12" fill="#b3502f">T3 FOR UPDATE  X를 원함, T2의 S에 막힘</text>
   <path d="M120 296 C 150 318, 210 318, 240 296" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#d7a1)"/>
   <path d="M240 290 C 210 272, 150 272, 120 290" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#d7a1)"/>
   <text x="180" y="346" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">🔥 서로 기다림 = 1213 교착</text>
@@ -112,26 +110,26 @@ MySQL 8.4 (Testcontainers)    60 / 90      1213 교착 30건      30       → F
   <text x="384" y="166" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">A FOR UPDATE, COMMIT</text>
   <text x="384" y="190" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">B, C INSERT IGNORE  0행</text>
   <text x="384" y="220" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">B, C 둘 다 FOR UPDATE 요청</text>
-  <text x="384" y="250" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">B 가 먼저 얻고 끝냄</text>
-  <text x="384" y="274" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">C 가 1ms 뒤 이어받음</text>
+  <text x="384" y="250" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">B가 먼저 얻고 끝냄</text>
+  <text x="384" y="274" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">C가 1ms 뒤 이어받음</text>
   <path d="M440 300 C 480 302, 560 299, 610 301" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#d7a1)"/>
-  <text x="520" y="346" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">줄 서서 차례로 = 늘 초록</text>
+  <text x="520" y="346" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">차례로 완료, 이번 실습은 통과</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 1. 같은 순서, 다른 결과. InnoDB 는 B 와 C 가 서로 막히고, H2 는 차례로 끝난다</div>
+<div class="obsv-figcap">그림 1. 같은 순서, 다른 결과. InnoDB는 B와 C가 서로 막히고, H2는 차례로 끝난다</div>
 
-<p>H2 문서도 이 한계를 숨기지 않아요. 호환 모드 절은 데이터베이스 간 차이 가운데 "작은 일부만" 이런 방식으로 구현했다고 적고, MySQL 모드 항목에는 <code>INSERT IGNORE</code> 가 "부분적으로 지원된다"고 적습니다(<a href="https://h2database.com/html/features.html">H2 Features, Compatibility</a>). 문법이 통과하는 것과 잠금이 같은 것은 별개의 일이에요. <span class="obsv-mark">H2 로 쓴 동시성 테스트는 "InnoDB 에서 교착이 안 난다"가 아니라 "H2 에서 교착이 안 난다"를 증명합니다.</span></p>
+<p>H2 문서에도 호환 모드의 범위가 나와 있어요. 호환 모드 절은 데이터베이스 간 차이 가운데 "작은 일부만" 이런 방식으로 구현했다고 적고, MySQL 모드 항목에는 <code>INSERT IGNORE</code>가 "부분적으로 지원된다"고 적습니다(<a href="https://h2database.com/html/features.html">H2 Features, Compatibility</a>). 문법이 통과하는 것과 잠금이 같은 것은 별개의 일이에요. <span class="obsv-mark">H2 로 쓴 동시성 테스트는 "InnoDB에서 교착이 안 난다"가 아니라 "H2에서 교착이 안 난다"를 증명합니다.</span></p>
 
-<p>리포지토리를 목(mock)으로 바꾼 테스트는 더 멀어요. SQL 이 DB 에 닿지 않으니 잠금이 아예 없습니다. 목 테스트는 "1213 이 오면 재시도하나"처럼 예외를 받은 뒤의 코드를 검사하는 데는 쓸 수 있지만, 교착이 나는지는 알려 주지 못해요. 그래서 동시성 테스트는 운영과 같은 엔진과 같은 메이저 버전으로 돌려야 하고, 보통 그 수단이 Testcontainers 입니다. 문제는 그 Testcontainers 가 조용히 꺼질 수 있다는 점이에요.</p>
+<p>리포지토리를 목(mock)으로 바꾸면 DB의 잠금 동작을 확인할 수 없어요. SQL이 DB에 닿지 않으니 잠금이 아예 없습니다. 목 테스트는 "1213이 오면 재시도하나"처럼 예외를 받은 뒤의 코드를 검사하는 데는 쓸 수 있지만, 교착이 나는지는 알려 주지 못해요. 그래서 동시성 테스트는 운영과 같은 엔진과 같은 메이저 버전으로 돌려야 하고, 보통 그 수단이 Testcontainers 입니다. 다만 Testcontainers를 사용하더라도 설정에 따라 테스트가 건너뛰어질 수 있어요.</p>
 
-<h2>2. Testcontainers 가 Docker 를 못 찾으면: 기본은 실패, 옵션을 켜면 SKIPPED</h2>
+<h2>2. Testcontainers가 Docker를 못 찾으면: 기본은 실패, 옵션을 켜면 SKIPPED</h2>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: Testcontainers</div>
-  테스트 코드에서 Docker 컨테이너를 띄우고 내리는 Java 라이브러리예요. JUnit 5 에서는 클래스에 <code>@Testcontainers</code>, 필드에 <code>@Container</code> 를 붙이면 테스트 전에 MySQL 같은 컨테이너가 뜨고 끝나면 정리됩니다.
+  테스트 코드에서 Docker 컨테이너를 띄우고 내리는 Java 라이브러리예요. JUnit 5에서는 클래스에 <code>@Testcontainers</code>, 필드에 <code>@Container</code>를 붙이면 테스트 전에 MySQL 같은 컨테이너가 뜨고 끝나면 정리됩니다.
 </div>
 
-<p><code>@Testcontainers</code> 에는 <code>disabledWithoutDocker</code> 속성이 있어요. 소스의 Javadoc 은 이 속성을 "Docker 를 쓸 수 없을 때 테스트를 실패시키는 대신 비활성화할지"라고 설명하고, 기본값은 <code>false</code> 입니다(<a href="https://github.com/testcontainers/testcontainers-java/blob/main/modules/junit-jupiter/src/main/java/org/testcontainers/junit/jupiter/Testcontainers.java">Testcontainers.java</a>). Docker 없는 노트북에서도 빌드가 깨지지 않게 하려고 많이 켜는 옵션이에요. 같은 테스트를 두 클래스로 나눠 하나는 이 옵션을 켜고(<code>SkippingMysqlTest</code>), 하나는 기본값으로 뒀습니다(<code>StrictMysqlTest</code>).</p>
+<p><code>@Testcontainers</code>에는 <code>disabledWithoutDocker</code> 속성이 있어요. 소스의 Javadoc은 이 속성을 "Docker를 쓸 수 없을 때 테스트를 실패시키는 대신 비활성화할지"라고 설명하고, 기본값은 <code>false</code> 입니다(<a href="https://github.com/testcontainers/testcontainers-java/blob/main/modules/junit-jupiter/src/main/java/org/testcontainers/junit/jupiter/Testcontainers.java">Testcontainers.java</a>). Docker 없는 노트북에서도 빌드가 깨지지 않게 하려고 많이 켜는 옵션이에요. 같은 테스트를 두 클래스로 나눠 하나는 이 옵션을 켜고(<code>SkippingMysqlTest</code>), 하나는 기본값으로 뒀습니다(<code>StrictMysqlTest</code>).</p>
 
 <div class="obsv-code">@Testcontainers(disabledWithoutDocker = true)     // StrictMysqlTest 는 그냥 @Testcontainers
 class SkippingMysqlTest extends FirstVisitContract {
@@ -150,9 +148,9 @@ class SkippingMysqlTest extends FirstVisitContract {
       <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
     </marker>
   </defs>
-  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">@Testcontainers 가 붙은 클래스가 Docker 를 찾을 때</text>
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">@Testcontainers가 붙은 클래스가 Docker를 찾을 때</text>
   <path d="M30 60 C 110 57, 190 61, 222 59 C 225 85, 223 110, 224 134 C 150 137, 90 133, 32 135 C 29 110, 31 85, 30 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="127" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Docker 에 붙어 본다</text>
+  <text x="127" y="92" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Docker에 붙어 본다</text>
   <text x="127" y="118" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">DOCKER_HOST, 소켓, API 버전</text>
   <path d="M226 88 C 300 80, 380 78, 452 82" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" marker-end="url(#d7a2)"/>
   <text x="340" y="70" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">붙었다</text>
@@ -169,45 +167,45 @@ class SkippingMysqlTest extends FirstVisitContract {
   <text x="330" y="310" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">기본값 false</text>
   <path d="M458 160 C 540 157, 620 161, 672 159 C 675 185, 673 210, 674 232 C 600 235, 520 231, 460 233 C 457 210, 459 185, 458 160 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
   <text x="565" y="190" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">SKIPPED, BUILD SUCCESSFUL</text>
-  <text x="565" y="216" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">초록인데 아무것도 안 돌았다</text>
+  <text x="565" y="216" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">빌드 성공, 테스트는 실행 안 됨</text>
   <path d="M458 270 C 540 267, 620 271, 672 269 C 675 290, 673 310, 674 332 C 600 335, 520 331, 460 333 C 457 310, 459 290, 458 270 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
   <text x="565" y="298" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">FAILED, BUILD FAILED</text>
-  <text x="565" y="322" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">시끄럽지만 정직하다</text>
+  <text x="565" y="322" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">실패와 원인을 확인할 수 있다</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 2. 같은 "Docker 를 못 찾음"이 옵션 하나로 빨간불과 초록불로 갈린다</div>
+<div class="obsv-figcap">그림 2. Docker를 찾지 못했을 때 실패할지 건너뛸지는 옵션에 따라 달라져요</div>
 
-<p>처음에는 Docker 를 못 찾게 만들려고 <code>DOCKER_HOST</code> 를 아무도 듣지 않는 주소(<code>tcp://127.0.0.1:39071</code>)로 줬어요. 결과는 예상과 달랐습니다. 두 클래스 모두 skip 되지 않고 실제로 MySQL 을 띄워 교착 30건으로 실패했어요.</p>
+<p>처음에는 Docker를 못 찾게 만들려고 <code>DOCKER_HOST</code>를 아무도 듣지 않는 주소(<code>tcp://127.0.0.1:39071</code>)로 줬어요. 결과는 예상과 달랐습니다. 두 클래스 모두 skip 되지 않고 실제로 MySQL을 띄워 교착 30건으로 실패했어요.</p>
 
 <div class="obsv-code">(results/a-dockerhost-fallback.txt, Testcontainers 2.0.5)
 WARN  DockerClientProviderStrategy - DOCKER_HOST tcp://127.0.0.1:39071 is not listening
 INFO  DockerClientProviderStrategy - Found Docker environment with local Unix socket (unix:///var/run/docker.sock)</div>
 
-<p>→ <code>DOCKER_HOST</code> 가 응답하지 않는다고 경고만 남기고, 다음 후보인 로컬 유닉스 소켓으로 넘어가 Docker 를 찾았다는 뜻이에요. Testcontainers 는 Docker 를 찾는 방법(전략)을 여러 개 차례로 시도하고, 처음 성공한 것을 씁니다(<code>DockerClientProviderStrategy.getFirstValidStrategy</code>, 1.x 도 같은 구조예요). 이 머신에서 그다음 후보는 예전 실행이 <code>~/.testcontainers.properties</code> 에 기록해 둔 유닉스 소켓 전략이었어요. 원출력에도 "Loaded … UnixSocketClientProviderStrategy from ~/.testcontainers.properties, will try it first" 가 찍혀 있습니다. 그러니 "Docker 를 못 찾는다"는 건 주소 하나가 틀린 상황이 아니라 모든 후보가 실패한 상황이에요. Docker 가 아예 없는 CI 러너, 그리고 다음 장의 "Docker 는 있는데 말이 안 통하는" 경우가 여기에 해당합니다.</p>
+<p>→ <code>DOCKER_HOST</code>가 응답하지 않는다고 경고만 남기고, 다음 후보인 로컬 유닉스 소켓으로 넘어가 Docker를 찾았다는 뜻이에요. Testcontainers는 Docker를 찾는 방법(전략)을 여러 개 차례로 시도하고, 처음 성공한 것을 씁니다(<code>DockerClientProviderStrategy.getFirstValidStrategy</code>, 1.x도 같은 구조예요). 이 머신에서 그다음 후보는 예전 실행이 <code>~/.testcontainers.properties</code>에 기록해 둔 유닉스 소켓 전략이었어요. 원출력에도 "Loaded … UnixSocketClientProviderStrategy from ~/.testcontainers.properties, will try it first" 가 찍혀 있습니다. 그러니 "Docker를 못 찾는다"는 건 주소 하나가 틀린 상황이 아니라 모든 후보가 실패한 상황이에요. Docker가 없는 CI 러너나 다음 절처럼 API 버전이 맞지 않는 경우에도 모든 후보가 실패할 수 있어요.</p>
 
-<p>모든 후보가 실패했을 때 두 클래스가 어떻게 끝나는지는 다음 장의 실측에 같이 담았어요. 기본값 클래스는 테스트 메서드에 들어가기도 전에 <code>initializationError</code> 로 실패하고, 원인으로 <code>IllegalStateException</code> 과 "Could not find a valid Docker environment" 로그가 남습니다. 빨간불이라 귀찮지만 누구든 원인을 바로 봐요. 옵션을 켠 클래스는 같은 로그를 테스트의 표준 오류에 남기고 SKIPPED 로 끝납니다. 그런데 Gradle 은 <code>testLogging</code> 을 따로 설정하지 않으면 콘솔에 SKIPPED 줄도, 그 원인 로그도 찍지 않아요. 테스트 하나가 skip 되는 최소 프로젝트를 Gradle 9.8.1 기본값으로 돌리니 콘솔에는 <code>&gt; Task :test</code> 다음 <code>BUILD SUCCESSFUL</code> 만 나왔고, XML 에만 <code>skipped="1"</code> 이 남았습니다(results/gradle-default-console.txt). 이 글의 실행 화면에 SKIPPED 줄과 원인 로그가 보이는 건 실습의 <code>build.gradle</code> 이 <code>testLogging</code> 에 <code>skipped</code> 와 표준 출력을 켜 두었기 때문이에요. <span class="obsv-mark">disabledWithoutDocker 는 실패를 없애는 게 아니라, 실패를 아무도 안 보는 곳으로 옮깁니다.</span></p>
+<p>모든 후보가 실패했을 때 두 클래스가 어떻게 끝나는지는 다음 장의 실측에 같이 담았어요. 기본값 클래스는 테스트 메서드에 들어가기도 전에 <code>initializationError</code> 로 실패하고, 원인으로 <code>IllegalStateException</code> 과 "Could not find a valid Docker environment" 로그가 남습니다. 빌드가 실패하므로 테스트 환경을 확인하게 돼요. 옵션을 켠 클래스는 같은 로그를 테스트의 표준 오류에 남기고 SKIPPED 로 끝납니다. 그런데 Gradle은 <code>testLogging</code>을 따로 설정하지 않으면 콘솔에 SKIPPED 줄도, 그 원인 로그도 찍지 않아요. 테스트 하나가 skip 되는 최소 프로젝트를 Gradle 9.8.1 기본값으로 돌리니 콘솔에는 <code>&gt; Task :test</code> 다음 <code>BUILD SUCCESSFUL</code>만 나왔고, XML 에만 <code>skipped="1"</code>이 남았습니다(results/gradle-default-console.txt). 이 글의 실행 화면에 SKIPPED 줄과 원인 로그가 보이는 건 실습의 <code>build.gradle</code>이 <code>testLogging</code>에 <code>skipped</code>와 표준 출력을 켜 두었기 때문이에요. <span class="obsv-mark">이 옵션으로 건너뛴 테스트는 빌드 성공 여부만 봐서는 구분할 수 없어요. 테스트 리포트나 실행 건수도 확인해야 해요.</span></p>
 
-<h2>3. Docker 29 와 옛 Testcontainers: Docker 는 떠 있는데 "없다"가 된다</h2>
+<h2>3. Docker 29에서 구버전 Testcontainers가 Docker를 찾지 못한 이유</h2>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: Docker API 버전</div>
   Docker 클라이언트가 데몬에 보내는 요청 경로 앞에 붙는 버전이에요(<code>/v1.44/containers/json</code> 처럼). 데몬은 받아 줄 최소 버전을 정해 두고, 그보다 낮은 버전으로 온 요청은 거절합니다.
 </div>
 
-<p>Docker Engine 29.0.0(2025-11-10) 릴리스 노트에는 "데몬은 이제 API 버전 v1.44 이상(Docker v25.0+)을 요구한다"는 항목이 있어요. 그리고 29.3.0(2026-03-05)에서 "최소 API 버전을 v1.44 에서 v1.40(Docker 19.03)으로 낮춘다"고 다시 내렸습니다(<a href="https://docs.docker.com/engine/release-notes/29/">Docker Engine 29 release notes</a>). Testcontainers 쪽 릴리스 노트는 이렇게 이어져요(<a href="https://github.com/testcontainers/testcontainers-java/releases">testcontainers-java releases</a>).</p>
+<p>Docker Engine 29.0.0(2025-11-10) 릴리스 노트에는 "데몬은 이제 API 버전 v1.44 이상(Docker v25.0+)을 요구한다"는 항목이 있어요. 그리고 29.3.0(2026-03-05)에서 "최소 API 버전을 v1.44에서 v1.40(Docker 19.03)으로 낮춘다"고 다시 내렸습니다(<a href="https://docs.docker.com/engine/release-notes/29/">Docker Engine 29 release notes</a>). Testcontainers 쪽 릴리스 노트는 이렇게 이어져요(<a href="https://github.com/testcontainers/testcontainers-java/releases">testcontainers-java releases</a>).</p>
 
 <div class="obsv-code">2.0.2   2025-11-13   Set default docker API version to 1.44 (#11216)
 1.21.4  2025-12-15   This release makes version 1.21.x works with recent Docker Engine changes.
 2.0.3   2025-12-15   Fix compatibility with older Docker Engines by falling back to v1.32 (#11346)</div>
 
-<p>"29.3.0 에서 바닥을 1.40 으로 내렸으니 이제 옛 Testcontainers 도 되겠지"라고 읽기 쉬운데, 실측은 아니었어요. 이 글의 실습 머신은 Docker Desktop 4.78.0, 엔진 29.5.3 이고 최소 API 가 1.40 입니다. 같은 <code>SkippingMysqlTest</code> 를 Testcontainers 버전만 바꿔 돌렸어요.</p>
+<p>29.3.0에서 최소 API 버전이 1.40으로 낮아졌지만, 실습에서는 구버전 Testcontainers가 여전히 연결하지 못했어요. 이 글의 실습 머신은 Docker Desktop 4.78.0, 엔진 29.5.3 이고 최소 API가 1.40 입니다. 같은 <code>SkippingMysqlTest</code>를 Testcontainers 버전만 바꿔 돌렸어요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-07/skipped-green.png" alt="Testcontainers 1.19.8 로 SkippingMysqlTest 를 실행한 화면. UnixSocket 과 DockerDesktop 전략이 모두 Status 400 으로 실패해 Could not find a valid Docker environment, 테스트는 SKIPPED, 빌드는 BUILD SUCCESSFUL" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 3. Docker 는 떠 있는데 400, 그리고 SKIPPED 와 BUILD SUCCESSFUL (실습은 testLogging 에 skipped 를 켜 둠)</div>
+<div class="obsv-figcap">그림 3. Docker는 떠 있는데 400, 그리고 SKIPPED와 BUILD SUCCESSFUL (실습은 testLogging에 skipped를 켜 둠)</div>
 
-<p>→ 1.19.8 은 유닉스 소켓도 Docker Desktop 소켓도 찾았지만 둘 다 <code>Status 400</code> 으로 거절당해 "유효한 Docker 환경을 찾지 못했다"고 결론 냈어요. <code>disabledWithoutDocker = true</code> 라서 테스트는 SKIPPED, 빌드는 성공이었습니다. 교착이 30건 나야 하는 고치기 전 코드인데도요. 400 이 어디서 오는지는 소켓에 직접 물어보면 보입니다.</p>
+<p>→ 1.19.8은 유닉스 소켓도 Docker Desktop 소켓도 찾았지만 둘 다 <code>Status 400</code>으로 거절당해 "유효한 Docker 환경을 찾지 못했다"고 결론 냈어요. <code>disabledWithoutDocker = true</code> 라서 테스트는 SKIPPED, 빌드는 성공이었습니다. 교착이 30건 나야 하는 고치기 전 코드인데도요. 400 응답의 이유를 확인하려고 소켓을 통해 API 버전별로 직접 요청했어요.</p>
 
 <div class="obsv-code">(results/curl-api-versions.txt, Docker Desktop 4.78.0, 엔진 29.5.3)
 curl --unix-socket /var/run/docker.sock http://localhost/v1.32/version   → 400
@@ -215,7 +213,7 @@ curl --unix-socket /var/run/docker.sock http://localhost/v1.32/version   → 400
                                                .../v1.40/version   → 200
                                                .../v1.44/version   → 200</div>
 
-<p>→ 1.40 미만은 전부 거절된다는 뜻이에요. 1.19.8 소스의 <code>DockerClientProviderStrategy</code> 는 API 버전이 따로 정해지지 않았으면 <code>RemoteApiVersion.VERSION_1_32</code> 를 넣어요(<a href="https://github.com/testcontainers/testcontainers-java/blob/1.19.8/core/src/main/java/org/testcontainers/dockerclient/DockerClientProviderStrategy.java#L409-L410">1.19.8 DockerClientProviderStrategy.java 409-410행</a>). 같은 파일의 1.21.4 와 2.0.5 판은 1.44 를 먼저 씁니다. 바닥이 1.44 에서 1.40 으로 내려와도 1.32 는 여전히 바닥 아래예요. 버전별 결과는 이랬습니다.</p>
+<p>→ 1.40 미만은 전부 거절된다는 뜻이에요. 1.19.8 소스의 <code>DockerClientProviderStrategy</code>는 API 버전이 따로 정해지지 않았으면 <code>RemoteApiVersion.VERSION_1_32</code>를 넣어요(<a href="https://github.com/testcontainers/testcontainers-java/blob/1.19.8/core/src/main/java/org/testcontainers/dockerclient/DockerClientProviderStrategy.java#L409-L410">1.19.8 DockerClientProviderStrategy.java 409-410행</a>). 같은 파일의 1.21.4와 2.0.5 판은 1.44를 먼저 씁니다. 최소 지원 버전이 1.44에서 1.40으로 낮아져도 1.32 요청은 여전히 지원 범위 밖이에요. 버전별 결과는 이랬습니다.</p>
 
 <div class="obsv-code">(results/summary.txt, Docker 29.5.3, 고치기 전 코드)
 Testcontainers   결과
@@ -228,7 +226,7 @@ Testcontainers   결과
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
-  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">Docker 가 받는 API 바닥과 Testcontainers 가 보내는 API</text>
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">Docker의 최소 API와 Testcontainers의 요청 API</text>
   <path d="M40 120 C 200 118, 450 122, 664 119" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
   <path d="M90 112 C 91 116, 89 124, 90 128" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
   <text x="90" y="72" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">Docker 29.0.0</text>
@@ -241,41 +239,41 @@ Testcontainers   결과
   <path d="M410 112 C 411 116, 409 124, 410 128" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round"/>
   <text x="410" y="72" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5">TC 1.21.4, 2.0.3</text>
   <text x="410" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">2025-12-15</text>
-  <text x="410" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">1.21.x 도 새 엔진에 맞춤</text>
+  <text x="410" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">1.21.x도 새 엔진에 맞춤</text>
   <path d="M580 112 C 581 116, 579 124, 580 128" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
   <text x="580" y="72" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">Docker 29.3.0</text>
   <text x="580" y="92" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">2026-03-05</text>
-  <text x="580" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">최소 API 1.40 으로 내림</text>
+  <text x="580" y="150" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">최소 API 1.40으로 내림</text>
   <path d="M40 186 C 200 183, 450 188, 664 185 C 667 250, 665 320, 666 378 C 450 381, 200 377, 42 379 C 39 320, 41 250, 40 186 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="352" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">실측: Docker 29.5.3 (최소 1.40) 에 같은 테스트를 붙여 보면</text>
-  <text x="70" y="250" font-family="Menlo, monospace" font-size="13" fill="#b3502f">TC 1.19.8  → API 1.32 로 요청 → 400 → SKIPPED, 빌드 초록</text>
-  <text x="70" y="278" font-family="Menlo, monospace" font-size="13" fill="#b3502f">TC 1.21.3  → 400 → SKIPPED, 빌드 초록</text>
+  <text x="352" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">실측: Docker 29.5.3 (최소 1.40)에 같은 테스트를 붙여 보면</text>
+  <text x="70" y="250" font-family="Menlo, monospace" font-size="13" fill="#b3502f">TC 1.19.8  → API 1.32 요청 → 400 → SKIPPED, 빌드 성공</text>
+  <text x="70" y="278" font-family="Menlo, monospace" font-size="13" fill="#b3502f">TC 1.21.3  → 400 → SKIPPED, 빌드 성공</text>
   <text x="70" y="306" font-family="Menlo, monospace" font-size="13" fill="#2e6b41">TC 1.21.4  → 붙음 → 교착 30/30 → FAILED</text>
   <text x="70" y="334" font-family="Menlo, monospace" font-size="13" fill="#2e6b41">TC 2.0.5   → 붙음 → 교착 30/30 → FAILED</text>
-  <text x="352" y="360" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">바닥이 1.40 으로 내려와도 1.32 를 보내는 옛 버전은 여전히 거절된다</text>
+  <text x="352" y="360" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">최소 API가 1.40이어도 1.32 요청은 거절된다</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 4. 엔진의 바닥이 내려와도, 클라이언트가 그보다 더 낮은 버전을 보내면 소용없다</div>
+<div class="obsv-figcap">그림 4. 요청 API가 엔진의 최소 지원 버전보다 낮으면 연결할 수 없어요</div>
 
-<p>그래서 처방은 Testcontainers 를 올리는 것이에요. 1.x 에 머물러야 하면 1.21.4 이상입니다. 2.x 는 릴리스 노트상 2.0.2 부터 기본 API 를 1.44 로 보내고, 2.0.3 은 그 때문에 깨진 옛 엔진(지원하는 최대 API 가 1.44 보다 낮은 엔진) 쪽을 1.32 폴백으로 되살렸어요. Docker 29 와 옛 엔진이 섞인 팀이면 2.0.3 이상이 안전합니다. 실측은 1.21.4 와 2.0.5 에서만 했어요(2.0.2~2.0.4 는 돌려 보지 않았습니다). 2.0.0 과 2.0.1 은 소스상 1.19.8 과 같은 1.32 기본값이라 Docker 29 에서 같은 증상이 날 것으로 보지만, 이것도 돌려 보지는 않았어요. 당장 올릴 수 없다면 테스트 JVM 에 docker-java 의 <code>api.version</code> 시스템 속성을 1.44 로 주는 우회가 1.19.8 에서도 통했어요. 다만 이건 버전 문제를 덮는 임시방편이라, 올리는 일을 미루는 이유로 쓰면 안 됩니다.</p>
+<p>이 버전 불일치를 해결하려면 Testcontainers를 올려야 해요. 1.x에 머물러야 하면 1.21.4 이상입니다. 2.x는 릴리스 노트상 2.0.2 부터 기본 API를 1.44 로 보내고, 2.0.3은 지원하는 최대 API가 1.44보다 낮은 엔진에도 연결할 수 있도록 1.32로 재시도하는 폴백을 추가했어요. 이 릴리스 설명을 기준으로 Docker 29와 이전 엔진을 함께 쓴다면 2.0.3 이상을 검토할 수 있어요. 실측은 1.21.4와 2.0.5 에서만 했어요(2.0.2~2.0.4는 돌려 보지 않았습니다). 2.0.0 과 2.0.1은 소스상 1.19.8 과 같은 1.32 기본값이라 Docker 29에서 같은 증상이 날 것으로 보지만, 이것도 돌려 보지는 않았어요. 당장 올릴 수 없다면 테스트 JVM에 docker-java의 <code>api.version</code> 시스템 속성을 1.44 로 주는 우회가 1.19.8에서도 통했어요. 다만 특정 API 버전을 강제하는 우회이므로, 라이브러리 업데이트 전까지의 임시 대응으로 구분해야 해요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">⚠️ 주의: 같은 저장소, 다른 결과</div>
-  같은 커밋이라도 Docker 버전이 다른 사람의 노트북에서는 결과가 다릅니다. Docker 를 29 로 올린 사람의 노트북에서만 skip 되고, 그 전 버전을 쓰는 사람에게는 테스트가 그대로 돌아요. 그러니 "내 로컬에서 초록"은 증거가 아니에요. 제 회사에서도 로컬에서 skip 된 탓에, 이미 깨져 있던 통합 테스트들이 한동안 드러나지 않았습니다.
+  같은 커밋이라도 Docker 버전과 테스트 설정에 따라 결과가 달라질 수 있어요. Docker 29와 구버전 Testcontainers의 조합에서는 테스트가 건너뛰어질 수 있으니, 로컬 빌드 성공만으로 통합 테스트가 실행됐다고 판단하기 어려워요. 앞서 겪은 사례에서도 이 때문에 기존 통합 테스트의 실패가 드러나지 않았어요.
 </div>
 
-<h2>4. CI 에서 skip 이 0 인지 빌드가 검사하게 한다</h2>
+<h2>4. CI에서 skip이 0 인지 빌드가 검사하게 한다</h2>
 
-<p>버전을 맞추는 건 이번 원인 하나를 막을 뿐이에요. 다음에는 러너에 Docker 가 빠지거나, 누가 <code>assumeTrue</code> 를 넣을 수 있습니다. 원인과 상관없이 막으려면 "통합 테스트가 하나라도 실행되지 않았으면 빌드 실패"를 규칙으로 둬야 해요.</p>
+<p>버전을 맞추는 건 이번 원인 하나를 막을 뿐이에요. 다음에는 러너에 Docker가 빠지거나, 누가 <code>assumeTrue</code>를 넣을 수 있습니다. 원인과 상관없이 막으려면 "통합 테스트가 하나라도 실행되지 않았으면 빌드 실패"를 규칙으로 둬야 해요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: JUnit XML 리포트</div>
-  테스트 실행 결과를 클래스마다 XML 파일로 남긴 것이에요. Gradle 은 <code>build/test-results/test/TEST-*.xml</code> 에 남기고, <code>&lt;testsuite tests="1" skipped="1" failures="0" ...&gt;</code> 처럼 건수가 속성으로 들어 있습니다. CI 도구들이 테스트 결과 화면을 그릴 때 읽는 형식이에요.
+  테스트 실행 결과를 클래스마다 XML 파일로 남긴 것이에요. Gradle은 <code>build/test-results/test/TEST-*.xml</code>에 남기고, <code>&lt;testsuite tests="1" skipped="1" failures="0" ...&gt;</code> 처럼 건수가 속성으로 들어 있습니다. CI 도구들이 테스트 결과 화면을 그릴 때 읽는 형식이에요.
 </div>
 
-<h3>방법 1. XML 의 skipped 를 합쳐서 0 이 아니면 실패</h3>
+<h3>방법 1. XML의 skipped를 합쳐서 0이 아니면 실패</h3>
 
-<p>가장 일반적인 방법이에요. 빌드 도구나 테스트 라이브러리와 상관없이 XML 만 읽습니다. Gradle 에서는 태스크 하나로 붙여요.</p>
+<p>가장 일반적인 방법이에요. 빌드 도구나 테스트 라이브러리와 상관없이 XML만 읽습니다. Gradle에서는 태스크 하나로 붙여요.</p>
 
 <div class="obsv-code">def resultsDir = layout.buildDirectory.dir('test-results/test')
 def checkNoSkipped = tasks.register('checkNoSkipped') {
@@ -302,18 +300,18 @@ if (hasProperty('noSkip')) {                       // CI 에서만: ./gradlew te
     tasks.named('test') { finalizedBy checkNoSkipped }
 }</div>
 
-<p>세 군데를 일부러 이렇게 했어요. <code>finalizedBy</code> 로 붙여서 테스트가 실패해도 검사가 돌아요. <code>tests == 0</code> 과 결과 디렉터리가 없는 경우도 실패로 봐서, 필터가 잘못돼 아무것도 안 돈 빌드를 잡습니다. 그래서 멀티 모듈이라면 통합 테스트가 있는 모듈의 <code>test</code> 태스크에만 붙여야 해요. 테스트가 없는 모듈에 붙이면 결과 디렉터리가 없어 거짓 실패가 납니다. 그리고 <code>-PnoSkip</code> 일 때만 켜서 Docker 없는 노트북의 로컬 빌드는 그대로 두고 CI 만 엄격하게 해요. 같은 1.19.8 조합을 CI 모드로 돌린 화면입니다.</p>
+<p>세 군데를 일부러 이렇게 했어요. <code>finalizedBy</code> 로 붙여서 테스트가 실패해도 검사가 돌아요. <code>tests == 0</code> 과 결과 디렉터리가 없는 경우도 실패로 봐서, 필터가 잘못돼 아무것도 안 돈 빌드를 잡습니다. 그래서 멀티 모듈이라면 통합 테스트가 있는 모듈의 <code>test</code> 태스크에만 붙여야 해요. 테스트가 없는 모듈에 붙이면 결과 디렉터리가 없어 거짓 실패가 납니다. 그리고 <code>-PnoSkip</code> 일 때만 켜서 Docker 없는 노트북의 로컬 빌드는 그대로 두고 CI만 엄격하게 해요. 같은 1.19.8 조합을 CI 모드로 돌린 화면입니다.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-07/noskip-blocks.png" alt="Testcontainers 1.19.8 로 -PnoSkip 을 주고 실행한 화면. 테스트는 SKIPPED 지만 checkNoSkipped 가 tests=1 skipped=1 을 세어 skip 된 테스트가 1개 있다며 BUILD FAILED" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 5. 같은 SKIPPED 가 이번에는 빌드를 막는다</div>
+<div class="obsv-figcap">그림 5. 같은 SKIPPED가 이번에는 빌드를 막는다</div>
 
-<p>→ 테스트 자체는 그림 3 과 똑같이 SKIPPED 였지만 <code>checkNoSkipped</code> 가 <code>tests=1 skipped=1</code> 을 세고 빌드를 실패시켰어요. JUnit 의 <code>Assumptions.assumeTrue(false)</code> 로 중단된 테스트도 Gradle XML 에 <code>skipped="1"</code> 로 남아서 같은 검사에 걸렸습니다(임시 테스트로 확인, results/assume-noskip.txt). Maven Surefire 도 같은 모양의 <code>TEST-*.xml</code> 을 남기니, 같은 검사를 작은 스크립트로 CI 단계에 붙일 수 있어요. 일부러 <code>@Disabled</code> 해 둔 테스트가 있는 저장소라면 통합 테스트만 따로 태스크로 돌리고 그 결과 디렉터리만 검사하면 됩니다.</p>
+<p>→ 테스트 자체는 그림 3 과 똑같이 SKIPPED 였지만 <code>checkNoSkipped</code>가 <code>tests=1 skipped=1</code>을 세고 빌드를 실패시켰어요. JUnit의 <code>Assumptions.assumeTrue(false)</code> 로 중단된 테스트도 Gradle XML에 <code>skipped="1"</code> 로 남아서 같은 검사에 걸렸습니다(임시 테스트로 확인, results/assume-noskip.txt). Maven Surefire도 같은 모양의 <code>TEST-*.xml</code>을 남기니, 같은 검사를 작은 스크립트로 CI 단계에 붙일 수 있어요. 일부러 <code>@Disabled</code> 해 둔 테스트가 있는 저장소라면 통합 테스트만 따로 태스크로 돌리고 그 결과 디렉터리만 검사하면 됩니다.</p>
 
-<h3>방법 2. Testcontainers 의 조건을 꺼서 skip 대신 실패로</h3>
+<h3>방법 2. Testcontainers의 조건을 꺼서 skip 대신 실패로</h3>
 
-<p><code>disabledWithoutDocker</code> 는 JUnit 의 실행 조건(ExecutionCondition)으로 동작해요. JUnit 5 사용자 가이드는 <code>junit.jupiter.conditions.deactivate</code> 설정에 패턴을 주면 그 조건들을 평가하지 않는다고 설명합니다. 예로 든 것은 <code>@Disabled</code> 가 붙은 테스트를 일부러 돌려 보는 경우예요(<a href="https://docs.junit.org/5.12.2/user-guide/">JUnit 5 User Guide, Deactivating Conditions</a>). CI 에서 이 값을 <code>org.testcontainers.*</code> 로 주면 옵션은 소스에 그대로 두고 CI 에서만 꺼집니다.</p>
+<p><code>disabledWithoutDocker</code>는 JUnit의 실행 조건(ExecutionCondition)으로 동작해요. JUnit 5 사용자 가이드는 <code>junit.jupiter.conditions.deactivate</code> 설정에 패턴을 주면 그 조건들을 평가하지 않는다고 설명합니다. 예로 든 것은 <code>@Disabled</code>가 붙은 테스트를 일부러 돌려 보는 경우예요(<a href="https://docs.junit.org/5.12.2/user-guide/">JUnit 5 User Guide, Deactivating Conditions</a>). CI에서 이 값을 <code>org.testcontainers.*</code> 로 주면 옵션은 소스에 그대로 두고 CI 에서만 꺼집니다.</p>
 
 <div class="obsv-code">// 예시: CI 환경 변수가 있을 때만. 실습은 같은 값을 -Pdeactivate='org.testcontainers.*' 로 넘겼다
 tasks.named('test', Test) {
@@ -325,19 +323,19 @@ SkippingMysqlTest &gt; initializationError FAILED
     java.lang.IllegalStateException at DockerClientProviderStrategy.java:277
 BUILD FAILED</div>
 
-<p>→ 같은 1.19.8 조합이 SKIPPED 가 아니라 기본값 클래스와 똑같이 <code>initializationError</code> 로 실패했어요. 원인 메시지가 바로 보인다는 게 장점입니다. 다만 Testcontainers 의 조건만 끄니 <code>assumeTrue</code> 로 빠지는 테스트는 못 잡아요. 방법 1 을 기본으로 두고, 방법 2 는 원인을 빨리 보이게 하는 보조로 쓰는 게 맞습니다.</p>
+<p>→ 같은 1.19.8 조합이 SKIPPED가 아니라 기본값 클래스와 똑같이 <code>initializationError</code> 로 실패했어요. 원인 메시지가 바로 보인다는 게 장점입니다. 다만 Testcontainers의 조건만 끄니 <code>assumeTrue</code> 로 빠지는 테스트는 못 잡아요. 방법 1을 기본으로 두고, 방법 2는 원인을 빨리 보이게 하는 보조로 쓰는 게 맞습니다.</p>
 
 <h3>방법 3. 통합 테스트에서는 건너뛰는 장치를 쓰지 않는다</h3>
 
-<p>규칙으로 막는 방법도 있어요. 통합 테스트 디렉터리에서 <code>disabledWithoutDocker = true</code>, <code>assumeTrue</code>, <code>Assumptions.</code> 를 금지하고, CI 첫 단계에서 <code>grep</code> 으로 찾으면 실패시키는 식입니다. Docker 가 없으면 실패하는 게 정상이라고 팀이 합의하는 거예요. 로컬에서 Docker 없이 일하는 사람이 많다면 방법 1 처럼 CI 에서만 엄격하게 하는 쪽이 덜 불편합니다.</p>
+<p>규칙으로 막는 방법도 있어요. 통합 테스트 디렉터리에서 <code>disabledWithoutDocker = true</code>, <code>assumeTrue</code>, <code>Assumptions.</code>를 금지하고, CI 첫 단계에서 <code>grep</code>으로 찾으면 실패시키는 식입니다. Docker가 없으면 실패하는 게 정상이라고 팀이 합의하는 거예요. 로컬에서 Docker 없이 일하는 사람이 많다면 방법 1 처럼 CI 에서만 엄격하게 하는 쪽이 덜 불편합니다.</p>
 
-<h2>5. 동시성 테스트는 고치기 전에 빨간불부터 본다</h2>
+<h2>5. 수정 전 코드에서 동시성 테스트가 실패하는지 확인하기</h2>
 
-<p>skip 을 막아도 남는 함정이 하나 있어요. 테스트가 실제로 돌았는데 동시성이 안 걸리는 경우입니다. 스레드를 하나씩 순서대로 띄우면 앞 스레드가 커밋한 뒤에 뒤 스레드가 시작해서, 교착이 있는 코드도 초록이 돼요. 그래서 이 실습의 테스트는 이렇게 짰습니다.</p>
+<p>건너뛴 테스트가 없더라도 요청이 실제로 겹치는지 확인해야 해요. 스레드를 차례로 시작하면 앞 스레드가 커밋한 뒤에 다음 스레드가 실행될 수 있어요. 그러면 동시 요청에서 교착이 나는 코드도 테스트를 통과할 수 있어서, 이 실습에서는 요청의 출발 시점을 맞췄어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: CountDownLatch</div>
-  정해진 횟수만큼 <code>countDown()</code> 이 불릴 때까지 <code>await()</code> 하는 스레드들을 붙잡아 두는 Java 동기화 도구예요. 여러 스레드를 준비시켜 놓고 한 번에 출발시킬 때 씁니다.
+  정해진 횟수만큼 <code>countDown()</code>이 불릴 때까지 <code>await()</code> 하는 스레드들을 대기시키는 Java 동기화 도구예요. 여러 스레드를 준비시켜 놓고 한 번에 출발시킬 때 씁니다.
 </div>
 
 <div class="obsv-code">for (int r = 1; r &lt;= ROUNDS; r++) {                  // 라운드마다 새 키 = 매번 "첫 방문"
@@ -359,36 +357,36 @@ BUILD FAILED</div>
 assertEquals(0, failed);                               // 실패한 요청 0
 assertEquals(0, keysWhereCntIsNot(THREADS));           // 최종 상태까지 확인</div>
 
-<p>요점은 다섯 가지예요. 첫째, 커넥션은 출발 전에 스레드마다 미리 열어 둡니다. 출발 뒤에 커넥션을 얻으면 그 시간만큼 출발이 흩어져요. 둘째, <code>ready</code> 와 <code>start</code> 래치 두 개로 "전원 준비, 동시 출발"을 만듭니다. 셋째, 한 번이 아니라 여러 라운드를 돌리고 라운드마다 새 키를 써요. 1편의 교착은 행이 없을 때의 첫 방문에서 나니, 같은 키를 반복하면 두 번째부터는 다른 상황을 재게 됩니다. 넷째, 예외를 삼키지 말고 SQLSTATE 와 오류 코드로 세요. <code>40001/1213</code> 이 30건이라는 숫자가 원인을 바로 말해 줍니다. 다섯째, "예외가 없다"만이 아니라 최종 상태(cnt 가 3)도 확인해요. 교착에 걸린 요청이 재시도 없이 사라지면 예외를 잡는 쪽에서는 조용할 수 있습니다.</p>
+<p>커넥션을 여는 시점부터 맞췄어요. 커넥션은 출발 전에 스레드마다 미리 열어 둡니다. 출발 뒤에 커넥션을 얻으면 그 시간만큼 출발이 흩어져요. <code>ready</code>와 <code>start</code> 래치 두 개로 모든 스레드가 준비된 뒤 함께 출발하게 했어요. 한 번이 아니라 여러 라운드를 돌리고 라운드마다 새 키를 써요. 1편의 교착은 행이 없을 때의 첫 방문에서 나니, 같은 키를 반복하면 두 번째부터는 다른 상황을 재게 됩니다. 예외는 SQLSTATE와 오류 코드별로 집계했어요. <code>40001/1213</code>이 30건이면 교착으로 실패한 요청을 구분할 수 있어요. 또 "예외가 없다"만이 아니라 최종 상태(cnt가 3)도 확인해요. 교착에 걸린 요청이 재시도 없이 사라지면 예외를 잡는 쪽에서는 조용할 수 있습니다.</p>
 
-<p>그리고 가장 중요한 순서가 있어요. <b>고친 코드를 넣기 전에 고치기 전 코드로 먼저 돌려서 빨간불을 확인합니다.</b> 빨간불을 한 번도 본 적 없는 동시성 테스트는 skip 이든, 동시성이 안 걸린 것이든, H2 든, 무언가가 빠져 있을 수 있어요. 이 실습은 고치기 전(<code>-Pimpl=buggy</code>)과 고친 뒤(<code>-Pimpl=fixed</code>)를 실제 MySQL 8.4 에서 세 바퀴씩 돌렸습니다.</p>
+<p>수정 전 코드에서도 같은 테스트를 실행했어요. <b>기존 교착을 재현해 실패하는지 먼저 확인해야 수정 후 통과 결과를 비교할 수 있어요.</b> 수정 전에도 통과한다면 실행 여부, 요청이 겹치는 시점, DB 엔진이 맞는지부터 확인해야 해요. 이 실습은 고치기 전(<code>-Pimpl=buggy</code>)과 고친 뒤(<code>-Pimpl=fixed</code>)를 실제 MySQL 8.4에서 세 바퀴씩 돌렸습니다.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-07/mysql-red-green.png" alt="Testcontainers 2.0.5 와 MySQL 8.4 로 같은 테스트를 두 번 실행한 화면. 고치기 전 impl=buggy 는 ok=60 failed=30 errors 40001/1213=30 으로 FAILED, 고친 뒤 impl=fixed 는 ok=90 failed=0 으로 PASSED. 두 번 모두 checkNoSkipped tests=1 skipped=0" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 6. 같은 테스트가 고치기 전에는 빨간불, 고친 뒤에는 초록불. skip 은 0</div>
+<div class="obsv-figcap">그림 6. 같은 테스트가 수정 전에는 실패, 수정 후에는 통과했고 skip은 모두 0이에요</div>
 
-<p>→ 고치기 전 코드는 세 바퀴 모두 90 요청 중 60 성공, 1213 교착 30건, cnt 가 3 이 아닌 키 30개로 실패했어요. 고친 코드는 세 바퀴 모두 90 요청 전부 성공, cnt 도 전부 3 이었습니다. 두 경우 모두 <code>checkNoSkipped</code> 가 <code>skipped=0</code> 을 확인했으니, 이 초록불은 정말 돈 결과예요.</p>
+<p>→ 고치기 전 코드는 세 바퀴 모두 90 요청 중 60 성공, 1213 교착 30건, cnt가 3이 아닌 키 30개로 실패했어요. 고친 코드는 세 바퀴 모두 90 요청 전부 성공, cnt도 전부 3 이었습니다. 두 경우 모두 <code>checkNoSkipped</code>가 <code>skipped=0</code>을 확인했어요. 이 결과는 테스트를 건너뛰어 생긴 빌드 성공과 구분할 수 있어요.</p>
 
-<p>실습의 수정은 단순합니다. <code>INSERT IGNORE</code> 를 자동 커밋으로 먼저 끝내고, 그다음 트랜잭션에서 <code>SELECT … FOR UPDATE</code> 와 <code>UPDATE</code> 를 해요. <code>FOR UPDATE</code> 시점에 행은 이미 커밋돼 있고, 손에 쥔 S 잠금이 없으니 세 요청이 X 잠금을 차례로 받습니다. 대가도 있어요. 행을 넣는 일과 카운트를 올리는 일이 다른 트랜잭션이 되니, 뒤 트랜잭션이 실패하면 cnt 가 0 인 행이 남습니다. "첫 방문 행이 있다"는 사실 자체가 틀린 게 아닌 테이블이라 이 실습에서는 받아들였어요. 이것 말고도 고르는 방법이 여럿이고 각각 대가가 다른데, 그 비교는 <a href="https://dding-shark.tistory.com/679">6편</a>에 정리했어요. 어떤 방법을 고르든 이 글의 테스트를 그대로 붙여 빨간불에서 초록불로 바뀌는지 보면 됩니다.</p>
+<p>실습에서는 트랜잭션 범위를 바꿨어요. <code>INSERT IGNORE</code>를 자동 커밋으로 먼저 끝내고, 그다음 트랜잭션에서 <code>SELECT … FOR UPDATE</code>와 <code>UPDATE</code>를 해요. <code>FOR UPDATE</code> 시점에 행은 이미 커밋돼 있고, 앞선 중복 검사에서 얻은 S 잠금을 유지하지 않으니 세 요청이 X 잠금을 차례로 받습니다. 대가도 있어요. 행을 넣는 일과 카운트를 올리는 일이 다른 트랜잭션이 되니, 뒤 트랜잭션이 실패하면 cnt가 0인 행이 남습니다. "첫 방문 행이 있다"는 사실 자체가 틀린 게 아닌 테이블이라 이 실습에서는 받아들였어요. 이것 말고도 고르는 방법이 여럿이고 각각 대가가 다른데, 그 비교는 <a href="https://dding-shark.tistory.com/679">6편</a>에 정리했어요. 어떤 방법을 고르든 자신의 트랜잭션과 데이터 조건에 맞춘 테스트로 수정 전 실패와 수정 후 결과를 비교해야 해요.</p>
 
-<h2>6. 정리: "초록"을 믿기 전에 확인할 것</h2>
+<h2>6. 빌드 성공과 함께 확인할 항목</h2>
 
 <div class="obsv-callout">
   <div class="obsv-ct">💡 내 코드에서 바꿀 것</div>
   &bull; 교착·잠금을 검사하는 테스트를 H2 나 목으로 돌리고 있다면, 운영과 같은 엔진과 메이저 버전의 컨테이너로 옮기세요. H2 MySQL 모드는 1편의 시나리오를 90/90 성공으로 통과시켰습니다<br>
-  &bull; <code>build.gradle</code> / <code>pom.xml</code> 에서 Testcontainers 버전을 확인하세요. Docker 29 를 쓰는 사람이 있다면 1.21.4 이상, 2.x 라면 2.0.3 이상을 권합니다. 1.19.8 과 1.21.3 은 29.5.3 에서도 Docker 를 못 찾았어요<br>
-  &bull; <code>disabledWithoutDocker = true</code> 와 <code>assumeTrue</code> 를 검색하세요. 있다면 CI 에서 skip 0 검사(XML 의 skipped 합계)를 붙이거나 <code>junit.jupiter.conditions.deactivate</code> 로 CI 에서만 끄세요<br>
-  &bull; 테스트 리포트에서 PASSED 와 SKIPPED 를 구분해 보세요. Gradle 은 기본 설정에서 SKIPPED 줄을 콘솔에 찍지 않고, <code>BUILD SUCCESSFUL</code> 은 둘을 구분하지 않습니다<br>
+  &bull; <code>build.gradle</code> / <code>pom.xml</code>에서 Testcontainers 버전을 확인하세요. Docker 29를 쓰는 사람이 있다면 1.21.4 이상, 2.x 라면 2.0.3 이상을 권합니다. 1.19.8 과 1.21.3은 29.5.3에서도 Docker를 못 찾았어요<br>
+  &bull; <code>disabledWithoutDocker = true</code>와 <code>assumeTrue</code>를 검색하세요. 있다면 CI에서 skip 0 검사(XML의 skipped 합계)를 붙이거나 <code>junit.jupiter.conditions.deactivate</code> 로 CI 에서만 끄세요<br>
+  &bull; 테스트 리포트에서 PASSED와 SKIPPED를 구분해 보세요. Gradle은 기본 설정에서 SKIPPED 줄을 콘솔에 찍지 않고, <code>BUILD SUCCESSFUL</code>은 둘을 구분하지 않습니다<br>
   &bull; 동시성 테스트는 래치로 동시에 출발시키고, 라운드마다 새 키, 오류 코드별 집계, 최종 상태 확인까지 넣으세요<br>
-  &bull; 고치기 전 코드로 빨간불을 먼저 보세요. 빨간불을 본 적 없는 초록불은 아무것도 증명하지 않습니다
+  &bull; 수정 전 코드에서 테스트가 기존 교착을 재현해 실패하는지 확인한 뒤, 같은 테스트로 수정 후 결과를 비교하세요
 </div>
 
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>1편의 교착 시나리오는 H2 MySQL 모드에서 90/90 성공했고, 같은 테스트가 MySQL 8.4 에서는 30 라운드 전부에서 1213 으로 실패했어요. 세 세션으로 같은 순서를 만들어도 H2 에서는 두 요청이 차례로 끝났어요. 1편의 S 잠금에 해당하는 것이 H2 에는 없거나 다르게 동작합니다.</b><br><br>
-  Testcontainers 는 Docker 를 못 찾으면 기본값에서는 실패하고, <code>disabledWithoutDocker = true</code> 면 SKIPPED 에 빌드 성공으로 끝나요. Docker 29.5.3 에서 1.19.8 과 1.21.3 은 API 1.40 미만 요청이 400 으로 거절되어 Docker 가 "없다"고 판단했고, 1.21.4 와 2.0.5 는 붙었습니다. <code>DOCKER_HOST</code> 를 틀리게 주는 것만으로는 skip 되지 않았어요. 다른 소켓으로 넘어가 버렸습니다. JUnit XML 의 skipped 합계를 CI 에서 0 으로 강제하자 같은 skip 이 빌드를 막았어요.<br><br>
-  초록불은 "실패하지 않았다"는 뜻이지 "검사했다"는 뜻이 아니에요. 동시성 테스트의 초록불은 같은 테스트의 빨간불을 먼저 본 뒤에만 믿습니다.
+  H2 MySQL 모드에서는 90/90 요청이 성공했지만, MySQL 8.4에서는 30라운드 모두에서 1213 교착이 발생했어요. 이 실행 결과만으로 H2 내부의 잠금 구조까지 설명할 수는 없어요.<br><br>
+  Docker 29.5.3에서 Testcontainers 1.19.8과 1.21.3은 API 버전 문제로 연결하지 못했고, <code>disabledWithoutDocker = true</code>일 때는 테스트를 건너뛴 채 빌드가 성공했어요. 1.21.4와 2.0.5는 연결됐어요. 잘못된 <code>DOCKER_HOST</code>만 지정하면 다른 소켓으로 연결되기도 했어요.<br><br>
+  CI 검사에서는 JUnit XML의 skipped 합계가 0이 아니면 빌드를 실패시켰어요. 동시성 테스트는 수정 전 실패와 수정 후 통과를 비교하고 두 경우 모두 skip이 0인지 확인했어요. 직접 실행하지 않은 버전에 대한 설명은 소스와 릴리스 노트에 따른 예상으로 구분했어요.
 </div>
 
 </div>

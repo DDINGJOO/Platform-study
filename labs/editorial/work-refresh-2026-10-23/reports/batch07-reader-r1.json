@@ -1,0 +1,248 @@
+{
+  "role": "code-reviewer",
+  "perspective": "reader",
+  "round": 1,
+  "checked_numbers": [
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96
+  ],
+  "recommendation": "REQUEST_CHANGES",
+  "independence": "대상 글을 직접 작성하지 않은 독립 독자 검토다. 원자료 사실 감사와 구분했다.",
+  "read_scope": {
+    "mode": "full_content",
+    "html_count": 10,
+    "writer_reports": "writers/087.json부터 writers/096.json까지 전체",
+    "title_rows": "titles.json의 87–96번",
+    "surfaces": [
+      "도입",
+      "전체 본문과 절 제목",
+      "보호 코드·인용과 인접 한정",
+      "SVG 라벨",
+      "그림 캡션",
+      "스크린샷 대체 텍스트",
+      "콜아웃",
+      "요약",
+      "lead·태그",
+      "대상 시리즈 안의 선행 편 참조"
+    ],
+    "guidance": [
+      "BRIEF.md",
+      "PLAN.md",
+      "REVIEW.md",
+      "설치된 code-reviewer 역할",
+      "blog-post-pipeline 스킬",
+      "tistory-sketch-post 스킬과 쉬운 글·SVG 가이드"
+    ],
+    "source_material_audit_performed": false,
+    "new_database_or_operational_experiment": false
+  },
+  "issues": [
+    {
+      "id": "B07-READER-01",
+      "number": 87,
+      "severity": "LOW",
+      "kind": "reader",
+      "location": "4절 비교표 239–244행과 해설 246행",
+      "problem": "두 개의 세 요청 시나리오를 보여 준 뒤 '열두 번 모두'라고 합쳐 설명해, 표 전체의 실행 수가 12회인지 시나리오마다 12회인지 혼동할 수 있다.",
+      "evidence": "커밋 뒤 FOR UPDATE와 롤백 뒤 INSERT가 각각 네 조합에서 3/3이다. 각 시나리오는 12회이고 두 시나리오 합계는 24회인데, 해설에는 시나리오별이라는 범위가 없다. 앞선 편을 인용하는 89번은 A 패턴으로 한정하므로 별도 횟수 오류로 지적하지 않았다.",
+      "suggested_fix": "보호 표는 유지하고 해설을 '커밋 뒤 FOR UPDATE와 롤백 시나리오에서 각각 열두 번, 합계 스물네 번 모두 교착이 났어요'처럼 범위만 명시한다."
+    },
+    {
+      "id": "B07-READER-02",
+      "number": 88,
+      "severity": "LOW",
+      "kind": "reader",
+      "location": "2절 실습 설명 78행의 전체 두 번 실행 주장",
+      "problem": "반환값과 잠금이 독립적인 두 실행에서 동일했다고 단정하지만, 현재 보관 자료로는 두 실행을 구분해 확인하지 못했다는 한계가 독자에게 전달되지 않는다. 반복 재현을 확인한 근거로 확대해 읽힐 수 있다.",
+      "evidence": "본문은 전체를 두 번 돌렸고 두 번 모두 같았다고 설명한다. writers/088.json의 unresolved는 각 실행의 독립 기록을 보관 결과에서 구분해 확인하지 못했고 이번 재실행도 하지 않았다고 명시한다. 같은 글의 회사 코드·Hibernate에 대한 한정은 이 반복 실행 주장까지 한정하지 않는다.",
+      "suggested_fix": "해당 문장 직후 '두 번 같았다는 것은 당시 기록의 설명이며, 이번에는 보관 결과에서 각 실행의 독립 기록을 구분해 재확인하지 못했어요'라는 짧은 한정을 붙인다. 새 재실행은 요구하지 않는다."
+    },
+    {
+      "id": "B07-READER-03",
+      "number": 91,
+      "severity": "LOW",
+      "kind": "reader",
+      "location": "2절 165행, 3편의 sys.innodb_lock_waits 참조",
+      "problem": "대기 관계를 확인하려고 선행 편으로 이동한 독자가 안내한 이름의 조회 예제를 찾을 수 없다.",
+      "evidence": "91번은 3편의 해당 sys 뷰로 이어서 확인하라고 안내한다. 실제 3편인 89번에는 이 뷰 이름이 없고, performance_schema.data_lock_waits와 트랜잭션 정보를 연결하는 조회를 설명한다. 89번 전체를 읽고 해당 뷰 문자열이 0개임도 직접 확인했다.",
+      "suggested_fix": "보호 인라인 코드 이름은 유지하되, '3편에서는 같은 대기 관계를 data_lock_waits와 트랜잭션 정보의 조인 예제로 확인해요'라는 안내를 붙이고, 비보호 '3편의' 표현을 조정해 그 편에 해당 sys 뷰 예제가 있다는 뜻을 제거한다."
+    },
+    {
+      "id": "B07-READER-04",
+      "number": 95,
+      "severity": "MEDIUM",
+      "kind": "reader",
+      "location": "lead 2행, 도입 29행, 3절 82·93행, SVG 125행, 요약 211행",
+      "problem": "복구 지연 약 9분의 종료 지점이 lead에서는 도커 시작이고 본문에서는 정상 서비스 응답으로 달라진다. OS 기동 1–2분, 이후 7분 관찰, 도커 시작 후 3분이라는 순서도 약 9분과 어떻게 겹치는지 알 수 없다. 독자가 복구 순서를 재구성하거나 지연 원인을 나눠 볼 때 서로 다른 구간을 같은 수치로 오해한다.",
+      "evidence": "lead는 '재부팅 뒤 도커를 시작하기까지 약 9분', 29행은 '복구까지 약 9분', 93행은 도커 시작 후 3분 뒤 정상 응답과 재부팅 후 서비스 기동까지 약 9분을 함께 제시한다. 82행의 1–2분 및 7분을 순차 구간으로 더하면 같은 합계가 되지 않는다. SVG의 '+9분 2차 중단'은 서비스가 복구되기 전의 지연인지 별도 중단인지도 명확하지 않다. 원시 시계열 미확인 한정은 충분하지만 어떤 구간끼리 비교할 수 없는지는 남아 있다.",
+      "suggested_fix": "lead와 SVG는 '재부팅 뒤 서비스 기동 지연 약 9분(당시 정리)'처럼 동일한 범위로 맞춘다. 3절에는 세부 구간의 시작·종료점과 중첩을 원시 기록으로 대조하지 못해 1–2분·7분·3분을 단순 합산해 약 9분을 재구성할 수 없다는 한 문장을 붙인다. 보호 인용 수치를 임의로 바꾸거나 새로운 복구 시각을 만들지 않는다."
+    }
+  ],
+  "article_assessments": [
+    {
+      "number": 87,
+      "result": "실습 조건과 과거 운영 이력 미확인 범위, S·X 잠금과 1213 롤백 설명은 충분하다. 반복 횟수의 시나리오별 범위만 보완이 필요하다."
+    },
+    {
+      "number": 88,
+      "result": "ODKU 반환값과 CLIENT_FOUND_ROWS, 일반 UPDATE 영향, 경고·읽기 뷰·회사 코드 미검증 범위는 구분된다. 독립 반복 실행 기록의 한계는 본문에 남아 있지 않다."
+    },
+    {
+      "number": 89,
+      "result": "STATUS의 현재 SQL과 앞서 잠금을 잡은 SQL을 구분하며 THREAD_ID의 함정, 샘플링 한계와 내부 원인의 추정도 설명한다. 운영 배포 경험은 별도 경험 문단으로 제시돼 실습이 그 이력을 입증했다는 뜻으로 읽히지 않는다."
+    },
+    {
+      "number": 90,
+      "result": "운영 사례, 기존 MySQL 실습, 시뮬레이션과 미적용 규칙을 구분한다. R3 합계는 매시간 지속을 보장하지 않으며 0건도 정한 관찰 기간에 한정된다는 본문 설명이 보호 표의 단정을 한정한다."
+    },
+    {
+      "number": 91,
+      "result": "1213 전체 롤백과 기본 1205 문장 롤백, 자동 커밋·Spring 경로·재시도 위치가 충분히 분리된다. 과거 반복 실행과 운영 응답의 미확인 범위도 설명한다. 선행 편 조회 이름의 안내만 일치하지 않는다."
+    },
+    {
+      "number": 92,
+      "result": "일곱 구현과 다섯 방법의 관계, 성공·중복 판정·UNKNOWN의 차이, 같은 키 중복 제어와 멱등성의 전제를 설명한다. 외부 부작용, 롤백 미실험 조건 및 과거 시험과 현재 실습의 실패 건수 차이도 한정한다."
+    },
+    {
+      "number": 93,
+      "result": "실무 경험과 별도 실습을 구분한다. SKIPPED와 빌드 성공, API 버전 실측과 미실행 버전 예상, 수정 전후 실행과 라운드·요청 수를 구분한다. H2 내부 잠금 추정도 제한돼 있다."
+    },
+    {
+      "number": 94,
+      "result": "초기 가설, 당시 해석과 재검증하지 못한 결론을 구분한다. GC 미진단을 기각 근거로 쓰지 않고, OOM 메시지 부재·CPU·수집 공백·힙 합계의 보호 인용마다 인접 한정이 있다. 물리 메모리 점유와 설정값도 구별한다."
+    },
+    {
+      "number": 95,
+      "result": "접속 경로·스냅샷과 휘발성 증거·도커 미기동·설정 적용을 구별한다. 시리얼 콘솔 가능성과 전체 무중단 보장도 제한한다. 약 9분 구간의 기준과 하위 시간의 관계는 보완이 필요하다."
+    },
+    {
+      "number": 96,
+      "result": "파일 형식과 실행 도구 버전, 힙 설정과 적용값, 조회 실패와 실제 롤백 실패를 구분한다. 종단 검증 미완료, 예상 롤백 시간, 수동 정지와 후속 과제 상태가 SVG·콜아웃·요약까지 전달된다."
+    }
+  ],
+  "proof": {
+    "frozen_manifest": "batch07-frozen-r1.json",
+    "frozen_numbers_match": true,
+    "hashes_checked": 10,
+    "hash_mismatches": 0,
+    "articles": [
+      {
+        "number": 87,
+        "sha256": "9e4b468d08919264de6edd987998112c89d0ca6d954f81c841c56723a80ece04",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 88,
+        "sha256": "774514b2fc9c740a5c6e4434e59a26126378dfbca0c59225f208fa012f76d63f",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 89,
+        "sha256": "d73ec12083f62cfd367994e0a427f640a5a2f4c013e1bae2f33b802cd4d2051d",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 90,
+        "sha256": "e573d7985326ef6187ef35cab2dbfe3ee637c27998616796966ff2f9ee265448",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 91,
+        "sha256": "e04c03df07f23d573c94cece63be043e9a849924927d5bbee95620ed67331b9f",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 92,
+        "sha256": "7d85cdeb8c79799f435ddbaf1d83941321d30d4e28483ca47adbe8bdd359d551",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 93,
+        "sha256": "b144c1617921ee08e1aaaff8fcb4f15c82ea9fae4cb7a3ee2e8f106f3a1930da",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 94,
+        "sha256": "71b534a5d6cd201a328ada0550b8f699f49fa126ef11af39430ca140baba020c",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 95,
+        "sha256": "9a1e930a80d59956fd1e9501948f30774a3c61342e33053ef47c1bff84990857",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      },
+      {
+        "number": 96,
+        "sha256": "a8ed21e3d02dd6ce446a050af794f6774221988029c2702c0fe293de60c2bb53",
+        "frozen_r1_match": true,
+        "html_structure_exit": 0,
+        "external_organization_mask_exit": 0
+      }
+    ],
+    "writer_reports_read": 10,
+    "title_rows_read": 10,
+    "content_read": "10편 전체 가시 텍스트, 보호 코드·인용, SVG 라벨·캡션·콜아웃·요약과 이미지 대체 텍스트를 읽었다. 이전 배치 판정을 재사용하지 않았다.",
+    "predecessor_reference_check": {
+      "article_89_sys_innodb_lock_waits_occurrences": 0,
+      "article_91_reference_location": "165행"
+    },
+    "changes_made": [
+      "reports/batch07-reader-r1.json"
+    ]
+  },
+  "validation": {
+    "json_parse": "pass",
+    "required_report_fields": "pass",
+    "required_issue_fields": "pass",
+    "html_structure": {
+      "checked": 10,
+      "passed": 10,
+      "failed": 0
+    },
+    "external_organization_mask": {
+      "html_checked": 10,
+      "html_passed": 10,
+      "external_list_used": true,
+      "report_exit_code": 0,
+      "report_result": "pass"
+    },
+    "final_frozen_hashes": {
+      "checked": 10,
+      "matched": 10,
+      "mismatches": 0
+    }
+  },
+  "limits": [
+    "이 보고서는 현재 동결 HTML의 독자 이해와 주장 범위를 검토했다. 원자료의 사고 로그·지표·배포 이력·기존 DB 실험 기록을 독립 감사하지 않았다. 작가 보고서의 확인·확인 불가 판단을 재검증한 것으로 표현하지 않았다.",
+    "실제 DB·운영 환경이나 컨테이너를 실행하지 않았으며 새 장애 실험과 재현 시험도 하지 않았다. 반복 횟수 지적은 공개 본문 표와 작가 보고서의 확인 한계에 근거한다.",
+    "스크린샷은 대체 텍스트와 인접 본문·캡션을 읽었다. 이미지 픽셀이나 모바일·데스크톱 브라우저 렌더링을 직접 검사하지 않았으므로 시각적 잘림과 반응형 배치 판정은 포함하지 않는다.",
+    "본문의 외부 링크와 공식 문서를 새로 조회하지 않았다. 선행 편 참조는 이번 대상에 포함된 실제 HTML 본문끼리 대조했다.",
+    "HTML·공통 파일·원자료·git 상태를 수정하지 않았다. 지정된 보고서 한 파일만 작성했다. 보호 인용·코드의 한정은 인접 비보호 설명의 보완으로 제안했다."
+  ]
+}

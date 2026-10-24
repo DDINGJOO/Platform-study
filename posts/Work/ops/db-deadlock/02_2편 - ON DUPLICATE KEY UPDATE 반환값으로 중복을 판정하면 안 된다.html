@@ -2,8 +2,8 @@
   MySQL 교착 2편: ON DUPLICATE KEY UPDATE 반환값으로 중복을 판정하면 안 된다
   tistory-sketch-post 스타일 · 단일 HTML
 ============================================================ -->
-<!-- tags: ON DUPLICATE KEY UPDATE, useAffectedRows, CLIENT_FOUND_ROWS, ROW_COUNT, INSERT IGNORE, affected rows -->
-<!-- lead: INSERT … ON DUPLICATE KEY UPDATE 는 매뉴얼상 새 행 1, 변경 2, 무변경 0 인데 Connector/J 기본값에서는 무변경 중복도 1 이에요. mysql CLI, 기본값, useAffectedRows=true 로 13개 문장의 반환값과 잠금을 비교했어요. -->
+<!-- tags: ON DUPLICATE KEY UPDATE, useAffectedRows, CLIENT_FOUND_ROWS, ROW_COUNT -->
+<!-- lead: ON DUPLICATE KEY UPDATE는 Connector/J 기본값에서 새 행과 값이 바뀌지 않은 중복 모두 1을 반환해요. 13개 문장의 실습 결과로 접속 설정에 따른 차이와 중복 판정 시 확인할 경고·잠금을 살펴봐요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -28,48 +28,43 @@
 
 <div class="obsv-series">
   <div class="obsv-st">🔒 MySQL 교착 · 2편</div>
-  1편. INSERT IGNORE 다음 SELECT … FOR UPDATE가 교착을 만드는 이유<br>
-  <b>2편. ON DUPLICATE KEY UPDATE 반환값으로 중복을 판정하면 안 된다</b> &larr; 지금 이 글<br>
-  3편. LATEST DETECTED DEADLOCK 읽는 법과 data_locks로 원인을 확정하는 순서<br>
-  4편. 교착 알람이 조용해졌다고 교착이 사라진 건 아니다<br>
-  5편. 교착(1213)과 lock wait timeout(1205)은 롤백 범위가 다르다<br>
-  6편. 같은 요청이 동시에 두 번 올 때 없으면 넣기를 교착 없이 짜는 다섯 가지 방법<br>
-  7편. 동시성 테스트가 통과한 게 아니라 실행되지 않았을 때
+  <a href="https://dding-shark.tistory.com/674" style="color:inherit">1편. INSERT IGNORE 뒤 SELECT … FOR UPDATE에서 교착이 발생하는 조건</a><br>
+  <b>2편. Connector/J 기본값에서 ON DUPLICATE KEY UPDATE의 중복 판정이 달라지는 이유</b> &larr; 지금 이 글
 </div>
 
-<p><code>INSERT IGNORE</code> 다음에 같은 행을 <code>SELECT … FOR UPDATE</code> 하던 코드가 교착을 냈습니다(<a href="https://dding-shark.tistory.com/674">1편</a>). 리뷰에서 이런 제안이 나와요. "두 문장을 <code>INSERT … ON DUPLICATE KEY UPDATE</code> 한 문장으로 합치죠. 반환값이 1 이면 새로 저장한 거고, 2 면 이미 있던 거예요. MySQL 매뉴얼에 그렇게 적혀 있어요." 매뉴얼에 그렇게 적혀 있는 건 맞습니다. 그리고 그 코드는 같은 요청이 두 번 들어와 갱신할 값이 기존 값과 같으면, 두 번 다 "새로 저장했다"고 판정해요.</p>
+<p><code>INSERT IGNORE</code> 다음에 같은 행을 <code>SELECT … FOR UPDATE</code> 하던 코드에서 교착이 났어요(<a href="https://dding-shark.tistory.com/674">1편</a>). 리뷰에서는 두 문장을 <code>INSERT … ON DUPLICATE KEY UPDATE</code> 하나로 합치고, 반환값이 1이면 새로 저장한 행, 2면 이미 있던 행으로 구별하자는 제안이 있었어요. 하지만 같은 요청이 다시 들어와 갱신할 값이 기존 값과 같으면 이 판정은 맞지 않아요. Connector/J 기본값에서는 두 요청 모두 1을 반환하기 때문이에요.</p>
 
-<p>제 회사에서도 교착을 고치는 과정에서 이 제안을 받았고, 쓰지 않았습니다. 같은 본문이 다시 들어오면 갱신할 값이 기존 값과 같고, 그때 Connector/J 기본 설정에서는 중복인데도 1 이 돌아오기 때문이었어요. 이 글은 그 판단의 근거를 다른 회사 개발자가 자기 환경에서 그대로 재현할 수 있게 정리합니다. <b>같은 문장 13개를 mysql CLI, Connector/J 기본값, <code>useAffectedRows=true</code> 세 가지로 돌린 반환값 표</b>가 중심이에요.</p>
+<p>당시에는 반환값으로 중복을 구별해야 했으므로 이 제안을 쓰지 않았어요. 아래에서는 같은 문장 13개를 mysql CLI, Connector/J 기본값, <code>useAffectedRows=true</code> 세 가지로 실행한 결과를 비교해요. 반환값뿐 아니라 설정을 바꿀 때 다른 UPDATE에 미치는 영향과 중복 행에 남는 잠금도 함께 확인했어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
+  <div class="obsv-ct">🧭 반환값과 함께 확인할 조건</div>
   &bull; 매뉴얼의 "새 행 1, 변경 2, 무변경 0" 은 언제 성립하나?<br>
   &bull; Connector/J 기본값에서 무변경 중복은 왜 1 이 되나? 그럼 <code>useAffectedRows=true</code> 로 바꾸면 끝인가?<br>
   &bull; <code>INSERT IGNORE</code> 의 반환값과 <code>ROW_COUNT()</code> 는 믿을 만한가?<br>
   &bull; ODKU 는 중복일 때 어떤 잠금을 거나? 값이 안 바뀌어도 거나?<br>
-  &bull; 그럼 저장과 중복은 무엇으로 판정하나?
+  &bull; 새로 저장한 행과 중복 행은 무엇으로 구별하나?
 </div>
 
 <h2>1. 매뉴얼의 규칙: 새 행 1, 변경 2, 무변경 0</h2>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: ODKU (INSERT … ON DUPLICATE KEY UPDATE)</div>
-  넣으려는 행이 PK 나 유니크 키에서 기존 행과 겹치면, 오류를 내는 대신 기존 행에 지정한 UPDATE 를 실행하는 문장이에요. 이 글에서는 줄여서 ODKU 라고 부릅니다.
+  넣으려는 행이 PK 나 유니크 키에서 기존 행과 겹치면, 오류를 내는 대신 기존 행에 지정한 UPDATE 를 실행하는 문장이에요. 이 글에서는 줄여서 ODKU라고 부를게요.
 </div>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: affected rows (영향받은 행 수)</div>
-  INSERT, UPDATE, DELETE 를 실행한 뒤 서버가 클라이언트에 돌려주는 숫자예요. JDBC 에서는 <code>executeUpdate()</code> 의 반환값, SQL 안에서는 바로 다음에 부르는 <code>ROW_COUNT()</code> 로 봅니다.
+  INSERT, UPDATE, DELETE 를 실행한 뒤 서버가 클라이언트에 돌려주는 숫자예요. JDBC 에서는 <code>executeUpdate()</code> 의 반환값, SQL 안에서는 바로 다음에 부르는 <code>ROW_COUNT()</code>로 볼 수 있어요.
 </div>
 
-<p>MySQL 8.4 매뉴얼의 ODKU 절은 이렇게 적습니다. "ON DUPLICATE KEY UPDATE 를 쓰면 행마다 affected-rows 값은, 새 행으로 삽입되면 1, 기존 행이 갱신되면 2, 기존 행이 현재 값 그대로 설정되면 0 이다." 바로 뒤에 조건이 하나 붙어요. "<code>mysqld</code> 에 연결할 때 <code>mysql_real_connect()</code> C API 함수에 <code>CLIENT_FOUND_ROWS</code> 플래그를 지정하면, 기존 행이 현재 값 그대로 설정될 때 affected-rows 값은 (0 이 아니라) 1 이다."(<a href="https://dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html">INSERT … ON DUPLICATE KEY UPDATE Statement</a>)</p>
+<p>MySQL 8.4 매뉴얼의 ODKU 절에는 다음과 같이 나와 있어요. "ON DUPLICATE KEY UPDATE 를 쓰면 행마다 affected-rows 값은, 새 행으로 삽입되면 1, 기존 행이 갱신되면 2, 기존 행이 현재 값 그대로 설정되면 0 이다." 바로 뒤에 조건이 하나 붙어요. "<code>mysqld</code> 에 연결할 때 <code>mysql_real_connect()</code> C API 함수에 <code>CLIENT_FOUND_ROWS</code> 플래그를 지정하면, 기존 행이 현재 값 그대로 설정될 때 affected-rows 값은 (0 이 아니라) 1 이다."(<a href="https://dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html">INSERT … ON DUPLICATE KEY UPDATE Statement</a>)</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: CLIENT_FOUND_ROWS</div>
   클라이언트가 접속할 때 켜는 플래그예요. 켜면 UPDATE 의 결과가 "실제로 바뀐 행 수"가 아니라 "WHERE 에 걸린 행 수"가 됩니다. 접속 단위로 정해지므로 같은 커넥션의 모든 문장에 적용돼요.
 </div>
 
-<p>같은 플래그가 일반 UPDATE 의 의미도 바꿉니다. 정보 함수 문서의 <code>ROW_COUNT()</code> 설명은 "UPDATE 문에서 affected-rows 값은 기본적으로 실제로 바뀐 행 수"이고, <code>CLIENT_FOUND_ROWS</code> 를 지정하면 "찾은 행 수, 즉 WHERE 절에 걸린 행 수"라고 적어요. ODKU 에 대해서도 위와 같은 1, 2, 0 규칙과 같은 단서를 반복합니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/information-functions.html">Information Functions</a>). 정리하면 숫자 하나가 두 가지 질문 중 하나에 답하는데, 어느 질문인지는 문장이 아니라 <b>접속할 때 정해진다</b>는 뜻입니다.</p>
+<p>같은 플래그는 일반 UPDATE의 반환값 의미도 바꿔요. 정보 함수 문서의 <code>ROW_COUNT()</code> 설명은 "UPDATE 문에서 affected-rows 값은 기본적으로 실제로 바뀐 행 수"이고, <code>CLIENT_FOUND_ROWS</code> 를 지정하면 "찾은 행 수, 즉 WHERE 절에 걸린 행 수"라고 적어요. ODKU 에 대해서도 위와 같은 1, 2, 0 규칙과 같은 단서를 반복합니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/information-functions.html">Information Functions</a>). 같은 UPDATE라도 접속 설정에 따라 실제로 바뀐 행 수를 반환할 수도, 조건에 맞는 행 수를 반환할 수도 있어요.</p>
 
 <h2>2. 실습: 같은 문장 13개, 클라이언트 세 가지</h2>
 
@@ -80,7 +75,7 @@ cd Platform-study/labs/db/dl-02-odku-rowcount
 ./scripts/run_all.sh        # MySQL(127.0.0.1:39020) → CLI → JDBC 두 모드 → 잠금
 docker compose down -v</div>
 
-<p>mysql CLI 는 <code>-vvv</code> 로 "Query OK, N rows affected" 를 찍고, Java 쪽은 JDK 25 의 단일 파일 실행(<code>java -cp 드라이버.jar RowCount.java</code>)으로 <code>executeUpdate()</code> 반환값과 바로 다음 <code>SELECT ROW_COUNT()</code> 를 찍었어요. Connector/J 는 9.7.0 과 26.7.0 두 버전으로 돌렸고 13개 문장의 결과가 한 칸도 다르지 않았습니다. 전체를 두 번 돌렸고 반환값과 잠금은 두 번 모두 같았어요. 경고 코드와 그 직후의 <code>ROW_COUNT()</code>(5절)는 첫 실행 뒤 측정 순서를 고친 프로그램으로 한 번 쟀습니다. 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/db/dl-02-odku-rowcount">labs/db/dl-02-odku-rowcount</a> 에 있습니다.</p>
+<p>mysql CLI 는 <code>-vvv</code> 로 "Query OK, N rows affected" 를 찍고, Java 쪽은 JDK 25 의 단일 파일 실행(<code>java -cp 드라이버.jar RowCount.java</code>)으로 <code>executeUpdate()</code> 반환값과 바로 다음 <code>SELECT ROW_COUNT()</code> 를 찍었어요. Connector/J 는 9.7.0 과 26.7.0 두 버전으로 돌렸고 13개 문장의 결과가 한 칸도 다르지 않았습니다. 당시 정리에는 전체를 두 번 돌렸고 반환값과 잠금이 같았다고 적혀 있어요. 다만 보관 결과에서 각 실행의 독립 기록을 구분해 재확인하지는 못했어요. 경고 코드와 그 직후의 <code>ROW_COUNT()</code>(5절)는 첫 실행 뒤 측정 순서를 고친 프로그램으로 한 번 쟀습니다. 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/db/dl-02-odku-rowcount">labs/db/dl-02-odku-rowcount</a> 에 있습니다.</p>
 
 <div class="obsv-code">(results/cli-summary.txt, results/jdbc-9.7.0.txt 에서 추림)
                                       mysql CLI   Connector/J 기본값   useAffectedRows=true
@@ -97,14 +92,14 @@ C11 UPDATE 같은 값                        0            1                   0 
 C12 UPDATE 다른 값                        1            1                   1
 C13 UPDATE 없는 행                        0            0                   0</div>
 
-<p>→ 화살표 두 곳이 이 글의 전부예요. Connector/J 기본값에서는 C05(새 행)와 C06, C07(이미 있고 아무것도 안 바뀐 중복)이 똑같이 1 이었습니다. 반환값만 보고는 새로 넣었는지 이미 있었는지 구별할 수 없다는 뜻이에요. 그리고 <code>useAffectedRows=true</code> 로 이 구별을 되찾으면, 이번에는 C11 의 일반 UPDATE 가 행이 있는데도 0 을 돌려줍니다. mysql CLI 는 <code>useAffectedRows=true</code> 와 같은 쪽이었어요. CLI 에서 매뉴얼의 1, 2, 0 을 확인하고 애플리케이션에 옮기면 그대로 틀리는 이유가 이것입니다.</p>
+<p>표에서 비교할 부분은 ODKU의 무변경 중복과 일반 UPDATE의 같은 값 대입이에요. Connector/J 기본값에서는 C05(새 행)와 C06, C07(이미 있고 아무것도 안 바뀐 중복)이 똑같이 1 이었습니다. 반환값만 보고는 새로 넣었는지 이미 있었는지 구별할 수 없다는 뜻이에요. 그리고 <code>useAffectedRows=true</code> 로 이 구별을 되찾으면, 이번에는 C11 의 일반 UPDATE 가 행이 있는데도 0 을 돌려줍니다. mysql CLI 는 <code>useAffectedRows=true</code> 와 같은 쪽이었어요. 따라서 CLI에서 확인한 1, 2, 0 규칙을 애플리케이션에 적용하기 전에 드라이버 접속 설정도 확인해야 해요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-02/jdbc-rowcount.png" alt="scripts/jdbc.sh 를 Connector/J 9.7.0, MySQL 8.4.11 에서 실행한 화면. 기본값에서는 ODKU 새 행 1, 무변경 중복 1, 값 변경 2, UPDATE 같은 값 1. useAffectedRows=true 에서는 ODKU 무변경 중복 0, UPDATE 같은 값 0. 두 모드 모두 INSERT IGNORE 중복 0, RR 에서 INSERT IGNORE 0 뒤 잠금 없는 SELECT 0행" style="max-width:100%">
 </div>
 <div class="obsv-figcap">그림 1. 같은 13문장을 Connector/J 기본값과 useAffectedRows=true 로 돌린 실제 화면</div>
 
-<h2>3. Connector/J 기본값이 그 플래그를 켠다</h2>
+<h2>3. Connector/J 기본값에서는 CLIENT_FOUND_ROWS가 켜져요</h2>
 
 <p>Connector/J 문서의 접속 속성 표에서 <code>useAffectedRows</code> 를 찾으면 원문은 이렇습니다.</p>
 
@@ -116,7 +111,7 @@ C13 UPDATE 없는 행                        0            0                   0<
   statements to be returned by the server.
   Default Value: false     Since Version: 5.1.7</div>
 
-<p>→ "서버에 접속할 때 CLIENT_FOUND_ROWS 를 켜지 마라"는 속성이고 기본값이 false 예요(<a href="https://dev.mysql.com/doc/connector-j/en/connector-j-connp-props-connection.html">Connector/J, Connection</a>). 이중 부정이라 헷갈리는데, 뒤집으면 <b>기본값에서 Connector/J 는 CLIENT_FOUND_ROWS 를 켜고 접속합니다.</b> 그래서 1절의 단서 조항이 적용되고, 무변경 중복이 0 이 아니라 1 이 됩니다. 실습의 C06, C07 이 그 결과예요.</p>
+<p>설명은 "서버에 접속할 때 CLIENT_FOUND_ROWS를 켜지 않는다"는 뜻이고, 이 속성의 기본값은 false예요(<a href="https://dev.mysql.com/doc/connector-j/en/connector-j-connp-props-connection.html">Connector/J, Connection</a>). 이중 부정이라 헷갈리는데, 뒤집으면 <b>기본값에서 Connector/J는 CLIENT_FOUND_ROWS를 켜고 접속해요.</b> 그래서 1절의 단서 조항이 적용되고, 무변경 중복이 0 이 아니라 1 이 됩니다. 실습의 C06, C07 이 그 결과예요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -146,44 +141,46 @@ C13 UPDATE 없는 행                        0            0                   0<
   <text x="400" y="176" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">구별 불가</text>
   <path d="M548 275 C 556 268, 594 268, 602 276 C 608 290, 600 306, 576 307 C 552 306, 544 290, 548 275 Z" fill="none" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round"/>
   <text x="608" y="318" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">행이 있는데 0</text>
-  <text x="350" y="366" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 한쪽을 고치면 다른 쪽 숫자의 의미가 바뀐다</text>
+  <text x="350" y="366" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 설정을 바꾸면 일반 UPDATE 반환값도 달라진다</text>
 </svg>
 </div>
 <div class="obsv-figcap">그림 2. 기본값에서는 새 행과 무변경 중복이 같은 1, 플래그를 끄면 일반 UPDATE 가 0 으로 바뀐다</div>
 
-<p>"중복이면 같은 값을 다시 쓰는 경우는 드물다"고 생각하기 쉬운데, 중복 판정이 필요한 상황이 바로 그 경우예요. 같은 요청의 재전송, 클라이언트의 재시도, 메시지 큐의 중복 전달은 전부 같은 본문을 다시 보냅니다. 갱신할 값이 기존 값과 같으니 무변경이 되고, 기본값 드라이버에서는 1 이 돌아와 "새로 저장"으로 판정돼요. 반대로 값이 바뀌는 테스트(C08)만 써 두면 2 가 나와서 테스트는 통과합니다. 운영에서만 틀리는 코드가 되는 거예요.</p>
+<p>같은 본문을 재전송하거나 메시지가 중복 전달되는 상황에서는 갱신할 값도 기존 값과 같을 수 있어요. 이때 기본값 드라이버가 반환한 1을 새 행으로 해석하면 중복을 놓쳐요. 반대로 값을 바꾸는 테스트(C08)에서는 2가 나오므로, 그 테스트만으로는 같은 값이 다시 들어오는 경우를 확인할 수 없어요.</p>
 
-<p>여러 행 ODKU 는 더 애매해요. C10 은 "무변경 중복 하나 + 새 행 하나"였는데 기본값에서 2 였습니다. 같은 2 가 "값이 바뀐 중복 하나"(C08)에서도 나와요. 행마다 더한 합계만 오니 어느 행이 무엇이었는지는 숫자로 되돌릴 수 없습니다. CLI 의 정보 문자열도 도움이 안 됐어요. C10 에서 <code>Records: 2  Duplicates: 0  Warnings: 0</code> 이 찍혔습니다. 한 행이 분명히 중복이었는데 Duplicates 는 0 이었어요.</p>
+<p>여러 행을 한 번에 ODKU로 처리하면 반환값만으로 구별하기가 더 어려워요. C10 은 "무변경 중복 하나 + 새 행 하나"였는데 기본값에서 2 였습니다. 같은 2 가 "값이 바뀐 중복 하나"(C08)에서도 나와요. 행마다 더한 합계만 오니 어느 행이 삽입됐고 어느 행이 갱신됐는지는 합계만으로 알 수 없어요. CLI 의 정보 문자열도 도움이 안 됐어요. C10 에서 <code>Records: 2  Duplicates: 0  Warnings: 0</code> 이 찍혔습니다. 한 행이 분명히 중복이었는데 Duplicates 는 0 이었어요.</p>
 
-<h2>4. useAffectedRows=true 로 바꾸면 끝일까</h2>
+<h2>4. useAffectedRows=true가 다른 UPDATE에 미치는 영향</h2>
 
-<p>문서가 이미 경고를 달아 두었어요. 이 설정은 JDBC 규약과 맞지 않고, DML 에서 "찾은 행"과 "영향받은 행"의 차이에 기대는 애플리케이션 대부분을 깨뜨린다고요. 실습의 C11 이 그 예입니다. 행이 있고 WHERE 에도 걸렸는데, 값이 같아서 0 이 돌아왔어요. 이런 코드가 흔합니다.</p>
+<p>Connector/J 문서에도 이 설정의 영향이 나와 있어요. 이 설정은 JDBC 규약과 맞지 않고, DML 에서 "찾은 행"과 "영향받은 행"의 차이에 기대는 애플리케이션에 문제가 생길 수 있다고 경고해요. 실습의 C11 이 그 예입니다. 행이 있고 WHERE 에도 걸렸는데, 값이 같아서 0 이 돌아왔어요. 예를 들어 아래 코드는 같은 값으로 UPDATE해도 예외를 던지게 돼요.</p>
 
 <div class="obsv-code">int n = jdbc.update("UPDATE item SET v = ? WHERE code = ?", v, code);
 if (n == 0) throw new NotFoundException(code);   // useAffectedRows=true 에서는 같은 값이면 여기로 온다</div>
 
-<p>→ 기본값에서는 "행이 없다"를 뜻하던 0 이, 이 설정에서는 "행은 있지만 안 바뀌었다"도 뜻하게 된다는 거예요. 낙관적 잠금처럼 UPDATE 건수로 "다른 트랜잭션이 먼저 고쳤는지"를 판단하는 코드도 같은 숫자에 기댑니다. 버전 컬럼을 매번 올리는 방식이면 값이 항상 바뀌니 영향이 없겠지만, 그 숫자를 쓰는 곳을 전부 확인하기 전에는 장담할 수 없어요. 실측하지 않은 추정이지만 Hibernate 도 반례가 될 수 있어요. Hibernate 는 엔티티 UPDATE 마다 1행이 바뀌기를 기대하는데, 자바 쪽에서는 값이 바뀌었지만 DB 에 들어가면 같은 값이 되는 경우(시각 컬럼의 정밀도 절삭 같은)라면 이 설정에서 0 이 돌아와 <code>StaleObjectStateException</code> 류의 낙관적 잠금 실패로 보일 가능성이 있습니다.</p>
+<p>이 예제의 기본값에서 "행이 없다"를 뜻하던 0 이, 이 설정에서는 "행은 있지만 안 바뀌었다"도 뜻하게 된다는 거예요. 낙관적 잠금처럼 UPDATE 건수로 "다른 트랜잭션이 먼저 고쳤는지"를 판단하는 코드도 같은 숫자에 기댑니다. 버전 컬럼을 매번 올리는 방식이면 값이 항상 바뀌니 영향이 없겠지만, 그 숫자를 쓰는 곳을 전부 확인하기 전에는 장담할 수 없어요.</p>
 
-<p>그리고 이 속성은 <b>JDBC URL 에 붙는 접속 속성</b>이에요. ODKU 문장 하나를 위해 켜면, 같은 데이터소스(커넥션 풀)를 쓰는 모든 UPDATE 의 반환값 의미가 같이 바뀝니다. 고치려던 곳은 한 줄인데 영향 범위는 애플리케이션 전체예요. 꼭 써야 한다면 그 ODKU 만 따로 둔 데이터소스로 보내는 방법이 있지만, 그러면 같은 트랜잭션에 묶을 수 없다는 제약이 생깁니다.</p>
+<p>Hibernate에도 영향이 있을 수 있지만 이 실습에서는 확인하지 않았어요. Hibernate 는 엔티티 UPDATE 마다 1행이 바뀌기를 기대하는데, 자바 쪽에서는 값이 바뀌었지만 DB 에 들어가면 같은 값이 되는 경우(시각 컬럼의 정밀도 절삭 같은)라면 이 설정에서 0 이 돌아와 <code>StaleObjectStateException</code> 류의 낙관적 잠금 실패로 처리될 가능성이 있어요. 이 부분은 실행 결과가 아닌 추정이에요.</p>
+
+<p>그리고 이 속성은 <b>JDBC URL 에 붙는 접속 속성</b>이에요. ODKU 문장 하나를 위해 켜면, 같은 데이터소스(커넥션 풀)를 쓰는 모든 UPDATE 의 반환값 의미가 같이 바뀝니다. 따라서 영향 범위는 해당 ODKU 문장에 한정되지 않아요. 꼭 써야 한다면 그 ODKU 만 따로 둔 데이터소스로 보내는 방법이 있지만, 별도 커넥션에서 실행한 작업을 기존 로컬 트랜잭션과 함께 처리하는 문제도 검토해야 해요.</p>
 
 <h2>5. INSERT IGNORE 의 반환값과 ROW_COUNT()</h2>
 
-<p><code>INSERT IGNORE</code> 는 세 클라이언트에서 모두 새 행 1, 중복 0 이었어요(C01, C02). UPDATE 가 일어나지 않으니 found rows 와 affected rows 의 차이가 끼어들 자리가 없습니다. 중복 판정에 쓸 수 있는 반환값은 이쪽이에요. 다만 두 가지를 같이 알아야 합니다.</p>
+<p><code>INSERT IGNORE</code> 는 세 클라이언트에서 모두 새 행 1, 중복 0 이었어요(C01, C02). UPDATE 가 일어나지 않으니 found rows 와 affected rows 의 차이가 끼어들 자리가 없습니다. 이 실습에서는 반환값으로 새 행과 중복을 구별할 수 있었어요. 다만 실제 판정에 쓰려면 두 가지 조건을 더 확인해야 해요.</p>
 
 <p>첫째, IGNORE 가 무시하는 건 중복만이 아니에요. 매뉴얼의 INSERT 절은 IGNORE 를 쓰면 "무시할 수 있는 오류"가 경고로 바뀌고, 데이터 변환 오류는 가장 가까운 값으로 고쳐서 넣는다고 적습니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/insert.html">INSERT Statement</a>). 실습 C03 에서 <code>VARCHAR(5)</code> 컬럼에 7글자를 넣었더니 오류 없이 1 이 돌아왔고 경고 1265(Data truncated)가 붙었어요. 값은 잘려서 저장됐습니다. 중복이면 경고 코드는 1062 였어요. <span class="obsv-mark">1 은 "들어갔다"는 뜻이지 "의도한 값으로 들어갔다"는 뜻이 아니에요.</span> 0 쪽도 같습니다. 이건 실측하지 않았지만, sql_mode 문서의 "IGNORE 가 적용되는 오류" 목록에는 중복(<code>ER_DUP_ENTRY</code>) 말고도 외래 키의 부모 행 없음(<code>ER_NO_REFERENCED_ROW_2</code>), 맞는 파티션 없음(<code>ER_NO_PARTITION_FOR_GIVEN_VALUE</code>) 등이 들어 있어요(<a href="https://dev.mysql.com/doc/refman/8.4/en/sql-mode.html">Server SQL Modes</a>). INSERT 문서도 맞는 파티션이 없는 행은 IGNORE 에서 "조용히 실패한다(fails silently)"고 적습니다. 외래 키가 걸린 테이블이라면 0 이 중복이 아니라 부모 행이 없다는 뜻일 수 있어요. 엄밀하게 하려면 경고 코드가 1062 인지까지 봅니다.</p>
 
 <p>둘째, <code>ROW_COUNT()</code> 는 "이 커넥션의 직전 문장"의 값이에요. 실습에서 <code>executeUpdate()</code> 바로 다음에 부르면 반환값과 같았는데, 그 사이에 <code>Statement.getWarnings()</code> 를 먼저 읽으면 경고가 있던 C02, C03 에서만 -1 로 바뀌었어요. Connector/J 9.7.0 jar 를 <code>javap</code> 로 열어 보면 <code>StatementImpl.getWarnings()</code> 가 <code>NativeProtocol.convertShowWarningsToSQLWarnings()</code> 를 부르고, 그 메서드가 서버에 <code>SHOW WARNINGS</code> 를 보냅니다. 경고를 읽는 순간 드라이버가 문장을 하나 더 보낸 거예요. 그래서 그다음의 <code>ROW_COUNT()</code> 는 매뉴얼이 결과 집합을 돌려주는 SELECT 에 대해 적은 -1 과 같은 값이 됐습니다. 애플리케이션에서는 <code>ROW_COUNT()</code> 대신 <code>executeUpdate()</code> 반환값을 바로 쓰는 쪽이 안전해요. 그리고 <code>ROW_COUNT()</code> 도 서버가 계산하는 같은 affected rows 라서, C06, C07 에서 Connector/J 기본값이면 1 이었습니다. SQL 함수로 바꾼다고 플래그를 피하지는 못해요.</p>
 
-<h2>6. ODKU 는 중복이면 X 잠금을 건다, 값이 안 바뀌어도</h2>
+<h2>6. 값이 바뀌지 않는 중복에도 X 잠금이 걸려요</h2>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 넥스트키 잠금 (next-key lock)</div>
-  인덱스 레코드 하나와 그 바로 앞의 갭(이전 레코드와의 사이)을 함께 잠그는 InnoDB 잠금이에요. <code>performance_schema.data_locks</code> 의 <code>LOCK_MODE</code> 가 <code>X</code> 나 <code>S</code> 만 있으면 넥스트키, <code>X,REC_NOT_GAP</code> 이면 레코드만 잠근 것입니다.
+  인덱스 레코드 하나와 그 바로 앞의 갭(이전 레코드와의 사이)을 함께 잠그는 InnoDB 잠금이에요. <code>performance_schema.data_locks</code> 의 <code>LOCK_MODE</code> 가 <code>X</code> 나 <code>S</code> 만 있으면 넥스트키, <code>X,REC_NOT_GAP</code> 이면 레코드만 잠근 상태예요.
 </div>
 
-<p>ODKU 를 검토할 때 반환값만큼 봐야 하는 게 잠금이에요. 매뉴얼의 잠금 절은 이렇게 적습니다. "ODKU 는 중복 키 오류가 났을 때 갱신할 행에 공유 잠금이 아니라 배타 잠금을 건다는 점에서 단순 INSERT 와 다르다. 중복 PK 값에는 배타 인덱스 레코드 잠금, 중복 유니크 키 값에는 배타 넥스트키 잠금을 건다."(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-locks-set.html">Locks Set by Different SQL Statements in InnoDB</a>) 같은 절에 <code>INSERT IGNORE</code> 는 나오지 않아서, 비교 대상으로 같이 찍었어요.</p>
+<p>ODKU 를 검토할 때 반환값만큼 봐야 하는 게 잠금이에요. 매뉴얼의 잠금 절은 다음과 같이 설명해요. "ODKU 는 중복 키 오류가 났을 때 갱신할 행에 공유 잠금이 아니라 배타 잠금을 건다는 점에서 단순 INSERT 와 다르다. 중복 PK 값에는 배타 인덱스 레코드 잠금, 중복 유니크 키 값에는 배타 넥스트키 잠금을 건다."(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-locks-set.html">Locks Set by Different SQL Statements in InnoDB</a>) 같은 절에 <code>INSERT IGNORE</code> 는 나오지 않아서, 비교 대상으로 같이 찍었어요.</p>
 
-<p><code>lk(id PK, code UNIQUE)</code> 에 <code>(10,'a') (20,'c') (30,'e')</code> 를 넣고, 트랜잭션 안에서 문장 하나를 실행한 뒤 같은 세션에서 <code>data_locks</code> 를 봤습니다.</p>
+<p><code>lk(id PK, code UNIQUE)</code> 에 <code>(10,'a') (20,'c') (30,'e')</code> 를 넣고, 트랜잭션 안에서 문장 하나를 실행한 뒤 같은 세션에서 <code>data_locks</code>를 봤어요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-02/odku-locks.png" alt="scripts/locks.sh 의 REPEATABLE READ 부분. ODKU PK 중복은 PRIMARY 20 에 X,REC_NOT_GAP. ODKU 보조 유니크 중복은 uk_code 'c',20 에 X, PRIMARY 20 에 X,REC_NOT_GAP, PRIMARY supremum 에 X. v=v 로 무변경이어도 row_count 0 에 같은 잠금. INSERT IGNORE 보조 유니크 중복은 uk_code 'c',20 에 S" style="max-width:100%">
@@ -200,7 +197,7 @@ ODKU 유니크 중복, v=v (row_count 0)    위와 같음                       
 INSERT IGNORE 유니크 중복              uk_code 'c'  S (넥스트키)             uk_code 'c'  S (넥스트키)
                                        PRIMARY supremum  X</div>
 
-<p>→ 매뉴얼 그대로 PK 중복은 레코드만, 유니크 중복은 넥스트키로 잡혔어요. 눈여겨볼 곳이 세 군데입니다. 하나, <code>v=v</code> 로 아무것도 안 바뀌어 <code>row_count</code> 가 0 인데도 잠금은 값을 바꾼 경우와 한 줄도 다르지 않았어요. 무변경 중복도 X 잠금을 잡고 커밋까지 쥡니다. 둘, READ COMMITTED 에서도 유니크 인덱스 쪽은 <code>X,REC_NOT_GAP</code> 이 아니라 넥스트키 <code>X</code> 였어요. RC 는 갭 잠금을 대부분 끄지만, 격리 수준 문서가 "갭 잠금은 외래 키 제약 검사와 중복 키 검사에만 쓴다"고 적는 그 예외가 이것입니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html">Transaction Isolation Levels</a>). 셋, RR 에서는 PK 의 <code>supremum pseudo-record</code>(인덱스 맨 끝 다음 자리)에도 X 가 잡혔어요. 새 행의 id 99 가 들어갈 자리가 인덱스 끝이었기 때문으로 보이고, RC 에서는 보이지 않았습니다.</p>
+<p>실습에서도 매뉴얼 설명대로 PK 중복은 레코드만, 유니크 중복은 넥스트키로 잡혔어요. 결과를 조금 더 보면, <code>v=v</code> 로 아무것도 안 바뀌어 <code>row_count</code> 가 0 인데도 잠금은 값을 바꾼 경우와 한 줄도 다르지 않았어요. 무변경 중복도 X 잠금을 잡고 커밋까지 유지해요. 또 READ COMMITTED 에서도 유니크 인덱스 쪽은 <code>X,REC_NOT_GAP</code> 이 아니라 넥스트키 <code>X</code> 였어요. RC 는 갭 잠금을 대부분 끄지만, 격리 수준 문서가 "갭 잠금은 외래 키 제약 검사와 중복 키 검사에만 쓴다"고 적는 그 예외가 이것입니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html">Transaction Isolation Levels</a>). 한편 RR에서는 PK 의 <code>supremum pseudo-record</code>(인덱스 맨 끝 다음 자리)에도 X 가 잡혔어요. 새 행의 id 99 가 들어갈 자리가 인덱스 끝이었기 때문으로 보이고, RC 에서는 보이지 않았습니다.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -223,16 +220,16 @@ INSERT IGNORE 유니크 중복              uk_code 'c'  S (넥스트키)       
   <text x="288" y="192" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">INSERT IGNORE: S 넥스트키, 같은 범위</text>
   <path d="M60 228 C 200 226, 450 230, 640 228 C 642 250, 641 280, 640 300 C 450 302, 200 298, 60 300 C 58 280, 59 250, 60 228 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
   <text x="350" y="254" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">S 는 서로 같이 잡히지만 X 는 하나만 잡힌다</text>
-  <text x="350" y="284" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">동시 중복 요청이 ODKU 면 'c' 에서 줄을 서고, 갭에 들어갈 다른 INSERT 도 기다린다</text>
+  <text x="350" y="284" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">같은 키의 ODKU와 앞 갭에 넣는 다른 INSERT는 기다린다</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 4. 같은 범위를 잡지만 ODKU 는 X 라서 동시 중복 요청이 한 줄로 선다</div>
+<div class="obsv-figcap">그림 4. ODKU는 X 잠금 때문에 같은 키의 동시 중복 요청을 순서대로 처리해요</div>
 
-<p>교착 관점에서 정리하면 이렇습니다. 1편의 교착은 두 트랜잭션이 같은 행에 S 를 나눠 쥔 채 서로 X 로 올리려다 생겼어요. ODKU 는 처음부터 X 를 잡으니 그 S→X 업그레이드는 생기지 않습니다. 대신 같은 키로 동시에 들어온 중복 요청은 전부 그 X 앞에서 차례를 기다리고, 유니크 인덱스면 앞 갭까지 잠겨서, 그 갭에 넣으려는 다른 INSERT 의 삽입 의도 잠금도 기다리게 됩니다(매뉴얼 InnoDB Locking 절의 삽입 의도 잠금 예제가 이 모양이에요). 그 트랜잭션이 뒤에서 다른 행을 잠근다면 그 순서가 새 교착을 만들 수 있습니다. ODKU 가 교착의 답인지는 <a href="https://dding-shark.tistory.com/679">6편</a>에서 다른 방법들과 같이 비교합니다.</p>
+<p>이 잠금 차이는 교착 조건에도 영향을 줘요. 1편의 교착은 두 트랜잭션이 같은 행에 S 잠금을 함께 보유한 상태에서 각각 X로 전환하려다 생겼어요. ODKU 는 처음부터 X 를 잡으니 그 S→X 전환은 생기지 않아요. 대신 같은 키로 동시에 들어온 중복 요청은 전부 그 X 잠금이 풀리기를 기다리고, 유니크 인덱스면 앞 갭까지 잠겨서, 그 갭에 넣으려는 다른 INSERT 의 삽입 의도 잠금도 기다리게 됩니다(매뉴얼 InnoDB Locking 절의 삽입 의도 잠금 예제가 이 모양이에요). 그 트랜잭션이 뒤에서 다른 행을 잠근다면 잠금 순서에 따라 다른 교착이 생길 수 있어요. ODKU와 다른 방법의 교착 조건은 <a href="https://dding-shark.tistory.com/679">6편</a>에서 비교해요.</p>
 
-<h2>7. 그럼 저장과 중복은 무엇으로 판정하나</h2>
+<h2>7. 중복 판정 방법마다 확인할 조건</h2>
 
-<p>남은 질문은 "이 요청이 행을 새로 만들었나, 이미 있었나"를 무엇으로 아느냐예요. 실습에서 확인한 것만으로 표를 만들었습니다.</p>
+<p>새 행과 중복을 구별하는 방법을 반환값, 예외, 잠금 기준으로 비교하면 아래와 같아요. 실습 결과와 매뉴얼에서 확인한 잠금 조건을 함께 적었어요.</p>
 
 <div class="obsv-code">방법                                  새 행        중복           드라이버 플래그 영향    중복일 때 잠금
 ① 일반 INSERT, 1062 를 잡는다          1            예외 1062       없음                    S (매뉴얼, 1편)
@@ -242,13 +239,17 @@ INSERT IGNORE 유니크 중복              uk_code 'c'  S (넥스트키)       
 ④ ODKU 반환값, useAffectedRows=true    1            0 또는 2        커넥션 전체가 바뀜      X
 ⑤ ODKU + 항상 바뀌는 컬럼(hits+1)      1            2               없음 (두 모드 모두 2)   X</div>
 
-<p>→ 단건이면 ①, ②, ⑤ 는 드라이버 설정과 상관없이 새 행과 중복을 구별했어요. ① 은 받는 예외가 접근 기술마다 달라요. <code>JdbcTemplate</code> 이면 <code>sql-error-codes.xml</code> 의 MySQL 항목이 1062 를 <code>duplicateKeyCodes</code> 로 묶어 두어서 <code>DuplicateKeyException</code> 으로 받습니다(<a href="https://github.com/spring-projects/spring-framework/blob/main/spring-jdbc/src/main/resources/org/springframework/jdbc/support/sql-error-codes.xml">spring-jdbc sql-error-codes.xml</a>). JPA(Hibernate)로 저장하면 예외는 flush 시점에 나고, Spring 의 <code>HibernateExceptionTranslator</code> 는 JDBC 번역기를 따로 지정하지 않은 기본 설정에서 Hibernate 의 <code>ConstraintViolationException</code> 을 <code>DuplicateKeyException</code> 이 아니라 <code>DataIntegrityViolationException</code> 으로 바꿔요(<a href="https://github.com/spring-projects/spring-framework/blob/main/spring-orm/src/main/java/org/springframework/orm/jpa/hibernate/HibernateExceptionTranslator.java">HibernateExceptionTranslator</a>). 예외가 난 세션은 그대로 이어 쓰지 않는 게 원칙이니, 중복을 정상 흐름으로 다룰 곳이라면 그 INSERT 만 JDBC 로 보내는 편이 다루기 쉬워요. 그리고 1062 는 PK 를 포함해 어느 유니크 키에서든 납니다. 메시지의 키 이름(실습에서는 <code>for key 'item.uk_code'</code>)이 판정하려던 키인지 확인하세요. ② 는 5절의 경고 코드를 같이 봐야 엄밀하고, ⑤ 는 중복마다 행을 실제로 고쳐 쓰고 X 잠금을 쥔다는 대가가 있어요. 그리고 ③~⑤ 의 ODKU 판정은 유니크 키가 하나인 테이블을 전제로 합니다. 매뉴얼 ODKU 절은 유니크 키가 둘(a, b)이면 이 문장이 <code>UPDATE … WHERE a=1 OR b=2 LIMIT 1</code> 과 같아서 여러 행이 걸려도 한 행만 갱신된다고 설명하고, 그래서 유니크 인덱스가 여러 개인 테이블에는 ODKU 를 피하라고 적어요. 어느 행이 갱신됐는지 모르면 반환값이 2 여도 무엇과 중복이었는지 알 수 없습니다. ③ 은 이 글의 결론대로 판정에 쓸 수 없고, ④ 는 4절의 부작용을 감수해야 합니다.</p>
+<p>이번 단건 실습에서 ①, ②, ⑤ 는 드라이버 설정과 상관없이 새 행과 중복을 구별했어요. ① 은 받는 예외가 접근 기술마다 달라요. <code>JdbcTemplate</code> 이면 <code>sql-error-codes.xml</code> 의 MySQL 항목이 1062 를 <code>duplicateKeyCodes</code> 로 묶어 두어서 <code>DuplicateKeyException</code> 으로 받습니다(<a href="https://github.com/spring-projects/spring-framework/blob/main/spring-jdbc/src/main/resources/org/springframework/jdbc/support/sql-error-codes.xml">spring-jdbc sql-error-codes.xml</a>). JPA(Hibernate)로 저장하면 예외는 flush 시점에 나고, Spring 의 <code>HibernateExceptionTranslator</code> 는 JDBC 번역기를 따로 지정하지 않은 기본 설정에서 Hibernate 의 <code>ConstraintViolationException</code> 을 <code>DuplicateKeyException</code> 이 아니라 <code>DataIntegrityViolationException</code> 으로 바꿔요(<a href="https://github.com/spring-projects/spring-framework/blob/main/spring-orm/src/main/java/org/springframework/orm/jpa/hibernate/HibernateExceptionTranslator.java">HibernateExceptionTranslator</a>). 예외가 난 세션은 그대로 이어 쓰지 않는 게 원칙이니, 중복을 정상 흐름으로 다룰 곳이라면 그 INSERT만 JDBC로 보내는 편이 다루기 쉬워요.</p>
 
-<p>표 밖에 판정 보조 하나를 더 적을게요. 중복이 났을 때 "같은 값으로 이미 저장된 중복인가"를 잠금 없는 조회로 확인하는 방법이에요. 제 회사의 2차 수정도 ODKU 대신, 같은 값으로 이미 저장된 중복을 잠금 없는 조회로 확인하고 중복으로 끝내는 방식이었습니다. 이 조회를 <code>INSERT IGNORE</code> 뒤에 붙이면 조건이 하나 생겨요. 실습에서 찾은 조건이고, 회사 코드가 여기에 해당했는지는 이 글에서 다루지 않습니다.</p>
+<p>1062는 PK 를 포함해 어느 유니크 키에서든 납니다. 메시지의 키 이름(실습에서는 <code>for key 'item.uk_code'</code>)이 판정하려던 키인지 확인하세요. ② 는 5절의 경고 코드를 같이 봐야 엄밀하고, ⑤ 는 중복마다 행을 실제로 고쳐 쓰고 X 잠금을 유지한다는 비용이 있어요.</p>
+
+<p>③~⑤의 ODKU로 중복을 판정할 때는 어느 유니크 키에서 충돌했는지도 명확해야 해요. 매뉴얼 ODKU 절은 유니크 키가 둘(a, b)이면 이 문장이 <code>UPDATE … WHERE a=1 OR b=2 LIMIT 1</code> 과 같아서 여러 행이 걸려도 한 행만 갱신된다고 설명하고, 그래서 유니크 인덱스가 여러 개인 테이블에는 ODKU 를 피하라고 적어요. 어느 행이 갱신됐는지 모르면 반환값이 2 여도 무엇과 중복이었는지 알 수 없습니다. ③ 은 이 글의 결론대로 판정에 쓸 수 없고, ④ 는 4절의 부작용을 감수해야 합니다.</p>
+
+<p>반환값이나 예외로 중복을 알아낸 뒤에는 잠금 없는 조회로 저장된 값이 같은지 확인할 수도 있어요. 당시 2차 수정에서도 ODKU 대신 잠금 없는 조회로 같은 값이 저장돼 있는지 확인한 뒤 중복으로 처리했어요. 이 조회를 <code>INSERT IGNORE</code> 뒤에 붙이면 조건이 하나 생겨요. 실습에서 찾은 조건이고, 당시 회사 코드가 이 조건에 해당했는지는 여기서 확인하지 않았어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 읽기 뷰 (read view)</div>
-  잠금 없는 SELECT 가 "어느 시점의 데이터를 볼지" 정해 둔 스냅숏이에요. REPEATABLE READ 에서는 트랜잭션의 첫 잠금 없는 읽기에서 만들어져 커밋할 때까지 유지되고, READ COMMITTED 에서는 문장마다 새로 만듭니다.
+  잠금 없는 SELECT 가 "어느 시점의 데이터를 볼지" 정해 둔 스냅숏이에요. REPEATABLE READ 에서는 트랜잭션의 첫 잠금 없는 읽기에서 만들어져 커밋할 때까지 유지되고, READ COMMITTED 에서는 문장마다 새로 만들어요.
 </div>
 
 <div class="obsv-fig">
@@ -281,26 +282,26 @@ INSERT IGNORE 유니크 중복              uk_code 'c'  S (넥스트키)       
 </div>
 <div class="obsv-figcap">그림 5. 읽기 뷰가 INSERT IGNORE 보다 먼저 생겼으면, 중복이라고 답한 그 행이 잠금 없는 조회에 보이지 않는다</div>
 
-<p>실습에서 트랜잭션 A 가 먼저 아무 SELECT 나 한 번 해서 읽기 뷰를 만들고, 세션 B 가 <code>'n'</code> 을 넣어 커밋한 뒤, A 가 <code>INSERT IGNORE 'n'</code> 을 했어요. 결과는 0, 중복이었습니다. 그런데 바로 이어서 A 가 잠금 없이 <code>SELECT … WHERE code='n'</code> 을 하자 0행이 나왔어요. 같은 조회를 <code>FOR SHARE</code> 로 하면 1행, READ COMMITTED 에서는 잠금 없이도 1행이었습니다. 두 드라이버 버전, 두 모드, 두 번의 실행에서 모두 같았어요. 중복 검사는 최신 커밋된 행을 보는데 잠금 없는 읽기는 먼저 만든 스냅숏을 보기 때문입니다.</p>
+<p>실습에서 트랜잭션 A가 먼저 테이블을 잠금 없이 조회해 읽기 뷰를 만들고, 세션 B 가 <code>'n'</code> 을 넣어 커밋한 뒤, A 가 <code>INSERT IGNORE 'n'</code> 을 했어요. 결과는 0, 중복이었습니다. 그런데 바로 이어서 A 가 잠금 없이 <code>SELECT … WHERE code='n'</code> 을 하자 0행이 나왔어요. 같은 조회를 <code>FOR SHARE</code> 로 하면 1행, READ COMMITTED 에서는 잠금 없이도 1행이었습니다. 두 드라이버 버전과 두 모드의 결과는 같았어요. 두 차례 반복에서도 같았다는 설명은 앞서 한정한 당시 기록에 따른 것이에요. 중복 검사는 최신 커밋된 행을 보는데 잠금 없는 읽기는 먼저 만든 스냅숏을 보기 때문입니다.</p>
 
 <p>그래서 이 확인 조회를 쓰려면 둘 중 하나가 성립해야 해요. 그 확인 조회가 트랜잭션의 첫 잠금 없는 읽기라서 <code>INSERT IGNORE</code> 이후에 읽기 뷰가 생기거나(트랜잭션을 <code>START TRANSACTION WITH CONSISTENT SNAPSHOT</code> 으로 열면 시작 시점에 읽기 뷰가 생기므로 이 조건은 깨집니다), 격리 수준이 READ COMMITTED 여야 합니다. 앞에서 이미 무언가를 읽은 RR 트랜잭션이라면 "중복이라는데 행이 없다"는 상태를 만나고, 그 경우를 오류로 처리하는 코드가 따로 있어야 해요. <code>FOR SHARE</code> 로 읽으면 행은 보이지만 S 잠금을 하나 더 잡게 되니 1편의 조건과 다시 가까워집니다.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">💡 내 코드에서 바꿀 것</div>
+  <div class="obsv-ct">💡 적용 전에 확인할 것</div>
   &bull; ODKU 반환값으로 "새로 저장 / 이미 있음"을 가르는 곳을 찾으세요. Connector/J 기본값이면 무변경 중복이 1 이라 새 행과 구별되지 않습니다<br>
   &bull; 그 테스트는 "같은 본문을 두 번 보내기"로 쓰세요. 값을 바꿔 보내는 테스트는 2 가 나와서 통과합니다<br>
-  &bull; <code>useAffectedRows=true</code> 를 켜기 전에 같은 데이터소스의 <code>update(...) == 0</code> 판정을 전부 세세요. 같은 값 UPDATE 가 0 이 됩니다<br>
+  &bull; <code>useAffectedRows=true</code> 를 켜기 전에 같은 데이터소스의 <code>update(...) == 0</code> 판정이 있는지 확인하세요. 같은 값 UPDATE 가 0 이 됩니다<br>
   &bull; 판정이 필요하면 일반 INSERT 의 1062 예외나 <code>INSERT IGNORE</code> 반환값을 쓰세요. IGNORE 라면 경고 코드가 1062 인지도 보세요<br>
-  &bull; 1062 를 잡는다면 받는 예외를 확인하세요. <code>JdbcTemplate</code> 은 <code>DuplicateKeyException</code>, JPA 는 flush 때 <code>DataIntegrityViolationException</code> 입니다. 메시지의 키 이름이 판정하려던 유니크 키인지도 보세요<br>
+  &bull; 1062를 잡는다면 접근 기술과 번역기 설정에 따라 어떤 예외를 받는지 확인하세요. <code>JdbcTemplate</code> 은 <code>DuplicateKeyException</code>, 위에서 설명한 JPA 기본 번역기에서는 flush 때 <code>DataIntegrityViolationException</code>으로 받아요. 메시지의 키 이름이 판정하려던 유니크 키인지도 보세요<br>
   &bull; <code>ROW_COUNT()</code> 보다 <code>executeUpdate()</code> 반환값을 쓰세요. 중간에 드라이버가 보낸 문장이 끼면 값이 바뀝니다<br>
   &bull; 중복 뒤 잠금 없는 조회로 확인한다면 RR 에서 읽기 뷰가 언제 생기는지 확인하세요. 먼저 생겼으면 0행이 나옵니다
 </div>
 
 <div class="obsv-summary">
-  <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>ODKU 의 "새 행 1, 변경 2, 무변경 0" 은 CLIENT_FOUND_ROWS 가 꺼져 있을 때의 규칙이고, Connector/J 는 기본값에서 그 플래그를 켭니다. 그래서 같은 본문이 다시 들어온 무변경 중복이 새 행과 같은 1 이 됐어요.</b><br><br>
-  <code>useAffectedRows=true</code> 로 구별을 되찾으면 같은 커넥션의 일반 UPDATE 가 행이 있어도 0 을 돌려주고, ODKU 는 값이 안 바뀌어도 중복 행에 X 잠금을 잡습니다. <code>INSERT IGNORE</code> 반환값은 세 클라이언트에서 같았지만 0 이 곧 중복은 아니었고, RR 에서는 중복이라고 답한 행이 잠금 없는 조회에 보이지 않을 수 있었어요.<br><br>
-  반환값은 "무슨 일이 일어났나"가 아니라 "접속할 때 어떤 질문을 골랐나"에 대한 답입니다. 판정에 쓰기 전에 그 질문부터 확인하세요.
+  <div class="obsv-st2">✍️ 확인한 결과</div>
+  ODKU의 "새 행 1, 변경 2, 무변경 0"은 CLIENT_FOUND_ROWS가 꺼져 있을 때의 규칙이에요. Connector/J 기본값에서는 이 플래그가 켜져 있어서, 이번 실습의 무변경 중복도 새 행과 같은 1을 반환했어요.<br><br>
+  <code>useAffectedRows=true</code> 로 구별을 되찾으면 같은 커넥션의 일반 UPDATE 가 행이 있어도 0 을 돌려주고, ODKU는 값이 안 바뀌어도 중복 행에 X 잠금을 잡아요. <code>INSERT IGNORE</code> 반환값은 세 클라이언트에서 같았지만 0 이 곧 중복은 아니었고, RR 에서는 중복이라고 답한 행이 잠금 없는 조회에 보이지 않을 수 있었어요.<br><br>
+  중복을 판정할 때는 접속 설정과 같은 값의 재전송을 함께 확인해야 해요. 경고나 확인 조회를 이용한다면 경고 코드와 읽기 뷰 생성 시점까지 확인해야 하고요. 이 실습의 반환값만으로 회사 코드의 동작이나 Hibernate의 예외까지 검증한 것은 아니에요.
 </div>
 
 </div>
