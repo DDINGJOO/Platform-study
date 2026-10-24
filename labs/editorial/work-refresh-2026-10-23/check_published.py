@@ -41,10 +41,12 @@ def normalize(text):
     return re.sub(r'\s+', '', text)
 
 
-def main(baseline, through=None):
+def main(baseline, through=None, after=0):
     assert not baseline or through is None, 'Baseline must cover the complete corpus'
+    assert not after or (not baseline and through is not None and 0 < after < through)
     source = json.loads((HERE / 'baseline.json').read_text())
-    selected = [r for r in source['articles'] if through is None or r['number'] <= through]
+    selected = [r for r in source['articles']
+                if r['number'] > after and (through is None or r['number'] <= through)]
     before_file = HERE / 'publication-baseline.json'
     assert not baseline or not before_file.exists(), 'Do not replace the live visibility baseline'
     previous = {} if baseline else {r['number']: r for r in json.loads(before_file.read_text())['results']}
@@ -55,6 +57,24 @@ def main(baseline, through=None):
     assert set(original) == set(manifest)
     assert all(manifest[k] == v for k, v in original.items() if k not in keys)
     results = []
+    retained = None
+    if after:
+        retained_file = HERE / f'publication-through-{after:03}.json'
+        retained = json.loads(retained_file.read_text())
+        assert not retained['baseline'] and retained['articles'] == after
+        assert retained['existing_ids_preserved']
+        assert [r['number'] for r in retained['results']] == list(range(1, after + 1))
+        for row, saved in zip(source['articles'][:after], retained['results']):
+            path, entry = ROOT / row['path'], manifest[row['path']]
+            assert saved['verified'] and saved['body_text_exact']
+            assert saved['path'] == row['path']
+            assert saved['id'] == row['id'] == str(entry['id']) == str(original[row['path']]['id'])
+            assert saved['visibility'] == entry['visibility'] == previous[row['number']]['visibility']
+            assert saved['title'] == entry['title'] == u.title_of(path, series)
+            rendered = u.render(path, path.read_text(), manifest, files)
+            assert saved['render_sha256'] == entry['sha256'] == u.sha(rendered)
+            assert saved['tags'] == entry['tags'] == u.tags_of(path, series, rendered)
+        results.extend(retained['results'])
     lock = u.hold_lock(True)
     with sync_playwright() as pw:
         ctx = u.open_ctx(pw)
@@ -97,13 +117,21 @@ def main(baseline, through=None):
                           'title': entry['title'], 'tags': tags, 'body_text_exact': True,
                           'render_sha256': u.sha(rendered), 'verified': True}
             results.append(result)
-            if len(results) % 14 == 0:
-                print(f'Read {len(results)}/{len(selected)} posts', flush=True)
+            if (len(results) - after) % 14 == 0:
+                print(f'Read {len(results) - after}/{len(selected)} posts; verified total {len(results)}', flush=True)
         u.keep_state(ctx)
         ctx.close()
     result = {'baseline': baseline, 'articles': len(results), 'existing_ids_preserved': True,
               'unchanged_other_manifest_entries': len(original) - len(keys),
               'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'results': results}
+    if retained:
+        result['verification_scope'] = {
+            'retained_live_articles': after,
+            'retained_live_evidence': retained_file.name,
+            'retained_live_checked_at': retained['checked_at'],
+            'retained_current_render_ids_titles_tags_visibility_rechecked': True,
+            'newly_live_checked_articles': len(selected),
+        }
     suffix = f'-through-{through:03}' if through is not None else ''
     (before_file if baseline else HERE / f'publication{suffix}.json').write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({'articles': len(results), 'baseline': baseline, 'verified': True}))
@@ -113,5 +141,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline', action='store_true')
     parser.add_argument('--through', type=int)
+    parser.add_argument('--after', type=int, default=0,
+                        help='Reuse an unchanged verified prefix after rechecking all current hashes and metadata')
     args = parser.parse_args()
-    main(args.baseline, args.through)
+    main(args.baseline, args.through, args.after)
