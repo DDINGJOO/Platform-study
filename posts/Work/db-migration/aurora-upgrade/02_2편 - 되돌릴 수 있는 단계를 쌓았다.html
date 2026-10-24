@@ -1,4 +1,5 @@
-<!-- lead: Aurora 8.0 Blue/Green 전환 전에 되돌릴 수 있는 단계부터 쌓았어요. 실제 적용된 파라미터 값 확인, 스냅샷, 미부착 리소스 검증, green 복제본 생성 순서와 준비 중 세 번 깨진 지점을 운영 DB 영향 없이 넘긴 기록이에요. -->
+<!-- tags: 파라미터그룹, 수동 스냅샷, binlog, DB 롤백 -->
+<!-- lead: Aurora 8.0 Blue/Green 전환에 앞서 실제 파라미터 값과 수동 스냅샷을 확인했어요. 미부착 파라미터그룹 검증과 green 복제본 생성, 앱 접속 설정을 준비하면서 놓쳤던 확인 항목과 작업 순서를 설명해요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -21,20 +22,17 @@
 
 <div class="obsv-series">
   <div class="obsv-st">📚 Aurora 5.7 → 8.0, 5부작</div>
-  1편 · 확장 지원료가 마감을 만들었다<br>
-  <b>2편 · 되돌릴 수 있는 단계를 쌓았다</b> &larr; 지금 이 글<br>
-  3편 · 전환은 6분이었고, 순서는 틀렸다<br>
-  4편 · 앱은 한 번도 멈추지 않았다<br>
-  5편 · 옛것이 사라진 뒤에 무엇으로 증명하나
+  <a href="https://dding-shark.tistory.com/500" style="color:inherit">1편. 파라미터 설정을 확인한 뒤 Blue/Green으로 바꾼 이유</a><br>
+  <b>2편. 전환 전에 파라미터와 green 복제본을 확인한 순서</b> &larr; 지금 이 글
 </div>
 
-<p>1편에서 Blue/Green으로 방향이 정해졌습니다. 8.0 복제본을 만들어두고 이름을 맞바꾸는 방식입니다.</p>
+<p>1편에서 업그레이드는 Blue/Green으로 진행하기로 했어요. 운영 DB를 유지한 채 8.0 복제본인 green을 만들고, 전환할 때 이름을 맞바꾸는 방식이에요.</p>
 
-<p>이 글은 <b>그 사이에 무엇을 어떤 순서로 했는지</b>에 대한 기록입니다. 결론부터 적으면 원칙이 하나였어요. <span class="obsv-mark">되돌릴 수 없는 단계 앞에 되돌릴 수 있는 단계를 최대한 쌓는다.</span></p>
+<p>전환 전에 실제 DB 설정을 읽고, 복원에 쓸 스냅샷을 만든 뒤, 운영 DB에 붙이지 않은 리소스부터 검증했어요. 준비 중 문제가 생겨도 운영 DB에 영향을 주지 않는 순서로 진행하려고 했습니다.</p>
 
-<h2>1. 순서가 곧 위험 관리다</h2>
+<h2>1. 운영 DB에 영향이 적은 작업부터 진행하기</h2>
 
-<p>전체 흐름을 이렇게 잡았습니다.</p>
+<p>설정 조회부터 시작해 스냅샷과 미부착 리소스를 준비하고, green 생성과 검증을 마친 뒤 전환하기로 했어요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -45,26 +43,26 @@
     </defs>
     <g stroke-linecap="round" stroke-linejoin="round">
       <path d="M26 34 C 100 31, 176 36, 248 32 C 251 50, 250 60, 249 74 C 176 77, 100 73, 28 75 C 25 60, 26 46, 26 34 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
-      <text x="137" y="58" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">① 게이트 0: 실물 확인</text>
+      <text x="137" y="58" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">① 게이트 0: 적용값 확인</text>
       <text x="266" y="58" font-family="Menlo, monospace" font-size="10" fill="#8a8272">읽기만 한다</text>
 
       <path d="M137 80 C 140 88, 136 92, 139 100" fill="none" stroke="#3d3a34" stroke-width="1.8" marker-end="url(#au1)"/>
 
       <path d="M26 106 C 100 103, 176 108, 248 104 C 251 122, 250 132, 249 146 C 176 149, 100 145, 28 147 C 25 132, 26 118, 26 106 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
       <text x="137" y="130" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">② 수동 스냅샷</text>
-      <text x="266" y="130" font-family="Menlo, monospace" font-size="10" fill="#8a8272">더하기만 한다</text>
+      <text x="266" y="130" font-family="Menlo, monospace" font-size="10" fill="#8a8272">스냅샷을 만든다</text>
 
       <path d="M137 152 C 140 160, 136 164, 139 172" fill="none" stroke="#3d3a34" stroke-width="1.8" marker-end="url(#au1)"/>
 
       <path d="M26 178 C 100 175, 176 180, 248 176 C 251 194, 250 204, 249 218 C 176 221, 100 217, 28 219 C 25 204, 26 190, 26 178 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
       <text x="137" y="202" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">③ 미부착 리소스 준비</text>
-      <text x="266" y="202" font-family="Menlo, monospace" font-size="10" fill="#8a8272">깨져도 비용 0</text>
+      <text x="266" y="202" font-family="Menlo, monospace" font-size="10" fill="#8a8272">운영 DB에 미부착</text>
 
       <path d="M137 224 C 140 232, 136 236, 139 244" fill="none" stroke="#3d3a34" stroke-width="1.8" marker-end="url(#au1)"/>
 
       <path d="M26 250 C 100 247, 176 252, 248 248 C 251 266, 250 276, 249 290 C 176 293, 100 289, 28 291 C 25 276, 26 262, 26 250 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4"/>
       <text x="137" y="274" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">④ green 생성 · 검증</text>
-      <text x="266" y="274" font-family="Menlo, monospace" font-size="10" fill="#8a8272">지우면 끝</text>
+      <text x="266" y="274" font-family="Menlo, monospace" font-size="10" fill="#8a8272">전환 전 삭제 가능</text>
 
       <path d="M400 250 C 470 247, 540 252, 610 248 C 613 266, 612 276, 611 290 C 540 293, 470 289, 402 291 C 399 276, 400 262, 400 250 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="3"/>
       <text x="505" y="274" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">⑤ 전환</text>
@@ -75,20 +73,20 @@
       <text x="505" y="168" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">①~④ 는 전부</text>
       <text x="505" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">되돌릴 수 있다</text>
 
-      <text x="505" y="60" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">되돌릴 수 없는 건</text>
-      <text x="505" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">⑤ 하나뿐이게 만든다</text>
+      <text x="505" y="60" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">전환은 준비와</text>
+      <text x="505" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">구분해 마지막에 진행</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 1. 되돌릴 수 없는 단계를 맨 뒤에 하나만 남긴다</div>
+<div class="obsv-figcap">그림 1. 운영 DB를 전환하기 전에 조회와 별도 리소스 검증을 마치는 순서예요</div>
 
-<p>이 순서의 값어치는 마지막에 드러납니다. 준비 과정에서 <b>세 번 깨졌는데</b> 깨진 곳이 전부 ①~③이라서 <span class="obsv-mark">운영 클러스터는 한 번도 건드리지 않았습니다.</span></p>
+<p>준비 과정에서 파라미터 반영과 검증 문제가 생겼지만 모두 ①~③ 단계의 작업이었어요. 해당 작업으로 운영 클러스터를 변경하지는 않았습니다.</p>
 
-<h2>2. 게이트 0: 파라미터그룹 값이 아니라 돌고 있는 값</h2>
+<h2>2. 게이트 0: DB에 실제 적용된 파라미터 확인하기</h2>
 
-<p>1편에서 판정을 뒤집은 근거가 "그 파라미터가 이미 켜져 있다"였는데 그건 <b>파라미터그룹 설정값</b>을 본 것이었습니다. 지적을 받았어요. <b>설정값과 실제 돌고 있는 값은 다를 수 있다는 지적입니다.</b></p>
+<p>1편에서 판단을 바꾼 근거는 필요한 파라미터가 이미 켜져 있다는 것이었어요. 하지만 그때 확인한 것은 파라미터그룹의 설정값이었고, 실제 DB에 적용된 값과 다를 수 있다는 지적을 받았습니다.</p>
 
-<p>그래서 운영 DB에 직접 붙어서 읽었습니다.</p>
+<p>그래서 운영 DB에 직접 접속해 값을 조회했어요.</p>
 
 <div class="obsv-code">log_bin             ON
 binlog_format       ROW
@@ -96,7 +94,7 @@ binlog_row_image    FULL
 read_only           OFF
 @@version           5.7.12-log     ← 접미사 -log 가 바이너리 로깅 활성 증거</div>
 
-<p><b>판정 번복이 추측이 아니게 됐습니다.</b> 그리고 이 한 번의 접속으로 네 가지를 같이 확인했어요.</p>
+<p>조회한 값으로 바이너리 로깅 활성 상태를 확인했어요. 이와 함께 다음 네 가지도 확인했습니다.</p>
 
 <div class="obsv-code">스키마 기본 문자셋이 이미 목표값     →  변환 작업 항목 삭제
 앱·배치 이미지 다이제스트 기록        →  롤백 때 정확히 같은 이미지로 복귀
@@ -113,58 +111,56 @@ read_only           OFF
     <g stroke-linecap="round" stroke-linejoin="round">
       <path d="M28 52 C 100 49, 172 54, 242 50 C 245 82, 244 106, 243 132 C 172 135, 100 131, 30 133 C 27 106, 28 78, 28 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
       <text x="135" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2f2c26">파라미터그룹 값</text>
-      <text x="135" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">= 의도</text>
+      <text x="135" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">= 설정한 값</text>
       <text x="135" y="126" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">정적이면 재부팅 전까지 미적용</text>
 
       <path d="M250 92 C 290 89, 320 94, 356 91" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 6" marker-end="url(#au2)"/>
-      <text x="303" y="78" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">갈라질 수 있다</text>
+      <text x="303" y="78" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">다를 수 있다</text>
 
       <path d="M364 52 C 436 49, 508 54, 578 50 C 581 82, 580 106, 579 132 C 508 135, 436 131, 366 133 C 363 106, 364 78, 364 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="3"/>
-      <text x="471" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">돌고 있는 값</text>
-      <text x="471" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">= 사실</text>
+      <text x="471" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">실제 적용된 값</text>
+      <text x="471" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">= 조회한 값</text>
       <text x="471" y="126" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">@@version 의 -log 접미사</text>
 
       <text x="612" y="96" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">✓</text>
 
       <path d="M28 162 C 240 159, 460 166, 664 161" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
 
-      <text x="350" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">판정의 근거가 이 왼쪽 칸에 있었다</text>
-      <text x="350" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 의도를 사실로 착각한 채 판단했다</text>
+      <text x="350" y="196" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">처음 판단은 파라미터그룹 값에 근거했다</text>
+      <text x="350" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">실제 적용 여부는 DB에서 다시 확인했다</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 2. 읽기만 하는 게이트라 비용이 0이다: 그래서 맨 앞에 둔다</div>
+<div class="obsv-figcap">그림 2. 설정 조회를 앞에 두고 파라미터그룹 값과 실제 적용값을 대조했어요</div>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">💡 "적혀 있다" 와 "돌고 있다" 는 다르다</div>
-  이 저장소에서 계속 나오는 문장인데 이번엔 <b>판정의 근거 자체</b>가 그 자리에 있었습니다.<br><br>
-  설정 파일은 <b>의도</b>고, 돌고 있는 값은 <b>사실</b>입니다. 정적 파라미터는 재부팅 전까지 적용되지 않으니 둘이 갈라질 수 있고 갈라진 걸 모르면 <b>의도를 사실로 착각한 채 판단</b>합니다.<br><br>
-  그리고 이건 되돌릴 수 없는 단계 앞에 두기 딱 좋은 게이트예요. <b>읽기만 하니까 비용이 0입니다.</b>
+  <div class="obsv-ct">💡 설정값을 확인한 뒤 적용 여부도 조회해요</div>
+  정적 파라미터는 재부팅 전까지 적용되지 않을 수 있어요. 파라미터그룹에 원하는 값이 있어도 DB에서 그 값을 쓰고 있는지는 따로 확인해야 합니다.<br><br>
+  이 단계는 설정을 바꾸지 않고 조회만 하므로 전환 준비의 맨 앞에 뒀어요.
 </div>
 
-<h2>3. 스냅샷: 진짜 롤백 자산</h2>
+<h2>3. 복원에 쓸 수동 스냅샷 만들기</h2>
 
-<p>1편에서 봤듯 <b>보존기간 상향은 과거를 소급하지 않습니다.</b> 실제 롤백 자산은 수동 스냅샷이고 그건 0개였어요. 그래서 수동 스냅샷을 먼저 만들었습니다.</p>
+<p>1편에서 확인했듯 백업 보존기간을 늘려도 이전 시점의 백업이 새로 생기지는 않아요. 복원에 쓸 수동 스냅샷은 0개였기 때문에 먼저 만들었습니다.</p>
 
-<p>작은 디테일 하나가 있었는데, <b>스냅샷에 태그를 붙이지 않았습니다.</b> 이 계정에는 환경 태그로 접근을 막는 정책이 있어서 태그가 비어 있으면 나중에 <b>개발 환경으로 복원해 조사</b>할 때 정책에 안 걸립니다. 롤백 자산이 조사 자산도 되게 만든 거죠.</p>
+<p>스냅샷에는 태그를 붙이지 않았어요. 당시 계정에는 환경 태그에 따라 접근을 제한하는 정책이 있었고, 태그를 비워두면 나중에 개발 환경으로 복원해 조사할 때도 사용할 수 있었습니다.</p>
 
-<h2>4. 미부착 리소스에서 세 번 깨졌다</h2>
+<h2>4. 미부착 파라미터그룹 검증에 걸린 시간</h2>
 
-<p>8.0용 파라미터그룹을 새로 만들어야 했습니다. 이 리소스의 성격이 좋아요. <b>아직 아무 DB에도 붙지 않은 상태</b>라서 잘못 만들어도 영향이 0입니다.</p>
+<p>8.0용 파라미터그룹은 새로 만들어야 했어요. 아직 아무 DB에도 붙이지 않았기 때문에 생성이나 설정 적용이 실패해도 운영 DB에는 영향이 없었습니다.</p>
 
-<p>그리고 실제로 세 번 깨졌습니다.</p>
+<p>아래 기록에는 세 차례 시도가 있고, 마지막은 성공으로 적혀 있어요.</p>
 
 <div class="obsv-code">1차   파라미터 8개 중 7개만 반영
 2차   존재하지 않는 파라미터를 지우려 해서 실패
 3차   성공</div>
 
-<p>원인은 제 조사 방식이었어요. 파라미터 목록을 뽑을 때 <b>수정 가능 여부를 안 봤고</b>, 페이지네이션을 끄고 앞쪽 100개만 본 결과를 <b>"뒤는 잘렸겠지"로 넘겼습니다.</b> 그 둘 때문에 두 번 깨졌습니다.</p>
+<p>첫 두 시도에서 드러난 문제는 조사 과정에서 빠뜨린 확인 때문이었어요. 원자료에는 세 번 실패했다는 설명도 있지만 개별 실행 로그를 확보하지 못해, 이 표만으로 총 실패 횟수를 확정하지는 않았어요. 파라미터 목록을 뽑을 때 수정 가능 여부를 보지 않았고, 페이지네이션을 끈 상태에서 앞쪽 100개만 조회했는데도 나머지 목록을 확인하지 않았습니다.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">⚠️ 그런데 더 나빴던 건 검증 방법이었다</div>
-  파라미터 유효성을 <b>CI로 확인했습니다.</b> 코드를 올리고 파이프라인을 돌려서 실패를 보는 방식입니다. 사이클당 <b>25~40분</b>이 걸렸고 그 사이클을 세 번 반복했습니다.<br><br>
-  그런데 같은 검증이 <b>임시 파라미터그룹 하나 만들어서 30초</b>면 끝났어요.<br><br>
-  <b>CI를 검증 도구로 쓴 게 아니라 검증을 세 번 미룬 것</b>입니다. 파이프라인은 통합을 확인하는 자리고, 값이 유효한지는 그 앞에서 확인할 수 있었습니다.
+  <div class="obsv-ct">⚠️ 파라미터 유효성을 CI 실행 전에 확인했어야 했어요</div>
+  코드를 올리고 CI 파이프라인을 실행한 뒤에야 파라미터 유효성을 확인했어요. 한 번에 25~40분이 걸리는 과정을 세 번 반복했습니다.<br><br>
+  이후 임시 파라미터그룹을 만들어 같은 값을 검증했을 때는 30초가 걸렸어요. 이 검증을 먼저 했다면 파라미터 오류를 확인하려고 CI가 끝날 때까지 기다릴 필요는 없었습니다.
 </div>
 
 <div class="obsv-fig">
@@ -178,77 +174,74 @@ read_only           OFF
       <text x="71" y="168" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">30초</text>
       <text x="132" y="168" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">임시 리소스로 검증</text>
 
-      <text x="350" y="228" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">검증 도구를 쓴 게 아니라 검증을 세 번 미룬 것</text>
+      <text x="350" y="228" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">임시 리소스에서 값을 먼저 검증할 수 있었다</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 3. 파이프라인은 통합을 확인하는 자리고, 값이 유효한지는 그 앞에서 안다</div>
+<div class="obsv-figcap">그림 3. CI 실행마다 기다리던 파라미터 검증을 임시 리소스에서 먼저 할 수 있었어요</div>
 
-<p>그래도 이 세 번이 <b>싼 실패</b>였다는 점은 남습니다. 아직 아무것도 안 붙은 리소스였으니까요. <span class="obsv-mark">순서를 위험 낮은 것부터 잡았기 때문에 세 번 깨져도 서비스는 무사했습니다.</span></p>
+<p>이 준비 작업에서 겪은 파라미터 오류가 운영 서비스에 영향을 주지는 않았어요. DB에 연결하기 전인 리소스에서 검증했기 때문입니다.</p>
 
 <h2>5. 알람과 앱 쪽 준비</h2>
 
-<p>같이 준비한 것들이 있었습니다.</p>
+<p>DB 리소스와 함께 알람과 앱 설정도 준비했어요.</p>
 
 <div class="obsv-code">8.0 클러스터용 알람 3종 추가
 로그 수신함 정리 — 안 쓰는 리소스를 미리 치워 전환 후 혼선을 줄인다
 앱: 대용량 전송 청크 임계 조정 + DB 접속 설정을 환경변수로 분리</div>
 
-<p>마지막 줄이 중요했어요. <b>접속 URL이 이미지 안에 하드코딩</b>돼 있었으니 롤백할 때 URL을 되돌리려면 <b>이미지를 다시 빌드</b>해야 하는 상태였습니다. 환경변수로 빼면 <b>compose 한 줄로 되돌릴 수 있는 수단</b>이 생깁니다.</p>
+<p>앱의 DB 접속 URL은 이미지 안에 하드코딩돼 있었어요. 롤백하면서 URL을 바꾸려면 이미지를 다시 빌드해야 했습니다. 환경변수로 분리하면 compose 파일의 설정을 바꿔 URL을 되돌릴 수 있어요.</p>
 
-<p>그런데 여기서 실수를 했습니다. <b>저장소 파일에만 넣고 운영 호스트 파일을 빼먹었어요.</b></p>
+<p>이 변경을 저장소의 compose 파일에만 넣고, 실제 운영 호스트가 사용하는 파일에는 반영하지 않았어요.</p>
 
 <div class="obsv-code">저장소  infrastructure/compose 파일    ← 여기에 넣었다
 호스트  운영 서버의 compose 파일        ← 여기가 실제로 도는 것.  빼먹었다</div>
 
-<p>그대로 갔으면 <b>되돌릴 수단이 운영 서버에 반영되지 않은 상태</b>로 전환했을 겁니다. 나중에 발견해서 채웠지만, 이 저장소가 이미 겪은 문제였어요. <b>저장소 파일과 호스트 파일은 다른 파일입니다.</b></p>
+<p>나중에 빠진 설정을 발견해 운영 호스트 파일에도 반영했어요. 이 확인을 놓쳤다면 URL을 되돌릴 수단이 운영 서버에 없는 상태로 전환했을 겁니다. 저장소의 변경과 실제 호스트 파일의 반영 여부를 각각 확인해야 했어요.</p>
 
-<h2>6. 체크리스트에 금지문을 명시했다</h2>
+<h2>6. 전환 후에도 감시와 드리프트 검사를 유지하기</h2>
 
-<p>준비 단계의 마지막은 문서였습니다. 그리고 거기에 <b>하지 말 것</b>을 적었어요.</p>
+<p>마지막으로 체크리스트에 전환 후에도 유지할 검사와 추가하지 않을 예외 설정을 적었어요.</p>
 
-<p>전환 후 옛 클러스터는 <code>-old</code>가 붙은 이름으로 남습니다. 감시 커버리지 가드가 그걸 "감시 밖 리소스"로 잡을 테니 노이즈가 생기죠. 이름 패턴을 예외 처리하고 싶어집니다.</p>
+<p>전환 후 옛 클러스터는 <code>-old</code>가 붙은 이름으로 남아요. 감시 누락을 검사하는 커버리지 가드가 이를 "감시 밖 리소스"로 탐지할 예정이었지만, 이름 패턴에 따른 예외는 추가하지 않기로 했습니다.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🚨 이 가드가 막는 최악은 "유령" 이 아니다</div>
-  <b>라이브인데 감시 밖</b>입니다.<br><br>
-  전환 후 <code>-old</code>는 운영 태그를 달고 <b>살아서 도는 5.7 클러스터</b>이고, <b>롤백하면 그것이 라이브 DB가 됩니다.</b><br><br>
-  <code>-old</code>를 제외하는 필터는 <b>롤백한 바로 그 순간 라이브 DB를 감시 밖으로 숨깁니다.</b> 필요한 순간에 정확히 반대로 작동하는 거죠.<br><br>
-  제외 대신 <b>기간을 짧게</b> 하고 걸리는 이슈는 노이즈가 아니라 <b>삭제 리마인더로 씁니다.</b>
+  <div class="obsv-ct">⚠️ 롤백에 쓸 클러스터도 감시 대상이에요</div>
+  전환 후 <code>-old</code>는 운영 태그를 유지한 5.7 클러스터예요. 별도 복구 절차를 거쳐 다시 운영에 사용할 가능성을 검토하는 대상이에요. 성공한 전환 뒤에는 읽기 전용이므로, 클러스터가 남아 있다는 사실만으로 즉시 복귀할 수는 없어요.<br><br>
+  <code>-old</code>를 검사에서 제외하면 롤백 후 운영 DB의 감시 누락도 탐지하지 못해요. 예외를 추가하는 대신 이전 클러스터의 보존 기간을 짧게 잡고, 탐지된 이슈는 삭제 시점을 확인하는 데 쓰기로 했습니다.
 </div>
 
-<p>같은 이유로 <b>드리프트를 코드에서 무시하게 만드는 옵션도 넣지 않기로</b> 했습니다. 콘솔로 실행하면 코드가 옛 버전을 말하는 창이 생기는데 그 불일치를 무시하도록 설정하면 편합니다. 그런데 그건 <b>스택 전체를 영구히 검사 대상에서 빼는</b> 것이고 이 저장소는 그 대가를 이미 압니다. 예전에 그렇게 남겨둔 설정이 아직 그대로 있어요.</p>
+<p>코드와 실제 리소스의 차이인 드리프트를 무시하는 옵션도 넣지 않기로 했어요. 콘솔로 전환하면 한동안 코드에는 이전 버전이 남습니다. 이 불일치를 무시하도록 설정하면 스택 전체가 계속 검사 대상에서 빠질 수 있어요. 저장소에는 과거에 넣은 예외 설정이 남아 있었기 때문에 같은 방식을 추가하지 않기로 했습니다.</p>
 
-<p>대신 <b>전환 후 실제로 어긋난 자리만 코드에 반영</b>해서 불일치를 0으로 만들기로 했습니다. 합격 조건은 하나예요. <b>차이가 없어야 합니다.</b></p>
+<p>대신 전환 후 실제로 달라진 부분을 코드에 반영하고, 검사에서 남은 차이가 0인지 확인하기로 했어요.</p>
 
-<h2>7. green 생성: 53분, 영향 0</h2>
+<h2>7. 53분 걸린 green 생성과 가용영역 확인</h2>
 
-<p>준비가 끝나고 복제본을 만들었습니다.</p>
+<p>준비를 마친 뒤 green 복제본을 만들었어요.</p>
 
 <div class="obsv-code">소스 읽기 복제본 생성  →  엔진 버전 업그레이드  →  인스턴스 생성
 53분 후  사용 가능
 
 그동안 운영 클러스터는 계속 서비스했다.  영향 0</div>
 
-<p>그리고 <b>협의체가 전원 걸림돌로 지목했던 항목</b>을 실물로 확인했습니다. green 인스턴스가 <b>코드에 적힌 것과 같은 가용영역에 뜨는지</b>였어요.</p>
+<p>생성 후에는 사전 검토에서 확인이 필요하다고 본 가용영역을 조회했어요. green 인스턴스가 코드에 적힌 가용영역에 생성됐는지 확인했습니다.</p>
 
-<p>왜 이게 걸림돌이었냐면 다른 영역에 뜨면 전환 후 코드와 실물이 어긋나고, <b>그 자리는 삭제 방지가 걸려 있어서</b> 불일치를 해소하려는 순간 <b>스택 전체가 에러로 죽습니다.</b> 그러면 그 스택의 모든 변경이 막혀요.</p>
+<p>다른 가용영역에 생성되면 전환 후 코드와 실제 리소스가 달라져요. 해당 리소스에는 삭제 방지가 걸려 있어서 차이를 해소하는 작업이 실패하면 스택 전체의 변경이 막힐 수 있었습니다.</p>
 
-<p>확인 결과 <b>정확히 일치했습니다.</b> 세 관점이 전원 지목했던 최악의 시나리오가 사라졌습니다.</p>
+<p>조회 결과는 코드와 일치했어요. 사전 검토의 세 관점에서 모두 우려했던 가용영역 불일치는 발생하지 않았습니다.</p>
 
-<p>덧붙이면 <b>확인해야 할 영역이 두 개</b>였습니다. 쓰기 인스턴스와 읽기 인스턴스입니다. 1편에서 적었듯 그 읽기 인스턴스는 사실상 아무 요청도 처리하지 않고 있었으니, <span class="obsv-mark">먼저 지웠으면 이 걸림돌의 확인 대상도 절반이었습니다.</span> 미룬 작업이 이번 작업의 위험을 두 배로 만든 셈이에요.</p>
+<p>가용영역은 쓰기 인스턴스와 읽기 인스턴스, 두 개를 확인해야 했어요. 1편에서는 읽기 인스턴스의 일정한 부하를 검증 쿼리로 해석했어요. 실제 사용자 조회가 없다는 점까지 확정한 것은 아니었어요. 미리 삭제했다면 이번에 가용영역을 확인할 대상도 절반이었을 거예요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">💡 곁가지로 알게 된 것</div>
-  조회 필터에 다른 클러스터가 같이 걸렸는데 그건 <b>이미 8.0으로 돌고 있는 다른 팀 클러스터</b>였습니다.<br><br>
-  계정에 8.0 운영 실적이 이미 있었던 거예요. 다만 그 클러스터가 쓰는 버전은 <b>장기 지원 계열이 아니었습니다.</b> 우리는 그걸 보고 장기 지원 계열을 골랐습니다.<br><br>
-  옆에서 이미 하고 있던 걸 몰랐다는 건, 이 조직에서 반복해서 나오는 모양입니다. <b>배운 것이 옆 서비스로 안 옮겨갑니다.</b>
+  <div class="obsv-ct">💡 조회 중 확인한 다른 8.0 클러스터</div>
+  조회 필터에 다른 팀이 운영하는 8.0 클러스터도 포함됐어요. 같은 계정에 8.0 운영 사례가 있었지만 이번 준비 전에는 알지 못했습니다.<br><br>
+  그 클러스터의 버전은 장기 지원 계열이 아니었어요. 이 차이를 확인한 뒤 이번 업그레이드에는 장기 지원 계열을 선택했습니다.
 </div>
 
 <div class="obsv-summary">
-  <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>되돌릴 수 없는 단계 앞에 되돌릴 수 있는 단계를 쌓았습니다. 실물 확인 → 스냅샷 → 미부착 리소스 → 복제본 생성까지 전부 되돌릴 수 있었고 준비 중 세 번 깨졌는데 깨진 곳이 전부 그 구간이라 운영 DB는 한 번도 건드리지 않았습니다.</b><br><br>
-  나빴던 것도 남깁니다. 파라미터 유효성을 <b>CI로 확인하느라 사이클당 25~40분이 드는 과정을 세 번</b> 반복했는데 임시 리소스로 30초면 됐어요. 그건 검증 도구를 쓴 게 아니라 <b>검증을 세 번 미룬 것</b>입니다. 그리고 되돌릴 수단을 <b>저장소에만 넣고 운영 호스트를 빼먹었습니다.</b>
+  <div class="obsv-st2">✍️ 준비 결과와 놓친 확인</div>
+  실제 파라미터 조회, 스냅샷, 미부착 리소스 검증을 거쳐 green을 생성했어요. 준비 중 파라미터 반영 문제는 운영 DB 변경 없이 처리했고, 53분 뒤 사용 가능해진 green의 가용영역이 코드와 일치하는지 확인했습니다.<br><br>
+  파라미터 유효성은 한 번에 25~40분이 걸리는 CI를 세 번 실행한 뒤에야 별도로 검증했어요. 임시 리소스에서는 30초가 걸렸습니다. 앱 접속 설정도 저장소에만 반영했다가 운영 호스트 파일의 누락을 발견해 채웠어요. 전환 후에는 감시 예외를 추가하지 않고 실제 변경을 코드에 반영하기로 했습니다.
 </div>
 
 </div>

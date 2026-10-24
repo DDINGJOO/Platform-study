@@ -1,4 +1,5 @@
-<!-- lead: dev는 MySQL 5.7, prod는 Aurora MySQL 8.0 호환이라 utf8mb4_0900_ai_ci 콜레이션 DDL이 dev에서 실패했어요. 5단계로 나눠 되돌릴 수 있게 이관하고 5.7로 가는 경로를 끊은 과정을 적었어요. -->
+<!-- tags: utf8mb4_0900_ai_ci, mysqldump, 블루그린 배포, systemd -->
+<!-- lead: MySQL 5.7인 dev에서는 8.0 표준 콜레이션을 쓰는 DDL이 실패했어요. 8.0.42로 이관하면서 백업과 병행 기동을 확인하고 부팅 설정의 5.7 참조를 정리했지만, 재부팅 검증은 남았어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -21,32 +22,30 @@
 
 <div class="obsv-series">
   <div class="obsv-st">📚 dev DB 메이저 버전 이관, 1편</div>
-  <b>어려운 건 옛 버전으로 가는 길을 끊는 일이었다</b> &larr; 지금 이 글<br>
-  롤백은 되감기가 아니다<br>
-  체크리스트가 증명하지 못한 것
+  <b>1편. MySQL 8.0 이관 후 부팅 설정의 5.7 참조 정리하기</b> &larr; 지금 이 글
 </div>
 
-<p>새로 만든 테이블 DDL 을 dev 에 올리는데 이런 에러가 떴어요.</p>
+<p>새로 만든 테이블의 DDL(테이블 구조를 정의하는 SQL)을 dev에 적용하다가 다음 오류가 났어요.</p>
 
 <div class="obsv-code">ERROR 1273 (HY000): Unknown collation: 'utf8mb4_0900_ai_ci'</div>
 
-<p>전사 표준으로 쓰기로 한 콜레이션인데, dev DB 가 그런 건 모른다고 합니다. 이유는 허무했어요. <b>dev 는 MySQL 5.7 이었고, 그 콜레이션은 8.0 부터 생긴 것</b>이거든요. 그리고 이 서비스의 prod 는 Aurora MySQL 3.10.3, 즉 MySQL 8.0.42 호환 버전이었습니다.</p>
+<p>표준으로 정한 콜레이션을 dev DB가 지원하지 않는다는 뜻이에요. 콜레이션은 문자열을 비교하고 정렬하는 규칙이에요. <b>dev는 MySQL 5.7이었고, 이 콜레이션은 8.0부터 지원했어요.</b> 반면 이 서비스의 prod는 Aurora MySQL 3.10.3, 즉 MySQL 8.0.42 호환 버전이었어요.</p>
 
-<p>즉 <span class="obsv-mark">dev 에서 통과한 DDL 이 prod 에서 통과할지, dev 에서 막힌 게 prod 에서도 막힐지 아무것도 보장되지 않는 상태</span>로 몇 달을 쓰고 있었던 거예요. 그래서 dev DB 를 5.7 에서 8.0.42 로 옮겼습니다. 5단계로 나눠서 매 단계마다 되돌릴 수 있는 상태를 유지하면서요.</p>
+<p>몇 달 동안 <span class="obsv-mark">dev의 DDL 실행 결과만으로는 prod에서도 같은 결과가 날지 판단하기 어려운 상태</span>였어요. 그래서 dev DB를 5.7에서 8.0.42로 옮겼어요. 작업을 5단계로 나누고 각 단계에서 되돌리는 데 필요한 백업과 기존 볼륨을 보존했어요.</p>
 
-<h2>1. 메이저 버전이 다르면 뭐가 보장되지 않나</h2>
+<h2>1. dev에서 검증하지 못한 콜레이션과 예약어</h2>
 
-<p>"dev 랑 prod 버전이 좀 다른데 뭐 어때"라고 넘기기 쉬운데, 안 되는 이유가 생각보다 많아요. 콜레이션 하나만 봐도 그렇습니다.</p>
+<p>버전 차이는 같은 DDL과 쿼리를 검증하는 데 영향을 줬어요. 처음 오류가 난 콜레이션부터 확인했어요.</p>
 
-<p>5.7 에서는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_general_ci</code> 나 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_unicode_ci</code> 정도를 씁니다. 8.0 에서 기본값이 된 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_0900_ai_ci</code> 는 아예 존재하지 않습니다. 그러니까 신규 테이블에 전사 표준을 적용하고 싶어도 <b>dev 에서 그 DDL 을 테스트할 방법 자체가 없었어요.</b> 검증 없이 prod 에 올리는 수밖에요.</p>
+<p>5.7에서는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_general_ci</code> 나 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_unicode_ci</code> 등을 써요. 8.0에서 기본값이 된 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">utf8mb4_0900_ai_ci</code>는 5.7에서 지원하지 않아요. 신규 테이블에 표준 콜레이션을 적용하려 해도 <b>기존 dev DB에서는 해당 DDL을 테스트할 수 없었어요.</b> prod에 적용하기 전에 같은 버전에서 검증할 환경이 필요했어요.</p>
 
-<p>예약어도 늘었습니다. 8.0 에서 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">rank</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">groups</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">system</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">lead</code> 같은 단어가 예약어가 됐어요. 5.7 에서 잘 돌던 쿼리가 8.0 에서 문법 에러로 죽을 수 있다는 뜻입니다. 이런 건 dev 가 5.7 인 채로는 절대 못 잡아요.</p>
+<p>예약어도 늘었어요. 8.0에서 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">rank</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">groups</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">system</code>, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">lead</code> 같은 단어가 예약어가 됐어요. 5.7에서 실행되던 쿼리도 8.0에서는 문법 오류가 날 수 있다는 뜻이에요. dev가 5.7이면 이런 차이를 미리 확인하기 어려워요.</p>
 
-<p>그래서 목표를 <b>dev · CI · prod 세 곳의 버전을 8.0.42 하나로 통일</b>하는 것으로 잡았습니다. CI 는 testcontainers 를 쓰고 있었으니 이미지 태그만 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code> 로 고정하면 되고, 문제는 dev 였어요.</p>
+<p>그래서 <b>dev·CI·prod 세 곳의 호환 기준을 8.0.42로 맞추는 것</b>을 목표로 잡았어요. CI는 테스트용 DB 컨테이너를 실행하는 Testcontainers를 쓰고 있어서 이미지 태그를 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code>로 고정하면 됐어요. 기존 데이터가 있는 dev는 이관 절차가 필요했어요.</p>
 
-<h2>2. 백업은 만드는 게 아니라 검증하는 것</h2>
+<h2>2. 덤프 완료 여부와 테이블 수 확인하기</h2>
 
-<p>제일 먼저 논리 백업을 떴습니다. 여기서 옵션 하나가 중요했어요.</p>
+<p>먼저 데이터를 SQL 파일로 내보내는 논리 백업을 만들었어요. 이때 시스템 DB를 포함하지 않도록 옵션을 골랐어요.</p>
 
 <div class="obsv-code"># --all-databases 가 아니라 --databases
 mysqldump --databases app_db --single-transaction &gt; backup.sql
@@ -58,18 +57,18 @@ tail -1 backup.sql          # -- Dump completed on ... 이 나와야 정상
 grep -c 'CREATE TABLE' backup.sql</div>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">💡 --databases 와 --all-databases 는 다른 명령이에요</div>
-  <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--all-databases</code> 는 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql</code> 시스템 DB 까지 같이 덤프</b>해요. 그걸 8.0 에 복원하면 5.7 구조의 권한 테이블이 8.0 시스템 테이블 위에 덮여요. 8.0 은 시스템 테이블 구조가 바뀌었기 때문에 여기서 사고가 납니다.<br>
-  메이저 버전을 넘어갈 때는 <b>내 데이터만</b> 옮기고 시스템 DB 는 새 버전이 자기가 만든 걸 쓰게 두세요.
+  <div class="obsv-ct">💡 --databases로 이관할 DB를 지정해요</div>
+  <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">--all-databases</code> 는 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql</code> 시스템 DB까지 함께 덤프</b>해요. 이 덤프를 8.0에 복원하면 5.7의 권한 테이블과 8.0의 시스템 테이블 구조 차이로 문제가 생길 수 있어요.<br>
+  이번 이관에서는 <b>애플리케이션 데이터만</b> 옮기고 새 버전의 시스템 DB는 유지했어요.
 </div>
 
-<p>그리고 백업은 <b>떴다고 끝이 아니에요.</b> 44MB 파일이 생겼다는 사실이 그 안에 데이터가 온전히 들어있다는 뜻은 아니거든요. 디스크가 차서 중간에 끊겼을 수도 있고요. 그래서 덤프 말미에 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">-- Dump completed on</code> 이 찍혔는지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">CREATE TABLE</code> 개수가 원본 테이블 수와 같은지를 확인했습니다. 이 두 개가 <span class="obsv-mark">"파일이 있다"를 "복원할 수 있다"로 바꿔주는 최소 조건</span>이에요.</p>
+<p>44MB 백업 파일이 생긴 뒤에는 덤프가 끝까지 실행됐는지 확인했어요. 파일이 있어도 디스크 부족 등으로 중간에 끊겼을 수 있기 때문이에요. 덤프 말미에 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">-- Dump completed on</code>이 있는지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">CREATE TABLE</code> 개수가 원본 테이블 수와 같은지 확인했어요. <span class="obsv-mark">덤프 완료 여부와 테이블 수를 먼저 확인하고, 실제 복원 결과는 다음 단계에서 검증했어요.</span></p>
 
-<h2>3. 블루그린으로 옮기면 되돌릴 수 있다</h2>
+<h2>3. 기존 DB를 유지한 채 8.0을 병행 기동하기</h2>
 
-<p>제일 무서운 방식은 5.7 컨테이너를 내리고 그 자리에 8.0 을 올리는 거예요. 복원이 실패하면 그때부터 서비스도 없고 검증할 대상도 없습니다.</p>
+<p>5.7 컨테이너를 먼저 내리고 8.0을 올리면 복원이 실패한 동안 dev 서비스를 쓸 수 없어요. 그래서 기존 DB를 유지한 채 새 DB를 준비하는 블루그린 방식으로 진행했어요.</p>
 
-<p>그래서 <b>8.0 을 3307 포트에 따로 띄웠어요.</b> 3306 의 5.7 은 계속 서비스 중인 상태로요. 복원하고, 검증하고, 통과했을 때만 포트를 바꿨습니다.</p>
+<p><b>8.0을 3307 포트에 따로 띄우고</b> 3306의 5.7은 계속 서비스하게 뒀어요. 새 DB에 데이터를 복원하고 검증을 통과한 뒤 포트를 바꿨어요. 아래 코드는 목표 패치 버전으로 고정한 흐름 예시예요. 당시 최초 컨테이너의 정확한 태그는 확인하지 못했어요. 초기 인증·비밀번호 전달·데이터 볼륨 설정도 생략했으므로, 이 명령만으로 새 MySQL 컨테이너를 기동할 수는 없어요.</p>
 
 <div class="obsv-code"># 8.0 을 3307 에 띄운다 — 3306 의 5.7 은 그대로 서비스 중
 docker run -d --name app-dev-mysql8 -p 3307:3306 mysql:8.0.42
@@ -80,12 +79,12 @@ until docker exec app-dev-mysql8 mysql -uroot -p"$PW" -e 'SELECT 1' &amp;&gt; /d
 done</div>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">⚠️ "ready for connections" 는 준비 완료가 아니에요</div>
-  MySQL 컨테이너 로그에 이 문장이 <b>두 번</b> 나와요. 하나는 X Plugin(33060) 것이고 하나는 실제 SQL 포트 것입니다. 앞의 걸 보고 복원을 시작하면 커넥션이 거부돼요.<br>
-  로그 문자열을 grep 하지 말고 위처럼 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SELECT 1</code> 이 실제로 응답할 때까지 도는 루프</b>를 쓰는 게 안전합니다. 로그는 상태를 말해주지만 응답은 상태를 증명해요.
+  <div class="obsv-ct">⚠️ 로그와 함께 SQL 응답도 확인해요</div>
+  MySQL 컨테이너 로그에는 이 문장이 <b>두 번</b> 나왔어요. 하나는 X Plugin(33060), 다른 하나는 실제 SQL 포트의 로그였어요. 앞의 로그만 보고 복원을 시작하면 SQL 접속이 거부될 수 있어요.<br>
+  로그 문자열만 확인하는 대신 위 코드처럼 <b><code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">SELECT 1</code>이 응답할 때까지 기다리는 루프</b>로 SQL 접속 가능 여부를 확인했어요. 이 코드는 준비 여부 확인 부분만 보여 줘요. 접속 실패가 계속되면 대기를 중단하고 컨테이너 상태·초기화 로그·인증 정보를 확인해야 해요.
 </div>
 
-<p>검증 항목은 세 개였어요. 전 테이블 행수 diff 가 0인지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql.user</code> 의 계정이 그대로 넘어왔는지, 그리고 앱이 붙어서 API 가 200 을 주는지를 확인했습니다. 특히 계정은 5.7 → 8.0 에서 인증 플러그인 기본값이 바뀌기 때문에 꼭 봐야 했습니다.</p>
+<p>앱 DB 덤프에는 계정·권한 이관이 포함되지 않아요. 새 서버에서 사용할 계정과 권한은 별도로 준비할 대상이며, 당시 어떤 절차로 준비했는지는 확보한 자료로 확인하지 못했어요. 검증 항목은 세 개였어요. 전체 테이블의 행 수 차이(diff)가 0인지, <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql.user</code>의 계정이 유지됐는지, 앱이 접속해 API가 200을 반환하는지 확인했어요. 5.7에서 8.0으로 바뀌면서 인증 플러그인 기본값도 달라지므로 계정 확인이 필요했어요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -115,19 +114,19 @@ done</div>
       <text x="350" y="263" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">5.7 중지 → 8.0 을 :3306 으로</text>
       <text x="350" y="285" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">앱 재기동 후 API 200 확인</text>
 
-      <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 검증 끝나기 전까지 5.7 은 손대지 않는다</text>
+      <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">검증 전까지 5.7 서비스 유지</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 1. 병행 기동해두면 "복원 실패"가 "장애"로 번지지 않아요</div>
+<div class="obsv-figcap">그림 1. 목표 패치 버전을 표시한 전환 구성. 실제 최초 컨테이너 태그와 인증 준비 절차는 미확인이에요</div>
 
-<h2>4. 진짜 어려운 건 5.7 이 되살아나지 못하게 만드는 것</h2>
+<h2>4. 부팅 설정에 남아 있던 5.7 참조 정리하기</h2>
 
-<p>포트를 바꾸고 API 가 200 을 주는 걸 확인했을 때, 솔직히 다 끝났다고 생각했어요. 그런데 여기가 이 작업에서 가장 많이 놓치는 지점이었습니다.</p>
+<p>포트를 바꾼 뒤 API가 200을 반환하는 것까지 확인했어요. 다만 현재 실행 중인 컨테이너와 재부팅할 때 실행될 컨테이너가 같은지는 별도로 확인해야 했어요.</p>
 
-<p>dev 서버에는 컨테이너를 띄우는 경로가 여러 겹으로 쌓여 있었어요. systemd 유닛이 헬스체크 스크립트를 부르고, 그게 start 스크립트를 부르고, 그게 compose 를 실행하는 구조였습니다. <span class="obsv-mark">그리고 그 층 중 두 곳에 5.7 이 문자열로 박혀 있었어요.</span></p>
+<p>dev 서버에서는 systemd 유닛이 헬스체크 스크립트를 호출하고, 헬스체크가 start 스크립트를 거쳐 Compose를 실행했어요. <span class="obsv-mark">이 호출 순서를 따라가 보니 두 곳에 5.7 참조가 남아 있었어요.</span></p>
 
-<p>지금은 8.0 이 잘 돌고 있지만, <b>다음 재부팅 때 systemd 가 그 경로를 타면 5.7 컨테이너가 다시 올라옵니다.</b> 그러면 3306 포트를 어느 쪽이 먼저 차지하느냐에 따라 결과가 갈리거나, 최악의 경우 예전 볼륨을 붙인 5.7 이 서비스를 받게 돼요. 며칠 뒤 "데이터가 사라졌다"는 제보를 받고 원인을 못 찾는 상황이 이렇게 만들어집니다.</p>
+<p>8.0이 실행 중이어도 <b>재부팅 때 기존 설정을 실행하면 5.7 컨테이너가 다시 올라올 수 있었어요.</b> 그러면 3306 포트를 두 컨테이너가 경쟁하거나, 예전 볼륨을 연결한 5.7에 앱이 접속할 수 있어요. 이관 뒤 변경한 데이터가 보이지 않는 문제로 이어질 수 있는 설정이었어요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -145,7 +144,7 @@ done</div>
 
       <path d="M55 110 C 165 107, 300 113, 420 109 C 423 130, 422 146, 421 162 C 300 165, 165 161, 57 163 C 54 146, 55 127, 55 110 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
       <text x="238" y="135" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">cron-health-check-and-start.sh</text>
-      <text x="238" y="154" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">🔥 컨테이너명에 5.7 하드코딩</text>
+      <text x="238" y="154" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">컨테이너명에 5.7 명시</text>
 
       <path d="M238 165 C 241 172, 235 179, 238 185" fill="none" stroke="#3d3a34" stroke-width="1.9" marker-end="url(#arr2)"/>
 
@@ -157,41 +156,41 @@ done</div>
 
       <path d="M55 270 C 165 267, 300 273, 420 269 C 423 290, 422 306, 421 322 C 300 325, 165 321, 57 323 C 54 306, 55 287, 55 270 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
       <text x="238" y="295" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">docker-compose.yaml</text>
-      <text x="238" y="314" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">🔥 db 서비스 = mysql:5.7</text>
+      <text x="238" y="314" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">db 서비스 = mysql:5.7</text>
 
       <path d="M462 105 C 535 102, 605 108, 675 104 C 678 145, 677 195, 676 248 C 605 251, 535 247, 464 249 C 461 195, 462 148, 462 105 Z" fill="#fbeee7" stroke="#b3502f" stroke-width="2.4" stroke-dasharray="8 6"/>
-      <text x="569" y="130" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">🕳️ 전수 조사 대상</text>
+      <text x="569" y="130" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">확인한 실행 설정</text>
       <text x="484" y="156" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">systemd unit</text>
       <text x="484" y="176" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">헬스체크 스크립트</text>
       <text x="484" y="196" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">start 래퍼</text>
       <text x="484" y="216" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">compose 파일</text>
       <text x="484" y="236" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34">exec / 유틸 스크립트</text>
 
-      <text x="350" y="366" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 한 곳만 놓치면 다음 재부팅에 5.7 이 되살아난다</text>
+      <text x="350" y="366" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">5.7 참조가 남으면 재부팅 때 다시 실행될 수 있다</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 2. 이관은 데이터를 옮기는 일이 아니라 "옛 버전으로 가는 길"을 끊는 일이에요</div>
+<div class="obsv-figcap">그림 2. systemd부터 Compose까지 호출 순서를 따라 5.7 참조를 확인했어요</div>
 
-<p>그래서 부팅 경로를 전부 따라가면서 5.7 참조를 지웠어요. compose 의 db 서비스는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code> + 새 볼륨 + 표준 기동 플래그로 전부 교체하고, 헬스체크·유틸 스크립트의 컨테이너명도 일괄 교체했습니다. crontab 이 따로 없다는 것까지 확인해서 <b>실행 경로가 systemd 하나뿐임을 증명</b>하고 끝냈어요.</p>
+<p>부팅 설정의 호출 순서를 따라가며 5.7 참조를 지웠어요. Compose의 db 서비스는 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0.42</code>와 새 볼륨, 표준 기동 플래그를 쓰도록 바꿨어요. 헬스체크와 유틸 스크립트의 컨테이너명도 교체했어요. 별도 crontab이 없는지도 확인해, 조사한 설정에서는 systemd를 통해 기동하는 구조임을 확인했어요.</p>
 
-<p>그런데 이 작업, 정작 <b>검증은 못 했습니다.</b> "지금 재부팅하면 8.0 이 뜬다"를 증명하는 방법은 실제로 재부팅해보는 것뿐인데 그걸 안 했으니까요. 코드를 다 고쳤다는 것과 부팅이 실제로 그 코드를 탄다는 건 다른 이야기예요.</p>
+<p>다만 <b>실제 재부팅 검증은 하지 않았어요.</b> 설정을 수정하고 호출 관계를 확인한 것까지가 이번 검증 범위예요. 재부팅한 뒤에도 8.0이 기동하는지는 확인이 남았어요.</p>
 
-<h2>5. 인플레이스 업그레이드는 되돌아갈 수 없어요</h2>
+<h2>5. 기존 데이터 볼륨과 목표 패치 버전 보존하기</h2>
 
-<p>여기서 성격이 완전히 다른 위험이 하나 등장합니다. MySQL 8.0 은 컨테이너를 새 이미지로 올리면 데이터 디렉터리를 <b>자동으로 업그레이드</b>해줘요. 편한데, <span class="obsv-mark">이 변환은 단방향이라 다시 내려갈 수 없습니다.</span></p>
+<p>기존 데이터 디렉터리를 새 버전으로 직접 변환하는 인플레이스 업그레이드에도 주의가 필요해요. MySQL 8.0은 새 이미지로 기동하면서 데이터 디렉터리를 자동으로 업그레이드해요. <span class="obsv-mark">한번 변환한 디렉터리를 그대로 5.7에 다시 연결할 수는 없어요.</span></p>
 
-<p>8.0 이 한 번 손댄 데이터 디렉터리는 5.7 이 못 읽어요. 그래서 <b>물리 볼륨을 따로 보존</b>하는 게 필수였습니다. 논리 백업(44MB SQL 파일)도 있었지만, 그건 복원에 시간이 걸리는 수단이고, 볼륨은 붙이면 바로 뜨는 수단이니까요. 성격이 다른 두 개를 다 들고 있어야 했어요.</p>
+<p>그래서 <b>5.7에서 쓰던 물리 볼륨을 따로 보존</b>했어요. 44MB SQL 파일은 새 DB에 논리 복원할 때 쓰고, 기존 볼륨은 5.7 컨테이너를 다시 기동할 때 쓰는 용도였어요. 되돌리는 방식이 달라 두 백업을 함께 보관했어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🕳️ 놓친 것: 목표 버전을 처음부터 고정하지 않았어요</div>
-  Phase 2 에서 "8.0" 컨테이너에 복원하고, Phase 4 에서 이미지를 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">8.0.42</code> 로 교체하는 <b>2단계</b>로 진행했어요. 그런데 만약 Phase 2 가 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0</code> 태그였다면 8.0.43 이상을 받았을 수 있고, 그러면 Phase 4 는 업그레이드가 아니라 <b>다운그레이드</b>예요. InnoDB 는 그걸 지원하지 않습니다.<br>
-  결과적으로는 무사히 지나갔지만, 애초에 <b>첫 컨테이너부터 prod 와 똑같은 패치 버전으로 고정했으면 Phase 4 자체가 필요 없었어요.</b> 2단계로 나눈 대가가 리스크뿐이었던 거죠.
+  <div class="obsv-ct">⚠️ 목표 패치 버전을 처음부터 고정하지 않았어요</div>
+  Phase 2에서 "8.0" 컨테이너에 복원한 뒤 Phase 4에서 이미지를 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">8.0.42</code>로 교체하는 <b>2단계</b>로 진행했어요. 만약 Phase 2에서 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">mysql:8.0</code> 태그를 썼다면 8.0.43 이상을 받았을 수 있어요. 그러면 Phase 4는 <b>다운그레이드</b>가 돼요. 다만 MySQL 8.0.35부터는 같은 8.0 계열 안의 인플레이스 하향을 지원하므로, 8.0.43에서 8.0.42로 바꾼다는 이유만으로 기존 디렉터리를 사용할 수 없다고 한 설명은 맞지 않아요. 8.0에서 5.7로 되돌리는 메이저 버전 하향과는 구분해야 해요. 여기서 확인한 문제는 태그를 고정하지 않아 실제 복원·검증 버전이 목표와 달라질 수 있었다는 점이에요.<br>
+  당시 이 단계에서 문제는 없었지만, <b>첫 컨테이너부터 prod의 호환 패치 버전에 맞췄다면 Phase 4의 이미지 교체는 필요 없었어요.</b> 단계만 추가하면서 버전이 달라질 여지를 남긴 셈이에요.
 </div>
 
-<h2>6. 스키마 표준화, 그리고 남겨둔 미봉책</h2>
+<h2>6. 신규 6개 테이블에 적용한 스키마 표준</h2>
 
-<p>버전이 맞았으니 이제 처음에 하려던 걸 할 수 있게 됐어요. 이미 데이터가 들어있는 테이블 6개를, 데이터를 보존하면서 표준 규격으로 바꿨습니다.</p>
+<p>버전을 맞춘 뒤 처음 적용하려던 스키마 표준을 반영했어요. 이미 데이터가 들어 있던 신규 테이블 6개를 대상으로 데이터를 보존하면서 변경했어요.</p>
 
 <div class="obsv-code">-- ① 콜레이션 — 테이블을 재구성해요 (데이터는 보존)
 ALTER TABLE landing_page CONVERT TO CHARACTER SET utf8mb4
@@ -204,17 +203,17 @@ ALTER TABLE landing_page MODIFY created_at DATETIME(6) NOT NULL
 -- ③ 인덱스 명명 — 메타데이터만 바뀌어서 즉시 끝나요
 ALTER TABLE landing_page RENAME INDEX uq_lp_slug TO uk_lp_slug;</div>
 
-<p>세 개의 성격이 완전히 달라요. ①은 테이블을 통째로 다시 쓰는 작업이라 데이터가 크면 오래 걸리고, ③은 이름만 바꾸는 거라 메타데이터 수정으로 끝납니다. <b>같은 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">ALTER TABLE</code> 이라고 비용이 같지 않아요.</b> prod 에 적용할 때 이 차이를 모르면 예상 시간이 크게 틀립니다.</p>
+<p>각 변경에 필요한 작업은 달라요. ①은 테이블을 다시 구성하므로 데이터가 크면 오래 걸릴 수 있고, ③은 인덱스 이름을 바꾸는 메타데이터 수정이에요. 같은 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">ALTER TABLE</code>이라도 작업량이 다르므로 prod에 적용할 때는 변경 종류를 구분해서 시간을 예상해야 해요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🕳️ 놓친 것: 콜레이션은 신규 테이블만 바꿨어요</div>
-  Phase 2 가 <b>5.7 덤프를 논리 복원</b>했기 때문에, 나머지 수십 개 테이블은 5.7 시절 콜레이션(<code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">general_ci</code>)을 그대로 들고 왔어요. 표준으로 바꾼 건 신규 6개뿐입니다.<br>
-  즉 <b>한 DB 안에 콜레이션이 두 종류 섞인 상태</b>가 됐고, 저는 이걸 "표준화 완료"라고 기록했어요. 정확하지 않은 기록이었습니다.
+  <div class="obsv-ct">⚠️ 기존 테이블의 콜레이션은 남아 있어요</div>
+  Phase 2에서 <b>5.7 덤프를 논리 복원</b>했기 때문에 나머지 수십 개 테이블은 기존 콜레이션(<code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">general_ci</code>)을 유지했어요. 표준 콜레이션으로 바꾼 대상은 신규 6개뿐이에요.<br>
+  <b>한 DB 안에 콜레이션이 두 종류 섞인 상태</b>였지만, 당시에는 "표준화 완료"라고 기록했어요. 신규 테이블에만 적용했다는 범위를 빠뜨린 기록이었어요.
 </div>
 
-<p>이 혼재가 왜 문제인지가 재미있어요. <b>콜레이션은 저장되는 바이트를 바꾸지 않습니다.</b> 같은 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">'한글'</code> 을 넣으면 두 테이블에 완전히 같은 바이트가 들어가요. 콜레이션이 바꾸는 건 <b>비교와 정렬 규칙</b>이거든요.</p>
+<p>이 차이는 문자열을 비교할 때 문제가 될 수 있어요. 문자 집합이 같다면 콜레이션이 달라도 저장되는 바이트는 같아요. 같은 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">'한글'</code>을 넣어도 콜레이션에 따라 비교와 정렬 결과는 달라질 수 있어요.</p>
 
-<p>그래서 저장은 안전한데, 경계를 넘어 문자열을 비교하는 순간 쿼리가 죽습니다.</p>
+<p>서로 다른 콜레이션의 문자열 컬럼을 비교하면 다음과 같은 오류가 날 수 있어요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -243,21 +242,20 @@ ALTER TABLE landing_page RENAME INDEX uq_lp_slug TO uk_lp_slug;</div>
       <text x="350" y="219" text-anchor="middle" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f">ERROR 1267: Illegal mix of collations</text>
       <text x="350" y="238" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">(utf8mb4_0900_ai_ci,IMPLICIT) and (utf8mb4_general_ci,IMPLICIT)</text>
 
-      <text x="350" y="278" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 지금 안 터지는 건 숫자로만 조인하고 있어서다</text>
+      <text x="350" y="278" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">숫자 컬럼의 JOIN에는 콜레이션이 개입하지 않는다</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 3. 콜레이션은 저장을 바꾸지 않고 비교를 바꿔요. 그래서 배포 후에 터집니다</div>
+<div class="obsv-figcap">그림 3. 다른 콜레이션의 문자열 컬럼을 비교할 때 오류가 날 수 있어요</div>
 
-<p>다행히 지금은 안 터져요. 신규 테이블이 legacy 를 참조하는 컬럼이 전부 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">BIGINT</code> 라서 숫자 비교만 하고 있거든요. 숫자에는 콜레이션이 개입하지 않습니다. 그런데 이건 설계를 잘해서가 아니라 <b>아직 지뢰를 안 밟았을 뿐</b>이에요. 문자열로 경계를 넘는 쿼리가 하나 추가되는 날 터집니다. 에러가 안 나도 인덱스를 못 타서 조용히 느려지는 경로가 먼저 생기고요.</p>
+<p>당시 신규 테이블에서 기존 테이블을 참조하는 컬럼은 모두 <code style="background:#f2ecda;border-radius:4px;padding:1px 5px;font-family:Menlo,Consolas,monospace;font-size:0.86em;color:#2f2c26">BIGINT</code>였어요. 숫자를 비교하는 JOIN에는 콜레이션이 개입하지 않아 이 오류가 나지 않았어요. 다만 문자열 비교가 추가되면 콜레이션 충돌이나 인덱스 사용에 영향이 없는지 확인해야 해요.</p>
 
-<p>그래서 이건 "완료"가 아니라 <b>"혼재 상태: 경계를 넘는 문자열 비교 금지"</b> 로 문서에 남기고 별도 과제로 뺐어요. 전체 테이블 콜레이션 변환은 데이터 크기만큼 시간이 드는 작업이라 이관과 같이 할 일이 아니었습니다.</p>
+<p>문서에는 <b>"혼재 상태: 경계를 넘는 문자열 비교 금지"</b>로 남기고 전체 테이블의 콜레이션 변환은 별도 과제로 분리했어요. 데이터 크기에 따라 변환 시간이 달라지므로 이번 버전 이관과 함께 진행하지 않았어요.</p>
 
 <div class="obsv-summary">
-  <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>메이저 버전 이관은 5단계로 쪼개면 매 단계마다 되돌릴 수 있어요.</b> 백업은 검증까지, 이관은 병행 기동으로, 그리고 옛 버전으로 가는 부팅 경로를 전부 끊어야 끝납니다.<br><br>
-  놓친 것도 남았습니다. 목표 버전을 처음부터 고정하지 않아 불필요한 다운그레이드 위험을 만들었고, 콜레이션은 신규 테이블만 바꿨는데 "표준화 완료"라고 적었어요.<br><br>
-  결국 데이터를 옮기는 게 어려운 일이 아니었습니다. <b>어려운 건 옛 버전으로 돌아가는 모든 길을 찾아서 끊는 일이었어요.</b>
+  <div class="obsv-st2">✍️ 이관 결과와 남은 검증</div>
+  5단계로 이관하면서 백업을 확인하고, 5.7을 유지한 채 8.0을 준비한 뒤 행 수·계정·앱 응답을 검증했어요. 부팅 설정의 5.7 참조도 정리했지만 실제 재부팅 검증은 남았어요.<br><br>
+  목표 패치 버전을 첫 단계부터 고정하지 않아 복원·검증 버전이 달라질 여지를 남겼고, 콜레이션 표준은 신규 6개 테이블에만 적용했어요. 기존 테이블과의 콜레이션 혼재는 별도 과제로 남겼어요.
 </div>
 
 </div>

@@ -11,6 +11,15 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 
 
+def put_navigation(src, navigation):
+    match = re.search(r'<div class="obsv-series">.*?\n</div>', src, re.S)
+    if match:
+        return src[:match.start()] + navigation + src[match.end():]
+    anchor = '<div class="obsv-wrap">'
+    assert src.count(anchor) == 1, 'Missing or ambiguous article wrapper'
+    return src.replace(anchor, anchor + '\n\n' + navigation, 1)
+
+
 def main(through=None):
     articles = json.loads((HERE / 'baseline.json').read_text())['articles']
     if through is not None:
@@ -41,10 +50,12 @@ def main(through=None):
             path = ROOT / row['path']
             src = path.read_text()
             match = re.search(r'<div class="obsv-series">.*?\n</div>', src, re.S)
-            assert match, row['path']
-            head = re.search(r'<div class="obsv-st">.*?</div>', match.group(0), re.S)
-            assert head, row['path']
-            lines = ['<div class="obsv-series">', '  ' + head.group(0)]
+            head = re.search(r'<div class="obsv-st">.*?</div>', match.group(0), re.S) if match else None
+            if match:
+                assert head, row['path']
+            prefix = series[Path(row['path']).parent.as_posix()]['prefix']
+            heading = head.group(0) if head else f'<div class="obsv-st">📚 {html.escape(prefix)} · {row["episode"]}편</div>'
+            lines = ['<div class="obsv-series">', '  ' + heading]
             for other in rows[max(0, i - 2):i + 1]:
                 label = html.escape(f"{other['episode']}편. {other['subject']}")
                 if other['number'] == row['number']:
@@ -52,7 +63,7 @@ def main(through=None):
                 else:
                     lines.append(f'  <a href="https://dding-shark.tistory.com/{other["id"]}" style="color:inherit">{label}</a><br>')
             lines.append('</div>')
-            replacements.append((path, src[:match.start()] + '\n'.join(lines) + src[match.end():]))
+            replacements.append((path, put_navigation(src, '\n'.join(lines))))
     series_path.write_text(json.dumps(series, ensure_ascii=False, indent=2) + '\n')
     for path, src in replacements:
         path.write_text(src)

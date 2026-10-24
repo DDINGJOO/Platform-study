@@ -54,6 +54,24 @@ def load_checker():
     return module
 
 
+def evidence_errors(number, expected, actual, exceptions):
+    """Allow only recorded, exact hash transitions for manual cost redactions."""
+    errors = []
+    for field in expected:
+        before, after = expected[field], actual[field]
+        if before == after:
+            continue
+        approved = any(
+            row['number'] == number and row['field'] == field == 'code_blocks'
+            and row['reason'] == 'Remove absolute company costs; retain normalized comparison'
+            and row['before'] == before and row['after'] == after
+            for row in exceptions
+        )
+        if not approved:
+            errors.append(f'Evidence changed: {field}')
+    return errors
+
+
 def init():
     assert not BASELINE.exists(), 'Baseline already exists; do not replace after editing'
     checker = load_checker()
@@ -77,6 +95,8 @@ def init():
 
 def validate(only=None):
     baseline = json.loads(BASELINE.read_text())
+    exception_file = HERE / 'cost-redactions.json'
+    exceptions = json.loads(exception_file.read_text())['exceptions'] if exception_file.exists() else []
     checker = load_checker()
     rows = []
     for old in baseline['articles']:
@@ -90,7 +110,7 @@ def validate(only=None):
         # expectation from its fixed Git commit rather than edited articles.
         original = subprocess.check_output(['git', 'show', f"{baseline['commit']}:{old['path']}"], cwd=ROOT).decode()
         expected['css'] = [sha(v) for v in protected(original)['css']]
-        errors = [f'Evidence changed: {k}' for k in expected if now[k] != expected[k]]
+        errors = evidence_errors(old['number'], expected, now, exceptions)
         errors += [e for e in checker.validate_html(src) if e not in old['existing_structure_errors']]
         lead = re.search(r'<!--\s*lead:\s*(.*?)-->', src, re.S)
         tags = re.search(r'<!--\s*tags:\s*(.*?)-->', src, re.S)
