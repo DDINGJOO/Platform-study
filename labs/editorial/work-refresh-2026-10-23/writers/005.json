@@ -1,0 +1,61 @@
+{
+  "number": 5,
+  "path": "posts/Work/IaC/iac-log/05_5편 - plan 역할은 왜 읽기 전용이 될 수 없나.html",
+  "suggested_subject": "S3 잠금을 쓰는 Terraform plan 역할에 쓰기 권한이 필요한 이유",
+  "specific_tags": [
+    "Terraform plan",
+    "S3 state 잠금",
+    "tflock",
+    "IAM 최소 권한"
+  ],
+  "changes": [
+    "도입과 절 제목을 잠금 파일 생성·삭제 권한을 설명하는 해요체로 다듬고, 이름이 무엇을 감추는가 같은 수사와 반복 교훈을 줄였어요.",
+    "반드시 -lock=false로 우회하거나 동시 apply가 즉시 state를 손상시킨다는 단정을 조건부 위험 설명으로 바꿨어요.",
+    "plan이 apply가 된다는 과장은 실제 권한 영향인 state 본문 덮어쓰기로 구체화하고, 잠금 파일 하나를 허용했던 당시 설계와 다음 날 변경 범위를 정정·본문·그림 캡션·요약에 맞췄어요.",
+    "검색 태그 4개를 추가하고 lead를 124자로 다듬었어요. DynamoDB 비교는 실제 테이블을 만들었다가 삭제한 경험으로 읽히지 않도록 기존 방식과 선택한 방식의 차이로 설명했어요."
+  ],
+  "validation": [
+    {
+      "command": "python3 .codex/skills/tistory-sketch-post/scripts/validate_html.py <assigned-html>",
+      "result": "pass: valid explicit HTML/SVG structure",
+      "exit_code": 0
+    },
+    {
+      "command": "python3 .claude/skills/blog-post-pipeline/assets/mask-check.py <assigned-html> --extra /Users/dding/.config/blog-mask.txt",
+      "result": "pass: 깨끗함",
+      "exit_code": 0
+    },
+    {
+      "command": "python3 labs/editorial/work-refresh-2026-10-23/validate.py --only 5",
+      "result": "pass: articles=1, changed=1, errors=[]; CSS·코드블록·인라인 code·이미지·SVG 도형·외부 href 보존",
+      "exit_code": 0
+    },
+    {
+      "check": "시리즈 박스 원문 보존, 태그 수, lead 길이, 엠대시",
+      "result": "시리즈 박스 미수정; 글별 4개 + 공통 6개 = 10개; lead 124자; 엠대시 0개"
+    }
+  ],
+  "source_checks": [
+    {
+      "source": "자료 저장소 bootstrap/iam.tf의 plan_state 정책",
+      "checked": "ReadOnlyAccess에 잠금 파일 PutObject/DeleteObject를 더한 구조와 state 본문 쓰기 제외를 읽기 전용으로 확인했어요. 새로운 API 동작이나 실행 결과를 추가하지 않았어요."
+    },
+    {
+      "source": "자료 저장소 docs/adr/*-terraform-branch-strategy-and-cicd.md 및 docs/adr/*-state-access-boundary.md",
+      "checked": "S3 네이티브 잠금, DynamoDB를 만들지 않는 결정, 파일명 한 개에서 프리픽스·버킷 범위로 넓힌 경위를 대조했어요. 3장 코드블록은 당시 설계 원문 그대로 보존했어요."
+    },
+    {
+      "source": "자료 저장소 .github/workflows의 plan/apply/drift 워크플로",
+      "checked": "-lock-timeout=5m 사용을 확인했고 -lock=false 검색 적중은 없었어요. 과거의 모든 실행을 다시 검증했다는 주장은 하지 않았어요."
+    },
+    {
+      "source": "자료 저장소 git status --porcelain",
+      "checked": "첫 읽기 시 기존 변경 M 3건·D 1건을 관찰했고 종료 재확인에서는 깨끗했어요. 작성자는 원자료에 쓰기·커밋·푸시를 하지 않았어요."
+    },
+    {
+      "source": "작성자 검토 범위",
+      "checked": "배정 HTML 전체와 diff를 읽었어요. 작성자 자체 근거 확인이며 독립 퇴고·독립 감사 또는 승인으로 표현하지 않았어요."
+    }
+  ],
+  "unresolved": []
+}

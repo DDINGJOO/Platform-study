@@ -1,0 +1,256 @@
+{
+  "role": "independent-factual-review / code-reviewer",
+  "round": 1,
+  "batch": "baseline 1–31",
+  "checked_numbers": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "read_scope": "1–31편 본문·콜아웃·보호 코드·SVG 라벨·캡션을 통독했다. 31편을 마지막에 읽었다. 제목·목차는 지적에서 제외했다.",
+  "issues": [
+    {
+      "number": 2,
+      "location": {
+        "article": 2,
+        "line": 118
+      },
+      "kind": "보호 코드와 구현 불일치",
+      "problem": "코드에는 labeled 이벤트가 있지만 본문·3편은 라벨 추가 후 수동 재실행을 설명한다.",
+      "evidence": "고정 fbd852c .github/workflows/terraform-plan.yml:17–19는 labeled 제외를 명시하며 types에 unlabeled만 추가한다. writers/002.json도 불일치를 남겼다.",
+      "suggested_fix": "보호 코드는 유지하고 실제 구현에는 labeled를 넣지 않았다는 정정을 인접 문장에 둔다.",
+      "severity": "MEDIUM"
+    },
+    {
+      "number": 4,
+      "location": {
+        "article": 4,
+        "line": 49
+      },
+      "kind": "예시 형식 불일치",
+      "problem": "실제 sub에는 불변 ID가 있는데 ID 없는 wildcard 예시가 그 실제 sub의 모든 브랜치에 매칭된다고 설명한다.",
+      "evidence": "글 :39–40의 실제 형식과 :49의 repo:{조직}/{저장소}:* 비교. writers/004.json도 같은 문제를 기록했다.",
+      "suggested_fix": "인라인 코드는 유지하되 ID를 생략한 개념 예시이며 실제 문자열과 그대로 매칭되지 않음을 밝힌다.",
+      "severity": "LOW"
+    },
+    {
+      "number": 6,
+      "location": {
+        "article": 6,
+        "line": 32
+      },
+      "kind": "권한 우회 원인 오설명",
+      "problem": "새 역할의 env 태그 부재 때문에 태그 Deny가 미적용된다고 설명한다. 기존 역할의 identity 정책 Deny를 새 역할이 물려받지 않는 점과 주체 태그를 혼동했다.",
+      "evidence": "글 :31은 리소스 태그 제한, :32·SVG :57은 새 역할 태그 부재를 원인으로 설명한다. 고정 e45a756 bootstrap/iam.tf:429는 aws:ResourceTag/Environment 조건이다.",
+      "suggested_fix": "새 역할은 기존 identity 정책의 Deny를 자동 승계하지 않는다는 원인으로 본문과 SVG를 정정한다.",
+      "severity": "MEDIUM"
+    },
+    {
+      "number": 10,
+      "location": {
+        "article": 10,
+        "line": 57
+      },
+      "kind": "IfExists 동작 설명",
+      "problem": "키가 없으면 조건절을 통째로 무시한다는 설명은 Deny도 건너뛰는 것으로 읽힌다.",
+      "evidence": "AWS는 키 누락 시 조건식이 true이고 Deny+StringNotEqualsIfExists에서도 거부됨을 명시한다. https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html 6편은 같은 오류를 이미 정정했다.",
+      "suggested_fix": "조건식이 참으로 평가된다고 쓰고 Deny 생략을 뜻하지 않음을 밝힌다.",
+      "severity": "MEDIUM"
+    },
+    {
+      "number": 11,
+      "location": {
+        "article": 11,
+        "line": 55
+      },
+      "kind": "옛 키 정책 설명 한계 부족",
+      "problem": "키 정책에서 역할 하나를 빼면 독립 회수된다는 보호 코드를 당시 판단으로만 한정하고 왜 틀렸는지 설명하지 않았다.",
+      "evidence": "고정 058aa8f bootstrap/kms.tf:21–28은 계정 root principal에 kms:*를 위임한다. 이 위임은 IAM 허용 경로를 활성화한다. https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-default.html 글 :52–61 및 :82–84 참고.",
+      "suggested_fix": "보호 코드는 유지하되 root 위임 때문에 역할별 항목 제거만으로 독립 회수를 보장할 수 없었다는 후속 정정을 연결한다.",
+      "severity": "MEDIUM"
+    },
+    {
+      "number": 16,
+      "location": {
+        "article": 16,
+        "line": 260
+      },
+      "kind": "ECR lifecycle 동작 오류",
+      "problem": "태그 없음 수명주기 규칙이 살아 있는 인덱스가 참조하는 자식도 삭제하므로 사용할 수 없다고 단정한다.",
+      "evidence": "글 SVG :260·코드 :281·본문 :283. AWS는 manifest list가 참조하는 이미지를 해당 list보다 먼저 만료시키지 못하게 보호한다. https://docs.aws.amazon.com/AmazonECR/latest/userguide/LifecyclePolicies.html",
+      "suggested_fix": "태그 없는 목록과 실제 lifecycle 만료 후보를 구분하고 참조 자식 보호 규칙을 본문·SVG에 반영한다.",
+      "severity": "MEDIUM"
+    },
+    {
+      "number": 18,
+      "location": {
+        "article": 18,
+        "line": 210
+      },
+      "kind": "Checkov 규칙 범위 오류",
+      "problem": "ADR 인용 형식으로 s3:PutObject 추가를 CKV_AWS_20이 탐지한다고 계속 설명한다.",
+      "evidence": "공식 CKV_AWS_20은 public READ ACL 규칙이다. https://github.com/bridgecrewio/checkov/blob/main/checkov/terraform/checks/graph_checks/aws/S3PublicACLRead.yaml technical-corrections.json의 미해결 항목과 일치한다.",
+      "suggested_fix": "ADR의 해당 설명은 규칙 범위와 달라 확인된 동작으로 인용할 수 없다고 정정한다. 보호 코드와 링크는 유지한다.",
+      "severity": "MEDIUM"
+    },
+    {
+      "number": 21,
+      "location": {
+        "article": 21,
+        "line": 304
+      },
+      "kind": "이전 편 인용 반전",
+      "problem": "12편에서 데이터 없는 구간을 정상 상태로 판단했다고 적었지만 실제 오류는 앞 공백도 단절 상태라고 추정한 것이었다.",
+      "evidence": "12편 :153–168은 보존 경계가 UP이고 앞 공백을 DOWN으로 추정했다고 명시한다.",
+      "suggested_fix": "단절 상태로 추정했다거나 공백만으로 상태를 판단했다고 고친다.",
+      "severity": "LOW"
+    },
+    {
+      "number": 22,
+      "location": {
+        "article": 22,
+        "line": 279
+      },
+      "kind": "HeadBucket 상태코드 단정",
+      "problem": "404는 버킷 부재이고 권한 문제면 403이라고 일반화한다.",
+      "evidence": "AWS는 부재 또는 권한 부족에 400·403·404 일반 오류가 가능하고 본문이 없어 코드 이상의 예외를 확정할 수 없다고 설명한다. https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadBucket.html",
+      "suggested_fix": "해당 사례의 부재 판단과 일반 API 동작을 구분하고 404 하나로 권한 문제를 배제할 수 없음을 밝힌다.",
+      "severity": "MEDIUM"
+    },
+    {
+      "number": 25,
+      "location": {
+        "article": 25,
+        "line": 284
+      },
+      "kind": "도구 기능과 CI 적용 혼동",
+      "problem": "태그 외 변경을 기대 목록으로 CI가 차단한다고 설명하지만 고정 workflow에는 --expect가 없다.",
+      "evidence": "7f5709c .github/workflows/terraform-plan.yml:293은 --import-blocks만 전달한다. 같은 scripts/plan-verdict.py:406은 --expect 기본값이 빈 문자열이며 :468–469는 값이 있을 때만 허용 속성을 검사한다.",
+      "suggested_fix": "수동 --expect 기능과 실제 CI 호출 범위를 구분한다. 활성화 주장은 별도 고정 호출 근거가 있을 때만 유지한다.",
+      "severity": "MEDIUM"
+    },
+    {
+      "number": 26,
+      "location": {
+        "article": 26,
+        "line": 106
+      },
+      "kind": "삭제 방지 범위 오류",
+      "problem": "prevent_destroy가 코드 삭제·이름 변경으로 생긴 destroy도 막고 진짜 삭제하려면 이 줄을 먼저 떼야 한다고 설명한다.",
+      "evidence": "공식 문서는 인자가 구성에 있어야 하고 리소스 구성을 제거하면 삭제를 막지 못한다고 명시한다. https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle 16편은 이 한계를 설명한다.",
+      "suggested_fix": "블록과 lifecycle이 남은 상태의 파괴·교체 계획을 막는다고 한정하고 블록 삭제·주소 변경을 무조건 보호하지 않음을 명시한다.",
+      "severity": "HIGH"
+    },
+    {
+      "number": 27,
+      "location": {
+        "article": 27,
+        "line": 175
+      },
+      "kind": "날짜별 액션 개수 혼합",
+      "problem": "8월 6일 Deny 목록을 네 개로 설명하지만 네 개는 10월 시점 목록이다.",
+      "evidence": "직접 고정 소스 대조: e45a756 bootstrap/iam.tf:535는 6개, db8ec8e 같은 파일 :674는 4개 액션이다. 글 :175·192는 8월에 네 개였다고 서술한다.",
+      "suggested_fix": "8월 목록 여섯 개와 10월 재검 시 네 개를 구분하고 현재 목록의 SVG에는 시점을 명시한다.",
+      "severity": "LOW"
+    }
+  ],
+  "known_corrections": [
+    {
+      "number": 6,
+      "result": "IfExists 정정 확인. 해당 알려진 오류는 해결. 별도 우회 인과 오류는 issues에 기록."
+    },
+    {
+      "number": 13,
+      "result": "삭제 예약 키 사용 불가와 당시 알림 관찰의 한계를 명시한 정정 확인."
+    },
+    {
+      "number": 17,
+      "result": "현재 본문에서 반복 import가 반드시 실패한다는 오단정 재등장 없음."
+    },
+    {
+      "number": 18,
+      "result": "미해결. issues에 기록."
+    },
+    {
+      "number": 25,
+      "result": "import 멱등성과 오탐 가능성 한계 정정 확인."
+    }
+  ],
+  "claims": [
+    {
+      "number": 31,
+      "status": "통독 범위에서 추가 사실 오류 발견 없음",
+      "evidence": "64ae952·79556a9·78ef598 고정 커밋 시각 직접 대조. 세부 함수 운영 성공은 작성자 고정 이력 보고 범위이며 재실행하지 않았다."
+    },
+    {
+      "numbers": [
+        1,
+        3,
+        5,
+        7,
+        8,
+        9,
+        12,
+        13,
+        14,
+        15,
+        17,
+        19,
+        20,
+        23,
+        24,
+        28,
+        29,
+        30
+      ],
+      "status": "통독 범위에서 별도 확정 사실 이슈 없음",
+      "qualification": "모든 수치·외부 동작의 전수 감사 통과를 뜻하지 않는다."
+    }
+  ],
+  "writer_reports": "writers/001.json–031.json 완료·근거·미해결 보고 확인. 작성자 자체 검증을 독립 승인으로 취급하지 않았다.",
+  "limits": [
+    "독립 사실관계 퇴고 1차 보고이며 별도 audit 역할의 전수 원자료 감사나 운영 검증을 대체하지 않는다.",
+    "원자료는 고정 SHA의 git show 및 읽기 전용 조회만 사용했다. AWS·CI·서비스 호출, 과거 실행 재현, 원자료 수정은 하지 않았다.",
+    "모든 글을 읽었으나 모든 숫자·당시 화면·과거 로그를 재생산하지 않았다. 근거 부족 경험 수치는 오류로 단정하지 않았다.",
+    "10편 보호 출력의 성공 요청은 로그를 남기지 않는다는 단정은 작성자 보고상 미검증이다. 수정 담당자는 인접 한계 문구도 검토할 필요가 있다.",
+    "보고 이후 작업 트리 변경은 재검 대상이다. 31편은 완료 보고 후 마지막 통독했다.",
+    "취향·문체 선호·목차·제목·비공개 실제 값은 보고하지 않았다. 외부 근거는 공식 자료만 사용했다."
+  ],
+  "summary": {
+    "issues": 12,
+    "HIGH": 1,
+    "MEDIUM": 8,
+    "LOW": 3,
+    "read_articles": 31,
+    "modified_posts": 0,
+    "modified_source_files": 0
+  }
+}

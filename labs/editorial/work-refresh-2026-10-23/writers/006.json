@@ -1,0 +1,75 @@
+{
+  "number": 6,
+  "path": "posts/Work/IaC/iac-log/06_6편 - AdministratorAccess를 붙여도 소용없게 만들기.html",
+  "suggested_subject": "permissions boundary로 생성되는 IAM 역할의 권한 상한 정하기",
+  "specific_tags": [
+    "permissions boundary",
+    "IAM 권한 상승",
+    "AdministratorAccess",
+    "StringNotEquals"
+  ],
+  "changes": [
+    "도입의 반박·방어 붕괴 표현을 리뷰에서 확인한 이름 기반 Deny 우회 시나리오로 풀어 썼어요.",
+    "본문·소제목·SVG 텍스트·캡션의 울타리·천장·갈아타기 표현을 대상 역할·권한 상한·역할 전환으로 정리했어요.",
+    "반복 명언으로 끝나던 요약을 sts:AssumeRole 차단, boundary 강제, 모듈 설정과 재검토 조건으로 바꿨어요.",
+    "글별 검색 태그 4개를 추가하고 lead를 134자로 다듬었어요. 리소스 0개는 설계 당시 범위로 명시했어요.",
+    "AWS 공식 문서와 대조해 Deny+StringNotEqualsIfExists는 키 부재 시에도 거부된다고 최소 정정했어요. 기존 설명의 오류와 누락 키 허용 해결책이 아니라는 한계를 명시했으며 운영 코드 변경·신규 실행은 하지 않았어요."
+  ],
+  "validation": [
+    {
+      "command": "python3 .codex/skills/tistory-sketch-post/scripts/validate_html.py <assigned HTML>",
+      "result": "exit 0: valid explicit HTML/SVG structure"
+    },
+    {
+      "command": "python3 .claude/skills/blog-post-pipeline/assets/mask-check.py <assigned HTML> --extra /Users/dding/.config/blog-mask.txt",
+      "result": "exit 0: 깨끗함"
+    },
+    {
+      "command": "python3 labs/editorial/work-refresh-2026-10-23/validate.py --only 6",
+      "result": "exit 0: articles=1, changed=1, pass=true, errors=[]; CSS·코드블록·인라인 code·이미지·외부 href·SVG 구조 보존 확인"
+    },
+    {
+      "check": "metadata",
+      "result": {
+        "lead_chars": 134,
+        "specific_tags": 4,
+        "merged_tags": 10
+      }
+    },
+    {
+      "check": "manual full read and diff review",
+      "result": "문단·소제목·콜아웃·캡션·요약 전체 읽기 및 diff 확인. 시리즈 박스 원문 보존. 독립 감사가 아닌 작성자 자체 점검."
+    },
+    {
+      "check": "IfExists 기술 정정 후 재검증",
+      "result": "HTML 구조·조직 마스킹·validate.py --only 6 및 diff --check 재실행 통과. HTML 코드·SVG 구조·외부 href 보존. 독립 감사가 아닌 작성자 재검증."
+    }
+  ],
+  "source_checks": [
+    {
+      "source": "/Users/dding/orca/platform-IaC/docs/adr/*-block-iam-privilege-escalation.md",
+      "result": "당시 우회 시나리오, 선택한 두 제한, boundary 강제 다섯 지점, 초기 리소스 0개 및 재검토 조건 확인. 2026-10-07 보강은 기존 글 시점에 소급하지 않았어요."
+    },
+    {
+      "source": "/Users/dding/orca/platform-IaC/bootstrap/iam.tf; bootstrap/iam-boundary.tf",
+      "result": "StringNotEquals 기반 boundary 조건과 쓰기 접두사·AssumeRole·state 버킷 제한을 읽기 전용 대조. 현재 코드를 과거 실행 결과로 추가하지 않았어요."
+    },
+    {
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html",
+      "result": "AWS 공식 문서와 리더의 대조 확인을 근거로 Deny+StringNotEqualsIfExists는 조건 키가 없어도 거부된다는 동작으로 4절을 최소 정정했어요. 코드블록·인라인 code·href를 보존했고 운영 코드 변경이나 새 실행을 주장하지 않았어요."
+    },
+    {
+      "source": "/Users/dding/orca/platform-IaC",
+      "result": "읽기 전부터 다른 작업의 수정 3건·삭제 1건이 있었고 보존했어요. 자료 저장소에는 쓰지 않았어요."
+    }
+  ],
+  "unresolved": [],
+  "resolved": [
+    {
+      "location": "4절 IfExists 설명 문단",
+      "issue": "IfExists를 붙이면 조건 키가 없는 요청이 통과한다는 기존 설명 오류",
+      "resolution": "기존 설명이 오류였음을 밝히고 Deny+StringNotEqualsIfExists는 키 부재 시에도 거부됨을 명시했어요. 이 정책에 IfExists를 붙이는 것은 누락 키 허용 해결책이 아니에요. 본문·요약·그림을 재검토했으며 오류 인과는 해당 문단에만 있어 그 문단만 정정했어요.",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html"
+    }
+  ]
+}

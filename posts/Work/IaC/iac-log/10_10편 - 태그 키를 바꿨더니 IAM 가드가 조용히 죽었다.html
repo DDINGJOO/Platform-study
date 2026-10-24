@@ -1,4 +1,5 @@
-<!-- lead: 태그 키를 env 에서 Environment 로 바꾸자 dev 와 prod 를 가르는 IAM Deny 가 에러 없이 무력화됐어요. 조건 키가 없으면 StringEquals 가 매치되지 않는 이유와 태그 정합성 검사기를 만든 과정을 다뤄요. -->
+<!-- lead: 태그 키를 env에서 Environment로 바꾸면서 permissions boundary의 IAM Deny 조건 한 곳을 빠뜨렸어요. 수정 누락의 원인과 태그 선언·참조가 일치하는지 검사하는 방법을 살펴봐요. -->
+<!-- tags: IAM Deny, permissions boundary, AWS 태그, StringEquals -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -21,24 +22,22 @@
 
 <div class="obsv-series">
   <div class="obsv-st">📚 IaC 작업일지, 둘째 날 · 10편</div>
-  1~7편. 첫날: 설계, 리뷰, 그리고 수리<br>
-  8편. 초록불 다 받고 머지했는데 Apply 가 통째로 사라졌다<br>
-  9편. 어제 못 박았다고 썼는데, 오늘 버킷을 열었다<br>
-  <b>10편. 태그 키를 바꿨더니 IAM 가드가 조용히 죽었다</b> &larr; 지금 이 글<br>
-  11편. 1단계를 끝냈는데 아무것도 안 바뀌었다
+  <a href="https://dding-shark.tistory.com/477" style="color:inherit">8편. 재사용 워크플로 권한 누락으로 Apply 잡이 생성되지 않은 이유</a><br>
+  <a href="https://dding-shark.tistory.com/479" style="color:inherit">9편. 새 스택의 잠금 오류로 plan IAM 권한을 넓힌 이유</a><br>
+  <b>10편. 태그 키 변경에서 빠뜨린 IAM boundary 조건을 검사로 찾기</b> &larr; 지금 이 글
 </div>
 
-<p>태그 키를 하나 바꿨어요. <code>env</code> 에서 <code>Environment</code> 로 바꾼 겁니다. 조직이 이미 쓰는 태그 스키마가 PascalCase 라, 우리가 만든 스택만 소문자를 쓰면 태그로 리소스를 조회할 때 목록이 두 갈래로 갈라지거든요. 위험할 게 하나도 없어 보이는 정리 작업이었습니다. <code>plan</code> 도 깨끗했고 PR 체크도 다 초록불이었어요.</p>
+<p>태그 키를 <code>env</code>에서 <code>Environment</code>로 바꿨어요. 조직에서 이미 PascalCase로 된 태그 키를 쓰고 있어서, 새로 만든 스택만 소문자를 쓰면 태그로 리소스를 조회할 때 결과가 나뉘었거든요. <code>plan</code>에는 문제가 없었고 PR 검사도 모두 통과했어요.</p>
 
-<p>그런데 이 저장소에서 단일 계정 안의 dev 와 prod 를 갈라놓는 IAM Deny 가, 하필 <b>바로 그 태그 키를 조건으로 씁니다.</b> 어제 6편에 "권한 상승 경로를 두 겹으로 막았다"고 썼는데, 그 두 번째 겹이 이 리팩터링으로 죽었어요. <span class="obsv-mark">에러 하나 없이, 로그 한 줄 없이요.</span></p>
+<p>이 태그 키는 단일 계정 안에서 dev와 prod의 접근 권한을 구분하는 IAM Deny 조건에도 쓰였어요. 어제 6편에서 설명한 두 겹의 차단 중, 하위 역할에 적용되는 permissions boundary의 조건을 수정하지 못했습니다. 태그 이름 변경에 문제가 없어도 IAM 조건이 맞는지 따로 확인해야 했어요.</p>
 
-<p>커밋 SHA 는 <code>815de6b</code>, 발견하고 고친 건 다음 날 <code>c6226ae</code> 입니다. 그 사이에 무슨 일이 있었는지, 그리고 <b>왜 이 종류의 실패는 사고가 터지기 전까지 아무도 모르는지</b>를 적어요.</p>
+<p>태그를 바꾼 커밋은 <code>815de6b</code>이고, 다음 날 <code>c6226ae</code>에서 누락된 조건을 고쳤어요. 수정할 때는 태그 선언과 IAM 참조를 함께 검사하는 스크립트도 추가했습니다.</p>
 
-<h2>1. 왜 조용한가: 조건 키가 없으면 매치되지 않는다</h2>
+<h2>1. 조건 키가 없으면 Deny에 매치되지 않아요</h2>
 
-<p>IAM 정책의 <code>StringEquals</code> 는 "값이 같으면 참"이 아니에요. 정확히는 <b>비교할 조건 키가 요청 컨텍스트에 있고, 그 값이 같으면 참</b>입니다. 키 자체가 없으면 비교가 성립하지 않으니 조건은 거짓이 되고 조건이 거짓인 Deny 문은 <span class="obsv-mark">그냥 없는 것처럼 넘어갑니다.</span></p>
+<p>IAM 정책의 <code>StringEquals</code>는 비교할 조건 키가 요청 컨텍스트에 있고 값도 같아야 참이 돼요. 키가 없으면 조건은 거짓이 되고, 해당 Deny 문은 적용되지 않아요.</p>
 
-<p>그래서 태그 키를 바꾸는 순간 이런 상태가 돼요. 리소스에는 <code>Environment</code> 태그가 붙어 있는데 Deny 는 <code>aws:ResourceTag/env</code> 를 봅니다. 없는 키를 보니까 영원히 매치되지 않고 매치되지 않으니 아무것도 거부하지 않아요.</p>
+<p>리소스에는 <code>Environment</code> 태그가 붙어 있는데 Deny가 <code>aws:ResourceTag/env</code>를 참조하면, 그 조건으로는 요청을 거부하지 못해요.</p>
 
 <div class="obsv-code">리소스에 붙은 태그   Environment = prod
 Deny 조건            StringEquals  aws:ResourceTag/env = ["prod"]
@@ -48,47 +47,47 @@ Deny 조건            StringEquals  aws:ResourceTag/env = ["prod"]
     → Deny 문이 발동하지 않는다
     → 요청은 그냥 성공한다</div>
 
-<p>여기서 이 실패의 진짜 성질이 나옵니다. <b>거부된 요청은 흔적을 남기지만, 거부되지 않은 요청은 그냥 성공한 요청이에요.</b> AccessDenied 가 나면 CloudTrail 에 에러가 찍히고 파이프라인이 빨간불로 멈춥니다. 반대로 발동하지 않은 Deny 는 아무 이벤트도 만들지 않아요. <span class="obsv-mark">"가드가 꺼졌다"는 사실을 알려주는 신호가 구조적으로 존재하지 않습니다.</span></p>
+<p>위 발췌의 마지막 줄은 다른 권한 평가를 생략한 설명이에요. 이 Deny가 적용되지 않아도 별도의 허용이 없거나 다른 명시적 Deny가 있으면 요청은 거부될 수 있어요.</p>
 
-<p>보안 장치의 실패 모드가 이쪽인 게 최악이에요. 잠금이 고장 났을 때 문이 안 열리면 바로 알아채지만, 잠금이 고장 났는데 문이 <b>더 잘 열리면</b> 도둑이 들 때까지 모르니까요.</p>
+<p>이 경우는 AccessDenied로 요청이 실패하는 상황과 달라요. <span class="obsv-mark">Deny 조건에 매치되지 않았다는 이유만으로 오류가 발생하지는 않아요.</span> 요청 실패를 확인하는 것만으로는 태그 키와 IAM 조건이 어긋난 상태를 찾기 어려워요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🔑 조건 키가 없을 때 무슨 일이 일어나나</div>
-  6편 4장에서 <code>StringNotEquals</code> 는 <b>키가 없을 때도 참</b>이라 boundary 강제가 성립한다고 썼어요. 이번 건 같은 성질의 반대편이에요.<br>
-  &bull; <code>StringEquals</code>: 키가 없으면 <b>거짓</b>이 됩니다. Deny 에 쓰면 키가 사라진 순간 가드가 꺼져요<br>
+  6편 4장에서 <code>StringNotEquals</code>는 <b>키가 없을 때도 참</b>이라 boundary 강제가 성립한다고 썼어요. 이번에는 반대로 키가 없으면 거짓이 되는 조건을 사용했어요.<br>
+  &bull; <code>StringEquals</code>: 키가 없으면 <b>거짓</b>이 됩니다. Deny에 쓰면 키가 사라졌을 때 해당 조건으로 거부하지 못해요<br>
   &bull; <code>StringNotEquals</code>: 키가 없으면 <b>참</b>이 됩니다. Deny 에 쓰면 키가 없는 요청까지 막아요<br>
-  &bull; <code>...IfExists</code>: 키가 있을 때만 비교하고 없으면 그 조건절을 통째로 무시해요<br>
-  긍정형 조건으로 만든 Deny 는 <b>태그가 붙어 있어야만</b> 동작해요. 태그 키를 건드리는 건 그래서 정책 변경입니다.
+  &bull; <code>...IfExists</code>: 키가 없으면 조건 결과를 참으로 평가해요. Deny에서 부정 연산자와 함께 쓰면 키가 없는 요청도 거부하므로, 조건을 무시해 허용한다는 뜻은 아니에요<br>
+  긍정형 조건으로 만든 Deny는 <b>태그가 붙어 있어야만</b> 동작해요. 그래서 태그 키를 바꿀 때는 정책에 미치는 영향도 확인해야 해요.
 </div>
 
-<h2>2. 순서를 고민했는데, 순서로는 못 막는 문제였다</h2>
+<h2>2. 적용 순서만 정해서는 공백을 없앨 수 없어요</h2>
 
-<p>이 위험을 몰랐던 건 아니에요. 커밋 메시지에 적용 순서를 이렇게 명시해 뒀거든요.</p>
+<p>태그와 IAM 조건을 따로 적용할 때 생기는 위험은 알고 있었어요. 그래서 커밋 메시지에 다음 순서를 적었습니다.</p>
 
 <div class="obsv-code">적용 순서가 중요하다:
   1) bootstrap apply        - IAM Deny 가 Environment 를 보게 만든다
   2) stacks/alerting apply  - 리소스 태그를 Environment 로 바꾼다
 반대로 하면 태그는 바뀌었는데 Deny 는 옛 키를 보는 구간이 생긴다.</div>
 
-<p>말이 되는 것처럼 들리죠. 그런데 <b>이 논증은 성립하지 않아요.</b> 1장에 적은 성질 때문입니다.</p>
+<p>하지만 이 순서로도 Deny가 적용되지 않는 기간을 없애지는 못해요.</p>
 
-<p>bootstrap 을 먼저 apply 하면 Deny 는 <code>Environment</code> 를 보게 됩니다. 그런데 그 시점의 기존 리소스에는 아직 <code>env</code> 태그만 붙어 있어요. <span class="obsv-mark">Deny 가 보는 키가 리소스에 없으니, 이번에도 매치되지 않습니다.</span> 순서를 반대로 해도 결과는 같고요. 어느 쪽으로 하든 <b>재태깅이 전부 끝날 때까지 가드가 꺼진 창이 열립니다.</b> 순서는 창이 열리는 이유를 바꿀 뿐 창을 없애지 못해요.</p>
+<p>bootstrap을 먼저 apply하면 Deny는 <code>Environment</code>를 참조하지만, 기존 리소스에는 아직 <code>env</code> 태그만 있어요. 이때도 조건에 매치되지 않아요. 순서를 반대로 하면 리소스 태그가 먼저 바뀌므로, 어느 쪽이든 태그와 조건이 맞지 않는 기간이 생깁니다.</p>
 
-<p>무중단으로 하려면 방법은 사실상 하나뿐이에요. 과도기에 <b>두 키를 함께 달고</b>, Deny 도 두 조건을 OR 로 유지한 다음, 재태깅이 끝난 걸 확인하고 옛 키를 떼는 3단계입니다.</p>
+<p>이 공백을 피하려면 전환 기간에 두 키를 함께 사용해야 해요. Deny도 두 조건을 OR로 유지하고, 새 태그가 모두 적용된 뒤 옛 키를 제거하는 3단계로 나눌 수 있어요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🪜 태그 키를 무중단으로 바꾸는 3단계</div>
   <b>1단계</b>: default_tags 에 <code>env</code> 와 <code>Environment</code> 를 <b>둘 다</b> 달고 apply 합니다. 이 사이 리소스는 두 키를 모두 가져요<br>
   <b>2단계</b>: IAM Deny 조건을 두 개로 늘립니다. 옛 키 조건과 새 키 조건을 각각 별도 statement 로 두면, Deny 는 하나만 맞아도 거부되니 자연스럽게 OR 이 돼요<br>
   <b>3단계</b>: 모든 리소스에 새 키가 붙은 걸 확인한 뒤, 옛 키 태그와 옛 키 조건을 같은 PR 에서 떼어냅니다<br>
-  핵심은 <b>가드가 두 세계를 동시에 인정하는 구간</b>을 만드는 거예요. 순서를 정하는 것만으로는 그 구간이 생기지 않아요.
+  전환 기간에는 옛 키와 새 키 어느 쪽으로도 Deny가 적용되도록 유지해요.
 </div>
 
-<p>정직하게 덧붙이면, 이 시점에 실제로 존재하는 AWS 리소스가 거의 없었어요. 그래서 실질 피해 가능성은 낮았습니다. 그래도 <b>설계상 창은 분명히 있었고, 커밋 메시지는 그 창을 없앴다고 잘못 적었어요.</b> 없는 안전을 있다고 적은 문서는, 나중에 그 문서를 믿는 사람에게 청구됩니다.</p>
+<p>당시에는 실제 AWS 리소스가 거의 없어 피해 가능성은 낮았어요. 그래도 적용 순서만으로 공백을 피할 수 있다는 판단은 잘못됐습니다.</p>
 
-<h2>3. 진짜 사고는 다른 파일에 있었다</h2>
+<h2>3. boundary 파일의 조건을 빠뜨렸어요</h2>
 
-<p>여기까지는 과도기 이야기고, 실제 사고는 따로 있었어요. 태그 키를 조건으로 참조하는 곳이 <b>두 파일</b>이었는데 한 파일만 고쳤습니다.</p>
+<p>전환 과정의 공백과 별개로, 코드에도 누락이 있었어요. 태그 키를 조건으로 참조하는 파일은 두 개였는데 한 파일만 고쳤습니다.</p>
 
 <div class="obsv-code">bootstrap/iam.tf            ← 고쳤다
   DenyOtherEnvironmentResources   aws:ResourceTag/Environment
@@ -97,15 +96,15 @@ Deny 조건            StringEquals  aws:ResourceTag/env = ["prod"]
 bootstrap/iam-boundary.tf   ← 빠뜨렸다
   DenyOtherEnvironmentResources   aws:ResourceTag/env</div>
 
-<p>빠뜨린 그 파일이 하필 <b>permissions boundary</b> 예요. apply 역할이 새 IAM 역할을 만들 때 강제로 붙게 되어 있는 천장, 6편에서 "두 겹 차단"이라고 부른 것의 <b>두 번째 겹</b>입니다. 첫 번째 겹은 apply 역할 자신의 권한을 조이고 두 번째 겹은 그 역할이 만들어내는 하위 역할들에 같은 격리를 상속시켜요.</p>
+<p>빠뜨린 파일은 permissions boundary를 정의해요. apply 역할이 새 IAM 역할을 만들 때 반드시 붙이도록 한 권한 상한입니다. 6편의 두 겹 차단 중 첫 번째는 apply 역할 자신의 권한을 제한하고, 두 번째는 그 역할이 만드는 하위 역할에도 같은 환경 격리를 적용해요.</p>
 
-<p>재태깅이 끝난 뒤 이 저장소가 만드는 리소스 중 <code>env</code> 태그를 가진 건 하나도 없습니다. 그래서 저 Deny 는 <span class="obsv-mark">영원히 매치되지 않는 문장</span>이 됐어요. 하위 역할의 환경 격리가 완전히 꺼진 채로 머지됐고 다음 날 발견될 때까지 그대로 있었습니다.</p>
+<p>태그 변경 뒤 이 저장소에서 만드는 리소스에는 <code>env</code> 태그가 없었어요. boundary의 Deny는 계속 옛 키를 참조했으므로 하위 역할의 환경 격리에 쓰던 조건이 적용되지 않았습니다. 이 누락은 다음 날 발견했어요.</p>
 
-<p>가장 뼈아픈 건 아이러니예요. <b>같은 커밋의 메시지가 이렇게 경고하고 있었거든요.</b></p>
+<p>태그를 바꾼 커밋 메시지에도 이 위험을 적어 두었어요.</p>
 
 <p><i>"주의: env 태그는 장식이 아니라 IAM Deny 조건이 참조하는 값이다. 키만 바꾸면 그 가드가 조용히 무력화되므로 함께 교체한다."</i></p>
 
-<p>위험을 정확히 알고 있었고, 문장으로 적어뒀고, 그렇게 함께 교체하다가 파일 하나를 빠뜨린 거예요. <b>이 사고의 원인은 무지가 아니라 누락입니다.</b> 그리고 이건 중요한 구분이에요. 무지는 공부로 줄어들지만, <span class="obsv-mark">누락은 아무리 잘 알아도 줄어들지 않습니다.</span> 알고 있음은 재발 방지책이 될 수 없어요.</p>
+<p>위험을 알고도 참조 파일 하나를 빠뜨렸어요. 같은 설명을 다시 읽는 것보다, 선언한 태그 키와 IAM에서 참조하는 키를 함께 확인할 방법이 필요했습니다.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 332" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -131,8 +130,8 @@ bootstrap/iam-boundary.tf   ← 빠뜨렸다
 <text x="582" y="84" font-size="19" fill="#2e6b41">매치 → 차단됨 ✅</text>
 <text x="122" y="210" font-size="17">리소스에 붙은 태그</text>
 <text x="353" y="210" font-size="17">boundary 의 Deny</text>
-<text x="582" y="215" font-size="19" fill="#b3502f">매치 없음 → 통과</text>
-<text x="582" y="238" font-size="14" fill="#8a8272">에러 없음 · 로그 없음</text>
+<text x="582" y="215" font-size="19" fill="#b3502f">매치 없음 → 거부 안 함</text>
+<text x="582" y="238" font-size="14" fill="#8a8272">조건 불일치 오류 없음</text>
 <g text-anchor="start" font-size="19">
 <text x="30" y="34" fill="#4a7fb5">리네임 전</text>
 <text x="30" y="174" fill="#b3502f">리네임 후: 한 파일을 빠뜨린 채로</text>
@@ -143,28 +142,28 @@ bootstrap/iam-boundary.tf   ← 빠뜨렸다
 <text x="122" y="235">Environment = prod</text>
 <text x="353" y="235" fill="#b3502f">aws:ResourceTag/env</text>
 </g>
-<text x="350" y="290" font-size="20" fill="#b3502f">발동하지 않은 Deny 는 아무 로그도 남기지 않는다</text>
-<text x="350" y="316" font-size="16" fill="#8a8272">거부된 요청은 흔적이 남고, 거부되지 않은 요청은 그냥 성공한 요청이다</text>
+<text x="350" y="290" font-size="20" fill="#b3502f">Deny 조건이 맞지 않아도 별도 오류는 나지 않는다</text>
+<text x="350" y="316" font-size="16" fill="#8a8272">태그 이름 변경 뒤에는 IAM 조건과의 일치 여부도 확인한다</text>
 </g>
 </svg>
 </div>
-<div class="obsv-figcap">그림 1. 잠금이 고장 나서 문이 더 잘 열리면 아무도 모른다</div>
+<div class="obsv-figcap">그림 1. 태그 이름을 바꾼 뒤 boundary에 남은 옛 키는 조건에 매치되지 않아요</div>
 
-<h2>4. grep 한 줄이면 잡히는데 리뷰가 못 잡은 이유</h2>
+<h2>4. 변경 목록 밖에 남은 참조도 확인해야 해요</h2>
 
-<p>이 결함은 어렵지 않아요. <code>grep -rn "aws:.*Tag/" .</code> 한 줄이면 세 곳이 나오고 그중 하나만 소문자라는 게 눈에 바로 들어옵니다. 그런데 리뷰에서 안 잡혔어요. 부주의라고 정리하면 편하지만, 그렇게 정리하면 다음에도 똑같이 납니다. 원인이 구조적이거든요.</p>
+<p><code>grep -rn "aws:.*Tag/" .</code>로 찾으면 세 곳 중 하나만 소문자라는 걸 확인할 수 있었어요. 하지만 이번 리뷰에서는 그 참조를 찾지 못했습니다.</p>
 
-<p><span class="obsv-mark">리뷰어는 바뀐 줄을 봅니다.</span> 코드 리뷰의 입력은 diff 예요. 그런데 이 결함은 <b>바뀌지 않은 줄</b>에 있었습니다. <code>iam-boundary.tf</code> 는 그 PR 의 변경 파일 목록에 아예 없었어요. 화면에 뜨지 않은 파일을 리뷰어가 지적할 방법은 없죠.</p>
+<p>리뷰에서 주로 확인한 것은 diff였어요. 누락된 <code>iam-boundary.tf</code>는 PR의 변경 파일 목록에 없었기 때문에, 바뀐 줄만 검토해서는 찾기 어려웠습니다.</p>
 
-<p>그러니까 이건 리뷰어의 시력 문제가 아니라 <b>리뷰라는 도구의 시야 범위</b> 문제예요. diff 는 "무엇이 바뀌었나"를 아주 잘 보여주지만, <b>"바뀌었어야 하는데 안 바뀐 게 있나"</b>는 원리적으로 못 보여줍니다. 그 질문에 답하려면 diff 가 아니라 <b>저장소 전체</b>를 입력으로 받는 도구가 필요해요.</p>
+<p>diff에는 실제 바뀐 내용이 표시돼요. 함께 바뀌어야 하는 참조가 남았는지 확인하려면 변경 목록 밖의 파일도 검색해야 합니다.</p>
 
-<p>그게 정확히 CI 검사가 하는 일이고요. 사람에게 "다음부터 짝을 잘 챙기자"고 말하는 대신, 저장소 전체를 읽는 스크립트를 붙이는 게 맞는 수리인 이유입니다.</p>
+<p>이 확인을 PR마다 반복할 수 있도록 저장소 전체를 읽는 스크립트를 CI에 추가했어요.</p>
 
-<h2>5. 검사기를 만들고, 일부러 실패시켜 봤다</h2>
+<h2>5. 옛 키를 넣어 검사기가 실패하는지 확인했어요</h2>
 
-<p>수리 PR 에 <code>scripts/check-tag-key-consistency.py</code> 를 같이 넣었어요. 설계는 단순합니다.</p>
+<p>수정 PR에 <code>scripts/check-tag-key-consistency.py</code>를 추가했어요.</p>
 
-<p>provider 의 <code>default_tags</code> 가 실제로 다는 환경 키를 <b>진실의 출처</b>로 삼습니다. 코드가 리소스에 실제로 붙이는 키니까요. 그다음 저장소의 모든 <code>.tf</code> 를 훑어 <code>aws:ResourceTag/</code> 와 <code>aws:RequestTag/</code> 참조를 모으고 그게 진실의 출처와 같은 키인지 봅니다. 다르면 실패예요. AWS 자격증명이 전혀 필요 없어서 PR 의 static 검사 잡에 그대로 넣을 수 있었어요.</p>
+<p>provider의 <code>default_tags</code>에 선언된 환경 태그 키를 기준으로 삼았어요. 저장소의 <code>.tf</code> 파일에서 <code>aws:ResourceTag/</code>와 <code>aws:RequestTag/</code> 참조를 모아 선언된 키와 비교하고, 다르면 실패하게 했습니다. AWS 자격증명 없이 실행할 수 있어서 PR의 static 검사 잡에 넣었어요.</p>
 
 <div class="obsv-code">::error::IAM 조건이 참조하는 태그 키가 실제 태그 키(Environment)와 다르다.
 ::error::이 Deny 는 매치되지 않아 조용히 무력화된다
@@ -172,19 +171,21 @@ bootstrap/iam-boundary.tf   ← 빠뜨렸다
   bootstrap/iam-boundary.tf: aws:...Tag/env
       -&gt; aws:...Tag/Environment 여야 한다</div>
 
-<p>여기서 제일 중요했던 건 검사기 자체가 아니라 <b>검사기를 검사한 절차</b>예요. 만들고 나서 <span class="obsv-mark">일부러 옛 키로 되돌려놓고, 검사가 실제로 실패하는지 확인했습니다.</span> 이 과정을 건너뛰면 정규식 하나가 안 맞는 것만으로도 "돌긴 도는데 아무것도 안 잡는" 검사가 돼요. 그건 방어가 아니라 <b>방어가 있다는 착각</b>이고, 착각은 방어가 없는 것보다 위험합니다. 8편에서 초록불 네 개를 받고도 apply 가 통째로 사라진 게 정확히 그 모양이었어요.</p>
+<p>위 검사 메시지의 로그 설명도 범위를 좁혀 읽어야 해요. IAM 조건이 일치하지 않았다는 별도 오류가 생기지 않는다는 뜻이며, 허용된 API 요청이 CloudTrail 등에 기록되지 않는다는 뜻은 아니에요. API별 기록 설정은 따로 확인해야 합니다.</p>
 
-<p>디테일이 하나 더 있어요. 태그 선언을 <b>하나도 못 찾으면 통과가 아니라 실패</b>하게 했습니다. 파일 구조가 바뀌어서 정규식이 아무것도 못 잡는 날이 오면, 검사는 "위반 0건"이라며 조용히 초록불을 켤 거예요. 그건 이 글이 다루는 사고와 완전히 같은 실패 모드죠. <b>조건이 안 맞아서 아무것도 하지 않는데, 아무 소리도 나지 않는 것입니다.</b> 그러니 검사기 자신도 같은 방식으로 죽지 않게 만들어야 해요.</p>
+<p>검사기를 만든 뒤에는 <span class="obsv-mark">일부러 옛 키로 되돌려 검사가 실패하는지 확인했어요.</span> 정규식이 실제 선언과 참조를 찾지 못하면 검사 실행 자체는 성공할 수 있기 때문이에요. 8편에서도 네 개의 검사가 통과했지만 apply 잡이 실행되지 않았으므로, 통과 결과만으로 의도한 동작을 확인했다고 볼 수는 없었어요.</p>
 
-<h2>6. 같은 사실이 몇 군데에 적혀 있는지부터 센다</h2>
+<p>태그 선언을 하나도 찾지 못할 때도 실패하도록 했어요. 파일 구조가 바뀌어 정규식이 맞지 않는 경우를 위반 0건으로 처리하지 않기 위해서예요.</p>
 
-<p>이날 같은 모양의 사고가 세 번 났어요. 세 번 다 "한 사실이 여러 곳에 적혀 있는데 그중 일부만 고쳤다"입니다.</p>
+<h2>6. 여러 파일에 있는 설정을 함께 검사해요</h2>
 
-<p>8편은 재사용 워크플로의 권한이었어요. 호출부가 둘인데 하나만 고쳐서, 초록불을 다 받고 머지한 PR 의 apply 잡이 통째로 사라졌죠. 9편은 state 키 레이아웃이었고요. backend 설정은 새 키로 바꿨는데 IAM 정책에 지정한 잠금 파일 이름은 옛 이름 그대로라, 읽기는 되고 잠금만 거부됐어요. 그리고 오늘은 이 태그 키였고요. 참조하는 파일이 둘인데 하나만 고쳤습니다.</p>
+<p>이날 확인한 세 문제는 모두 같은 설정이 여러 곳에 있었는데 일부만 고쳤다는 공통점이 있었어요.</p>
 
-<p>세 번 다 성실하게 일했고, 세 번 다 위험을 알고 있었고, 세 번 다 한 군데를 놓쳤어요. 그래서 결론은 "더 꼼꼼히 하자"가 될 수 없습니다. <span class="obsv-mark">같은 사실이 두 군데 이상에 적혀 있으면, 그 정합성은 사람의 기억이 아니라 검사가 지켜야 해요.</span></p>
+<p>8편에서는 재사용 워크플로 호출부 두 곳 중 하나만 권한을 고쳐, 검사에 통과한 PR의 apply 잡이 실행되지 않았어요. 9편에서는 backend의 state 키를 바꾸고 IAM 정책의 잠금 파일 이름을 그대로 두어 읽기는 되고 잠금만 거부됐습니다. 이번에는 태그 키를 참조하는 파일 둘 중 하나만 고쳤고요.</p>
 
-<p>실무적으로 쓸 만한 형태로 바꾸면 이렇게 돼요. 경계를 좁게 그리는 건 좋은 습관이지만, 그보다 먼저 할 일은 <b>그 경계가 몇 군데에 적혀 있는지 세어보는 것</b>입니다. 한 군데면 그냥 고치면 되고, <b>두 군데 이상이면 그 순간부터 그건 사람이 기억할 짝이 아니라 기계가 붙들어야 할 계약</b>이에요. grep 한 줄짜리 CI 검사를 붙일 값어치는 거기서 생깁니다.</p>
+<p>세 문제 모두 변경한 파일만 확인해서는 다른 파일에 남은 설정을 찾기 어려웠어요. 이번 태그 키 검사는 여러 파일에 나뉜 선언과 참조를 비교하는 방식으로 그 누락을 확인해요.</p>
+
+<p>환경 태그 키는 아래처럼 파일 여섯 개의 여덟 곳에 있었어요. 선언과 참조를 먼저 찾아 놓으면 수정 범위와 검사 범위를 함께 정할 수 있어요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 438" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -226,18 +227,18 @@ bootstrap/iam-boundary.tf   ← 빠뜨렸다
 <text x="48" y="342">9편 · state 키 레이아웃: backend 는 고치고 IAM 정책은 그대로</text>
 <text x="48" y="372" fill="#b3502f">10편 · 환경 태그 키: 파일 두 개 중 한 개만 고침</text>
 </g>
-<text x="350" y="424" font-size="20" text-anchor="middle" fill="#b3502f">두 군데 이상이면 기억이 아니라 검사로 묶는다</text>
+<text x="350" y="424" font-size="20" text-anchor="middle" fill="#b3502f">태그 선언과 IAM 참조가 일치하는지 검사한다</text>
 </g>
 </svg>
 </div>
-<div class="obsv-figcap">그림 2. 경계를 좁게 그리기 전에, 그 경계가 몇 군데에 적혀 있는지부터 센다</div>
+<div class="obsv-figcap">그림 2. 태그 선언뿐 아니라 IAM 조건에서 참조하는 키까지 함께 확인해요</div>
 
-<p>덧붙이면 이 수리에는 꼬리가 하나 더 있어요. 고친 파일이 <code>bootstrap/</code> 이라 9편에 적은 그 제약이 그대로 걸립니다. <b>CI 의 apply 대상이 아니라서, 머지해도 자격증명을 가진 사람이 로컬에서 apply 해야 실제로 적용돼요.</b> 코드가 초록불로 머지된 시점과 가드가 실제로 되살아나는 시점 사이에 또 간격이 생기는 거죠. 좁은 경계의 값은 이렇게 계속 청구됩니다.</p>
+<p>다만 고친 파일은 <code>bootstrap/</code>에 있어요. 9편에서 설명했듯 CI의 apply 대상이 아니므로, 머지 뒤에 자격증명을 가진 사람이 로컬에서 apply해야 실제 정책에 반영됩니다. 코드 수정과 실제 적용은 구분해서 확인해야 해요.</p>
 
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>태그 기반 IAM Deny 는 조건 키가 리소스에 없으면 매치되지 않아요. 그래서 태그 키를 바꾸고 IAM 조건을 안 바꾸면 그 가드는 에러도 로그도 없이 조용히 죽습니다. 거부된 요청은 흔적을 남기지만, 거부되지 않은 요청은 그냥 성공한 요청이니까요.</b><br><br>
-  리뷰어는 바뀐 줄을 본다. 바뀌지 않은 채 남은 짝은 diff 에 없다. 같은 사실이 두 군데 이상에 적혀 있으면, 그 정합성은 사람의 기억이 아니라 검사가 지켜야 한다.
+  태그 키를 바꾸면서 boundary의 IAM 조건 한 곳을 빠뜨렸고, 다음 날 옛 키를 새 키로 고쳤어요. 재발을 막기 위해 태그 선언과 IAM 참조를 비교하는 CI 검사를 추가하고, 옛 키를 넣었을 때 실패하는지도 확인했습니다.<br><br>
+  bootstrap 정책은 머지만으로 적용되지 않아요. 실제 환경에 반영하려면 로컬 apply가 필요합니다.
 </div>
 
 </div>
