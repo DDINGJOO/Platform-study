@@ -2,8 +2,8 @@
   개인정보 암호화 7편: 개인정보가 로그로 새는 다섯 경로와 막는 법
   tistory-sketch-post 스타일 · 단일 HTML
 ============================================================ -->
-<!-- tags: 로그 개인정보 마스킹, Lombok ToString Exclude, Logback replace, TurboFilter, ArchUnit, HttpClient wire 로그 -->
-<!-- lead: 컬럼은 암호화했는데 개인정보가 로그에 남는다면 DTO toString, 예외 메시지, 원인 예외의 DB 메시지, HTTP 클라이언트 덤프, 정규식이 놓치는 입력 다섯 길을 봐야 해요. 실습으로 막는 법 열 가지가 무엇을 막고 못 막는지 셌습니다. -->
+<!-- tags: 로그 마스킹, Logback, ArchUnit, HttpClient wire 로그 -->
+<!-- lead: 컬럼을 암호화해도 DTO와 예외 메시지, DB 오류, HTTP 덤프, 자유 입력에서 개인정보가 로그에 남을 수 있어요. 가짜 값으로 다섯 경로를 재현하고, 마스킹과 코드 규칙을 각각 적용했을 때 남은 값을 비교했어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -28,22 +28,16 @@
 
 <div class="obsv-series">
   <div class="obsv-st">🔐 개인정보 암호화 · 7편</div>
-  1편. 설정은 켜 두었고 그 파일은 읽히지 않았다<br>
-  2편. 암호화에 실패하면 평문으로 저장하기로 했다<br>
-  3편. 등치 조회가 남아 있어 랜덤 IV 를 쓸 수 없었다<br>
-  4편. 컬럼이 아니라 문장을 암호화했다<br>
-  5편. 관리자 코멘트가 암호문처럼 보였다<br>
-  6편. 암호화한 컬럼을 WHERE로 찾는 세 가지 방법과 각각의 대가<br>
-  <b>7편. 개인정보가 로그로 새는 다섯 경로와 막는 법</b> &larr; 지금 이 글<br>
-  8편. 운영 중인 테이블을 무중단으로 암호화 전환하는 순서<br>
-  9편. 마스킹과 암호화는 무엇을 되돌릴 수 있느냐로 고른다
+  <a href="https://dding-shark.tistory.com/572" style="color:inherit">5편. 평문 코멘트를 암호문으로 오인한 컨버터 수정</a><br>
+  <a href="https://dding-shark.tistory.com/670" style="color:inherit">6편. JPA 암호화 컬럼 검색: 결정적 암호화·복호화 필터·블라인드 인덱스 비교</a><br>
+  <b>7편. 개인정보 로그 마스킹: 다섯 출력 경로와 대응책의 적용 범위</b> &larr; 지금 이 글
 </div>
 
-<p>주민번호 컬럼을 암호화했고, DB 를 열어 보면 암호문만 보입니다. 그런데 로그 검색창에 주민번호 뒷자리 일곱 자리를 넣으면 결과가 나와요. DB 는 지켰는데 같은 값이 다른 길로 로그에 내려앉은 겁니다.</p>
+<p>주민번호 컬럼을 암호화해도 로그에 같은 값이 남을 수 있어요. 컬럼에 저장하기 전의 DTO를 출력하거나 입력값을 예외 메시지에 넣으면, 저장된 암호문과 별개로 평문이 로그에 찍히기 때문이에요.</p>
 
-<p>그 길이 몇 개인지 세어 보려고 작은 Java 프로그램 하나에 흔한 코드 다섯 줄을 넣고 돌렸어요. 가짜 이름·주민번호·전화번호 한 벌이 지나가자 로그에 <b>값 22개</b>가 남았습니다. 막는 법을 하나씩 켜 보니 어느 것도 혼자서는 다섯 경로를 다 막지 못했고, 전부 켠 뒤에도 2개가 남았어요.</p>
+<p>이를 확인하려고 작은 Java 프로그램에서 다섯 경로를 재현했어요. 가짜 이름·주민번호·전화번호 한 벌을 사용했는데 로그에 값 22개가 남았어요. 대응책을 하나씩 적용한 실행에서는 다섯 경로를 모두 막는 방법이 없었고, 실습에서 조합한 대응책을 함께 적용해도 2개가 남았어요.</p>
 
-<p>이 글은 <b>컬럼은 암호화했는데 개인정보가 로그에 남는다면 어디로 새고, 무엇으로 막나</b>에 답합니다. 경로마다 새는 화면과 막은 화면을 나란히 보이고, 막는 법 열 가지가 다섯 경로 가운데 무엇을 막고 무엇을 못 막는지 실제로 센 표로 정리했어요.</p>
+<p>경로별로 대응 전후의 로그를 비교하고, 대응책 열 가지의 적용 범위와 한계를 정리했어요. 아래 결과는 가짜 값을 넣은 실습에서 확인한 것이며, 실제 서비스의 전체 로그 경로나 현재 보안 상태를 검증한 결과는 아니에요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
@@ -52,14 +46,14 @@
   &bull; Logback <code>%replace(%msg)</code> 를 걸었는데 <code>Caused by:</code> 줄은 왜 그대로인가?<br>
   &bull; HTTP 클라이언트 덤프에서 이름은 왜 정규식으로 못 가리나?<br>
   &bull; 정규식을 넓혀도 남는 입력은 무엇인가?<br>
-  &bull; 내 코드에서 오늘 바꿀 것은 무엇인가?
+  &bull; 코드와 로깅 설정에서 각각 무엇을 확인해야 하나?
 </div>
 
-<h2>1. 실습: 값 한 벌을 다섯 길로 흘려 보낸다</h2>
+<h2>1. 실습: 가짜 값 한 벌로 다섯 경로를 재현하기</h2>
 
-<p>실습 코드는 <code>labs/security/pii-07-log-leaks/</code> 에 있어요. Java 25, Lombok 1.18.48, SLF4J 2.0.17 과 Logback 1.5.18, H2 2.3.232, Apache HttpClient 5.6.5, ArchUnit 1.5.1 을 쓰고 Docker 는 쓰지 않습니다. 넣는 값은 전부 가짜예요. 이름 <code>김가짜</code>, 주민번호 <code>000000-9876543</code>, 전화번호 <code>010-0000-0000</code> 입니다.</p>
+<p>실습 코드는 <code>labs/security/pii-07-log-leaks/</code> 에 있어요. Java 25, Lombok 1.18.48, SLF4J 2.0.17 과 Logback 1.5.18, H2 2.3.232, Apache HttpClient 5.6.5, ArchUnit 1.5.1 을 쓰고 Docker 는 쓰지 않아요. 넣는 값은 전부 가짜예요. 이름 <code>김가짜</code>, 주민번호 <code>000000-9876543</code>, 전화번호 <code>010-0000-0000</code>예요.</p>
 
-<p>프로그램은 다섯 경로를 차례로 지나갑니다. 가입 요청 DTO 를 통째로 로깅하고(①), 형식이 틀린 주민번호로 검사 예외를 던지고(②), 같은 전화번호를 두 번 넣어 DB 유니크 제약을 깨고(③), 외부 본인확인 API 를 흉내 낸 로컬 서버에 HTTP 요청을 보내고(④), 마지막으로 검색어 열 개를 그대로 로깅해요(⑤). 막는 법은 시스템 속성으로 하나씩 켭니다.</p>
+<p>프로그램은 다섯 경로를 차례로 실행해요. 가입 요청 DTO 를 통째로 로깅하고(①), 형식이 틀린 주민번호로 검사 예외를 던지고(②), 같은 전화번호를 두 번 넣어 DB 유니크 제약을 깨고(③), 외부 본인확인 API 를 흉내 낸 로컬 서버에 HTTP 요청을 보내고(④), 마지막으로 검색어 열 개를 그대로 로깅해요(⑤). 대응책은 시스템 속성으로 하나씩 적용해요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -69,7 +63,7 @@
   </marker>
 </defs>
 <g font-family="'Nanum Pen Script', cursive" stroke-linecap="round" stroke-linejoin="round">
-<text x="24" y="30" font-size="21" fill="#4a7fb5">같은 값이 로그에 닿는 다섯 길, 그리고 막는 법이 서는 자리</text>
+<text x="24" y="30" font-size="21" fill="#4a7fb5">다섯 로그 출력 경로와 대응책의 적용 위치</text>
 
 <path d="M22 178 C 60 175, 100 179, 132 177 C 135 198, 134 218, 132 236 C 100 239, 60 235, 23 237 C 19 218, 21 198, 22 178 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
 <text x="36" y="204" font-size="20" fill="#3d3a34">🔐 개인정보</text>
@@ -84,7 +78,7 @@
 <path d="M196 250 C 260 247, 330 251, 392 249 C 395 264, 394 278, 392 290 C 330 293, 260 289, 197 291 C 193 278, 195 264, 196 250 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
 <text x="208" y="276" font-size="18" fill="#c07f18">④ 라이브러리 wire 로거</text>
 <path d="M196 316 C 260 313, 330 317, 392 315 C 395 330, 394 344, 392 356 C 330 359, 260 355, 197 357 C 193 344, 195 330, 196 316 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2"/>
-<text x="208" y="342" font-size="18" fill="#c07f18">⑤ 날것 문자열 (검색어)</text>
+<text x="208" y="342" font-size="18" fill="#c07f18">⑤ 입력 문자열 (검색어)</text>
 
 <path d="M134 196 C 155 150, 170 100, 192 74" fill="none" stroke="#3d3a34" stroke-width="1.8" marker-end="url(#pii7a)"/>
 <path d="M134 200 C 155 180, 170 150, 192 140" fill="none" stroke="#3d3a34" stroke-width="1.8" marker-end="url(#pii7a)"/>
@@ -95,14 +89,14 @@
 <path d="M452 70 C 500 67, 540 71, 572 69 C 575 160, 574 260, 572 344 C 540 347, 500 343, 453 345 C 449 260, 451 160, 452 70 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
 <text x="466" y="96" font-size="20" fill="#3d3a34">Logback</text>
 <text x="466" y="128" font-size="15" fill="#4a7fb5">TurboFilter</text>
-<text x="466" y="148" font-size="13" fill="#8a8272">형식·인자를 본다</text>
+<text x="466" y="148" font-size="13" fill="#8a8272">형식·인자를 확인한다</text>
 <text x="466" y="168" font-size="13" fill="#8a8272">통과/거부만</text>
 <path d="M462 186 C 500 184, 530 188, 562 186" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="6 6"/>
 <text x="466" y="212" font-size="15" fill="#4a7fb5">PatternLayout</text>
 <text x="466" y="232" font-size="13" fill="#8a8272">%msg 와 %ex 를</text>
-<text x="466" y="252" font-size="13" fill="#8a8272">따로 그린다</text>
+<text x="466" y="252" font-size="13" fill="#8a8272">따로 출력한다</text>
 <text x="466" y="282" font-size="13" fill="#8a8272">%replace 는</text>
-<text x="466" y="302" font-size="13" fill="#8a8272">감싼 글자만</text>
+<text x="466" y="302" font-size="13" fill="#8a8272">내부 문자열만</text>
 
 <path d="M396 72 C 420 80, 436 100, 450 110" fill="none" stroke="#3d3a34" stroke-width="1.6" marker-end="url(#pii7a)"/>
 <path d="M396 138 C 420 140, 436 146, 450 150" fill="none" stroke="#3d3a34" stroke-width="1.6" marker-end="url(#pii7a)"/>
@@ -117,31 +111,31 @@
 
 <text x="196" y="384" font-size="14" fill="#5a9e6f">소스에서 막기: Lombok · 코드 규칙 · ArchUnit</text>
 <text x="452" y="372" font-size="14" fill="#5a9e6f">로깅 층에서 막기</text>
-<text x="24" y="402" font-size="17" fill="#b3502f">= 값을 만지는 곳은 다섯이고, 로깅 층은 그중 글자로 바뀐 뒤의 모습만 본다</text>
+<text x="24" y="402" font-size="17" fill="#b3502f">다섯 경로에서 값이 출력되며, 패턴 마스킹은 출력 문자열에 적용된다</text>
 </g>
 </svg>
 </div>
-<div class="obsv-figcap">그림 1. 다섯 길은 모두 Logback 을 지나지만, 지날 때의 모양이 서로 다릅니다</div>
+<div class="obsv-figcap">그림 1. 다섯 경로는 모두 Logback 을 사용하지만 전달하는 값의 형태가 달라요</div>
 
-<p>남은 값은 <code>scripts/leaks.py</code> 가 셉니다. 같은 값이 다른 모양으로 남아도 잡아야 하니까 줄마다 HttpClient 의 바이트 표기(<code>[0xffffffea]</code>)를 바이트로 되돌리고, URL 인코딩을 풀고, NFKC 정규화로 전각 숫자를 반각으로 바꾸고, 공백·점·대시를 지운 뒤 가짜 값을 찾아요. 한 줄에 이름과 전화번호가 같이 있으면 2개로 셉니다. 아무것도 켜지 않은 실행에서 ①이 6개, ②가 1개, ③이 1개, ④가 4개, ⑤가 10개로 합계 22개였어요. 아무것도 켜지 않은 기준 실행, 막는 법을 하나씩 켠 아홉 번, 전부 켠 한 번까지 11번을 한 묶음으로 세 번 돌렸는데 세 번 모두 숫자가 같았습니다.</p>
+<p>남은 값은 <code>scripts/leaks.py</code> 가 세어요. 같은 값이 다른 모양으로 남아도 잡아야 하니까 줄마다 HttpClient 의 바이트 표기(<code>[0xffffffea]</code>)를 바이트로 되돌리고, URL 인코딩을 풀고, NFKC 정규화로 전각 숫자를 반각으로 바꾸고, 공백·점·대시를 지운 뒤 가짜 값을 찾아요. 한 줄에 이름과 전화번호가 같이 있으면 2개로 세어요. 아무것도 켜지 않은 실행에서 ①이 6개, ②가 1개, ③이 1개, ④가 4개, ⑤가 10개로 합계 22개였어요. 아무것도 켜지 않은 기준 실행, 막는 법을 하나씩 켠 아홉 번, 전부 켠 한 번까지 11번을 한 묶음으로 세 번 돌렸는데 세 번 모두 숫자가 같았어요.</p>
 
-<p>아래는 아무것도 켜지 않은 실행과 전부 켠 실행을 경로별로 붙여 본 화면이에요. 새는 쪽은 값이 남은 줄만, 막은 쪽은 스택 줄을 뺀 전부를 보여 줍니다.</p>
+<p>아래는 대응책을 적용하지 않은 실행과 실습의 조합을 모두 적용한 실행을 경로별로 비교한 화면이에요. 전자는 값이 남은 줄만, 후자는 스택 줄을 뺀 전체 출력을 보여 줘요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/security/pii-encryption/images/lab-07/leak-vs-fixed.png" alt="compare.py 로 아무것도 켜지 않은 실행과 전부 켠 실행을 경로별로 비교한 화면. 새는 쪽 값은 ① 6개, ② 1개, ③ 1개, ④ 4개, ⑤ 10개이고, 막은 쪽은 ①~④ 0개, ⑤ 2개(뒷자리 7자리, URL 인코딩)" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 2. 새는 로그와 막은 로그. 전부 켜도 ⑤에서 두 줄이 남습니다</div>
+<div class="obsv-figcap">그림 2. 실습의 대응책을 함께 적용해도 ⑤의 두 줄에는 가짜 값이 남았어요</div>
 
-<h2>2. ① DTO 를 통째로 찍으면 새로 붙은 필드부터 샌다</h2>
+<h2>2. ① DTO 전체 출력과 새 필드의 포함 여부</h2>
 
-<p>가장 흔한 줄은 이거예요. <code>log.info("가입 요청 {}", request)</code>. Lombok <code>@Data</code> 가 만든 <code>toString</code> 은 모든 필드를 찍으니, 이 한 줄에 이름·주민번호·전화번호 3개가 실립니다. 같은 값을 record 로 받은 줄도 3개였어요.</p>
+<p>가장 흔한 줄은 이거예요. <code>log.info("가입 요청 {}", request)</code>. Lombok <code>@Data</code> 가 만든 <code>toString</code> 은 모든 필드를 찍으니, 이 한 줄에 이름·주민번호·전화번호 3개가 실려요. 같은 값을 record 로 받은 줄도 3개였어요.</p>
 
 <div class="obsv-code">INFO  app - 가입 요청 SignupData(name=김가짜, rrn=000000-9876543, phone=010-0000-0000, channel=web)
 INFO  app - 가입 요청(record) SignupRecord[name=김가짜, rrn=000000-9876543, phone=010-0000-0000, channel=web]</div>
 
-<p>Lombok 문서가 주는 장치는 셋입니다. 필드를 빼는 <code>@ToString.Exclude</code>, 인자 없는 인스턴스 메서드의 결과를 넣는 <code>@ToString.Include</code>(<code>name</code> 으로 표시 이름을 바꿀 수 있어요), 그리고 <code>@ToString(onlyExplicitlyIncluded = true)</code> 예요. 마지막 것은 문서 표현대로 "표시한 것 말고는 아무것도 넣지 않는다"는 뜻입니다(<a href="https://projectlombok.org/features/ToString">Lombok @ToString</a>).</p>
+<p>Lombok 문서에는 세 가지 설정이 나와 있어요. 필드를 빼는 <code>@ToString.Exclude</code>, 인자 없는 인스턴스 메서드의 결과를 넣는 <code>@ToString.Include</code>(<code>name</code> 으로 표시 이름을 바꿀 수 있어요), 그리고 <code>@ToString(onlyExplicitlyIncluded = true)</code> 예요. 마지막 설정은 문서 표현대로 "표시한 것 말고는 아무것도 넣지 않는다"는 뜻이에요(<a href="https://projectlombok.org/features/ToString">Lombok @ToString</a>).</p>
 
-<p>주민번호에만 <code>@ToString.Exclude</code> 를 붙인 판은 6개에서 5개로 줄었어요. 이름과 전화번호는 그대로였습니다. 실제 코드에서도 이 모양이 흔해요. 처음 만들 때 주민번호만 민감하다고 보고 빼 두면, 나중에 붙은 필드는 기본값대로 <b>포함</b>됩니다. 제외 목록은 잊은 필드를 막지 못해요.</p>
+<p>주민번호에만 <code>@ToString.Exclude</code> 를 붙인 판은 6개에서 5개로 줄었어요. 이름과 전화번호는 그대로였어요. 처음 만들 때 주민번호만 민감하다고 보고 빼 두면, 나중에 붙은 필드는 기본값대로 포함돼요. 제외 목록에 적지 않은 필드는 계속 출력되는 거예요.</p>
 
 <div class="obsv-code">@Data
 @ToString(onlyExplicitlyIncluded = true)       // 허용 목록: 새 필드는 기본으로 빠진다
@@ -159,40 +153,40 @@ public class SignupMasked {                    // 원본은 빼고 같은 이름
     ...
 }</div>
 
-<p>마스킹 메서드 판과 허용 목록 판은 둘 다 3개가 남았어요. 남은 3개는 전부 record 줄입니다. record 에는 <code>@Data</code> 를 붙이지 않으니 컴파일러가 만든 <code>toString</code> 이 모든 구성 요소를 찍어요. <span class="obsv-mark">DTO 를 record 로 바꾸는 리팩터링 하나가 Lombok 설정을 통째로 비껴갑니다.</span></p>
+<p>마스킹 메서드 판과 허용 목록 판은 둘 다 3개가 남았어요. 남은 3개는 전부 record 줄이었어요. record 에는 <code>@Data</code> 를 붙이지 않으니 컴파일러가 만든 <code>toString</code> 이 모든 구성 요소를 찍어요. DTO 를 record 로 바꾸면 기존 Lombok 설정이 적용되지 않는다는 점도 함께 확인해야 해요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: TurboFilter</div>
-  Logback 이 로그 요청마다 부르는 필터예요. 문서는 "원칙적으로 LoggingEvent 객체를 만들기 전에 불린다", "한 appender 가 아니라 로깅 컨텍스트 전체에 묶인다"고 적습니다(<a href="https://logback.qos.ch/manual/filters.html">Logback Filters</a>). 형식 문자열과 인자 배열을 보고 통과·중립·거부를 돌려줘요. 넘어오는 인자 배열이 원본이라 기술적으로는 고쳐 쓸 여지가 있지만, API 가 의도한 일은 판정이라 이 실습에서는 거부만 썼습니다.
+  Logback 이 로그 요청마다 부르는 필터예요. 문서는 "원칙적으로 LoggingEvent 객체를 만들기 전에 불린다", "한 appender 가 아니라 로깅 컨텍스트 전체에 묶인다"고 설명해요(<a href="https://logback.qos.ch/manual/filters.html">Logback Filters</a>). 형식 문자열과 인자 배열을 보고 통과·중립·거부를 돌려줘요. 넘어오는 인자 배열이 원본이라 기술적으로는 고쳐 쓸 여지가 있지만, API 가 의도한 일은 판정이라 이 실습에서는 거부만 썼어요.
 </div>
 
-<p>record 줄까지 막은 건 TurboFilter 였어요. 인자 가운데 <code>@Pii</code> 를 단 필드나 record 구성 요소가 있는 객체가 오면 그 줄을 버리고, 무엇을 버렸는지만 따로 남기게 했습니다. ①이 0개가 됐어요. 대신 그 로그 줄 자체가 사라집니다. 가입 요청이 왔다는 사실도 같이 없어지니, 이 필터는 안전망이고 고칠 곳은 여전히 로깅하는 코드예요.</p>
+<p>record 줄까지 막은 건 TurboFilter 였어요. 인자 가운데 <code>@Pii</code> 를 단 필드나 record 구성 요소가 있는 객체가 오면 그 줄을 버리고, 무엇을 버렸는지만 따로 남기게 했어요. ①이 0개가 됐어요. 이때는 그 로그 줄 자체가 사라져요. 가입 요청이 왔다는 사실도 함께 없어지므로, 필터와 별개로 로깅하는 코드에서 남길 정보를 정해야 해요.</p>
 
 <div class="obsv-code">WARN  pii-guard - @Pii 객체를 인자로 받은 로그를 버림: logger=app format="가입 요청 {}" type=SignupData
 WARN  pii-guard - @Pii 객체를 인자로 받은 로그를 버림: logger=app format="가입 요청(record) {}" type=SignupRecord</div>
 
-<p>제 회사 작업에서도 이 경로는 객체의 출력 형식부터 막았어요. 암호화 배치에서 한 행을 담는 객체의 출력 형식을 id 만 찍게 해 두고, 로그와 예외에는 id 와 건수만 남겼습니다(<a href="https://dding-shark.tistory.com/571">4편</a>). 객체를 찍는 줄이 아예 없으면 Lombok 설정이 틀려도 샐 곳이 없어요.</p>
+<p>당시 업무에서도 객체의 출력 형식을 먼저 제한했어요. 암호화 배치에서 한 행을 담는 객체의 출력 형식을 id 만 찍게 해 두고, 로그와 예외에는 id 와 건수만 남겼어요(<a href="https://dding-shark.tistory.com/571">4편</a>). 이 방식은 해당 객체를 출력하는 경로에 대한 대응이에요. 다른 로그 경로까지 확인했다는 뜻은 아니에요.</p>
 
-<h2>3. ② 형식 검사 예외는 정규식이 못 알아보는 값을 들고 온다</h2>
+<h2>3. ② 형식 검사 예외에 입력값이 포함되는 경우</h2>
 
-<p>두 번째 줄도 흔합니다. <code>throw new IllegalArgumentException("주민번호 형식이 아닙니다: " + v)</code>. 전역 예외 처리기가 <code>log.warn("요청 거부", e)</code> 로 받으면 메시지가 그대로 찍혀요.</p>
+<p>두 번째는 입력값을 예외 메시지에 넣는 코드예요. <code>throw new IllegalArgumentException("주민번호 형식이 아닙니다: " + v)</code>. 전역 예외 처리기가 <code>log.warn("요청 거부", e)</code> 로 받으면 메시지가 그대로 찍혀요.</p>
 
 <div class="obsv-code">WARN  app - 요청 거부
 java.lang.IllegalArgumentException: 주민번호 형식이 아닙니다: 000000 9876543</div>
 
-<p>이 경로가 까다로운 이유가 있어요. <b>형식 검사가 실패하는 값은 정의상 형식이 틀린 값</b>입니다. 이번에는 구분자가 공백이었고, 그래서 <code>\d{6}-\d{7}</code> 같은 흔한 마스킹 정규식에 걸리지 않았어요. 실제로 메시지만 가리는 판도, 예외까지 가리는 판도 ②는 1개 그대로였습니다. 정규식을 넓힌 판에서야 0개가 됐어요.</p>
+<p>형식 검사에서 거부한 값은 마스킹 정규식이 예상한 형식과도 다를 수 있어요. 이번에는 구분자가 공백이었고, 그래서 <code>\d{6}-\d{7}</code> 같은 흔한 마스킹 정규식에 걸리지 않았어요. 실제로 메시지만 가리는 판도, 예외까지 가리는 판도 ②는 1개 그대로였어요. 정규식을 넓힌 판에서야 0개가 됐어요.</p>
 
-<p>막는 법은 메시지에 값 대신 필드 이름과 길이를 싣는 겁니다. 원인 찾기에는 "어느 필드가, 몇 글자로 왔나"면 대개 충분해요.</p>
+<p>실습에서는 메시지에 값 대신 필드 이름과 길이를 넣었어요. 입력 형식 문제를 확인하는 데 필요한 정보를 남기면서 원본 값은 제외한 거예요.</p>
 
 <div class="obsv-code">throw new IllegalArgumentException("주민번호 형식이 아닙니다 (field=rrn, length=" + v.length() + ")");
 // WARN  app - 요청 거부
 // java.lang.IllegalArgumentException: 주민번호 형식이 아닙니다 (field=rrn, length=14)</div>
 
-<p>제 회사 작업에서 같은 판단을 한 자리가 있습니다. 암호화에 실패한 값을 로그에 찍으면 원인 찾기는 쉬워지는데, 그 값이 바로 지키려던 개인정보예요. 그래서 컨버터는 값 없이 입력 길이만 WARN 으로 남기게 했습니다(<a href="https://dding-shark.tistory.com/569">2편</a>).</p>
+<p>당시 업무에서도 같은 방식으로 예외 로그를 제한했어요. 암호화에 실패한 값을 로그에 찍으면 원인 찾기는 쉬워지는데, 그 값이 바로 지키려던 개인정보예요. 그래서 컨버터는 값 없이 입력 길이만 WARN 으로 남기게 했어요(<a href="https://dding-shark.tistory.com/569">2편</a>).</p>
 
-<h2>4. ③ 원인 예외는 DB 가 붙인 값을 함께 데려온다</h2>
+<h2>4. ③ 원인 예외에 포함된 DB 오류 메시지</h2>
 
-<p>저장소 계층에서 드라이버 예외를 감싸 다시 던지는 코드도 흔해요. <code>throw new IllegalStateException("회원 저장 실패", e)</code>. 바깥 메시지에는 값이 없지만, 로그에는 원인 체인이 <code>Caused by:</code> 로 따라 찍힙니다. H2 의 유니크 제약 위반 메시지는 겹친 값을 그대로 담고 있었어요.</p>
+<p>저장소 계층에서 드라이버 예외를 감싸 다시 던지는 코드도 흔해요. <code>throw new IllegalStateException("회원 저장 실패", e)</code>. 바깥 메시지에는 값이 없지만, 로그에는 원인 체인이 <code>Caused by:</code> 로 따라 찍혀요. H2 의 유니크 제약 위반 메시지는 겹친 값을 그대로 담고 있었어요.</p>
 
 <div class="obsv-code">ERROR app - 가입 실패
 java.lang.IllegalStateException: 회원 저장 실패
@@ -202,14 +196,14 @@ INSERT INTO member (rrn_enc, phone) VALUES (?, ?) [23505-232]</div>
 
 <p>→ 바인딩 변수는 <code>?</code> 로 가려져 있지만, 제약 위반 문구가 겹친 값을 직접 보여 줘요.</p>
 
-<p>여기서 컬럼 암호화가 한 일이 보입니다. 같은 주민번호를 두 번 넣었을 때의 위반 메시지에는 실습용 암호문(<code>LABENC:...</code>)만 찍혔어요. <span class="obsv-mark">암호화한 컬럼은 에러 메시지에서도 암호문이지만, 같은 테이블의 평문 컬럼은 그렇지 않습니다.</span> 전화번호나 이메일처럼 유니크 제약을 거는 일이 많은 컬럼이 바로 그쪽이에요. MySQL 도 오류 1062(<code>ER_DUP_ENTRY</code>)의 메시지가 <code>Duplicate entry '%s' for key ...</code> 모양이라 겹친 값을 문구에 넣습니다(<a href="https://dev.mysql.com/doc/mysql-errors/8.4/en/server-error-reference.html">MySQL Server Error Reference</a>).</p>
+<p>실습에서는 암호화한 컬럼의 제약 위반 메시지도 비교했어요. 같은 주민번호를 두 번 넣었을 때의 위반 메시지에는 실습용 암호문(<code>LABENC:...</code>)만 찍혔고, 전화번호 중복 메시지에는 평문 값이 나타났어요. 따라서 전화번호나 이메일 등 유니크 제약이 있는 평문 컬럼도 확인해야 해요. MySQL 도 오류 1062(<code>ER_DUP_ENTRY</code>)의 메시지가 <code>Duplicate entry '%s' for key ...</code> 모양이라 겹친 값을 문구에 넣어요(<a href="https://dev.mysql.com/doc/mysql-errors/8.4/en/server-error-reference.html">MySQL Server Error Reference</a>).</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 원인 예외 (cause)</div>
-  예외를 다시 던질 때 안쪽에 달아 보내는 "무엇 때문에 실패했나"예요. 로거에 예외를 넘기면 Logback 은 바깥 예외와 원인 체인을 모두 찍습니다. 디버깅에는 좋은데, 안쪽 메시지가 그대로 바깥으로 흘러가요.
+  예외를 다시 던질 때 안쪽에 달아 보내는 "무엇 때문에 실패했나"예요. 로거에 예외를 넘기면 Logback 은 바깥 예외와 원인 체인을 모두 찍어요. 디버깅에 도움이 되지만 안쪽 메시지의 값도 로그에 포함될 수 있어요.
 </div>
 
-<p>막는 법은 원인을 떼고, 원인에서 값이 아닌 것만 골라 담는 겁니다. SQLState 와 오류 코드면 중복인지, 연결 문제인지는 구분돼요.</p>
+<p>실습에서는 원인 예외를 제외하고 SQLState 와 오류 코드만 담았어요. 원본 값을 남기지 않고 오류 종류를 구분하기 위한 선택이에요.</p>
 
 <div class="obsv-code">} catch (SQLException e) {
     throw new MemberSaveException("회원 저장 실패 (sqlState=" + e.getSQLState()
@@ -217,18 +211,18 @@ INSERT INTO member (rrn_enc, phone) VALUES (?, ?) [23505-232]</div>
 }
 // lab.repo.SafeMemberRepo$MemberSaveException: 회원 저장 실패 (sqlState=23505, errorCode=23505)</div>
 
-<p>대가는 스택이에요. 드라이버 안쪽 스택이 사라지니 처음 보는 오류라면 재현이 필요해집니다. 그래서 원인을 떼는 자리를 저장소 계층처럼 값이 실리는 경계로 좁히는 편이 낫습니다.</p>
+<p>대신 드라이버 내부의 스택 정보가 사라져 처음 보는 오류는 별도로 재현해야 할 수 있어요. 그래서 이 처리는 저장소 계층에서 값이 포함될 수 있는 예외를 다시 던지는 지점에 적용했어요.</p>
 
-<p>이 경로는 제 회사 작업에서도 한 번 놓쳤어요. "쓰기 예외는 원인을 떼고 다시 던진다"는 방침이 문서에 있었는데, 새로 만든 배치 코드는 원인 예외를 그대로 달아 던지고 있었고 독립 리뷰가 그걸 잡았습니다. 그 예외는 배치 스케줄러 로그와 실패 알림으로 그대로 나가는 길이었어요(<a href="https://dding-shark.tistory.com/572">5편</a>). 방침만으로는 코드가 따라오지 않으니, 뒤에서 볼 정적 검사가 필요해집니다.</p>
+<p>당시 업무에서는 이 처리가 빠진 코드를 리뷰에서 발견했어요. "쓰기 예외는 원인을 떼고 다시 던진다"는 방침이 문서에 있었는데, 새로 만든 배치 코드는 원인 예외를 그대로 달아 던지고 있었고 독립 리뷰에서 그 차이를 찾았어요. 해당 예외를 그대로 전달하면 배치 스케줄러 로그와 실패 알림에도 원인 메시지가 포함될 수 있었어요(<a href="https://dding-shark.tistory.com/572">5편</a>). 아래 실습에서는 원인 예외를 전달하는 코드를 정적 검사로 찾는 방법도 확인했어요.</p>
 
-<h3>%replace(%msg) 는 Caused by 줄을 가리지 않는다</h3>
+<h3>%replace(%msg) 의 적용 범위와 Caused by 줄</h3>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: PatternLayout, 변환어</div>
-  Logback 이 로그 이벤트 하나를 글자 한 줄로 그리는 규칙이에요. <code>%msg</code>(메시지), <code>%ex</code>(예외와 원인 체인), <code>%level</code> 같은 변환어를 이어 붙여 모양을 정합니다. 메시지와 예외는 서로 다른 변환어가 따로 그려요.
+  Logback 이 로그 이벤트를 문자열로 출력하는 규칙이에요. <code>%msg</code>(메시지), <code>%ex</code>(예외와 원인 체인), <code>%level</code> 같은 변환어를 이어 붙여 출력 형식을 정해요. 메시지와 예외는 서로 다른 변환어로 따로 출력해요.
 </div>
 
-<p>로깅 층에서 정규식으로 가리는 방법도 같이 봤어요. Logback 의 <code>%replace(p){r, t}</code> 는 "하위 패턴 p 가 만든 문자열에서" 정규식 r 을 t 로 바꿉니다. 그리고 PatternLayout 은 패턴에 예외용 변환어가 없으면 "스택 정보가 중요하므로" 그것을 맨 끝에 자동으로 붙여요(<a href="https://logback.qos.ch/manual/layouts.html">Logback Layouts</a>). 그러니 <code>%replace(%msg)</code> 만 걸면, 자동으로 붙은 예외 부분은 replace 바깥에서 찍힙니다.</p>
+<p>로깅 층에서 정규식으로 가리는 방법도 같이 봤어요. Logback 의 <code>%replace(p){r, t}</code> 는 "하위 패턴 p 가 만든 문자열에서" 정규식 r 에 일치하는 부분을 t 로 바꿔요. 그리고 PatternLayout 은 패턴에 예외용 변환어가 없으면 "스택 정보가 중요하므로" 그것을 맨 끝에 자동으로 붙여요(<a href="https://logback.qos.ch/manual/layouts.html">Logback Layouts</a>). 그러니 <code>%replace(%msg)</code> 만 걸면, 자동으로 붙은 예외 부분은 replace 바깥에서 찍혀요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -239,7 +233,7 @@ INSERT INTO member (rrn_enc, phone) VALUES (?, ?) [23505-232]</div>
 <path d="M24 78 C 200 75, 450 80, 676 77 C 679 112, 678 140, 676 166 C 450 169, 200 165, 25 167 C 21 140, 23 112, 24 78 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2"/>
 <text x="40" y="104" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">ERROR app - 가입 실패</text>
 <path d="M126 110 C 150 108, 175 111, 196 109" fill="none" stroke="#5a9e6f" stroke-width="3"/>
-<text x="262" y="110" font-size="15" fill="#2e6b41">← %msg: 여기만 정규식이 닿는다</text>
+<text x="262" y="110" font-size="15" fill="#2e6b41">← %msg: 정규식 적용 범위</text>
 <text x="40" y="132" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">java.lang.IllegalStateException: 회원 저장 실패</text>
 <text x="40" y="154" font-family="Menlo, monospace" font-size="12" fill="#b3502f">Caused by: ... VALUES ( /* 1 */ '010-0000-0000' )</text>
 <text x="470" y="154" font-size="15" fill="#b3502f">← 자동 %ex: 그대로</text>
@@ -250,12 +244,12 @@ INSERT INTO member (rrn_enc, phone) VALUES (?, ?) [23505-232]</div>
 <text x="40" y="270" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">java.lang.IllegalStateException: 회원 저장 실패</text>
 <text x="40" y="294" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">Caused by: ... VALUES ( /* 1 */ '[전화]' )</text>
 <path d="M30 236 C 28 260, 29 280, 30 300" fill="none" stroke="#5a9e6f" stroke-width="3"/>
-<text x="420" y="270" font-size="15" fill="#2e6b41">메시지와 원인 체인을 한 번에 감싼다</text>
-<text x="420" y="292" font-size="15" fill="#8a8272">%nopex 는 의도를 적는 안전장치</text>
+<text x="420" y="270" font-size="15" fill="#2e6b41">메시지와 원인 체인에 함께 적용한다</text>
+<text x="420" y="292" font-size="15" fill="#8a8272">%nopex 는 설정 의도를 명시</text>
 </g>
 </svg>
 </div>
-<div class="obsv-figcap">그림 3. 정규식은 자기가 감싼 글자만 봅니다</div>
+<div class="obsv-figcap">그림 3. 정규식 마스킹은 replace 안에 포함된 문자열에만 적용돼요</div>
 
 <div class="obsv-code">&lt;!-- 메시지만: ③ 이 그대로 샌다 --&gt;
 &lt;pattern&gt;%-5level %logger{0} - %replace(%msg){'\d{6}-\d{7}', '[주민번호]'}%n&lt;/pattern&gt;
@@ -263,60 +257,60 @@ INSERT INTO member (rrn_enc, phone) VALUES (?, ?) [23505-232]</div>
 &lt;!-- 메시지와 예외를 함께. %nopex 는 "예외는 이미 위에서 그렸다"는 의도를 적어 두는 안전장치 --&gt;
 &lt;pattern&gt;%-5level %logger{0} - %replace(%msg%n%ex){'\d{6}-\d{7}', '[주민번호]'}%nopex&lt;/pattern&gt;</div>
 
-<p>측정도 그대로 나왔어요. 메시지만 가린 판은 ③이 1개 남았고, 예외까지 감싼 판은 0개였습니다. <code>%nopex</code> 는 꼭 있어야 하는 건 아니었어요. Logback 1.5.18 은 <code>%replace</code> 안에 든 <code>%ex</code> 도 예외 변환어로 인정해 자동 <code>%ex</code> 를 붙이지 않았고, <code>%nopex</code> 만 뺀 설정으로 다시 돌려도 예외는 한 번만 찍히고 결과도 13개로 같았습니다. 그래도 버전이 바뀌어도 의도가 남도록 적어 두는 편을 권해요.</p>
+<p>위 설정은 주민번호 형식 한 가지로 예외를 감싸는 범위를 보여 준 축약 예시예요. 전화번호 패턴은 포함하지 않으므로 이 설정만으로 그림의 전화번호를 가릴 수는 없어요. 실습의 측정 설정에는 주민번호와 전화번호 패턴을 함께 넣었어요. 그 구성에서 메시지만 가린 판은 ③의 전화번호가 1개 남았고, 예외까지 감싼 판은 0개였어요. 그림의 결과를 얻으려면 예외를 포함하는 범위와 전화번호를 찾는 패턴이 모두 필요해요. <code>%nopex</code> 는 꼭 있어야 하는 건 아니었어요. Logback 1.5.18 은 <code>%replace</code> 안에 든 <code>%ex</code> 도 예외 변환어로 인정해 자동 <code>%ex</code> 를 붙이지 않았고, <code>%nopex</code> 만 뺀 설정으로 다시 돌려도 예외는 한 번만 찍히고 결과도 13개로 같았어요. 필수 설정은 아니지만 의도가 드러나도록 남겼어요.</p>
 
 <h2>5. ④ HTTP 클라이언트 덤프는 본문을 통째로 찍는다</h2>
 
-<p>외부 API 를 부르는 쪽은 장애가 나면 요청·응답을 보고 싶어집니다. Apache HttpClient 5 는 <code>org.apache.hc.client5.http.wire</code> 로거를 DEBUG 로 켜면 오가는 바이트를, <code>...http.headers</code> 를 켜면 헤더를 찍어요. 요청 본문과, 받은 전화번호를 되돌려 주는 응답 본문이 둘 다 찍혀 값 4개가 남았습니다.</p>
+<p>외부 API 의 오류를 확인하려고 요청·응답 로그를 켤 때도 본문 출력 여부를 봐야 해요. Apache HttpClient 5 는 <code>org.apache.hc.client5.http.wire</code> 로거를 DEBUG 로 켜면 오가는 바이트를, <code>...http.headers</code> 를 켜면 헤더를 찍어요. 요청 본문과, 받은 전화번호를 되돌려 주는 응답 본문이 둘 다 찍혀 값 4개가 남았어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: wire 로그</div>
-  HTTP 클라이언트가 소켓에 쓰고 읽은 바이트를 그대로 남기는 로그예요. <code>&gt;&gt;</code> 는 보낸 것, <code>&lt;&lt;</code> 는 받은 것입니다. 헤더 로그와 달리 본문이 들어가요.
+  HTTP 클라이언트가 소켓에 쓰고 읽은 바이트를 그대로 남기는 로그예요. <code>&gt;&gt;</code> 는 보낸 것, <code>&lt;&lt;</code> 는 받은 것이에요. 헤더 로그와 달리 본문이 들어가요.
 </div>
 
 <div class="obsv-code">DEBUG wire - http-outgoing-0 &gt;&gt; "{"name":"[0xffffffea][0xffffffb9][0xffffff80][0xffffffea]...","rrn":"000000-9876543","phone":"010-0000-0000"}"
 DEBUG wire - http-outgoing-0 &lt;&lt; "{"result":"MATCH","phone":"010-0000-0000"}"</div>
 
-<p>→ 이름은 UTF-8 바이트가 <code>[0xffffffea]</code> 꼴로 한 바이트씩 찍혔어요. 사람 눈으로도, 로그 검색으로도 이름이라는 걸 알아보기 어렵습니다.</p>
+<p>→ 이름은 UTF-8 바이트가 <code>[0xffffffea]</code> 꼴로 한 바이트씩 찍혔어요. 사람 눈으로도, 로그 검색으로도 이름이라는 걸 알아보기 어려워요.</p>
 
-<p>정규식 마스킹을 켜면 주민번호와 전화번호는 가려졌지만 이름 1개는 끝까지 남았어요. 정규식은 이름 모양을 모르고, 이 줄의 이름은 글자가 아니라 바이트 표기라서요. 이름도 개인정보예요. OWASP Logging Cheat Sheet 는 로그에 직접 남기지 말고 지우거나 가리거나 해시·암호화할 것들 가운데 "개인 이름, 전화번호, 이메일 주소 같은 민감하지 않은 개인정보"를 따로 적어 둡니다(<a href="https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html">OWASP Logging Cheat Sheet</a>).</p>
+<p>정규식 마스킹을 켜면 주민번호와 전화번호는 가려졌지만 이름 1개는 끝까지 남았어요. 실습에서 사용한 정규식에는 이름 패턴이 없고, 이 줄의 이름은 바이트 표기로 출력됐기 때문이에요. 이름도 개인정보예요. OWASP Logging Cheat Sheet 는 로그에 직접 남기지 말고 지우거나 가리거나 해시·암호화할 것들 가운데 "개인 이름, 전화번호, 이메일 주소 같은 민감하지 않은 개인정보"를 따로 적어 둬요(<a href="https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html">OWASP Logging Cheat Sheet</a>).</p>
 
-<p>④를 0개로 만든 건 wire·headers 로거 수준을 설정 파일에 INFO 로 <b>명시</b>하는 것 하나였어요. 루트 수준에 기대지 않고 적어 두는 이유가 있습니다. 장애 때 누군가 루트를 DEBUG 로 내리는 순간 이 덤프가 같이 켜지거든요. 본문이 꼭 필요하면 덤프 대신 상태 코드, 걸린 시간, 응답 길이 같은 값이 아닌 것을 직접 찍으면 됩니다. 실습의 막은 쪽은 <code>본인확인 응답 수신 length=42</code> 한 줄이었어요.</p>
+<p>실습에서 ④를 0개로 만든 설정은 wire·headers 로거 수준을 INFO 로 명시하는 것이었어요. 루트 로그 수준을 DEBUG 로 바꿨을 때도 해당 덤프가 함께 켜지지 않도록 별도로 지정했어요. 요청·응답을 확인할 때는 본문 덤프 대신 상태 코드, 걸린 시간, 응답 길이 등 원본 값이 없는 정보를 남기는 방법을 사용할 수 있어요. 실습의 막은 쪽은 <code>본인확인 응답 수신 length=42</code> 한 줄이었어요.</p>
 
-<h2>6. ⑤ 마스킹 정규식은 모양이 하나 다르면 놓친다</h2>
+<h2>6. ⑤ 정규식이 처리하지 못한 입력 형식</h2>
 
-<p>로깅 층의 정규식은 마지막 안전망입니다. 검색어, 메모, 상담 내용처럼 개발자가 개인정보라고 생각하지 못한 자유 입력은 여기서만 걸러져요. 그래서 그 그물이 무엇을 놓치는지 열 가지 입력으로 봤습니다.</p>
+<p>앞선 코드 규칙에서 개인정보로 다루지 않은 자유 입력에도 값이 포함될 수 있어요. 실습에서는 검색어를 그대로 로깅하는 코드를 두고, 정규식 마스킹이 처리하는 범위를 열 가지 입력으로 확인했어요.</p>
 
 <table style="width:100%;border-collapse:collapse;font-size:14.5px;margin:0 0 18px;">
 <tr style="background:#f3edd9;"><th style="padding:6px;text-align:left;">입력 모양</th><th style="padding:6px;">흔한 정규식</th><th style="padding:6px;">넓힌 정규식</th></tr>
 <tr><td style="padding:5px;">표준 <code>000000-9876543</code></td><td style="text-align:center;">가림</td><td style="text-align:center;">가림</td></tr>
-<tr><td style="padding:5px;">구분자가 공백</td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;">가림</td></tr>
-<tr><td style="padding:5px;">구분자가 en dash (U+2013)</td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;">가림</td></tr>
-<tr><td style="padding:5px;">전각 숫자 <code>００００００-９８７６５４３</code></td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;">가림</td></tr>
-<tr><td style="padding:5px;">구분자 없이 13자리</td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;">가림</td></tr>
-<tr><td style="padding:5px;">뒷자리 7자리만</td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;color:#b3502f;">샘</td></tr>
-<tr><td style="padding:5px;">전화번호, 공백 구분</td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;">가림</td></tr>
-<tr><td style="padding:5px;">전화번호, 점 구분</td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;">가림</td></tr>
-<tr><td style="padding:5px;">010 이 아닌 번호, 국번 3자리 <code>011-000-0000</code></td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;">가림</td></tr>
-<tr><td style="padding:5px;">URL 인코딩된 공백 <code>010%200000%200000</code></td><td style="text-align:center;color:#b3502f;">샘</td><td style="text-align:center;color:#b3502f;">샘</td></tr>
+<tr><td style="padding:5px;">구분자가 공백</td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;">가림</td></tr>
+<tr><td style="padding:5px;">구분자가 en dash (U+2013)</td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;">가림</td></tr>
+<tr><td style="padding:5px;">전각 숫자 <code>００００００-９８７６５４３</code></td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;">가림</td></tr>
+<tr><td style="padding:5px;">구분자 없이 13자리</td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;">가림</td></tr>
+<tr><td style="padding:5px;">뒷자리 7자리만</td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;color:#b3502f;">남음</td></tr>
+<tr><td style="padding:5px;">전화번호, 공백 구분</td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;">가림</td></tr>
+<tr><td style="padding:5px;">전화번호, 점 구분</td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;">가림</td></tr>
+<tr><td style="padding:5px;">010 이 아닌 번호, 국번 3자리 <code>011-000-0000</code></td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;">가림</td></tr>
+<tr><td style="padding:5px;">URL 인코딩된 공백 <code>010%200000%200000</code></td><td style="text-align:center;color:#b3502f;">남음</td><td style="text-align:center;color:#b3502f;">남음</td></tr>
 </table>
 
-<p>흔한 정규식(주민번호 <code>\d{6}-\d{7}</code>, 전화번호 <code>010-\d{4}-\d{4}</code>)은 열 개 중 하나만 가렸어요. 전각 숫자를 놓친 이유는 Java 정규식에 있습니다. Java 의 <code>\d</code> 는 <code>UNICODE_CHARACTER_CLASS</code> 가 꺼져 있으면 <code>[0-9]</code> 이고, 이 플래그는 패턴 안에 <code>(?U)</code> 로도 켤 수 있어요(<a href="https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/regex/Pattern.html">java.util.regex.Pattern</a>).</p>
+<p>흔한 정규식(주민번호 <code>\d{6}-\d{7}</code>, 전화번호 <code>010-\d{4}-\d{4}</code>)은 열 개 중 하나만 가렸어요. 전각 숫자를 놓친 이유는 Java 정규식의 기본 설정과 관련이 있어요. Java 의 <code>\d</code> 는 <code>UNICODE_CHARACTER_CLASS</code> 가 꺼져 있으면 <code>[0-9]</code> 이고, 이 플래그는 패턴 안에 <code>(?U)</code> 로도 켤 수 있어요(<a href="https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/regex/Pattern.html">java.util.regex.Pattern</a>).</p>
 
 <div class="obsv-code">주민번호  (?U)\d{6}[\s‐-―−－-]?\d{7}
 전화번호  (?U)01\d[\s.‐-―−－-]?\d{3,4}[\s.‐-―−－-]?\d{4}
           # 유니코드 숫자(전각 포함), 공백·점·여러 대시 구분자, 구분자 없음까지</div>
 
-<p>넓힌 정규식은 열 개 중 여덟을 가렸고, 둘이 남았어요. 뒷자리 일곱 자리만 따로 쓴 값은 아무 일곱 자리 숫자와 구별되지 않고, URL 인코딩된 값은 디코딩하기 전에는 숫자 사이에 <code>%20</code> 이 끼어 있습니다. 반대쪽 대가도 있어요. 구분자 없는 13자리를 가리게 넓히면 13자리 주문번호나 거래 번호도 같이 가려집니다. <b>정규식은 넓힐수록 정상 로그를 망가뜨리고, 좁힐수록 새요.</b> 그래서 정규식은 앞의 막는 법들이 놓친 것을 줍는 마지막 단계로만 씁니다.</p>
+<p>넓힌 정규식은 열 개 중 여덟을 가렸고, 둘이 남았어요. 뒷자리 일곱 자리만 따로 쓴 값은 아무 일곱 자리 숫자와 구별되지 않고, URL 인코딩된 값은 디코딩하기 전에는 숫자 사이에 <code>%20</code> 이 끼어 있어요. 처리 범위를 넓힐 때의 영향도 있어요. 구분자 없는 13자리를 가리게 넓히면 13자리 주문번호나 거래 번호도 같이 가려져요. 처리 범위를 넓히면 개인정보가 아닌 값도 가릴 수 있고, 좁히면 개인정보가 남을 수 있어요. 그래서 원본 값을 로그에 넣지 않는 코드 규칙을 우선하고, 정규식 마스킹을 보완책으로 적용했어요.</p>
 
-<h2>7. 막는 법 열 가지가 막는 것과 못 막는 것</h2>
+<h2>7. 대응책 열 가지의 적용 범위 비교</h2>
 
-<p>막는 법을 하나씩만 켜고 다섯 경로를 돌려 남은 값을 셌어요. 기준은 아무것도 켜지 않은 실행의 6·1·1·4·10, 합계 22개입니다. 정적 검사(ArchUnit)는 로그를 바꾸지 않으니 따로 돌려 위반 건수로 봤어요.</p>
+<p>막는 법을 하나씩만 켜고 다섯 경로를 돌려 남은 값을 셌어요. 기준은 아무것도 켜지 않은 실행의 6·1·1·4·10, 합계 22개예요. 정적 검사(ArchUnit)는 로그를 바꾸지 않으니 따로 돌려 위반 건수로 봤어요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/security/pii-encryption/images/lab-07/matrix-arch.png" alt="matrix.sh 로 막는 법을 하나씩 켠 11번의 실행 결과 표와 ArchUnit 결과. 합계 d0 22, Exclude 21, Include 19, 허용 목록 19, %replace 메시지 14, 예외 포함 13, 넓힌 정규식 5, TurboFilter 16, wire 끄기 18, 코드 규칙 14, 전부 2. ArchUnit 위반 7건(toString 규칙 5, 원인 예외 규칙 1, record 규칙 1)" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 4. 하나만 켠 판 가운데 합계가 가장 작은 건 넓힌 정규식(5개)이었지만, 이름은 끝까지 못 가렸습니다</div>
+<div class="obsv-figcap">그림 4. 개별 대응책 중 넓힌 정규식의 잔여 값이 가장 적었지만(5개), 이름은 남았어요</div>
 
 <table style="width:100%;border-collapse:collapse;font-size:14px;margin:0 0 18px;">
 <tr style="background:#f3edd9;"><th style="padding:6px;text-align:left;">막는 법</th><th>① DTO</th><th>② 예외 메시지</th><th>③ 원인·DB</th><th>④ HTTP 덤프</th><th>⑤ 정규식 밖</th></tr>
@@ -333,32 +327,36 @@ DEBUG wire - http-outgoing-0 &lt;&lt; "{"result":"MATCH","phone":"010-0000-0000"
 <tr style="background:#fbeee7;"><td style="padding:5px;"><b>전부 (허용 목록·코드 규칙·넓힌 정규식·wire 끄기·TurboFilter)</b></td><td style="text-align:center;">0</td><td style="text-align:center;">0</td><td style="text-align:center;">0</td><td style="text-align:center;">0</td><td style="text-align:center;">2</td></tr>
 </table>
 
-<p>→ 숫자는 남은 값의 개수예요(아무것도 안 켠 값→켠 뒤 값). "-"는 그 경로에 닿지 않는 설정이라 숫자가 그대로였다는 뜻입니다.</p>
+<p>→ 숫자는 남은 값의 개수예요(아무것도 안 켠 값→켠 뒤 값). "-"는 그 경로에 닿지 않는 설정이라 숫자가 그대로였다는 뜻이에요.</p>
 
-<p>코드 규칙이 ⑤를 못 막는 건 일부러 그렇게 짰어요. 검색어를 로깅하는 개발자는 그것이 개인정보라고 생각하지 않습니다. 규칙은 사람이 개인정보라고 알아본 곳에만 걸려요.</p>
+<p>실습의 코드 규칙은 ①~③에만 적용했고, ⑤의 검색어 로깅은 비교를 위해 그대로 두었어요. 따라서 이 결과는 코드 규칙 자체가 자유 입력을 처리할 수 없다는 뜻이 아니라, 실습에서 지정한 적용 범위를 보여 줘요.</p>
 
-<p>ArchUnit 규칙은 처음에 두 개를 넣었어요. 하나는 "<code>@Pii</code> 필드를 가진 클래스의 <code>toString</code> 이 그 필드나 getter 를 직접 부르면 위반"이고, 다른 하나는 "저장소 패키지에서 <code>Throwable</code> 을 받는 예외 생성자를 부르면 위반"입니다. 첫 규칙은 <code>@Data</code> 판과 <code>@ToString.Exclude</code> 판에서 위반 5건을 찾았고, 마스킹 메서드 판과 허용 목록 판은 통과시켰어요. 그런데 record 는 못 잡았습니다. record 의 <code>toString</code> 은 <code>invokedynamic</code> 한 줄로 <code>ObjectMethods.bootstrap</code> 을 부르고, 필드는 그 부트스트랩 인자에 <code>REF_getField</code> 핸들로만 들어 있어요. ArchUnit 은 그 인자를 필드 접근으로 세지 않았습니다. 그래서 record 는 <code>isRecord()</code> 와 <code>toString</code> 재정의 여부를 보는 규칙을 따로 둬야 해요. 세 번째 규칙으로 "<code>@Pii</code> 구성 요소를 가진 record 의 <code>toString</code> 에 필드 접근도 메서드 호출도 없으면 위반"을 넣자, 컴파일러가 만든 <code>toString</code> 을 그대로 쓰는 <code>SignupRecord</code> 1건이 잡혔고 <code>toString</code> 을 직접 쓴 <code>SignupRecordSafe</code> 는 통과했습니다. 세 규칙의 위반은 합쳐 7건이었어요. <code>@Data</code> 는 소스 보존이라 클래스 파일에 남지 않지만, Lombok 이 만든 메서드에는 <code>@lombok.Generated</code> 가 붙어 있어 "생성된 toString 인가"는 바이트코드에서도 알 수 있습니다.</p>
+<p>ArchUnit 규칙은 처음에 두 개를 넣었어요. 하나는 "<code>@Pii</code> 필드를 가진 클래스의 <code>toString</code> 이 그 필드나 getter 를 직접 부르면 위반"이고, 다른 하나는 "저장소 패키지에서 <code>Throwable</code> 을 받는 예외 생성자를 부르면 위반"이에요. 첫 규칙은 <code>@Data</code> 판과 <code>@ToString.Exclude</code> 판에서 위반 5건을 찾았고, 마스킹 메서드 판과 허용 목록 판은 통과시켰어요. 그런데 record 는 못 잡았어요.</p>
 
-<p>이 규칙에는 한계가 하나 더 있어요. <code>toString</code> 이 <b>직접</b> 읽는 것만 봅니다. 마스킹 메서드 판이 통과한 것도 <code>toString</code> 이 <code>maskedRrn()</code> 을 부르고, 원본 필드는 그 메서드 안에서 읽기 때문이에요. 마스킹 메서드가 실수로 원본을 그대로 돌려줘도 이 규칙은 모릅니다. 그 부분은 로그 단언 테스트가 맡아야 해요.</p>
+<p>record 의 <code>toString</code> 은 <code>invokedynamic</code> 한 줄로 <code>ObjectMethods.bootstrap</code> 을 부르고, 필드는 그 부트스트랩 인자에 <code>REF_getField</code> 핸들로만 들어 있어요. ArchUnit 은 그 인자를 필드 접근으로 세지 않았어요. 그래서 record 는 <code>isRecord()</code> 와 <code>toString</code> 재정의 여부를 보는 규칙을 따로 둬야 해요. 세 번째 규칙으로 "<code>@Pii</code> 구성 요소를 가진 record 의 <code>toString</code> 에 필드 접근도 메서드 호출도 없으면 위반"을 넣자, 컴파일러가 만든 <code>toString</code> 을 그대로 쓰는 <code>SignupRecord</code> 1건이 잡혔고 <code>toString</code> 을 직접 쓴 <code>SignupRecordSafe</code> 는 통과했어요. 세 규칙의 위반은 합쳐 7건이었어요.</p>
 
-<p>둘째 규칙은 첫 실행에서 오탐을 냈습니다. 막은 쪽 예외 클래스가 <code>super(m, null, false, false)</code> 를 불렀는데, 인자 값은 null 이어도 시그니처에 <code>Throwable</code> 이 있어서 걸렸어요. <code>super(m)</code> 으로 바꾸자 새는 저장소 1건만 남았습니다. 정적 검사는 값이 아니라 모양을 보니, 규칙이 잡는 모양을 코드 관례로 맞춰 두어야 해요.</p>
+<p><code>@Data</code> 는 소스 보존이라 클래스 파일에 남지 않지만, Lombok 이 만든 메서드에는 <code>@lombok.Generated</code> 가 붙어 있어 "생성된 toString 인가"는 바이트코드에서도 알 수 있어요.</p>
+
+<p>이 규칙은 <code>toString</code> 이 직접 읽는 것만 확인해요. 마스킹 메서드 판이 통과한 것도 <code>toString</code> 이 <code>maskedRrn()</code> 을 부르고, 원본 필드는 그 메서드 안에서 읽기 때문이에요. 마스킹 메서드가 실수로 원본을 그대로 돌려줘도 이 규칙으로는 찾지 못해요. 그 부분은 실제 로그 출력을 확인하는 단언 테스트로 보완해야 해요.</p>
+
+<p>둘째 규칙은 첫 실행에서 오탐을 냈어요. 막은 쪽 예외 클래스가 <code>super(m, null, false, false)</code> 를 불렀는데, 인자 값은 null 이어도 시그니처에 <code>Throwable</code> 이 있어서 걸렸어요. <code>super(m)</code> 으로 바꾸자 원인 예외를 그대로 전달하는 저장소 1건만 남았어요. 이 규칙은 실제 인자 값이 아니라 생성자 시그니처를 검사하므로, 그 범위를 고려해 코드 관례를 정해야 해요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">⚠️ 이 숫자로 말할 수 있는 것과 없는 것</div>
-  &bull; 경로마다 대표 코드 한 줄, 가짜 값 한 벌로 잰 것입니다. 실제 코드베이스의 비율이 아니라 "이 방법이 이 모양을 막느냐"의 확인이에요<br>
-  &bull; HTTP 덤프는 Apache HttpClient 5.6.5 의 wire 로거 하나만 봤어요. 다른 클라이언트의 로깅 인터셉터는 형식이 다릅니다<br>
+  &bull; 경로마다 대표 코드와 가짜 값 한 벌로 잰 결과예요. 실제 코드베이스의 비율이 아니라 "이 방법이 이 모양을 막느냐"의 확인이에요<br>
+  &bull; HTTP 덤프는 Apache HttpClient 5.6.5 의 wire 로거 하나만 봤어요. 다른 클라이언트의 로깅 인터셉터는 형식이 달라요<br>
   &bull; DB 메시지는 H2 2.3.232 에서 재현했고, MySQL 은 오류 문서의 메시지 형식만 확인했어요<br>
-  &bull; 다루지 않은 경로도 있어요. Hibernate 의 바인딩 파라미터 로깅(<code>org.hibernate.orm.jdbc.bind</code> 를 TRACE 로 켤 때), 접근 로그와 MDC 에 실리는 쿼리스트링은 이번 실습 밖입니다
+  &bull; 다루지 않은 경로도 있어요. Hibernate 의 바인딩 파라미터 로깅(<code>org.hibernate.orm.jdbc.bind</code> 를 TRACE 로 켤 때), 접근 로그와 MDC 에 실리는 쿼리스트링은 이번 실습에서는 확인하지 않았어요
 </div>
 
-<h2>8. 내 코드에서 오늘 바꿀 것</h2>
+<h2>8. 코드·로깅 설정·테스트에서 확인할 항목</h2>
 
-<p>다섯 경로를 막는 자리는 하나가 아니라 셋입니다. 소스(DTO 와 예외를 만드는 코드), 로깅 설정(라이브러리 로거와 패턴), 그리고 검사(정적 규칙과 로그 단언 테스트)예요.</p>
+<p>실습에서 확인한 대응은 소스 코드, 로깅 설정, 검사로 나눌 수 있어요. DTO 와 예외를 만드는 코드에서 출력할 값을 제한하고, 라이브러리 로거와 패턴을 설정한 뒤, 정적 규칙과 로그 단언 테스트로 확인하는 방식이에요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">💡 체크리스트</div>
-  &bull; <b>DTO·엔티티는 로그 인자로 넘기지 않는다.</b> 식별자와 건수만 찍는다. 넘겨야 하는 객체는 <code>@ToString(onlyExplicitlyIncluded = true)</code> 로 허용 목록을 쓴다. 제외 목록은 새 필드를 막지 못했다<br>
-  &bull; record 로 바꾼 DTO 는 <code>toString</code> 을 직접 재정의하거나 로그 인자에서 뺀다. Lombok 설정과 toString 필드 접근 규칙이 둘 다 record 를 비껴갔다. 규칙으로 막으려면 아래처럼 record 용을 따로 둔다<br>
+  &bull; DTO·엔티티 전체를 로그 인자로 넘기기보다 식별자와 건수만 남겨요. 객체를 넘겨야 하면 <code>@ToString(onlyExplicitlyIncluded = true)</code> 로 허용 목록을 사용해요. 실습의 제외 목록은 지정하지 않은 필드를 그대로 출력했어요<br>
+  &bull; record 로 바꾼 DTO 는 <code>toString</code> 을 직접 재정의하거나 로그 인자에서 제외해요. 실습에서 Lombok 설정과 toString 필드 접근 규칙은 record 의 출력을 제한하지 못했어요. 정적 검사로 찾으려면 record 용 규칙이 따로 필요해요<br>
 <span style="display:block;font-family:Menlo,monospace;font-size:13px;background:#fffdf7;padding:6px 10px;margin:4px 0 6px;white-space:pre;overflow-x:auto;">// 실습 PiiRules 의 규칙 3 (ArchCondition 안쪽)
 if (c.isRecord() &amp;&amp; hasPiiField(c)) {
     c.tryGetMethod("toString").ifPresent(m -&gt; {
@@ -366,19 +364,19 @@ if (c.isRecord() &amp;&amp; hasPiiField(c)) {
             events.add(SimpleConditionEvent.violated(c, c.getSimpleName() + " 는 컴파일러가 만든 toString 을 그대로 쓴다"));
     });
 }</span>
-  &bull; 검사 예외 메시지에는 값 대신 필드 이름과 길이를 싣는다. 틀린 값은 정규식이 알아보지 못하는 모양으로 온다<br>
-  &bull; 저장소 계층에서 드라이버 예외를 감쌀 때 원인을 떼고 SQLState·오류 코드·식별자만 담는다. 평문 컬럼의 유니크 위반 메시지에 값이 들어 있었다<br>
-  &bull; HTTP 클라이언트의 wire·본문 로거 수준을 설정 파일에 명시한다. 루트를 DEBUG 로 내리는 날 같이 켜지지 않게<br>
-  &bull; 정규식 마스킹은 <code>%replace(%msg%n%ex){…}</code> 처럼 예외까지 감싸고(<code>%nopex</code> 는 의도를 적어 두는 용도), <code>(?U)</code> 와 여러 구분자를 넣는다. 그래도 뒷자리만 쓴 값과 URL 인코딩된 값은 남는다<br>
-  &bull; 테스트에서 가짜 값을 흘린 뒤 로그 출력에 그 값이 없는지 단언한다. 바이트 표기·URL 인코딩·전각을 정규화하고 찾아야 숨은 값까지 보인다
+  &bull; 검사 예외 메시지에는 값 대신 필드 이름과 길이를 넣어요. 거부된 입력값은 마스킹 정규식의 예상 형식과 다를 수 있어요<br>
+  &bull; 저장소 계층에서 드라이버 예외를 감쌀 때는 원본 값이 담기는지 확인하고, 원인을 제외한 SQLState·오류 코드·식별자 등으로 제한해요. 실습의 평문 컬럼 유니크 위반 메시지에는 값이 들어 있었어요<br>
+  &bull; HTTP 클라이언트의 wire·본문 로거 수준을 설정 파일에 명시해요. 루트 로그 수준을 DEBUG 로 바꿀 때 함께 켜지는지 확인해요<br>
+  &bull; 정규식 마스킹은 <code>%replace(%msg%n%ex){…}</code> 처럼 예외까지 포함하고(<code>%nopex</code> 는 의도를 적어 두는 용도), <code>(?U)</code> 와 여러 구분자를 포함해요. 실습에서는 그래도 뒷자리만 쓴 값과 URL 인코딩된 값이 남았어요<br>
+  &bull; 테스트에 가짜 값을 넣고 로그 출력에 그 값이 없는지 단언해요. 바이트 표기·URL 인코딩·전각 숫자 등 실습에서 확인한 변형도 정규화한 뒤 검색해요
 </div>
 
-<p>마지막 항목은 이 실습의 <code>leaks.py</code> 가 하는 일이에요. 막는 법 가운데 다섯 경로 모두에서 쓸 수 있는 건 이 단언 하나였습니다. 다만 테스트가 지나간 경로에서만 동작해요. 제 회사 작업에서도 로컬 DB 실측 끝에 "로그에 이름·계좌번호 0건"을 확인 항목으로 남겼습니다(<a href="https://dding-shark.tistory.com/572">5편</a>).</p>
+<p>마지막 항목에서 필요한 잔여 값 집계는 이 실습의 <code>leaks.py</code> 로 확인했어요. 이 스크립트는 다섯 경로에서 지정한 가짜 값이 몇 개 남았는지 세며, 값이 없다고 단언하거나 로그 발생을 막지는 않아요. 테스트가 실행한 경로와 지정한 가짜 값만 확인해요. 당시 업무에서도 로컬 DB 실측 후 "로그에 이름·계좌번호 0건"을 확인 항목으로 남겼어요(<a href="https://dding-shark.tistory.com/572">5편</a>).</p>
 
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>컬럼을 암호화해도 개인정보는 DTO 의 toString, 예외 메시지, 원인 예외에 실린 DB 메시지, HTTP 클라이언트 덤프, 정규식이 못 알아보는 자유 입력으로 로그에 닿습니다.</b> 실습에서 가짜 값 한 벌이 값 22개로 남았고, 막는 법을 하나만 켰을 때는 가장 적게 남은 판도 5개였으며, 전부 켜도 2개가 남았어요. <code>@ToString.Exclude</code> 는 잊은 필드를, Lombok 과 toString 필드 접근 규칙은 record 를, <code>%replace(%msg)</code> 는 Caused by 줄을, 정규식은 이름과 URL 인코딩된 값을 놓쳤습니다.<br><br>
-  그래서 값을 로그 인자로 넘기지 않는 코드 규칙을 먼저 두고, 라이브러리 로거를 설정에 명시하고, 정규식은 마지막 그물로만 씁니다. 그리고 가짜 값을 흘려 로그에 남지 않았는지 세어 보는 테스트로 확인해요. 로그 유출은 한 곳에서 막는 게 아니라, 값이 글자로 바뀌는 자리마다 따로 막아야 합니다.
+  컬럼 암호화와 별개로 DTO 출력, 예외 메시지, DB 원인 예외, HTTP 클라이언트 덤프, 자유 입력의 로그를 확인해야 해요. 실습에서는 가짜 값 한 벌이 22개로 집계됐고, 개별 대응책 중 가장 적게 남은 결과도 5개였어요. 여러 대응책을 조합한 실행에서는 ①~④가 0개였지만, ⑤의 뒷자리만 쓴 값과 URL 인코딩된 값 2개는 남았어요. <code>@ToString.Exclude</code> 는 지정하지 않은 필드를, Lombok 과 toString 필드 접근 규칙은 record 를, <code>%replace(%msg)</code> 는 Caused by 줄을 처리하지 못했어요.<br><br>
+  실습에서는 출력할 값을 코드에서 제한하고, 라이브러리 로거 수준과 예외를 포함한 마스킹 패턴을 설정했어요. 가짜 값을 넣은 로그 검사로 남은 값을 확인했으며, 이 결과의 범위는 실습에 포함한 코드와 입력이에요. 실제 서비스의 전체 경로를 확인하거나 현재 조치 완료를 판단한 결과로 확대할 수는 없어요.
 </div>
 
 </div>

@@ -2,8 +2,8 @@
   개인정보 암호화 6편: 암호화한 컬럼을 WHERE로 찾는 세 가지 방법과 각각의 대가
   tistory-sketch-post 스타일 · 단일 HTML
 ============================================================ -->
-<!-- tags: AttributeConverter, 블라인드 인덱스, 결정적 암호화, AES-GCM, AES-SIV, 암호화 컬럼 검색 -->
-<!-- lead: JPA AttributeConverter 로 암호화한 컬럼은 findBy 가 예외 없이 0행을 돌려줘요. 결정적 암호화, 전부 복호화 후 앱 필터, 블라인드 인덱스를 MySQL 10만 행에서 EXPLAIN, 조회 시간, 빈도 노출, 키 회전으로 비교했어요. -->
+<!-- tags: AttributeConverter, 블라인드 인덱스, 결정적 암호화, 암호화 컬럼 검색 -->
+<!-- lead: 랜덤 IV로 암호화한 컬럼은 JPA AttributeConverter를 거친 조회 인자가 저장된 암호문과 달라져 0행을 반환했어요. 결정적 암호화, 복호화 후 앱 필터, 블라인드 인덱스를 조회 시간·빈도 노출·키 회전으로 비교했어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -28,51 +28,45 @@
 
 <div class="obsv-series">
   <div class="obsv-st">🔐 개인정보 암호화 · 6편</div>
-  1편. 설정은 켜 두었고 그 파일은 읽히지 않았다<br>
-  2편. 암호화에 실패하면 평문으로 저장하기로 했다<br>
-  3편. 등치 조회가 남아 있어 랜덤 IV 를 쓸 수 없었다<br>
-  4편. 컬럼이 아니라 문장을 암호화했다<br>
-  5편. 관리자 코멘트가 암호문처럼 보였다<br>
-  <b>6편. 암호화한 컬럼을 WHERE로 찾는 세 가지 방법과 각각의 대가</b> &larr; 지금 이 글<br>
-  7편. 개인정보가 로그로 새는 다섯 경로와 막는 법<br>
-  8편. 운영 중인 테이블을 무중단으로 암호화 전환하는 순서<br>
-  9편. 마스킹과 암호화는 무엇을 되돌릴 수 있느냐로 고른다
+  <a href="https://dding-shark.tistory.com/571" style="color:inherit">4편. 기존 조회를 유지하며 업무 이력 문구를 선택적으로 암호화하기</a><br>
+  <a href="https://dding-shark.tistory.com/572" style="color:inherit">5편. 평문 코멘트를 암호문으로 오인한 컨버터 수정</a><br>
+  <b>6편. JPA 암호화 컬럼 검색: 결정적 암호화·복호화 필터·블라인드 인덱스 비교</b> &larr; 지금 이 글
 </div>
 
-<p>주민번호 컬럼에 <code>AttributeConverter</code> 를 붙여 AES-GCM 으로 암호화했습니다. 저장도 되고, 화면에서 읽으면 평문으로 잘 나와요. 그런데 다음 날 고객 조회 화면이 아무것도 찾지 못합니다. <code>repo.findBySsn("000000-0002500")</code> 이 예외도 없이 빈 목록을 돌려줘요. 그 사람의 행이 다섯 개 있는데도요.</p>
+<p>가짜 주민번호 컬럼에 <code>AttributeConverter</code>를 붙여 AES-GCM으로 암호화한 실습에서는 저장과 읽기가 모두 됐어요. 그런데 <code>repo.findBySsn("000000-0002500")</code>은 예외 없이 빈 목록을 돌려줬어요. 해당 값으로 저장한 행이 다섯 개 있는데도 조회 결과는 0행이었어요.</p>
 
-<p>처음에는 JPA 가 조회 인자에는 컨버터를 안 거치나 보다 생각하기 쉽습니다. 실제로는 반대예요. 인자도 컨버터를 거칩니다. 그래서 평문 인자가 <b>새 난수로 다시 암호화되어</b> 넘어가고, 저장된 암호문과 한 글자도 맞지 않아요. 이 글은 이 상황에서 고를 수 있는 세 방법을 같은 테이블에서 재 봅니다. 결정적 암호화, 랜덤 IV 를 유지하고 전부 복호화해서 앱에서 거르기, 블라인드 인덱스예요. 각각 등치 조회가 되는지, 인덱스를 타는지, 키 없이 무엇이 보이는지, 키를 바꿀 때 무엇이 깨지는지를 숫자로 봅니다.</p>
+<p>JPA는 조회 인자도 컨버터에 전달해요. 랜덤 IV를 쓰면 같은 평문 인자를 다시 암호화해도 저장된 암호문과 달라져서 일치하는 행을 찾지 못해요. 이를 해결할 세 방식으로 결정적 암호화, 랜덤 IV를 유지한 채 복호화 후 앱에서 비교하기, 블라인드 인덱스를 같은 테이블에서 비교했어요. 등치 조회와 인덱스 사용 여부, 키 없이 보이는 정보, 키를 바꾸는 동안의 조회 결과를 확인했어요.</p>
 
 <div class="obsv-callout">
   <div class="obsv-ct">🧭 이 글에서 확인할 것</div>
-  &bull; <code>findByXxx</code> 는 왜 예외 없이 0행을 돌려주나? LIKE 는?<br>
-  &bull; 결정적 암호화로 바꾸면 무엇이 되고, 키 없는 사람에게 무엇이 보이나? GCM 의 IV 를 고정하면 안 되나?<br>
-  &bull; 전부 복호화해서 앱에서 거르면 1만, 5만, 10만 행에서 얼마나 걸리나?<br>
-  &bull; 블라인드 인덱스는 결정적 암호화보다 무엇이 나은가? 빈도도 숨겨 주나?<br>
-  &bull; 키를 바꾸는 도중에 조회가 깨지는 건 어느 방식인가?
+  &bull; <code>findByXxx</code> 는 왜 예외 없이 0행을 반환하나요? LIKE는 어떻게 처리되나요?<br>
+  &bull; 결정적 암호화로 바꾸면 등치 조회가 어떻게 달라지나요? 키 없이 보이는 정보와 GCM의 IV 고정 문제도 확인해요<br>
+  &bull; 전부 복호화해서 앱에서 거르면 1만, 5만, 10만 행에서 얼마나 걸리나요?<br>
+  &bull; 블라인드 인덱스는 결정적 암호화와 어떻게 다른가요? 빈도는 얼마나 드러나나요?<br>
+  &bull; 키를 바꾸는 도중에 검색 결과가 누락되는 방식은 무엇인가요?
 </div>
 
 <h2>1. findBy 가 빈 목록인 이유: 인자도 암호화된다</h2>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: AttributeConverter</div>
-  엔티티 필드 값과 컬럼 값을 서로 바꿔 주는 JPA 인터페이스예요. 저장할 때 <code>convertToDatabaseColumn</code>, 읽을 때 <code>convertToEntityAttribute</code> 가 불립니다. 컬럼 암호화를 엔티티 코드 한 줄(<code>@Convert</code>)로 붙일 수 있어서 많이 써요.
+  엔티티 필드 값과 컬럼 값을 서로 바꿔 주는 JPA 인터페이스예요. 저장할 때 <code>convertToDatabaseColumn</code>, 읽을 때 <code>convertToEntityAttribute</code>가 호출돼요. 컬럼 암호화를 엔티티 필드의 <code>@Convert</code>로 적용할 수 있어요.
 </div>
 
-<p>Jakarta Persistence 명세는 이 동작을 정해 두었어요. 3.2 판 3.9절(Type Conversion of Basic Attributes)은 변환이 걸린 속성을 질의에서 리터럴이나 파라미터와 비교하면, 비교 대상인 그 리터럴이나 파라미터 값도 변환해야 한다고 적습니다(<a href="https://jakarta.ee/specifications/persistence/3.2/jakarta-persistence-spec-3.2.html">Jakarta Persistence 3.2</a>). Spring Data 의 <code>findBySsn</code> 은 결국 JPQL 비교라서, Hibernate 가 인자를 컨버터에 넣고 나온 값을 바인딩해요. 실습에서 Hibernate 의 바인딩 로그를 켜고 돌린 화면입니다.</p>
+<p>Jakarta Persistence 명세는 이 동작을 정해 두었어요. 3.2 판 3.9절(Type Conversion of Basic Attributes)은 변환이 걸린 속성을 질의에서 리터럴이나 파라미터와 비교하면, 비교 대상인 그 리터럴이나 파라미터 값도 변환해야 한다고 설명해요(<a href="https://jakarta.ee/specifications/persistence/3.2/jakarta-persistence-spec-3.2.html">Jakarta Persistence 3.2</a>). Spring Data 의 <code>findBySsn</code> 은 결국 JPQL 비교라서, Hibernate 가 인자를 컨버터에 넣고 나온 값을 바인딩해요. 실습에서 Hibernate 의 바인딩 로그를 켜고 돌린 화면이에요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/security/pii-encryption/images/lab-06/findby-bind.png" alt="java -jar lookup.jar demo 를 Hibernate SQL·바인딩 로그와 함께 실행한 화면. 5만 행에서 findBySsnDet 5행, findBySsnGcm 0행, findAll 후 앱 필터 5행(310ms), findBySsnBidx 5행, findBySsnDetStartingWith 0행(평문 기준 707행)" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 1. 인자도 컨버터를 거친다. GCM 은 새 IV 로 암호화된 인자를 넘겨 0행이 된다</div>
+<div class="obsv-figcap">그림 1. 실습의 GCM 조회 인자는 새 IV로 암호화돼 저장된 값과 일치하지 않았어요</div>
 
-<p>→ 5만 행에 정답이 5행인 사람을 찾았어요. 결정적 컬럼(<code>ssn_det</code>)은 바인딩된 값이 저장된 암호문과 같아서 5행이 나왔습니다. GCM 컬럼(<code>ssn_gcm</code>)도 인자가 암호화되어 넘어갔지만, 매번 새 IV 를 쓰니 저장된 어느 행과도 같지 않아 0행이었어요. 마지막 줄이 더 조용한 함정입니다. <code>StartingWith</code> 는 Spring Data 가 인자 뒤에 <code>%</code> 를 붙이는데, Hibernate 가 그 <code>"000000-00025%"</code> 전체를 컨버터에 넣어 암호화했어요. <code>%</code> 가 암호문 안으로 들어가 버려서 평문 기준 707행이어야 할 결과가 0행이 됐습니다. 예외는 어디에도 없었어요.</p>
+<p>5만 행에 정답이 5행인 사람을 찾았어요. 결정적 컬럼(<code>ssn_det</code>)은 바인딩된 값이 저장된 암호문과 같아서 5행이 나왔어요. GCM 컬럼(<code>ssn_gcm</code>)도 인자가 암호화되어 넘어갔지만, 매번 새 IV 를 쓰니 저장된 어느 행과도 같지 않아 0행이었어요. 부분 검색도 기대한 결과를 찾지 못했어요. <code>StartingWith</code> 는 Spring Data 가 인자 뒤에 <code>%</code> 를 붙이는데, Hibernate 가 그 <code>"000000-00025%"</code> 전체를 컨버터에 넣어 암호화했어요. <code>%</code> 가 암호문 안으로 들어가 버려서 평문 기준 707행이어야 할 결과가 0행이 됐어요. 이 실행에서 예외는 발생하지 않았어요.</p>
 
-<p>정리하면 질문은 "어떻게 하면 인자가 컨버터를 안 거치나"가 아니에요. "같은 평문이 DB 안에서 같은 무언가로 보이게 할 것인가, 그렇다면 그 무언가는 무엇인가"입니다. 세 방법이 이 질문에 각각 다르게 답해요.</p>
+<p>조회에 필요한 값의 비교를 어디서 할지 정해야 해요. DB에서 암호문이나 별도 인덱스를 비교할 수도 있고, 앱에서 복호화한 평문을 비교할 수도 있어요. 이 선택에 따라 DB에 드러나는 정보와 조회 비용이 달라져요.</p>
 
 <h2>2. 실습: 같은 가짜 주민번호를 세 방식으로 한 행에</h2>
 
-<p>MySQL 8.4 컨테이너 하나와 Spring Boot 앱 하나로 돌렸어요. 테이블 하나에 같은 값을 네 형태로 넣고 컬럼마다 인덱스를 걸었습니다. 비교하려고 한 테이블에 모은 것이고, 실제로는 ① 한 컬럼이나 ③ 두 컬럼 한 쌍만 둡니다.</p>
+<p>MySQL 8.4 컨테이너 하나와 Spring Boot 앱 하나로 돌렸어요. 테이블 하나에 같은 값을 네 형태로 넣고 컬럼마다 인덱스를 걸었어요. 비교하려고 한 테이블에 모은 것이고, 실제 설계에서는 필요한 방식만 두면 돼요. 예를 들어 ①은 암호문 한 컬럼, ③은 암호문과 인덱스 두 컬럼을 사용해요.</p>
 
 <div class="obsv-code">컬럼          방식                                                    인덱스
 ssn_det       ① 결정적 암호화 (Tink AES256_SIV), 컨버터                idx_det
@@ -84,7 +78,7 @@ ssn_bidx12    ③' 같은 HMAC 의 앞 12비트만 (일부러 충돌을 낸다) 
         일부 사람이 아주 자주 나오게 치우친 분포 (5만 행에서 1등이 719행)
         주민번호는 생년월일 자리가 000000 인 가짜</div>
 
-<p>Spring Boot 4.1.1(Hibernate ORM 7.4.5, Spring Data JPA 4.1.1), MySQL Connector/J 9.7.0, Tink 1.23.0, Java 25, Docker 29.5.3 의 Docker Desktop, Apple M5 Pro 에서 돌렸어요. 전체를 세 바퀴 돌렸고 숫자는 전부 이 세 바퀴에서 나왔습니다. 키는 실습용으로 실행마다 새로 만들어요.</p>
+<p>Spring Boot 4.1.1(Hibernate ORM 7.4.5, Spring Data JPA 4.1.1), MySQL Connector/J 9.7.0, Tink 1.23.0, Java 25, Docker 29.5.3 의 Docker Desktop, Apple M5 Pro 에서 돌렸어요. 전체를 세 실행 돌렸고 숫자는 전부 이 세 실행에서 나왔어요. 키는 실습용으로 실행마다 새로 만들어요.</p>
 
 <div class="obsv-code">git clone https://github.com/DDINGJOO/Platform-study.git
 cd Platform-study/labs/security/pii-06-encrypted-lookup
@@ -92,7 +86,7 @@ cd Platform-study/labs/security/pii-06-encrypted-lookup
 ./scripts/run_all.sh        # MySQL(127.0.0.1:38060) + 세 바퀴, 약 3분
 docker compose down -v</div>
 
-<p>코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/security/pii-06-encrypted-lookup">labs/security/pii-06-encrypted-lookup</a>, 세 바퀴 요약은 <code>results/summary.txt</code> 에 있어요. 같은 평문이 두 행에 있을 때 DB 에 무엇이 남는지부터 그림으로 보면 이렇습니다.</p>
+<p>코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/security/pii-06-encrypted-lookup">labs/security/pii-06-encrypted-lookup</a>, 세 실행 요약은 <code>results/summary.txt</code> 에 있어요. 같은 평문이 두 행에 있을 때 DB 에 무엇이 남는지부터 그림으로 보면 아래와 같아요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 375" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -119,27 +113,27 @@ docker compose down -v</div>
   <text x="350" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">두 행이 다르다</text>
   <text x="576" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">암호문은 다르고 인덱스는 같다</text>
   <text x="125" y="232" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">WHERE 된다, 인덱스 탄다</text>
-  <text x="350" y="232" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">WHERE 0행, 전부 풀어야 한다</text>
+  <text x="350" y="232" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">WHERE 0행, 앱에서 비교</text>
   <text x="576" y="232" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">인덱스 컬럼으로 WHERE</text>
-  <text x="125" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">같은 값 빈도가 보인다</text>
-  <text x="350" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">빈도가 안 보인다</text>
-  <text x="576" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">빈도는 인덱스로 보인다</text>
+  <text x="125" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">같은 값 빈도 노출</text>
+  <text x="350" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">암호문으로 반복 구분 어려움</text>
+  <text x="576" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">인덱스에 빈도 노출</text>
   <text x="350" y="324" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">값은 실습 demo 출력(같은 평문을 두 번 넣은 결과)의 앞부분, ③ 의 ssn_gcm 은 ② 와 같은 랜덤 IV</text>
-  <text x="350" y="358" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 등치 조회가 되는 방식은 전부 "같은 값인가" 를 DB 에 보여 준다</text>
+  <text x="350" y="358" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= ①은 암호문, ③은 인덱스에서 동일성이 드러난다</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 2. 등치 조회가 되려면 같은 평문이 DB 안에서 같은 무언가로 보여야 한다</div>
+<div class="obsv-figcap">그림 2. 결정적 암호문과 블라인드 인덱스는 DB에서 같은 값을 비교할 수 있어요</div>
 
-<h2>3. ① 결정적 암호화: 그대로 되지만 빈도가 그대로 보인다</h2>
+<h2>3. ① 결정적 암호화: 등치 조회와 빈도 노출</h2>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 결정적 암호화 (deterministic encryption)</div>
-  같은 키, 같은 입력이면 항상 같은 암호문이 나오는 암호화예요. 암호문끼리 비교할 수 있어서 WHERE 와 인덱스가 그대로 동작합니다. 대신 키가 없는 사람도 두 행이 같은 값인지는 알 수 있어요.
+  같은 키, 같은 입력이면 항상 같은 암호문이 나오는 암호화예요. 암호문끼리 비교할 수 있어서 WHERE 와 인덱스가 그대로 동작해요. 대신 키가 없는 사람도 두 행이 같은 값인지는 알 수 있어요.
 </div>
 
-<p>컨버터 안의 암호화만 결정적으로 바꾸면 코드는 하나도 안 바뀌어요. 1장의 화면처럼 <code>findBySsnDet</code> 가 5행을 찾았고, EXPLAIN 은 세 바퀴 내내 <code>type=ref key=idx_det</code> 였습니다. 조회 시간도 행 수와 거의 상관이 없었어요. 1만 행에서 p50 0.77~0.87ms, 10만 행에서 0.69~0.76ms 였습니다.</p>
+<p>컨버터의 암호화 구현을 결정적 방식으로 바꾸면 조회 호출부는 유지할 수 있어요. 1장의 화면처럼 <code>findBySsnDet</code> 가 5행을 찾았고, EXPLAIN 은 세 실행 내내 <code>type=ref key=idx_det</code> 였어요. 측정한 범위에서는 조회 시간도 비슷했어요. p50은 조회 시간의 중앙값이에요. 1만 행에서 p50 0.77~0.87ms, 10만 행에서 0.69~0.76ms 였어요.</p>
 
-<p>대가는 키 없이 SQL 만 쓸 수 있는 사람에게 보이는 것입니다. DB 계정을 가진 사람, 백업 파일을 손에 넣은 사람이 그 예예요. 5만 행에서 평문 기준 빈도와, 키 없이 <code>GROUP BY</code> 만 돌린 결과를 나란히 놓았어요.</p>
+<p>대신 복호화 키 없이도 같은 값의 반복 횟수가 보여요. DB 계정을 가진 사람, 백업 파일을 손에 넣은 사람이 그 예예요. 5만 행에서 평문 기준 빈도와, 키 없이 <code>GROUP BY</code> 만 돌린 결과를 나란히 놓았어요.</p>
 
 <div class="obsv-code">(results/freq-r1.txt, 5만 행)
                           서로 다른 값   가장 많은 다섯 값의 행 수
@@ -147,13 +141,13 @@ docker compose down -v</div>
 ssn_det  (키 없이 SQL 만)    4,996        719  297  214  183  150
 ssn_gcm  (키 없이 SQL 만)   50,000          1    1    1    1    1</div>
 
-<p>→ 결정적 컬럼의 빈도 분포가 평문과 한 자리도 다르지 않다는 뜻이에요. 세 바퀴 모두 같았습니다(키는 바퀴마다 새로 만들었으니 키와 무관하게 그렇다는 뜻이에요). "719행을 가진 사람이 한 명 있다"는 사실은 암호를 풀지 않아도 보여요. 여기에 바깥 정보가 하나만 붙으면 값이 드러납니다. 예를 들어 그 사람의 평문과 암호문 한 쌍을 알면, 같은 암호문을 가진 719행이 전부 그 사람이에요. Google Tink 의 문서도 결정적 AEAD 에 대해 "평문에 대해서는 길이와 반복되는 평문의 동일성 말고는 아무것도 알려지지 않는다"고 적고, 같은 메시지를 두 번 보내면 공격자가 같다는 걸 알아챌 수 있으니 그게 의도가 아니면 일반 AEAD 를 쓰라고 합니다(<a href="https://developers.google.com/tink/deterministic-aead">Tink, Deterministic AEAD</a>).</p>
+<p>결정적 컬럼의 빈도 분포가 평문과 같았어요. 키를 실행마다 새로 만들었지만 세 실행의 분포는 같았어요. "719행을 가진 사람이 한 명 있다"는 사실은 암호를 풀지 않아도 보여요. 외부 정보와 결합하면 값이 드러날 수 있어요. 예를 들어 그 사람의 평문과 암호문 한 쌍을 알면, 같은 암호문을 가진 719행이 전부 그 사람이에요. Google Tink 의 문서도 결정적 AEAD 에 대해 "평문에 대해서는 길이와 반복되는 평문의 동일성 말고는 아무것도 알려지지 않는다"고 적고, 같은 메시지를 두 번 보내면 공격자가 같다는 걸 알아챌 수 있으니 그게 의도가 아니면 일반 AEAD 를 권해요(<a href="https://developers.google.com/tink/deterministic-aead">Tink, Deterministic AEAD</a>).</p>
 
-<p>그래서 결정적 방식은 값의 종류가 많고 한 값이 여러 행에 반복되지 않는 컬럼에서 대가가 작아요. 사람마다 한 행인 회원 테이블의 주민번호라면 빈도로 얻을 게 적습니다. 같은 사람이 수백 번 나오는 접수 테이블이나, 값이 몇 개 안 되는 컬럼(성별, 은행 코드)이라면 결정적 암호화는 거의 평문만큼 많이 보여 줘요.</p>
+<p>값의 종류가 많고 반복이 적은 컬럼에서는 빈도로 추론할 수 있는 정보가 상대적으로 적어요. 사람마다 한 행인 회원 테이블과 같은 사람이 수백 번 나오는 접수 테이블의 차이예요. 성별이나 은행 코드처럼 값의 종류가 적은 컬럼은 빈도와 외부 정보를 결합해 값을 추론할 위험을 더 신중하게 봐야 해요. 반복이 적다는 이유만으로 안전하다고 판단할 수는 없어요.</p>
 
 <h3>GCM 의 IV 를 고정하면 결정적이 되지 않나요</h3>
 
-<p>코드 한 줄로 결정적 암호화를 만드는 가장 쉬운 길이 이거라서 따로 적어요. AES-GCM 에 매번 같은 IV 를 넣으면 같은 평문에서 같은 암호문이 나오기는 합니다. 그런데 GCM 의 암호문은 평문에 키와 IV 로 만든 키스트림을 XOR 한 것이라, IV 가 같으면 다른 평문 두 개도 같은 키스트림으로 XOR 됩니다. 실습에서 IV 를 0 으로 고정하고 서로 다른 두 값을 암호화해 봤어요.</p>
+<p>GCM의 IV를 고정해서 결정적 암호화를 구현하면 안 돼요. AES-GCM 에 매번 같은 IV 를 넣으면 같은 평문에서 같은 암호문이 나와요. 그런데 GCM 의 암호문은 평문에 키와 IV 로 만든 키스트림을 XOR 한 것이라, IV 가 같으면 다른 평문 두 개도 같은 키스트림으로 XOR돼요. 실습에서 IV 를 0 으로 고정하고 서로 다른 두 값을 암호화해 봤어요.</p>
 
 <div class="obsv-code">(results/ivreuse.txt)
 GCM, 키와 IV 고정, 평문 둘: 000000-0000001 / 000000-0735218
@@ -161,21 +155,21 @@ GCM, 키와 IV 고정, 평문 둘: 000000-0000001 / 000000-0735218
   평문1   XOR 평문2   = 00 00 00 00 00 00 00 00 07 03 05 02 01 09
   평문1을 아는 사람이 키 없이 복원한 평문2 = 000000-0735218</div>
 
-<p>→ 암호문 두 개를 XOR 하면 평문 두 개를 XOR 한 값이 그대로 나와요. 평문 하나를 알면 다른 하나가 키 없이 풀립니다. 앞 8바이트가 00 인 것도 누출이에요. 앞부분이 같은 평문이면 암호문 앞부분도 같아서, 키 없이 "앞자리가 같다"까지 보입니다. 결정적 암호화는 "같은 값인가"만 드러내는데, 고정 IV GCM 은 다른 값끼리의 관계까지 드러내요. NIST SP 800-38D 는 8절에서 같은 키로 IV 가 한 번이라도 반복되면 위조 공격에 취약해질 수 있고 이 요구가 실무에서 키의 비밀 유지와 거의 같은 정도로 중요하다고 적고, 부록 A 에서 IV 가 반복되면 공격자가 해시 부분키를 알아내 인증이 사실상 사라진다고 설명합니다(<a href="https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf">NIST SP 800-38D</a>). 결정적 암호화가 필요하면 처음부터 그렇게 설계된 방식을 씁니다. RFC 5297 의 SIV 는 쓰는 방식에 따라 결정적 인증 암호화가 되도록 만든 모드이고(<a href="https://www.rfc-editor.org/rfc/rfc5297">RFC 5297</a>), Tink 는 그 AES-SIV 를 <code>AES256_SIV</code> 로 권합니다. 실습의 ① 도 이것을 썼어요. 같은 두 평문을 AES-SIV 로 암호화하면 XOR 결과는 아무 관계 없는 바이트였습니다.</p>
+<p>암호문 두 개를 XOR 하면 평문 두 개를 XOR 한 값이 그대로 나와요. 평문 하나를 알면 다른 하나가 키 없이 복원돼요. 앞 8바이트가 00 인 것도 누출이에요. 앞부분이 같은 평문이면 암호문 앞부분도 같아서, 키 없이 "앞자리가 같다"까지 보여요. AES-SIV에서 드러나는 동일성과 달리 고정 IV GCM은 서로 다른 평문 사이의 관계도 노출해요. NIST SP 800-38D 는 8절에서 같은 키로 IV 가 한 번이라도 반복되면 위조 공격에 취약해질 수 있고 이 요구가 실무에서 키의 비밀 유지와 거의 같은 정도로 중요하다고 적고, 부록 A 에서 IV 가 반복되면 공격자가 해시 부분키를 알아내 인증이 사실상 사라진다고 설명해요(<a href="https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf">NIST SP 800-38D</a>). 결정적 암호화가 필요하면 처음부터 그렇게 설계된 방식을 사용해야 해요. RFC 5297 의 SIV 는 쓰는 방식에 따라 결정적 인증 암호화가 되도록 만든 모드이고(<a href="https://www.rfc-editor.org/rfc/rfc5297">RFC 5297</a>), Tink 는 그 AES-SIV 를 <code>AES256_SIV</code> 로 권해요. 실습의 ① 도 이것을 썼어요. 같은 두 평문을 AES-SIV 로 암호화하면 앞서 본 XOR 일치가 나타나지 않았어요.</p>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: AES-SIV</div>
-  평문과 연관 데이터로 IV 를 계산해 쓰는 암호화 모드예요(Synthetic IV). IV 가 입력에서 나오니 같은 입력이면 같은 암호문이고, 다른 입력이면 IV 도 달라져서 고정 IV GCM 같은 XOR 누출이 없습니다.
+  평문과 연관 데이터로 IV를 계산하는 암호화 모드예요(Synthetic IV). 이 실습처럼 결정적으로 사용하면 같은 입력에서 같은 암호문이 나와요. 고정 IV GCM과 다른 방식으로 설계됐어요.
 </div>
 
-<h2>4. ② 랜덤 IV + 전부 복호화해서 거르기: 맞지만 행 수에 비례한다</h2>
+<h2>4. ② 랜덤 IV + 앱 필터: 후보 행 수에 따른 복호화 비용</h2>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 랜덤 IV</div>
-  암호화할 때마다 새 난수 IV 를 섞는 방식이에요. 같은 평문도 매번 다른 암호문이 되어 키 없이는 같은 값인지조차 모릅니다. AES-GCM 의 기본 사용법이고, 대부분의 권고가 이쪽입니다.
+  암호화할 때마다 새 난수 IV를 사용하는 방식이에요. 같은 평문에서도 다른 암호문이 나오므로 암호문을 단순 비교해서 평문이 같은지 판단하기 어려워요. AES-GCM은 같은 키에서 IV가 중복되지 않도록 관리해야 해요.
 </div>
 
-<p>랜덤 IV 를 그대로 두고 찾을 방법은 하나예요. 후보 행을 전부 읽어 복호화한 뒤 앱에서 비교합니다. 코드는 <code>repo.findAll().stream().filter(...)</code> 한 줄이라 쉽게 들어가요. 정답도 나옵니다. 문제는 시간이에요.</p>
+<p>②는 랜덤 IV를 유지한 채 앱에서 값을 비교하는 방식이에요. 후보 행을 전부 읽어 복호화한 뒤 앱에서 비교해요. 코드는 <code>repo.findAll().stream().filter(...)</code> 로 구현할 수 있고, 실습에서도 정답을 찾았어요. 다만 복호화할 후보 행 수에 따라 시간이 더 걸려요.</p>
 
 <div class="obsv-code">조회 한 번의 p50 (ms, 세 바퀴 최소~최대)
                           1만 행          5만 행           10만 행
@@ -185,7 +179,7 @@ GCM, 키와 IV 고정, 평문 둘: 000000-0000001 / 000000-0735218
 ② JDBC 한 컬럼 + 복호화    10.99~11.68     53.44~55.38      111.26~115.49
 ③ findBySsnBidx           0.44~0.47       0.45             0.45~0.75</div>
 
-<p>→ 전부 복호화하는 쪽만 행 수에 정비례해서 늘었다는 뜻이에요. 1만 행에서 28ms 였던 조회가 10만 행에서 270ms 안팎이 됐습니다. 엔티티를 만들지 않고 JDBC 로 암호문 한 컬럼만 읽어 복호화한 최선의 경우도 1만 행 11ms 에서 10만 행 113ms 안팎으로 같은 기울기였어요. 엔티티 생성을 빼도 기울기는 그대로고, 줄어든 건 상수뿐입니다. 이 숫자는 DB 와 앱이 한 노트북 안에 있을 때 값이라 실제 망에서는 행을 옮기는 시간이 더 붙어요. 조회가 동시에 여러 개 들어오면 그만큼 DB 와 앱의 메모리, CPU 를 같이 씁니다.</p>
+<p>전 행을 복호화하는 조회는 행 수와 함께 시간이 늘었어요. 1만 행에서 28ms 였던 조회가 10만 행에서 270ms 안팎이 됐어요. 엔티티를 만들지 않고 JDBC 로 암호문 한 컬럼만 읽어 복호화한 경우에도 1만 행 11ms 에서 10만 행 113ms 안팎으로 행 수와 함께 시간이 늘었어요. 엔티티 생성을 제외하면 시간은 줄었지만 행 수에 따라 비용이 늘어나는 경향은 같았어요. DB와 앱을 같은 노트북에서 실행한 수치이므로 실제 네트워크의 전송 비용까지 측정한 결과는 아니에요. 조회가 동시에 여러 개 들어오면 그만큼 DB 와 앱의 메모리, CPU를 함께 사용해요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -206,24 +200,24 @@ GCM, 키와 IV 고정, 평문 둘: 000000-0000001 / 000000-0735218
   <path d="M145 299 C 250 300, 450 298, 640 299" fill="none" stroke="#5a9e6f" stroke-width="2.8" stroke-linecap="round"/>
   <text x="110" y="78" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">② findAll + 앱 filter (약 28 → 130 → 270ms)</text>
   <text x="110" y="104" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">② JDBC 한 컬럼 + 복호화 (약 11 → 54 → 113ms)</text>
-  <text x="110" y="130" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">① ③ 인덱스 조회 (1ms 아래, 평평)</text>
-  <text x="350" y="364" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 전부 풀어서 거르면 조회 비용이 데이터 크기를 따라간다</text>
+  <text x="110" y="130" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">① ③ 인덱스 조회 (실습에서 1ms 미만)</text>
+  <text x="350" y="364" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">= 전 행 복호화 비용은 행 수와 함께 늘었다</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 3. 조회 한 번의 p50. 인덱스를 타는 두 방식은 평평하고, 전부 복호화는 직선으로 오른다</div>
+<div class="obsv-figcap">그림 3. 실습에서 전 행 복호화 비용은 행 수와 함께 늘었어요</div>
 
-<p>EXPLAIN 이 이 함정을 알려 주지 않는다는 점도 적어 둘게요. <code>findBySsnGcm</code> 이 실제로 보내는 <code>WHERE ssn_gcm = ?</code> 의 EXPLAIN 은 <code>type=ref key=idx_gcm rows=1</code> 이었습니다. 인덱스를 잘 타는 빠른 쿼리로 보이고, 실제로 0.5ms 안팎으로 끝났어요. 다만 결과가 항상 0행이었습니다. 느린 쿼리 로그에도, 실행 계획 점검에도 걸리지 않고 기능만 틀려요. <span class="obsv-mark">랜덤 IV 컬럼에 걸린 <code>findBy</code> 는 빠르고 틀리고, 그걸 고친 <code>findAll</code> 은 맞고 느립니다.</span> 느린 쪽은 테스트 데이터 몇 행으로는 드러나지 않고, 틀린 쪽은 찾은 행 수를 정답과 맞춰 보는 테스트가 있어야 드러나요.</p>
+<p>실행 계획만으로는 결과의 정확성을 확인할 수 없었어요. <code>findBySsnGcm</code> 이 실제로 보내는 <code>WHERE ssn_gcm = ?</code> 의 EXPLAIN 은 <code>type=ref key=idx_gcm rows=1</code> 이었어요. 인덱스를 잘 타는 빠른 쿼리로 보이고, 실제로 0.5ms 안팎으로 끝났어요. 다만 결과가 항상 0행이었어요. 조회가 빨리 끝나고 인덱스를 사용해도 기대한 행을 찾는지 따로 확인해야 해요. <span class="obsv-mark">랜덤 IV 컬럼에 걸린 <code>findBy</code> 는 기대한 행을 찾지 못했고, <code>findAll</code> 후 필터는 정답을 찾는 대신 더 오래 걸렸어요.</span> 느린 쪽은 테스트 데이터 몇 행으로는 드러나지 않고, 틀린 쪽은 찾은 행 수를 정답과 맞춰 보는 테스트가 있어야 드러나요.</p>
 
-<p>그래도 이 방식이 맞는 자리가 있어요. 그 컬럼을 조건으로 찾는 일이 관리자 화면의 드문 검색처럼 가끔이고, 대상 행을 다른 조건(날짜, 지점)으로 먼저 수백 행까지 줄일 수 있다면 복호화 비용은 그 수백 행에만 듭니다. 기준은 "전체 행 수"가 아니라 "복호화해야 하는 후보 행 수 × 조회 빈도"예요.</p>
+<p>그래도 이 방식이 맞는 자리가 있어요. 그 컬럼을 조건으로 찾는 일이 관리자 화면의 드문 검색처럼 가끔이고, 대상 행을 다른 조건(날짜, 지점)으로 먼저 수백 행까지 줄일 수 있다면 복호화 비용은 그 수백 행에만 들어요. 기준은 "전체 행 수"가 아니라 "복호화해야 하는 후보 행 수 × 조회 빈도"예요.</p>
 
-<h2>5. ③ 블라인드 인덱스: 인덱스는 타지만 빈도는 똑같이 보인다</h2>
+<h2>5. ③ 블라인드 인덱스: 검색 키 분리와 빈도 노출</h2>
 
 <div class="obsv-term">
   <div class="obsv-tt">📖 용어: 블라인드 인덱스 (blind index)</div>
-  평문의 키 있는 해시(HMAC)를 암호문과 별도 컬럼에 저장해 두고, 찾을 때는 그 해시로 찾는 방식이에요. 원래 값은 랜덤 IV 로 암호화한 채 둡니다. Paragon 의 글은 이 인덱스 키를 암호화 키와 다르게, DB 서버가 모르게 두라고 적어요.
+  평문의 키 있는 해시(HMAC)를 암호문과 별도 컬럼에 저장해 두고, 찾을 때는 그 해시로 찾는 방식이에요. 원래 값은 랜덤 IV 로 암호화해 저장해요. Paragon 의 글은 이 인덱스 키를 암호화 키와 다르게, DB 서버가 모르게 두라고 적어요.
 </div>
 
-<p>Paragon Initiative 의 글이 이 방식을 정리했어요. 평문의 키 있는 해시를 별도 컬럼에 저장하는 것이 기본 생각이고, 인덱스 키는 암호화 키와 달라야 하며 DB 서버가 몰라야 한다고 적습니다(<a href="https://paragonie.com/blog/2017/05/building-searchable-encrypted-databases-with-php-and-sql">Building Searchable Encrypted Databases with PHP and SQL</a>). JPA 로 옮기면 이렇게 됩니다.</p>
+<p>Paragon Initiative 의 글이 이 방식을 정리했어요. 평문의 키 있는 해시를 별도 컬럼에 저장하는 것이 기본 생각이고, 인덱스 키는 암호화 키와 달라야 하며 DB 서버가 몰라야 한다고 설명해요(<a href="https://paragonie.com/blog/2017/05/building-searchable-encrypted-databases-with-php-and-sql">Building Searchable Encrypted Databases with PHP and SQL</a>). JPA 로 옮기면 다음과 같이 구성할 수 있어요.</p>
 
 <div class="obsv-code">@Convert(converter = GcmConverter.class)       // 원래 값: 랜덤 IV 그대로
 @Column(name = "ssn_gcm")
@@ -241,24 +235,24 @@ public void setSsn(String ssn) {
 List&lt;Claim&gt; findBySsnBidx(String bidx);
 repo.findBySsnBidx(Crypto.bidx(ssn));</div>
 
-<p>두 군데가 중요해요. 첫째, 인덱스 컬럼에는 컨버터를 붙이지 않고 호출하는 쪽에서 HMAC 을 계산해 넘깁니다. 그래서 1장의 "인자가 다시 암호화되는" 일이 생기지 않아요. 둘째, HMAC 에 넣기 전에 값을 정규화합니다(실습은 하이픈과 공백 제거). 정규화하지 않으면 하이픈이 있는 값과 없는 값, 뒤에 공백이 붙은 값이 전부 다른 인덱스가 돼요. "같은 값인가"를 누가 판정하는지 정해 두는 일이고, 판정을 DB 의 비교 규칙에 맡겼다가 뒤 공백을 구분하지 않아 놀란 일은 <a href="https://dding-shark.tistory.com/570">3편</a>에 적었습니다. 이 판정을 코드에서 고정하는 게 블라인드 인덱스의 장점이기도 해요.</p>
+<p>인덱스 컬럼에는 컨버터를 붙이지 않고, 호출부에서 HMAC을 계산해 전달해요. 그러면 검색 인자가 다시 암호화되지 않아요. HMAC을 계산하기 전에는 값을 정규화해야 해요. 실습 코드는 하이픈과 앞뒤 공백을 제거해서 같은 값으로 처리했어요. 이 규칙이 없으면 하이픈 유무나 뒤 공백에 따라 다른 인덱스가 나와요. DB 비교 규칙 때문에 뒤 공백을 구분하지 못했던 사례는 <a href="https://dding-shark.tistory.com/570">3편</a>에 적었어요. 블라인드 인덱스를 쓸 때는 어떤 입력을 같은 값으로 볼지 코드에서 명시해야 해요.</p>
 
-<p>결과는 ① 과 같은 자리에 섰어요. <code>findBySsnBidx</code> 는 5행을 찾았고 EXPLAIN 은 <code>type=ref key=idx_bidx</code>, p50 은 행 수와 상관없이 0.44~0.75ms 였습니다. 그런데 빈도도 같은 자리에 섰어요.</p>
+<p><code>findBySsnBidx</code>는 5행을 찾았고 EXPLAIN은 <code>type=ref key=idx_bidx</code>였어요. p50은 측정한 행 수 범위에서 0.44~0.75ms로 결정적 방식과 비슷했어요. 빈도 분포도 결정적 방식과 같았어요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/security/pii-encryption/images/lab-06/explain-freq.png" alt="java -jar lookup.jar bench 200 과 freq 를 5만 행에서 실행한 화면. EXPLAIN 은 det·bidx 가 ref, gcm 등치는 ref 인데 0행, 전 행은 ALL. p50 은 findBySsnDet 0.77ms, findAll+filter 129.02ms, findBySsnBidx 0.45ms. 빈도는 ssn_det 와 ssn_bidx 의 top5 가 평문과 같은 719 297 214 183 150" style="max-width:100%">
 </div>
-<div class="obsv-figcap">그림 4. 블라인드 인덱스의 GROUP BY 는 결정적 암호문의 GROUP BY 와 한 자리도 다르지 않다</div>
+<div class="obsv-figcap">그림 4. 실습의 블라인드 인덱스와 결정적 암호문은 같은 빈도 분포를 보였어요</div>
 
-<p>→ <code>ssn_bidx</code> 의 서로 다른 값 4,996개, 상위 다섯 값의 행 수 719, 297, 214, 183, 150 이 결정적 컬럼과 평문과 전부 같았어요. Paragon 의 글도 DB 서버만 털린 경우 공격자가 알 수 있는 건 여러 행이 같은 값을 공유하는지라고 적습니다. <span class="obsv-mark">등치 조회가 되는 한 "같은 값인가"는 어딘가에 드러나고, 블라인드 인덱스는 그 노출을 암호문에서 인덱스 컬럼으로 옮길 뿐이에요.</span></p>
+<p><code>ssn_bidx</code> 의 서로 다른 값 4,996개, 상위 다섯 값의 행 수 719, 297, 214, 183, 150 이 결정적 컬럼과 평문과 전부 같았어요. Paragon 의 글도 DB 서버가 침해된 경우 공격자가 알 수 있는 건 여러 행이 같은 값을 공유하는지라고 설명해요. <span class="obsv-mark">이 실습의 블라인드 인덱스는 암호문 대신 인덱스 컬럼에서 동일성과 빈도를 드러냈어요.</span></p>
 
-<p>그럼 ③ 이 ① 보다 나은 점은 무엇일까요. 셋이에요. 원래 값의 암호문은 랜덤 IV 라서 그 컬럼만 빠져나가면 아무것도 안 보입니다. 찾기용 키와 복호화 키가 갈려서 복호화 권한과 검색 권한을 나눌 수 있어요(두 키의 보호 수준은 같아야 합니다, 바로 아래 이유로). 그리고 다음 절에서 볼 짧은 인덱스로 디스크를 아끼면서 빈도도 조금 흐릴 수 있습니다.</p>
+<p>③에서는 원래 값을 랜덤 IV로 암호화하므로 그 암호문만으로 평문의 반복 여부를 비교하기 어려워요. 또 검색용 키와 복호화 키를 분리해 각각의 권한을 관리할 수 있어요. 다만 인덱스가 함께 노출되면 앞서 본 빈도가 드러나고, 검색용 키도 암호화 키와 같은 수준으로 보호해야 해요. 짧은 인덱스를 쓸 때의 저장 공간과 조회 비용도 따로 확인했어요.</p>
 
-<p>다만 인덱스 키가 "덜 중요한 키"는 아니에요. 인덱스 키만 가진 쪽은 암호문을 복호화하지는 못하지만, 주민번호처럼 경우의 수가 작은 값은 후보를 하나씩 HMAC 해 보고 인덱스와 맞춰 보는 것만으로 원래 값이 찾아집니다. Paragon 의 글도 같은 자리에서, 아주 민감한 정보라면 단순 HMAC 대신 키 스트레칭 알고리즘(PBKDF2-SHA256, scrypt, Argon2)을 써서 열거 시도를 늦추라고 적어요. 인덱스 키는 암호화 키만큼 지키고, 값의 경우의 수가 작고 민감하면 키 스트레칭을 검토합니다. 그 대가로 인덱스 계산이 느려지니 쓰기와 조회마다 그만큼 시간이 붙어요.</p>
+<p>인덱스 키를 가진 사람은 후보 값을 HMAC으로 계산해 저장된 인덱스와 비교할 수 있어요. 주민번호처럼 후보를 열거할 수 있는 값은 이 방법으로 원래 값이 드러날 수 있어요. Paragon의 글은 민감한 정보에 PBKDF2-SHA256, scrypt, Argon2 같은 키 스트레칭 알고리즘을 적용해 열거 시도를 늦추는 방안도 안내해요. 적용하면 쓰기와 조회 때 인덱스를 계산하는 비용도 늘어나므로 함께 검토해야 해요.</p>
 
-<h3>인덱스를 자르면 빈도가 흐려질까</h3>
+<h3>짧은 인덱스의 충돌과 빈도 노출</h3>
 
-<p>Paragon 의 글은 블라인드 인덱스를 16, 32, 64비트 정도로 잘라 블룸 필터처럼 다루라고 제안해요. 동기는 디스크예요. 검색이 조금 느려지는 대신 디스크를 많이 아낄 수 있는 경우가 있다고 적습니다. 자르면 서로 다른 값이 같은 인덱스를 갖게 되어, 인덱스로 찾은 행은 "아마 맞는" 후보가 되고 앱이 복호화해서 확인합니다. 그러면 부수적으로 빈도도 흐려지는데, 얼마나 흐려지는지 재 봤어요. 실습은 효과가 잘 보이게 12비트(4,096칸)까지 잘랐어요. 5만 행의 서로 다른 값 4,996개를 4,096칸에 넣은 셈입니다.</p>
+<p>Paragon의 글은 블라인드 인덱스를 16, 32, 64비트 정도로 줄여 저장 공간을 아끼는 방안을 제안해요. 비트 수를 줄이면 서로 다른 평문이 같은 인덱스에 대응하는 충돌이 생겨요. 조회 결과를 후보로 받아 앱에서 복호화해 확인해야 하는 이유예요. 실습에서는 충돌이 잘 드러나도록 12비트(4,096개 인덱스 값)를 사용했어요. 5만 행의 서로 다른 평문 4,996개가 4,096개 인덱스 값 중 하나에 대응하도록 만든 구성이에요.</p>
 
 <div class="obsv-code">(5만 행, 세 바퀴. 인덱스 키가 바퀴마다 달라 충돌도 달라진다)
                      r1        r2        r3
@@ -267,11 +261,11 @@ repo.findBySsnBidx(Crypto.bidx(ssn));</div>
 조회 후보 / 진짜       37 / 5    14 / 5    22 / 5
 조회 p50 (복호화 확인 포함)  0.47ms   0.40ms   0.43ms</div>
 
-<p>→ 자르면 꼬리는 흐려졌어요. 서로 다른 값 수가 평문의 절반 남짓이 되어, 한두 번 나오는 값끼리는 구별이 안 됩니다. 조회도 후보 14~37행을 복호화해 걸러도 0.5ms 안쪽이었어요. 그런데 머리는 그대로 보였습니다. 1등 인덱스 값은 727, 730, 719행으로, 평문 1등 719행에 다른 값 몇 행이 섞였을 뿐이에요. <b>자르는 건 드물게 나오는 값을 숨기지, 자주 나오는 값을 숨기지는 않습니다.</b> 머리까지 흐리려면 칸당 평균 행 수가 1등 값의 행 수(719)에 가까워질 만큼, 5만 행이면 대략 70칸까지 줄여야 해요. 그때는 조회 한 번의 후보가 수백 행이 되어 4장의 전부 복호화 쪽으로 다가갑니다. 자르기는 디스크를 아끼는 장치이고, 빈도를 숨기는 장치로 기대하면 안 돼요.</p>
+<p>서로 다른 인덱스 값 수는 평문의 절반 남짓으로 줄었어요. 후보 14~37행을 복호화해 확인한 조회 시간은 0.5ms 안쪽이었어요. 하지만 가장 많은 인덱스 값의 행 수는 727, 730, 719로, 가장 흔한 평문 719행에 다른 값 몇 행이 합쳐진 정도였어요. 드문 값 사이에 충돌이 생겨도 자주 나오는 값의 빈도까지 충분히 감춰지지는 않았어요. 5만 행에서 인덱스 값 하나에 평균 719행 정도가 대응하려면 가능한 인덱스 값을 대략 70개까지 줄여야 해요. 이는 단순 평균 계산이며, 해당 구성의 검색 성능을 측정한 결과는 아니에요. 후보가 수백 행으로 늘면 복호화 확인 비용도 커지므로 인덱스 단축으로 빈도 노출을 없애기는 어려워요.</p>
 
-<h2>6. 키 회전: 셋 다 전 행을 다시 쓰지만, 조회가 깨지는 건 둘이다</h2>
+<h2>6. 키 회전 중 옛 키와 새 키의 검색 값을 함께 조회하기</h2>
 
-<p>키를 바꿀 때 비용은 두 가지예요. 전 행을 다시 쓰는 시간, 그리고 다시 쓰는 동안 조회가 맞는 답을 내는가입니다. 5만 행을 1,000행씩 커밋하며 다시 쓰고, 절반을 옮긴 시점에 정답 5행인 사람을 찾아봤어요.</p>
+<p>키를 바꿀 때 비용은 두 가지예요. 전 행을 다시 쓰는 시간, 그리고 다시 쓰는 동안 조회가 맞는 답을 내는지예요. 5만 행을 1,000행씩 커밋하며 다시 쓰고, 절반을 옮긴 시점에 정답 5행인 사람을 찾아봤어요.</p>
 
 <div class="obsv-code">(results/rotate-r1~r3.txt, 5만 행)
                                전부 다시 쓰기 (r1 / r2 / r3)    절반 옮긴 시점의 조회
@@ -279,7 +273,7 @@ repo.findBySsnBidx(Crypto.bidx(ssn));</div>
 ② GCM 키 회전                   1.7s / 2.0s / 1.8s            전 행 복호화 성공, 조회와 무관
 ③ 블라인드 인덱스 키 회전         1.9s / 2.2s / 2.0s            새 키 HMAC 3행, 옛 키 HMAC 2행</div>
 
-<p>→ 다시 쓰는 시간은 셋 다 비슷했어요. 행마다 복호화하고 다시 만들어 쓰는 일이라 연산이 거의 같습니다. ② 의 숫자에는 확인용으로 전 행을 두 번 복호화한 시간이 들어 있어서, 다시 쓰기만 따지면 그보다 조금 짧아요. 차이는 오른쪽 칸이에요. ① 에서 컨버터가 새 키로 인자를 암호화하자 아직 옛 키로 남은 2행을 못 찾았습니다. 세 바퀴 모두 3행이었어요. 회전하는 동안은 키마다 암호문을 만들어 컨버터를 거치지 않는 네이티브 쿼리나 JDBC 로 <code>IN (새 키 암호문, 옛 키 암호문)</code> 을 써서 찾아야 5행이 다 나왔고, 이건 <code>findBy</code> 한 줄이 아니라 직접 쓴 쿼리가 됩니다. 이때 컨버터가 걸린 필드에 JPQL <code>IN :list</code> 를 쓰면 안 돼요. 목록의 원소도 컨버터를 거쳐 주 키로만 암호화되니, 새 값과 옛 값을 넣어도 둘 다 새 키 암호문이 됩니다. 실습도 컨버터를 거치지 않는 JDBC 쿼리로 찾았어요. ③ 도 인덱스 키를 바꾸면 똑같이 3행이었어요.</p>
+<p>다시 쓰는 시간은 셋 다 비슷했어요. 다만 갱신 외에 포함된 확인 시간이 달라 순수 갱신 시간끼리의 비교는 아니에요. ②의 숫자에는 추가 전 행 조회와, 정답 행을 찾으려고 각 행을 복호화·비교한 시간이 포함돼요. 별도로 복호화 뒤 행 수를 세는 스트림은 자바가 변환 연산을 생략할 수 있어, 그 개수 출력만으로 전 행 복호화를 확인했다고 볼 수는 없어요. 오른쪽의 복호화·조회 결과는 별도의 전 행 복호화·비교 경로를 기준으로 읽어야 해요. 차이는 오른쪽 칸이에요. ① 에서 컨버터가 새 키로 인자를 암호화하자 아직 옛 키로 남은 2행을 못 찾았어요. 세 실행 모두 3행이었어요. 회전하는 동안은 키마다 암호문을 만들어 컨버터를 거치지 않는 네이티브 쿼리나 JDBC 로 <code>IN (새 키 암호문, 옛 키 암호문)</code> 을 써서 찾아야 5행이 다 나왔고, 이건 <code>findBy</code> 한 줄이 아니라 직접 쓴 쿼리가 필요해요. 이때 컨버터가 걸린 필드에 JPQL <code>IN :list</code> 를 쓰면 안 돼요. 미리 만든 암호문을 전달해도 목록의 각 원소가 다시 컨버터를 거치므로, 컨버터를 우회하는 조회와 같지 않아요. 실습도 컨버터를 거치지 않는 JDBC 쿼리로 찾았어요. ③ 도 인덱스 키를 바꾸면 똑같이 3행이었어요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -288,7 +282,7 @@ repo.findBySsnBidx(Crypto.bidx(ssn));</div>
       <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
     </marker>
   </defs>
-  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">키 회전을 절반 마친 테이블 (정답 5행)</text>
+  <text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">키 회전을 절반 진행한 테이블 (정답 5행)</text>
   <path d="M40 60 C 150 57, 250 61, 330 59 C 333 110, 331 160, 332 205 C 250 208, 150 204, 42 206 C 39 160, 41 110, 40 60 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
   <path d="M370 60 C 480 57, 580 61, 660 59 C 663 110, 661 160, 662 205 C 580 208, 480 204, 372 206 C 369 160, 371 110, 370 60 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
   <text x="186" y="88" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">id 1~25,000: 새 키로 다시 씀</text>
@@ -304,16 +298,16 @@ repo.findBySsnBidx(Crypto.bidx(ssn));</div>
   <path d="M420 250 C 360 236, 300 226, 250 212" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arr61)"/>
   <path d="M470 250 C 480 238, 495 226, 505 212" fill="none" stroke="#3d3a34" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#arr61)"/>
   <text x="380" y="270" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">① IN(새, 옛) = 5행</text>
-  <text x="350" y="314" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= ② 는 키 번호를 보고 골라 풀면 끝, ① ③ 은 찾는 값 자체가 키마다 다르다</text>
+  <text x="350" y="314" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= ②는 키 번호로 복호화, ① ③은 두 키로 조회</text>
 </svg>
 </div>
-<div class="obsv-figcap">그림 5. 회전 도중에 조회가 깨지는 건 "찾는 값"이 키에 묶인 방식이다</div>
+<div class="obsv-figcap">그림 5. 결정적 암호화와 인덱스 키 회전 중에는 두 키의 검색 값을 함께 조회해야 해요</div>
 
-<p>② 는 반대였어요. 암호문 맨 앞 1바이트에 키 번호를 넣어 두었기 때문에, 절반을 옮긴 시점에도 전 행 5만 개가 복호화됐고 정답 5행도 그대로 찾았습니다. 찾는 값이 암호문이 아니니 회전과 조회가 서로 엮이지 않아요. 그래서 ② 의 회전은 서두를 필요가 없고, 행을 읽거나 고칠 때 조금씩 옮겨도 됩니다(옛 키는 마지막 행을 옮길 때까지 남겨야 해요). ③ 은 두 키를 따로 돌릴 수 있다는 게 이점이에요. 암호화 키를 바꾸는 건 ② 와 같아서 조회에 영향이 없고, 깨지는 건 인덱스 키를 바꿀 때뿐입니다. 결정적 암호화는 하나의 키가 두 일을 같이 하므로 언제 돌려도 조회가 같이 깨져요.</p>
+<p>②는 암호문 맨 앞 1바이트에 키 번호를 넣고 그 번호로 복호화 키를 골랐어요. 옛 키와 새 키를 모두 보유한 상태에서는 절반을 옮긴 시점에도 5만 행을 복호화했고, 정답 5행을 찾았어요. 이 구현은 행을 읽거나 고칠 때 순차적으로 전환할 수도 있지만, 전환이 끝날 때까지 옛 키가 필요해요. 실제 회전 일정은 키 교체 사유와 정책에 맞춰 정해야 해요. ③은 암호화 키와 인덱스 키를 따로 바꿀 수 있어요. 암호화 키만 바꾸고 인덱스를 유지하면 검색 값은 그대로지만, 인덱스 키를 바꿀 때는 전환 중인 두 인덱스 값을 함께 조회해야 해요. ①도 옛 키와 새 키로 만든 검색 값을 함께 다뤄야 누락을 막을 수 있어요.</p>
 
-<h2>7. 고르는 법</h2>
+<h2>7. 조회 빈도와 후보 행 수로 비교하기</h2>
 
-<p>제 회사의 레거시 테이블 한 곳에서는 한 테이블 안에서 방식이 둘로 갈렸어요. 값을 조건으로 찾는 조회가 남아 있는 컬럼은 결정적 방식으로, 그런 조회가 없는 컬럼은 랜덤 IV 로 갔습니다. 보안 기준이 달라서가 아니라 남아 있는 조회가 달라서였어요(<a href="https://dding-shark.tistory.com/570">3편</a>). 이 글의 숫자로 다시 보면 그 판단의 축은 하나입니다. 그 컬럼을 값으로 찾는 조회가 있는가, 있다면 얼마나 자주, 몇 행을 대상으로 하는가예요.</p>
+<p>앞서 다룬 레거시 테이블에서는 등치 조회가 필요한 컬럼에 결정적 방식을, 그런 조회가 없는 컬럼에 랜덤 IV를 선택했어요(<a href="https://dding-shark.tistory.com/570">3편</a>). 당시 선택의 배경은 남아 있는 조회의 차이였어요. 이번 실습 결과를 적용할 때도 값으로 검색해야 하는지, 얼마나 자주 조회하는지, 후보가 몇 행인지부터 확인하고 빈도 노출과 키 관리 요구를 함께 비교해야 해요.</p>
 
 <div class="obsv-code">                       ① 결정적          ② 랜덤 IV + 앱 필터      ③ 랜덤 IV + 블라인드 인덱스
 등치 조회 (findBy)      그대로 된다        0행 (조용히 틀림)        인덱스 값으로 된다
@@ -324,23 +318,23 @@ p50, 10만 행            0.7ms 안팎         270ms 안팎 (JPA)         0.5ms 
 LIKE / 부분 검색        안 된다 (0행)      앱에서만                 안 된다
 코드 변경               컨버터만           조회마다 필터            컬럼 하나 + 호출부 HMAC</div>
 
-<p>LIKE 는 셋 다 DB 에서는 안 돼요. 뒷자리 네 개로 찾는 화면이 꼭 필요하면 그 부분값에 블라인드 인덱스를 따로 하나 더 둡니다. 다만 그 인덱스는 "뒷자리가 같은 행"을 드러내니, 둘 수 있는 부분 인덱스의 수가 곧 노출의 크기예요. 앞 글자 검색처럼 길이가 여러 개인 부분 검색은 길이마다 인덱스가 하나씩 늘어나서 대개 감당이 안 됩니다. 이럴 때는 검색 범위를 다른 조건으로 줄이고 ② 로 거르는 쪽이 현실적이에요.</p>
+<p>실습의 세 구성은 암호문에 SQL LIKE를 적용해 평문 부분 검색을 할 수 없어요. 뒷자리 네 개로 찾아야 한다면 해당 부분값에 대한 블라인드 인덱스를 따로 두는 방법을 검토할 수 있어요. 대신 뒷자리가 같은 행이 드러나므로 추가 노출을 평가해야 해요. 여러 길이의 접두어를 검색하려면 각 부분값의 인덱스가 필요해 저장 공간과 관리 비용도 늘어요. 다른 조건으로 후보를 줄인 뒤 ②로 비교하는 방법과 함께 검토할 수 있어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">💡 내 코드에서 바꿀 것</div>
-  &bull; 암호화 컨버터가 붙은 필드를 쓰는 <code>findBy</code>, <code>@Query</code>, <code>StartingWith</code>/<code>Containing</code> 부터 세세요. 랜덤 IV 컬럼에 걸린 것은 지금 0행을 돌려주고 있습니다<br>
-  &bull; 테스트는 "찾은 행 수가 정답과 같다"로 쓰세요. 예외가 없다는 것, EXPLAIN 이 ref 라는 것으로는 못 잡습니다<br>
-  &bull; 등치 조회가 필요하면 ③ 을 먼저 보세요. 인덱스 키를 암호화 키와 따로 두되 암호화 키만큼 지키고, HMAC 전에 정규화하고, 인덱스 컬럼에는 컨버터를 붙이지 마세요. 주민번호처럼 경우의 수가 작은 값이면 키 스트레칭도 검토하세요<br>
-  &bull; ① 을 고른다면 IV 를 고정한 GCM 이 아니라 AES-SIV 같은 결정적 AEAD 를 쓰고, 한 값이 여러 행에 반복되는 컬럼인지 먼저 <code>GROUP BY</code> 로 확인하세요<br>
-  &bull; ② 로 버틴다면 기준은 전체 행 수가 아니라 "후보 행 수 × 조회 빈도"입니다. 다른 조건으로 먼저 줄일 수 있는지 보세요<br>
-  &bull; 키 회전 계획에 "도중에는 키마다 값을 만들어, 컨버터를 거치지 않는 쿼리의 IN 으로 찾는다"를 적어 두세요. ① 과 ③ 의 인덱스 키에 해당합니다
+  <div class="obsv-ct">💡 적용 전에 확인할 것</div>
+  &bull; 암호화 컨버터가 붙은 필드를 쓰는 <code>findBy</code>, <code>@Query</code>, <code>StartingWith</code>/<code>Containing</code>을 먼저 확인해요. 실습과 같은 랜덤 IV 등치 조회에서는 기대한 행을 찾지 못할 수 있어요<br>
+  &bull; 테스트에서 조회 행 수를 정답과 비교해요. 예외 발생 여부와 EXPLAIN만으로는 결과의 정확성을 확인할 수 없어요<br>
+  &bull; ③을 검토한다면 인덱스 키를 암호화 키와 분리해 보호하고, HMAC 전에 정규화 규칙을 정해요. 인덱스 컬럼에는 컨버터를 붙이지 않아요. 후보를 열거할 수 있는 값은 키 스트레칭의 비용도 비교해요<br>
+  &bull; ①에는 AES-SIV처럼 결정적 암호화를 제공하는 방식을 사용해요. GCM의 IV를 고정하면 안 돼요. 같은 값의 반복 정도는 <code>GROUP BY</code>로 확인해요<br>
+  &bull; ②는 복호화할 후보 행 수와 조회 빈도를 함께 살펴봐요. 다른 조건으로 후보를 줄일 수 있는지도 확인해요<br>
+  &bull; ①과 ③의 인덱스 키를 회전할 때는 옛 키와 새 키의 검색 값을 함께 조회할 계획을 세워요. ①은 컨버터가 인자를 다시 변환하지 않도록 조회 경로도 확인해야 해요
 </div>
 
 <div class="obsv-summary">
-  <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>JPA 는 변환이 걸린 컬럼과 비교하는 인자도 컨버터로 바꿉니다. 랜덤 IV 컬럼의 <code>findBy</code> 가 예외 없이 0행인 이유이고, LIKE 는 <code>%</code> 까지 암호화되어 0행이 됩니다.</b><br><br>
-  결정적 암호화는 코드 변경 없이 인덱스를 타지만 5만 행의 빈도 분포가 평문과 한 자리도 다르지 않게 보였어요. 전부 복호화해서 거르면 정답은 나오지만 1만 행 28ms 에서 10만 행 270ms 로 행 수를 따라 늘었습니다. 블라인드 인덱스는 인덱스를 타고 키를 나눌 수 있지만 빈도는 결정적 방식과 똑같이 보였고, 12비트로 잘라도 1등 값은 그대로 보였어요. 키 회전 도중에 조회가 깨지는 건 찾는 값이 키에 묶인 ① 과 ③ 이었습니다.<br><br>
-  암호화한 컬럼을 WHERE 로 찾을 수 있다는 건, 같은 값인지를 누군가에게 보여 준다는 뜻이에요. 고를 것은 방식이 아니라 그걸 어디에, 누구에게 보여 줄지입니다.
+  <div class="obsv-st2">✍️ 조회 방식별 확인 결과</div>
+  JPA는 변환이 걸린 속성과 비교하는 인자도 컨버터에 전달해요. 실습의 랜덤 IV 컬럼은 <code>findBy</code>가 0행을 반환했고, LIKE도 <code>%</code>까지 암호화돼 기대한 행을 찾지 못했어요.<br><br>
+  결정적 암호화와 블라인드 인덱스는 빠른 등치 조회가 가능했지만 빈도 분포가 드러났어요. 전 행을 복호화해 비교하면 정답을 찾는 대신 조회 시간이 1만 행 28ms에서 10만 행 270ms 안팎으로 늘었어요. 인덱스를 12비트로 줄여도 가장 흔한 값의 빈도는 충분히 감춰지지 않았어요.<br><br>
+  결정적 키나 인덱스 키를 회전하는 동안에는 두 키의 검색 값을 함께 조회해야 누락을 막을 수 있었어요. 이 수치는 가짜 데이터와 실습 환경에서 측정한 결과이며, 실제 선택에는 후보 행 수·조회 빈도와 함께 빈도 노출 및 키 관리 요구를 반영해야 해요.
 </div>
 
 </div>
