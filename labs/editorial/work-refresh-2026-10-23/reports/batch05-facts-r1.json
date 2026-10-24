@@ -1,0 +1,239 @@
+{
+  "role": "code-reviewer / 사실관계 독립 퇴고",
+  "round": 1,
+  "checked_numbers": [
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75
+  ],
+  "verdict": "REQUEST_CHANGES",
+  "issues": [
+    {
+      "number": 66,
+      "location": "6장 보호 인용과 직후 설명, 323–338행",
+      "kind": "기술 조건 누락 / 인접 정정 부족",
+      "problem": "tagged와 삭제 접두사 목록으로 범위를 좁히면 latest가 항상 대상 밖이라는 보호 인용을 정정하지 않았다. 같은 이미지에 latest와 삭제 접두사 태그가 함께 붙으면 이미지 자체가 삭제 대상으로 선택될 수 있다.",
+      "evidence": {
+        "official_urls": [
+          "https://docs.aws.amazon.com/AmazonECR/latest/userguide/LifecyclePolicies.html",
+          "https://docs.aws.amazon.com/AmazonECR/latest/userguide/lifecycle_policy_parameters.html"
+        ],
+        "basis": "선택과 expire의 단위는 이미지다. 이미지에 붙은 태그가 접두사 조건에 맞으면 latest 문자열이 다른 접두사라는 사실만으로 해당 이미지를 보호하지 않는다."
+      },
+      "suggested_fix": "인용은 유지하고 바로 뒤에서 untagged 단독 규칙과 tagged 접두사 규칙을 구분한다. 후자는 보존 이미지에 삭제 접두사 태그가 함께 붙지 않는다는 조건과 전체 정책 preview 확인이 필요하다고 정정한다.",
+      "severity": "high"
+    },
+    {
+      "number": 70,
+      "location": "3–4장 189–222행 및 그림 2",
+      "kind": "서비스 동작 오인 / 잘못된 조건부 인과",
+      "problem": "크레딧 소진 뒤 기준선으로 성능이 제한되는 설정을 Aurora 클러스터 용량 판단의 전제로 남겼다. 설정 확인이 필요하다는 조건문만으로 Aurora T3/T4g의 Unlimited 동작을 설명하지 못한다.",
+      "evidence": {
+        "fixed_commit": "bb90753f4f7f5c902c3b297fffa96c887891fb46",
+        "source_sha256": [
+          "e64cb6f4154c8bee119880037eebd4aa5006978a4a193ea80be238d30ce54374",
+          "222c8cdd93a0a3377f7eb6a35c9e673d72da64a7da3fb74caaba911c051ad943"
+        ],
+        "official_urls": [
+          "https://aws.amazon.com/rds/aurora/instance-types/"
+        ],
+        "basis": "관련 고정 자료는 Aurora T3/T4g와 크레딧 감시를 다루지만 해당 과거 관측의 성능 제한을 입증하지 않는다. 공식 문서상 Aurora T3/T4g는 Unlimited로 구성되며 기준선 초과 사용은 추가 과금으로 이어질 수 있다."
+      },
+      "suggested_fix": "Aurora T3/T4g의 Unlimited와 추가 과금 가능성을 명시한다. 성능 제한을 전제한 당시 판단은 별도로 한정하고, 실제 지연과 증설 필요는 잔고만으로 확정할 수 없으며 초과 크레딧·CPU·쿼리 부하 확인이 필요하다고 본문과 그림을 맞춘다.",
+      "severity": "high"
+    },
+    {
+      "number": 71,
+      "location": "4장 203–205행",
+      "kind": "약정 적용 범위 일반화",
+      "problem": "EC2 Instance Savings Plans는 컨테이너 오케스트레이터에 적용되지 않는다고 일반화했다. ECS 실행 방식이 명시되지 않아 EC2 기반 ECS도 제외하는 설명이 된다.",
+      "evidence": {
+        "fixed_commit": "bb90753f4f7f5c902c3b297fffa96c887891fb46",
+        "source_sha256": [
+          "86efb2a77b0332d71bf6eb72a97c4eb8a3f93acca792728819973aa1c7445240"
+        ],
+        "official_urls": [
+          "https://docs.aws.amazon.com/savingsplans/latest/userguide/plan-types.html"
+        ],
+        "basis": "Compute와 EC2 Instance 두 유형 모두 ECS 클러스터의 기반 EC2 인스턴스에 적용된다. Fargate와 Lambda 사용량에 적용되는 유형은 Compute다. 고정 자료로 해당 과거 청구 항목의 실행 방식과 약정 배분까지 확정할 수 없다."
+      },
+      "suggested_fix": "컨테이너 사용량이 Fargate인 경우로 조건을 좁히고 EC2 기반 ECS에는 EC2 Instance 유형도 적용될 수 있다고 구분한다. 과거 청구 항목의 실행 방식은 미확인으로 남기고 Lambda 할인만으로 EC2 약정 유형을 확정할 수 없다는 한정을 유지한다.",
+      "severity": "medium"
+    }
+  ],
+  "reviewed_scope": "BRIEF·PLAN·REVIEW와 연결된 두 스킬·가이드, titles·checks·technical-corrections·baseline, writers 065–075, HTML 11편의 본문·보호 코드·SVG 문구·캡션·요약. 고정 원자료는 읽기 전용으로 직접 대조했다.",
+  "checks": [
+    {
+      "number": 65,
+      "result": "추가 지적 없음",
+      "basis": "동시 평가 뒤 우선순위 적용, any 순위 제약과 preview 비삭제 성격은 맞다. 평가 간격·초기 시각과 과거 삭제 개수는 당시 관찰로만 유지한다.",
+      "fixed_commit": "19b218df263ef0403510d127c96b5c19eb890c89",
+      "source_sha256": [
+        "aba0b55cf73c049204f18ba32bbb67fab37e58be5bbcf8946c779ea9da1932c4"
+      ],
+      "official_urls": [
+        "https://docs.aws.amazon.com/AmazonECR/latest/userguide/LifecyclePolicies.html",
+        "https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_GetLifecyclePolicy.html"
+      ]
+    },
+    {
+      "number": 66,
+      "result": "지적 1건",
+      "basis": "배포본 순위와 이후 푸시에 따른 이동은 시점 한정이 충분하다. 태그 접두사 보호 설명은 정정 필요.",
+      "fixed_commits": [
+        "c765090e26dbb22d425b6fd3015cb3146ec0334e",
+        "611a95fb6ef20336c5c3d9dcee9181a83bdadf27"
+      ],
+      "source_diff_sha256": "82817f867f6c6125f595295653832a84420b4ae95512ac3ab0423394d92c0301"
+    },
+    {
+      "number": 67,
+      "result": "추가 지적 없음",
+      "basis": "Batch 응답의 이미지 경로와 서비스·최신 리비전·잡 정의·함수 조회 범위가 구분된다. 이전 리비전 누락과 실제 성능 미측정의 인접 한정은 충분하다. 고정 원자료는 당시 참조 개수와 응답을 입증하지 않는다.",
+      "fixed_commit": "19b218df263ef0403510d127c96b5c19eb890c89",
+      "official_urls": [
+        "https://docs.aws.amazon.com/batch/latest/APIReference/API_EcsProperties.html",
+        "https://docs.aws.amazon.com/batch/latest/APIReference/API_TaskContainerProperties.html",
+        "https://docs.aws.amazon.com/lambda/latest/dg/images-create.html"
+      ]
+    },
+    {
+      "number": 68,
+      "result": "추가 지적 없음",
+      "basis": "작은 객체 자동 계층화·모니터링 제외, Frequent 시작과 미접근 기간 조건은 맞다. 평균과 분포, 적용과 실측, 최종 분포 확정의 보호 인용은 인접 정정했다. 고정 규칙의 클래스·크기 필터·전환 시점 설정을 직접 확인했다.",
+      "fixed_commit": "19b218df263ef0403510d127c96b5c19eb890c89",
+      "source_sha256": [
+        "e1ba707093b039ca7494b2045ade5bcb6eb92be32c15d98d1096de9ead81951a",
+        "9d05b7572b0ca8c5b0f05089d0966b3cbb0f73e5823d83c70ec36bb9bc2c5ec2",
+        "dfb22bb8a5652c29a3a97eeec55a13c4ccbcdb476e6b5df668f296971476983a",
+        "74452743d2af3bbbc814691828a2b8ca60739e73e3ed873fdef9fac92f226ec8"
+      ],
+      "official_urls": [
+        "https://docs.aws.amazon.com/AmazonS3/latest/userguide/intelligent-tiering-overview.html",
+        "https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html"
+      ]
+    },
+    {
+      "number": 69,
+      "result": "추가 지적 없음",
+      "basis": "최소 청구 크기와 보관 기간을 전환 기본 크기·지연 계층 색인 메타데이터와 구분했다. 열두 시간은 최저 저장 단가 계층의 기본 회수 설명이다. 평균 추정과 분포 미확인은 한정했다. 고정 변경에서 전환 규칙과 만료 부재를 대조했다.",
+      "fixed_commits": [
+        "0e13e099bb4a5296f3487bbc79d1bf71d2587bb1",
+        "4f8256016ffee10ed03b29c9c6357f5918c34375",
+        "9fd3c937e65007aaff828bbb0d541d919e0c1bb9"
+      ],
+      "source_diff_sha256": [
+        "4ffc1d74b559792a639e75f6bbafd91d7f955ecfdefd30f4375588e37c641cb2",
+        "10c9a56518ccfa56aa6398ca3de6c4a199bcc32f71d95319da2bc52b438595a8",
+        "c70ef3d5c6aad9b6990e6afd03d5035b6dad8e2d9642faddd17e64d5a258149c"
+      ],
+      "official_urls": [
+        "https://aws.amazon.com/s3/faqs/",
+        "https://docs.aws.amazon.com/AmazonS3/latest/userguide/metrics-dimensions.html",
+        "https://docs.aws.amazon.com/AmazonS3/latest/userguide/restoring-objects-retrieval-options.html"
+      ]
+    },
+    {
+      "number": 70,
+      "result": "지적 1건",
+      "basis": "접속 통계·복제본 부하와 이동할 읽기 부하·미실행 구분은 한정됐다. Aurora Unlimited 조건은 정정 필요."
+    },
+    {
+      "number": 71,
+      "result": "지적 1건",
+      "basis": "약정 소유와 혜택, 패밀리·리전 제약, 계약 미확인과 미문의는 구분했다. ECS 실행 방식에 따른 적용 범위는 정정 필요."
+    },
+    {
+      "number": 72,
+      "result": "추가 지적 없음",
+      "basis": "리스너 자체 수가 아니라 로드밸런서당 기본 규칙 제외 규칙 할당량을 사용했고 인증서도 기본 인증서 제외다. 부하·무중단·전체 동시 장애는 실측·확정으로 쓰지 않았다. 관련 고정 ADR은 당시 수량의 원시 증거가 아니다.",
+      "fixed_commit": "bb90753f4f7f5c902c3b297fffa96c887891fb46",
+      "source_sha256": [
+        "163d83bd3f0f92c1c7db30fd595b5ca8df8a1f216f5c34b8537bc4370e04d432"
+      ],
+      "official_urls": [
+        "https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html"
+      ]
+    },
+    {
+      "number": 73,
+      "result": "추가 지적 없음",
+      "basis": "직접 축소와 재생성·이전, 해당 당시 전체 재적재 설정, 실행 기록과 후속 청구 미확인을 구분했다. 크레딧 그림은 소모 가능성만 표현하므로 성능 제한을 추가 단정하지 않는다.",
+      "fixed_commit": "bb90753f4f7f5c902c3b297fffa96c887891fb46",
+      "source_sha256": [
+        "c3243117366343f5db06f9f81d2c6fc1b23dd66d74f2286978c7f014494735cd"
+      ]
+    },
+    {
+      "number": 74,
+      "result": "추가 지적 없음",
+      "basis": "청구 역산의 사용량·요율·동일 집계 종료 전제, 삭제 도중 평균, 레이어 중복과 잠정 하한 철회가 설명돼 있다. 평가 초기화와 주기는 당시 기록에 한정하며 기술 보장으로 승인하지 않는다.",
+      "fixed_commit": "bb90753f4f7f5c902c3b297fffa96c887891fb46",
+      "source_sha256": [
+        "915cb4112e6d5d1330e0cc7d8b2abd030631a8105a7da480f9ec3a7021c4bf7b",
+        "8338a607ddb1c07a5d559f4bfebbae9b86a64320e78ebd32c46a1d1e2c74363a"
+      ]
+    },
+    {
+      "number": 75,
+      "result": "추가 지적 없음",
+      "basis": "대상 수가 개수 조건보다 적었다는 사실만으로 삭제 경과를 재구성하지 않는다. 과거 절대 용량·페이지 실패 경로·교체 실행은 미확인이다. 개수·용량 인용도 실패 범위로 인접 정정했다.",
+      "fixed_commit": "bb90753f4f7f5c902c3b297fffa96c887891fb46",
+      "source_sha256": [
+        "1f5cba317d87bdae54d55feddf0801950cf6da9ccc5452f81131161581f9c1ee",
+        "9a320d9ec9b0d82b70894e014f7b4a64af5ebee953e9e9f275155de37344ec2a"
+      ]
+    }
+  ],
+  "verification": {
+    "frozen_manifest": "batch05-frozen-r1.json",
+    "frozen_manifest_sha256": "e50f3acc90bb2c18887af7ec697dd7c76016f7e6c25224fceb7efa76236d6d84",
+    "html_sha256": {
+      "65": "d9d07fcb35b17dd0d38e1d844251bf07fa19746a8425afcc674862be4aaa6bf1",
+      "66": "b193a34900921f9e364bae2721569a41b17f4cc4e4481dc8e1b7cde928fb311d",
+      "67": "237ed79077d2f20a0b300528a3984949be75c21cbd52b6d043e79d38646732b5",
+      "68": "b37b9c93ceafdfe22f23efa954cd6ff7aa7edef76208c28147b597e7228bfe17",
+      "69": "438552f48e90f8551b4530432b1fff06a6789e74f7ae7f5f1538f936b82d1c97",
+      "70": "4271a8aa04c1fa7977da8cbeb412dff707e584d739c249a37fc196bda332cbdc",
+      "71": "d83a550088b8c7c43fb05b68ef84819fb1adab4c835f5c1ef30b235380bfb6d1",
+      "72": "70b502cb956cbb5689d4371c46c2d6274e866614c0d0ed467c7d235141e49208",
+      "73": "fa4bf33a54c0b865b0a22128a9cd652dc50233d43daa6d5def9192a43f0c4fb4",
+      "74": "08b37a879b6d191f5b49673cdab02ebf0f6813ba976e1e65ee657e819cc36848",
+      "75": "80c32684f9a00cf226ea803fc798c540a3f320a4a0fdb65465fbf13b3a3a319a"
+    },
+    "all_11_match_frozen": true,
+    "writer_report_sha256": {
+      "65": "15f371273ea70ddee4dc181fed3e6fa2aa9a1c16a1b88fa8bb731eb7fb0fba36",
+      "66": "cbadea687aeb5e8f7610303c3e2bbb4f908cae457020bb089c59aaf7630a3eb0",
+      "67": "cacf9b65ffcd4593f0f476202cbab8f2971207658d00abe79625933978fec0d3",
+      "68": "38d8f73f178e97749fa992221dda450c545766916f538540d1edda5eaa79a315",
+      "69": "65fe5f126376cb2de269b3fba27244762730bfe34f082cbe5e50955779603329",
+      "70": "2e4a9e8ad4956387881a9bb16eb74fa630c0e4734d6e8f354d1cfa0f8500ebb3",
+      "71": "4e19f119932c379d8cc9b1de1bcc65d64d331009def094d2eb519514613a6a8e",
+      "72": "5f7448905e9314784c1ba9b3419150eb43564949e152f9b10c7e3f9bea859df8",
+      "73": "6a5b5b333c9dc4ff987ee0218ee4e3e4f04dac65f9bc6c7ea068cc70e7f62f5f",
+      "74": "6be06067350a84cf5f41cf830c8cd6bc8f3d5a570d7bfee385713052c5e73443",
+      "75": "21d2e39252b91142b300e98eb7c1a8df4ce85db5f70d3ec98714cb66c40ee36a"
+    },
+    "json_schema": "pass",
+    "mask_check": "pass",
+    "source_status_entries_before": 0,
+    "source_status_entries_after": 0,
+    "mutated_scope": "reports/batch05-facts-r1.json only"
+  },
+  "limits": [
+    "독립 사실관계 퇴고이며 독립 원자료 감사나 운영 재현이 아니다.",
+    "고정 자료의 관련 코드·설계 기록은 직접 읽었으나 과거 원시 조회·preview·청구서·실제 부하와 실행 결과를 전부 재확인하지 못했다. 당시 기록·추정·미확인으로 한정된 과거 수치는 새 오류로 올리지 않았다.",
+    "조직명·금액·비공개 경로·원자료 값을 인용하지 않았다. 근거는 고정 커밋·콘텐츠 또는 변경 SHA와 공식 URL로 기록했다.",
+    "현재 공식 문서는 서비스 조건 확인에만 사용했다. 과거 계약·수량·정책 주기·실행 사실을 소급 입증하지 않는다.",
+    "크레딧 소진 후 실제 지연, 계약 유형과 고객별 할인 배분, 최종 순절감액은 미확인이다."
+  ]
+}
