@@ -1,4 +1,5 @@
-<!-- lead: 야간 비용 절감으로 ASG 서버를 3대에서 2대로 줄였지만 ECS 태스크 수는 그대로여서 밤마다 배치 실패가 이어졌어요. 5xx 없이 정원의 2/3로 운영된 원인과 서버 수와 태스크 수의 불변식을 지키는 장치가 없던 구조를 분석했어요. -->
+<!-- tags: ASG 예약 작업, RESOURCE:CPU, ECS 태스크 배치, distinctInstance -->
+<!-- lead: ASG 예약 작업으로 야간 서버를 3대에서 2대로 줄였지만 ECS 태스크 목표는 3개로 남아 배치 실패가 반복됐어요. 태스크와 서버가 1:1로 배치되는 조건에서 두 설정이 어긋난 원인을 확인했어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -21,26 +22,25 @@
 
 <div class="obsv-series">
   <div class="obsv-st">📚 야간 스케일 다운, 2부작</div>
-  <b>1편 · 서버는 줄었는데 태스크는 안 줄었다</b> &larr; 지금 이 글<br>
-  2편 · 불변식은 양쪽으로 깨지는데 알람은 한쪽만 봤다
+  <b>1편. ASG 야간 축소 뒤 ECS 태스크 배치가 실패한 이유</b> &larr; 지금 이 글
 </div>
 
-<p>새벽 0시 8분에 Slack 카드가 떴어요.</p>
+<p>당시 기록에는 새벽 0시 8분에 Slack으로 ECS 태스크 배치 실패 알림을 받은 것으로 남아 있어요.</p>
 
 <div class="obsv-code">ECS 태스크 배치 실패
 부족: RESOURCE:CPU
 서비스: 웹 서비스 (운영)
 클러스터: prod</div>
 
-<p>이 알람은 <b>전날 배포한 것</b>이었습니다. 감지 체계를 만들면서 넣어둔 여러 룰 중 하나였고 이 룰이 배포 16시간 만에 처음으로 실장애를 잡았어요.</p>
+<p>전날 배포한 감지 규칙 중 하나가 보낸 알림이었어요. 당시에는 배포 16시간 만에 처음으로 실제 배치 실패를 감지한 것으로 정리했어요.</p>
 
-<p>그런데 확인해보니 이상했습니다. 5xx도 없고, 사용자 신고도 없고, 대시보드도 전부 초록불이었어요. <b>그런데 매일 밤 6시간씩, 정원의 2/3로 운영되고 있었습니다.</b> 그것도 최소 4일째였습니다.</p>
+<p>확인한 범위에서는 5xx나 사용자 신고가 없었고 대시보드에도 이상이 나타나지 않았어요. 하지만 매일 밤 6시간씩 목표 태스크 수의 2/3로 운영되고 있었어요. ASG 활동 로그로 확인한 기간만 최소 4일이었어요.</p>
 
-<h2>1. 알람이 없었으면 지금도 몰랐다</h2>
+<h2>1. 야간 서버 수만 줄어든 설정</h2>
 
-<p>야간에 EC2 비용을 줄이려고 ASG 예약 작업이 걸려 있었어요. 자정에 서버를 3대에서 2대로 줄이고, 아침 6시에 다시 3대로 늘립니다. 오래된 설정이고 의도한 절감입니다.</p>
+<p>야간 EC2 비용을 줄이려고 ASG(서버 수를 조절하는 Auto Scaling Group)에 예약 작업을 설정해 둔 상태였어요. 자정에 서버를 3대에서 2대로 줄이고 아침 6시에 다시 3대로 늘리는 일정이었어요.</p>
 
-<p>문제는 <span class="obsv-mark">서버만 줄고 ECS 태스크 수는 아무도 줄이지 않았다</span>는 것이었어요. 태스크는 3개로 남아 있으니 3번째가 갈 자리가 없습니다.</p>
+<p>예약 작업은 서버 수만 바꿨고 ECS의 목표 태스크 수는 3개로 남아 있었어요. 이 서비스는 서버 한 대에 태스크 하나만 배치할 수 있어서, 서버가 2대로 줄면 3번째 태스크를 실행할 수 없었어요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -64,26 +64,25 @@
       <text x="350" y="228" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">서버 · 태스크</text>
 
       <path d="M470 192 C 524 189, 578 194, 630 190 C 633 214, 632 232, 631 252 C 578 255, 524 251, 472 253 C 469 232, 470 210, 470 192 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8" stroke-dasharray="7 6"/>
-      <text x="550" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">태스크만 남음</text>
-      <text x="550" y="243" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">서버가 없다</text>
+      <text x="550" y="222" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">태스크 배치 실패</text>
+      <text x="550" y="243" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">배치할 서버 없음</text>
 
       <text x="350" y="288" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 매일 밤 6시간, 정원의 2/3</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 1. 서버만 줄이면 태스크는 갈 곳을 잃는다</div>
+<div class="obsv-figcap">그림 1. 서버는 2대인데 목표 태스크 수는 3개인 야간 설정</div>
 
-<p>ECS 스케줄러는 "태스크 3개 유지"가 임무라서 포기하지 않고 계속 재시도해요. 자리가 없으니 계속 실패하고 아침 6시에 서버가 돌아와야 비로소 채워집니다.</p>
+<p>ECS 스케줄러는 목표인 태스크 3개를 맞추려고 배치를 재시도했어요. 서버가 부족해 실패가 반복됐고, 아침 6시에 서버를 늘린 뒤에야 나머지 태스크를 배치할 수 있었어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">💡 무한 재시도는 원인이 아니라 증상이다</div>
-  로그에 배치 실패가 반복되는 걸 보면 ECS 가 고장난 것처럼 보이는데, ECS 는 정상 동작하고 있어요.<br>
-  문제는 <b>지킬 수 없는 목표를 계속 주고 있는 것</b>입니다. 고칠 곳은 재시도가 아니라 목표 쪽입니다.
+  <div class="obsv-ct">💡 배치 실패가 반복된 이유</div>
+  ECS는 설정된 목표 수를 맞추려고 재시도했어요. 당시 서버 수로는 목표를 충족할 수 없었으므로 재시도를 멈추기보다 서버 수와 목표 태스크 수를 함께 조정해야 했어요.
 </div>
 
-<p>그리고 이 사고의 성질이 고약합니다. <b>서비스가 죽지 않아요.</b> 축소된 상태로 계속 정상 응답하니 5xx도 없고 신고도 없습니다. 알람이 잡아주는 것 말고는 알아낼 방법이 없었어요.</p>
+<p>실행 중인 태스크 2개가 요청을 처리해서, 응답 오류만 확인해서는 목표보다 적은 수로 운영된다는 점을 놓치기 쉬웠어요. 이번에는 태스크 배치 실패 알림으로 그 상태를 확인했어요.</p>
 
-<p>실제로 어떤 밤이었는지 로그를 이어붙여 봤습니다.</p>
+<p>당시 조사에서 정리한 야간 타임라인은 아래와 같아요. 초 단위 원본 로그는 재확인하지 못했으므로 당시 정리본으로 봐야 해요.</p>
 
 <div class="obsv-code">00:00:05   ASG 예약 작업 실행
 00:00:15   인스턴스 종료 시작
@@ -98,27 +97,27 @@
 06:10:13   태스크 1개 시작
 06:37:29   정상 상태 도달</div>
 
-<p>이런 밤이 <b>최소 4일</b> 반복됐습니다. 정확히는 "최소"인데 ASG 활동 로그가 남아 있는 범위가 4일이라 그 이전은 확인할 방법이 없었어요.</p>
+<p>조회한 ASG 활동 로그에서는 같은 패턴이 최소 4일 반복됐어요. 이 조회 범위만으로는 그 이전에도 같은 일이 있었는지 확인할 수 없었어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">💡 고장난 상태에서 측정한 시간은 고쳐진 상태를 예측하지 못한다</div>
-  위 타임라인에서 <b>인스턴스 시작(06:00:14) → 태스크 시작(06:10:13)이 10분</b>입니다. 처음엔 서버 부팅이 느린 거라고 생각해서 설계할 때 아침 전환에 10분 여유를 잡았어요.<br><br>
-  나중에 재보니 <b>부팅은 2분</b>이었습니다. 남은 8분은 ECS 스케줄러의 <b>재시도 백오프</b>였어요. 6시간째 배치가 실패하는 중이었으니 재시도 간격이 최대치까지 벌어져 있었던 겁니다.<br><br>
-  즉 그 10분은 <b>고장난 상태에서만 나오는 값</b>이고 고친 뒤에는 존재하지 않습니다. 사고 타임라인의 숫자를 그대로 설계 근거로 옮기면 이런 함정에 빠집니다.
+  <div class="obsv-ct">⚠️ 부팅 시간과 재시도 대기를 구분하기</div>
+  위 기록에서는 인스턴스 시작(06:00:14)부터 태스크 시작(06:10:13)까지 약 10분이 걸렸어요. 처음에는 이를 부팅 시간으로 보고 아침 전환에 10분 여유를 잡았어요.<br><br>
+  이후 조사에서는 부팅을 2분, 남은 8분을 ECS 스케줄러의 재시도 백오프, 즉 실패 뒤 다음 시도까지 기다리는 시간으로 구분했어요. 6시간 동안 배치가 실패하며 재시도 간격이 길어졌다는 해석이었어요.<br><br>
+  다만 이 세부 측정 기록은 이번 대조에서 확인하지 못했어요. 당시의 10분을 정상 전환에도 그대로 필요한 시간으로 단정하지 않고, 부팅과 태스크 배치 시간을 나누어 확인해야 해요.
 </div>
 
-<h2>2. 7936 = 8192 - 256</h2>
+<h2>2. CPU 설정상 서버 한 대에 태스크 하나만 배치할 수 있었어요</h2>
 
-<p>처음 든 생각은 "한 대에 두 개 끼워 넣으면 되지 않나"였어요. 안 됩니다.</p>
+<p>남은 서버에 태스크를 추가로 배치할 수 있는지 CPU 설정을 확인했어요.</p>
 
 <div class="obsv-code">서버 등록 CPU      8192
 태스크 요구 CPU     7936   (97%)
                    ─────
 남는 CPU             256   → 두 번째 태스크는 절대 못 들어감</div>
 
-<p><code>7936 = 8192 - 256</code>은 우연으로 보이지 않아요. <b>서버 하나를 통째로 쓰도록 맞춘 값</b>입니다. 즉 이 서비스는 태스크 1개 = 서버 1개 구조예요.</p>
+<p><code>7936 = 8192 - 256</code>으로, 태스크 하나가 서버에 등록된 CPU의 대부분을 요구했어요. 남는 CPU로는 같은 태스크를 추가 배치할 수 없어서 이 서비스는 태스크 1개당 서버 1개가 필요했어요.</p>
 
-<p>그리고 이 한 숫자가 <span class="obsv-mark">이 문제의 난이도를 전부 결정합니다.</span></p>
+<p>따라서 서버 수를 바꿀 때 목표 태스크 수도 함께 검토해야 했어요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 285" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -130,7 +129,7 @@
       <path d="M62 66 C 130 63, 198 68, 258 64 C 261 100, 260 126, 259 150 C 198 153, 130 149, 64 151 C 61 126, 62 88, 62 66 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4"/>
       <text x="160" y="104" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">태스크</text>
       <text x="160" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">7936 / 8192</text>
-      <text x="160" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">남는 것 256: 틈이 없다</text>
+      <text x="160" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">남는 CPU 256: 추가 배치 불가</text>
 
       <path d="M432 56 C 504 53, 576 58, 648 54 C 651 96, 650 130, 649 166 C 576 169, 504 165, 434 167 C 431 130, 432 84, 432 56 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4"/>
       <path d="M442 66 C 486 63, 528 68, 566 64 C 569 82, 568 92, 567 104 C 528 107, 486 103, 444 105 C 441 92, 442 78, 442 66 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2"/>
@@ -138,26 +137,26 @@
       <text x="504" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">태스크</text>
       <text x="504" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">태스크</text>
       <text x="608" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">여유</text>
-      <text x="540" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">틈이 있다: 끼어들 수 있다</text>
+      <text x="540" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">여유 용량 내 추가 배치 가능</text>
 
       <path d="M40 212 C 240 208, 460 216, 664 211" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
 
-      <text x="160" y="242" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">난이도 높음</text>
-      <text x="160" y="266" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">양쪽 수가 항상 같아야 하고</text>
-      <text x="540" y="242" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">난이도 낮음</text>
-      <text x="540" y="266" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">순서가 틀려도 자가 복구된다</text>
+      <text x="160" y="242" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">서버별 태스크 1개</text>
+      <text x="160" y="266" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">목표 수만큼 서버 필요</text>
+      <text x="540" y="242" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">서버별 여러 태스크</text>
+      <text x="540" y="266" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">여유 용량과 배치 조건 확인</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 2. 패킹 밀도가 설계 난이도를 결정한다</div>
+<div class="obsv-figcap">그림 2. 서버 한 대에 배치할 수 있는 태스크 수에 따른 차이</div>
 
-<p>N:1이면 서버가 한 대 빠져도 남은 서버에 끼어들 틈이 있어요. 순서가 틀려도 알아서 복구됩니다. 1:1은 다릅니다. <b>양쪽 수가 항상 같아야 하고 전환 순서까지 맞춰야 해요.</b></p>
+<p>서버 한 대에 여러 태스크를 배치할 수 있다면 남은 서버의 여유 용량을 활용할 수 있어요. 다만 실제 재배치 가능 여부는 남은 자원과 배치 조건에 따라 달라져요. 이 서비스의 1:1 구조에서는 목표 태스크 수만큼 서버가 필요하므로 서버와 태스크를 바꾸는 순서를 맞춰야 했어요.</p>
 
-<p>그러면 1:1을 없애면 되지 않나 싶었는데 이 제약은 <b>의도된 설계</b>였습니다. 태스크를 서로 다른 서버에 강제로 흩어놓는 설정이 걸려 있었고 목적도 분명합니다. 서버 하나가 죽어도 태스크 하나만 잃게 하려는 가용성 설계였어요. 존중해야 하는 제약이었습니다.</p>
+<p>CPU 요구량 외에도 태스크를 서로 다른 서버에 배치하는 제약이 있었어요. 서버 한 대가 중단되었을 때 여러 태스크가 함께 중단되지 않도록 한 가용성 설계였으므로, 이번 조정에서도 이 조건은 유지하기로 했어요.</p>
 
-<h2>3. 제어 방향이 한쪽뿐이다</h2>
+<h2>3. 서버 축소가 태스크 목표 수를 바꾸지는 않았어요</h2>
 
-<p>왜 이런 일이 생기나 보니 두 시스템을 잇는 선이 <b>한 방향밖에 없었습니다.</b></p>
+<p>당시 설정에는 ECS의 용량 수요를 ASG에 반영하는 경로가 있었지만, ASG 예약 작업에 맞춰 ECS의 목표 태스크 수를 바꾸는 설정은 없었어요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 255" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -176,30 +175,30 @@
       <text x="563" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">서버 수 = 공급</text>
 
       <path d="M230 92 C 310 86, 390 90, 468 86" fill="none" stroke="#5a9e6f" stroke-width="2.6" marker-end="url(#pa1)"/>
-      <text x="350" y="72" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">태스크를 못 놓겠다, 서버를 더 달라</text>
+      <text x="350" y="72" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">배치에 필요한 서버 용량 요청</text>
 
       <path d="M468 130 C 420 134, 390 130, 360 132" fill="none" stroke="#e5533c" stroke-width="2.4" marker-end="url(#pa1)"/>
       <path d="M320 116 C 330 126, 338 138, 348 150" fill="none" stroke="#e5533c" stroke-width="3.2"/>
       <path d="M348 116 C 338 126, 330 138, 320 150" fill="none" stroke="#e5533c" stroke-width="3.2"/>
-      <text x="424" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">이 방향은 없다</text>
+      <text x="424" y="160" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">목표 수 변경 연동 없음</text>
 
       <path d="M40 180 C 240 176, 460 184, 664 179" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
-      <text x="350" y="212" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">ASG 는 태스크 수의 존재조차 모른다</text>
-      <text x="350" y="240" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 서버를 줄이는 쪽은 아무 신호도 보내지 않는다</text>
+      <text x="350" y="212" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">ASG 예약 작업은 서버 수만 변경</text>
+      <text x="350" y="240" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= ECS 목표 태스크 수는 유지</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 3. 결함은 잘못이 아니라 누락이었다</div>
+<div class="obsv-figcap">그림 3. 당시 설정에서 ASG 예약 작업과 ECS 목표 수는 연동되지 않았어요</div>
 
-<p>ECS에서 ASG로 가는 경로는 있어요. 용량 공급자의 관리형 스케일링이 "태스크를 못 놓겠으니 서버를 더 달라"고 요청합니다. <b>반대 방향은 없습니다.</b></p>
+<p>ECS의 용량 공급자는 태스크 배치에 필요한 서버 용량을 관리형 스케일링에 반영해요. 하지만 서버 수를 줄이는 ASG 예약 작업이 ECS의 목표 태스크 수까지 줄여 주지는 않았어요.</p>
 
-<p>그래서 서버를 줄이는 사람에게 태스크 쪽이 보이지 않아요. 두 설정은 서로 다른 화면, 서로 다른 서비스, 서로 다른 API에 있습니다. <span class="obsv-mark">한쪽을 바꾸는 사람에게 다른 쪽이 보이지 않습니다.</span></p>
+<p>서버 수와 태스크 수는 서로 다른 서비스의 화면과 API에서 관리했어요. ASG 설정만 변경할 때 ECS의 목표 수를 함께 확인하도록 하는 장치가 없었어요.</p>
 
-<p>이 사고를 조사하면서 제일 인상적이었던 게 이 부분이에요. <b>고장난 부품이 하나도 없습니다.</b> ASG 예약도 정상, ECS 스케줄러도 정상, 용량 공급자도 정상. 결함은 잘못이 아니라 <b>누락</b>이었어요. 둘을 잇는 선이 없었을 뿐입니다.</p>
+<p>ASG는 예약된 수로 서버를 줄였고 ECS는 설정된 수의 태스크를 유지하려고 했어요. 개별 동작보다 두 설정을 함께 조정하지 않은 점에서 배치 실패의 원인을 찾았어요.</p>
 
-<h2>4. 자동 조절 장치를 달아놓고 상한을 고정해뒀다</h2>
+<h2>4. 야간 상한 때문에 관리형 스케일링도 늘릴 수 없었어요</h2>
 
-<p>그런데 한 방향이라도 있으면 밤에 서버가 부족할 때 스스로 늘려주지 않을까요. 안 됩니다.</p>
+<p>관리형 스케일링이 부족한 서버를 늘릴 수 있는지도 확인했어요. 야간 예약 작업에는 상한이 설정돼 있었어요.</p>
 
 <div class="obsv-code">ASG 예약 작업 (밤)
   MinSize      2
@@ -209,37 +208,37 @@
 관리형 스케일링:  "서버를 더 달라"
 ASG:            "상한이 2 다"</div>
 
-<p>예약 작업이 <code>MinSize = MaxSize</code>로 고정하니 관리형 스케일링이 요청해도 늘릴 수 없어요. <b>자동 조절 장치를 달아놓고 상한을 손으로 고정해둔 상태</b>입니다.</p>
+<p>예약 작업이 <code>MinSize = MaxSize</code>로 서버 수를 고정해서 관리형 스케일링이 필요 용량을 계산해도 상한을 넘겨 서버를 늘릴 수 없었어요.</p>
 
-<p>그러니 밤에는 유일한 자동 복구 경로마저 막혀 있었던 거죠. 6시간 동안 아무것도 이 상황을 스스로 해결할 수 없었습니다.</p>
+<p>확인한 구성에서는 야간 6시간 동안 서버 부족을 해소할 자동 조정 경로가 없었어요.</p>
 
-<h2>5. 근본 원인은 지키는 장치가 없는 것</h2>
+<h2>5. 두 설정을 함께 검토하고 수량 차이를 확인하기</h2>
 
-<p>1:1 구조에서는 이게 항상 성립해야 해요.</p>
+<p>이 서비스의 안정된 운영 상태에서는 서버 수와 목표 태스크 수를 아래처럼 맞춰야 했어요. 전환 중에는 서버 준비와 태스크 배치가 순차적으로 진행되므로, 이 등식이 순간마다 성립해야 한다는 뜻은 아니에요.</p>
 
 <div class="obsv-code">ASG 서버 수  ==  ECS 태스크 수</div>
 
-<p>그리고 <b>이 등식을 검사하거나 강제하는 장치가 아무것도 없었습니다.</b> 한쪽만 바뀌면 조용히 깨지고, 깨진 채로 며칠이 지나도 아무도 모릅니다. 이번에 정확히 그랬어요.</p>
+<p>당시에는 이 수량 차이를 직접 검사하거나 두 설정을 함께 변경하도록 강제하지 않았어요. 그래서 서버 수만 바뀐 상태가 며칠간 이어졌어요.</p>
 
-<p>불변식을 지키는 방법은 세 단계로 강해집니다.</p>
+<p>두 수량의 관계를 유지하는 방법으로는 수동 확인, IaC에서 설정을 함께 관리하는 방식, 수량 차이를 감지하는 검증을 비교했어요.</p>
 
 <div class="obsv-code">최소   사람이 기억해서 양쪽을 같이 고친다        ← 여기였고, 깨졌다
 중간   양쪽 설정을 같은 IaC 파일에 둔다
        (한쪽을 고치려면 다른 쪽이 눈에 보인다)
 강     검증 장치가 등식 위반을 감지한다</div>
 
-<p>우리는 최소 단계에 있었고 그마저도 <b>양쪽 설정이 IaC 밖</b>에 있었습니다. 콘솔과 CLI로만 존재하니 변경 이력도 리뷰도 없어요.</p>
+<p>당시에는 양쪽 설정을 IaC로 관리하지 않아 변경 내용을 코드 diff로 비교하거나 함께 리뷰하기 어려웠어요. 사람이 두 설정을 모두 확인하는 데 의존하고 있었어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🔍 누가 만든 설정인지 추적할 수 없었다</div>
-  CloudTrail 에서 예약 작업 생성 기록을 찾아봤는데 <b>한 건도 없었습니다.</b> 조회 범위가 90일이니 그보다 오래된 설정이라는 뜻이고 만든 사람도 의도도 추적이 안 됩니다.<br><br>
-  그래서 이렇게 추측할 수밖에 없었어요. <b>"야간 2대"는 오래된 결정이고 그 뒤에 누군가 태스크 수를 3으로 올리면서 ASG 쪽을 보지 않았다.</b> 악의도 실수도 아니고, 그냥 <b>안 보였을</b> 겁니다.
+  <div class="obsv-ct">🔍 설정 생성 시점은 확인하지 못했어요</div>
+  당시에는 CloudTrail의 90일 조회 범위에서 예약 작업 생성 기록을 찾지 못했다고 정리했어요. 이 결과만으로 90일보다 오래된 설정이라고 확정하거나 생성자를 특정할 수는 없어요.<br><br>
+  야간 서버 수를 2대로 정한 뒤 목표 태스크 수가 3개로 바뀌었을 가능성은 있지만, 변경 순서와 당시 의도는 확인하지 못했어요.
 </div>
 
 <div class="obsv-summary">
-  <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>서버를 줄이는 쪽과 태스크를 줄이는 쪽이 서로를 모르면 비용 절감은 가용성을 조용히 대가로 치릅니다. 그 대가는 5xx 도 사용자 신고도 남기지 않습니다.</b><br><br>
-  이 사고에서 고장난 부품은 하나도 없었습니다. 결함은 잘못이 아니라 누락이었고, 그래서 어느 화면을 봐도 정상으로 보였습니다. <b>부품이 아니라 부품 사이를 검사하는 장치가 필요했던 것</b>입니다.
+  <div class="obsv-st2">✍️ 정리</div>
+  야간 ASG 예약 작업은 서버만 줄였고 ECS의 목표 태스크 수는 유지됐어요. 태스크와 서버가 1:1로 배치되는 조건에 야간 서버 상한까지 겹쳐 배치 실패가 반복됐어요.<br><br>
+  서버 수와 목표 태스크 수를 함께 검토하고, 수량 차이가 지속되는지 확인해야 한다고 판단했어요. 당시 타임라인과 부팅·재시도 시간의 세부 원본은 이번에 다시 확인하지 못했고, 설정 변경 순서도 추정으로 남겨 두었어요.
 </div>
 
 </div>

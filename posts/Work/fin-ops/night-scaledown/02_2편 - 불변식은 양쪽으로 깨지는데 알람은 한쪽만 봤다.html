@@ -1,4 +1,5 @@
-<!-- lead: 1편의 사고를 고치려고 ECS 태스크 야간 예약을 추가하자 반대 방향의 새 사고가 생길 수 있었어요. ASG 축소 보호가 무력할 때 서버가 남는 실패를 GroupDesiredCapacity와 GroupInServiceInstances 알람으로 잡은 과정을 정리했어요. -->
+<!-- tags: CloudWatch, 축소 보호, GroupDesiredCapacity, GroupInServiceInstances -->
+<!-- lead: ECS 태스크와 서버의 야간 예약을 맞춰도 축소 보호가 풀리지 않으면 서버가 남을 수 있어요. 배치 실패 알람이 감지하지 못하는 이 상황을 ASG 목표 용량과 실제 인스턴스 수를 비교해 감지하도록 했어요. -->
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
 .obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
@@ -21,17 +22,17 @@
 
 <div class="obsv-series">
   <div class="obsv-st">📚 야간 스케일 다운, 2부작</div>
-  1편 · 서버는 줄었는데 태스크는 안 줄었다<br>
-  <b>2편 · 불변식은 양쪽으로 깨지는데 알람은 한쪽만 봤다</b> &larr; 지금 이 글
+  <a href="https://dding-shark.tistory.com/491" style="color:inherit">1편. ASG 야간 축소 뒤 ECS 태스크 배치가 실패한 이유</a><br>
+  <b>2편. ECS 야간 축소 후 남는 서버를 ASG 지표로 감지하기</b> &larr; 지금 이 글
 </div>
 
-<p>고치는 건 쉬워 보였어요. 서버 쪽에만 예약이 걸려 있었으니 <b>태스크 쪽에도 예약을 걸면</b> 됩니다. 자정에 2개로 줄이고 아침에 3개로 되돌리는 예약입니다.</p>
+<p>서버에만 걸려 있던 야간 예약을 ECS 태스크에도 추가했어요. 자정에 태스크를 2개로 줄이고 아침에 3개로 되돌리되, 서버가 줄고 늘어나는 시각과 순서를 맞춰야 했어요.</p>
 
-<p>실제로 조치는 세 줄로 끝났습니다. 그런데 그 세 줄 중 하나가 <span class="obsv-mark">1편에서 본 것과 정확히 같은 모양의 새 사고</span>를 만들 수 있는 자리에 있었어요. 이 글은 그걸 발견하고 감지 장치까지 붙인 이야기입니다.</p>
+<p>태스크 예약, 서버 예약, 종료 보호의 세 가지를 적용했어요. 다만 종료 보호가 예상대로 해제되지 않으면 서버가 줄지 않을 수 있었어요. 기존 배치 실패 알람으로는 이 상황을 감지할 수 없어 별도 알람을 추가했어요.</p>
 
-<h2>1. 밤과 아침의 순서가 반대다</h2>
+<h2>1. 밤에는 태스크부터, 아침에는 서버부터 조절하기</h2>
 
-<p>태스크 예약과 서버 예약을 같은 시각에 걸면 안 됩니다. 순서가 있어요. 그리고 <b>밤과 아침의 순서가 서로 반대</b>입니다.</p>
+<p>이 구성에서는 태스크 예약과 서버 예약 사이에 간격을 뒀어요. 밤에는 태스크를 먼저 줄이고 서버를 줄여요. 아침에는 서버를 먼저 늘려 태스크가 실행될 용량을 준비해요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -41,54 +42,54 @@
       </marker>
     </defs>
     <g stroke-linecap="round" stroke-linejoin="round">
-      <text x="38" y="38" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#8a8272">밤: 수요를 먼저 줄인다</text>
+      <text x="38" y="38" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#8a8272">밤: 태스크를 먼저 줄인다</text>
 
       <path d="M52 52 C 122 49, 192 54, 258 50 C 261 74, 260 92, 259 112 C 192 115, 122 111, 54 113 C 51 92, 52 70, 52 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
       <text x="155" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2f2c26">00:00  태스크 3 → 2</text>
-      <text x="155" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">드레이닝. 서버 하나가 빈다</text>
+      <text x="155" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">태스크 종료 후 서버 하나가 빈다</text>
 
       <path d="M264 82 C 300 79, 330 84, 366 81" fill="none" stroke="#3d3a34" stroke-width="2.2" marker-end="url(#pb1)"/>
       <text x="315" y="70" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">10분</text>
 
       <path d="M372 52 C 442 49, 512 54, 578 50 C 581 74, 580 92, 579 112 C 512 115, 442 111, 374 113 C 371 92, 372 70, 372 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
       <text x="475" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">00:10  서버 3 → 2</text>
-      <text x="475" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">빈 서버를 치운다</text>
+      <text x="475" y="101" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">빈 서버를 종료한다</text>
 
       <path d="M40 144 C 240 140, 460 148, 664 143" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8"/>
 
-      <text x="38" y="182" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#8a8272">아침: 공급을 먼저 만든다</text>
+      <text x="38" y="182" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#8a8272">아침: 서버를 먼저 늘린다</text>
 
       <path d="M52 196 C 122 193, 192 198, 258 194 C 261 218, 260 236, 259 256 C 192 259, 122 255, 54 257 C 51 236, 52 214, 52 196 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6"/>
       <text x="155" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">05:50  서버 2 → 3</text>
-      <text x="155" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">자리를 먼저 만든다</text>
+      <text x="155" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">서버 용량을 먼저 확보한다</text>
 
       <path d="M264 226 C 300 223, 330 228, 366 225" fill="none" stroke="#3d3a34" stroke-width="2.2" marker-end="url(#pb1)"/>
       <text x="315" y="214" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">10분</text>
 
       <path d="M372 196 C 442 193, 512 198, 578 194 C 581 218, 580 236, 579 256 C 512 259, 442 255, 374 257 C 371 236, 372 214, 372 196 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6"/>
       <text x="475" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2f2c26">06:00  태스크 2 → 3</text>
-      <text x="475" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">준비된 서버에 놓는다</text>
+      <text x="475" y="245" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">준비된 서버에서 실행한다</text>
 
-      <text x="350" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">줄일 땐 수요 → 공급,  늘릴 땐 공급 → 수요</text>
+      <text x="350" y="290" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">밤에는 태스크 → 서버, 아침에는 서버 → 태스크</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 1. 순서를 틀리면 드레이닝 중 강제 종료 또는 자리 없는 배치가 된다</div>
+<div class="obsv-figcap">그림 1. 태스크 종료와 서버 준비에 필요한 시간을 예약 사이에 둬요</div>
 
-<p>밤에는 태스크가 먼저 빠져야 서버를 안전하게 뺄 수 있어요. 반대로 하면 드레이닝 중에 서버가 죽습니다. 아침에는 서버가 먼저 준비돼야 태스크를 놓을 수 있고요. 반대로 하면 자리 없는 곳에 배치를 시도해서 <b>아침에 알람이 울립니다.</b></p>
+<p>밤에는 태스크가 종료된 뒤 빈 서버를 줄여야 실행 중인 태스크가 함께 종료되는 일을 피할 수 있어요. 아침에는 서버가 준비되기 전에 태스크를 늘리면 배치할 용량이 부족해 알람이 발생할 수 있고요. 두 예약 사이에 둔 간격은 각각 10분이에요.</p>
 
-<h2>2. 세 번째 조치: 확률이 아니라 구조였다</h2>
+<h2>2. 태스크와 서버의 종료 대상이 다를 수 있어요</h2>
 
-<p>여기까지 걸고 나니 남는 문제가 있었어요. 자정에 태스크가 빠져서 서버 하나가 비는데, <b>ASG가 어느 서버를 고를지 모릅니다.</b></p>
+<p>예약 시각을 맞춰도 종료 대상이 일치한다는 보장은 없었어요. 자정에 태스크가 줄어 서버 하나가 비더라도, ASG(Auto Scaling Group)가 그 서버를 종료 대상으로 고르는지는 별도 문제예요.</p>
 
-<p>처음엔 "1/3 확률로 맞고 2/3 확률로 틀리겠네"라고 썼어요. 다시 보니 <span class="obsv-mark">확률 문제가 아니었습니다.</span></p>
+<p>처음에는 "1/3 확률로 맞고 2/3 확률로 틀리겠네"라고 생각했어요. 하지만 서버를 무작위로 고르는 구성이 아니어서 그런 확률을 적용할 근거가 없었어요.</p>
 
-<p>둘은 서로 다른 기준으로 고릅니다.</p>
+<p>ECS와 ASG는 서로 다른 기준으로 종료 대상을 골라요.</p>
 
 <div class="obsv-code">ECS   종료할 태스크를 고른다   AZ 균형 등 자체 판단
 ASG   종료할 서버를 고른다     종료 정책 — 가장 최근에 뜬 것</div>
 
-<p>그리고 <b>가장 최근에 뜬 서버는 항상 그날 아침에 추가된 3번째 서버</b>입니다. 게다가 1편에서 본 그 배치 제약 때문에 아침에 추가된 태스크는 반드시 그 서버에 올라가요. 나머지 두 대는 이미 태스크가 있으니 다른 선택지가 없습니다.</p>
+<p>아래는 아침 이후 서버 교체나 태스크 재배치가 없었다고 본 구성이에요. 가장 최근에 시작된 서버는 아침에 추가한 3번째 서버예요. 서버마다 같은 서비스의 태스크를 하나씩만 놓는 배치 제약 때문에, 기존 두 대에 태스크가 있는 상태라면 아침에 추가한 태스크는 새 서버에 배치돼요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -108,33 +109,33 @@ ASG   종료할 서버를 고른다     종료 정책 — 가장 최근에 뜬 �
 
       <path d="M466 62 C 522 59, 578 64, 640 60 C 643 84, 642 102, 641 122 C 578 125, 522 121, 468 123 C 465 102, 466 80, 466 62 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="3"/>
       <text x="553" y="90" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">서버 3</text>
-      <text x="553" y="111" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">05:50 에 뜬 가장 최근</text>
+      <text x="553" y="111" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">05:50에 시작한 최신 서버</text>
 
       <path d="M300 186 C 380 180, 450 156, 496 130" fill="none" stroke="#4a7fb5" stroke-width="2.4" marker-end="url(#pb2)"/>
       <text x="288" y="186" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2f2c26">배치 제약</text>
-      <text x="288" y="207" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">아침 태스크는 여기밖에 갈 곳이 없다</text>
+      <text x="288" y="207" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">아침 태스크는 새 서버에 배치</text>
 
       <path d="M300 250 C 430 246, 540 200, 588 132" fill="none" stroke="#e5a33c" stroke-width="2.4" marker-end="url(#pb2)"/>
       <text x="288" y="250" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">종료 정책</text>
-      <text x="288" y="271" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">ASG 는 가장 최근 서버를 고른다</text>
+      <text x="288" y="271" text-anchor="end" font-family="Menlo, monospace" font-size="11" fill="#8a8272">ASG는 가장 최근 서버를 선택</text>
 
-      <text x="350" y="312" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 두 규칙이 같은 서버를 가리킨다. 우연이 아니라 구조</text>
+      <text x="350" y="312" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">새 태스크가 있는 서버가 ASG 종료 후보가 돼요</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 2. ASG 가 고를 서버에는 거의 항상 태스크가 있다</div>
+<div class="obsv-figcap">그림 2. 태스크를 추가한 서버와 ASG 종료 후보가 겹칠 수 있어요</div>
 
-<p>즉 ASG가 고를 서버에는 <b>거의 항상 태스크가 있습니다.</b> ECS가 하필 그 서버의 태스크를 골랐을 때만 우연히 맞아떨어지는 거예요. 매일 밤 불필요한 태스크 재시작이 한 번 일어나고 그 사이 몇 분간 태스크가 하나 부족해집니다.</p>
+<p>이 상태에서 ECS가 다른 서버의 태스크를 종료하면, ASG의 종료 후보에는 여전히 태스크가 있어요. 그대로 서버를 종료하면 불필요한 태스크 재시작이 발생하고 몇 분간 태스크가 하나 부족해질 수 있어요. 매일 같은 일이 발생한다고 단정할 수는 없지만, 두 종료 대상이 일치하도록 할 방법은 필요했어요.</p>
 
-<p>그래서 세 번째 조치가 <b>종료 보호</b>입니다. 태스크가 있는 서버를 ASG의 후보 목록에서 빼버리면 종료 정책이 무엇이든 남은 후보는 빈 서버 하나뿐이라 <span class="obsv-mark">선택이 결정적이 됩니다.</span></p>
+<p>그래서 세 번째 조치로 종료 보호를 적용했어요. 태스크가 있는 서버를 ASG 축소 대상에서 제외하고, 태스크가 없는 서버의 보호는 ECS가 해제하도록 하는 구성이에요. 이 동작이 확인돼야 빈 서버만 종료 후보로 남길 수 있어요.</p>
 
-<h2>3. 그런데 그게 무력하면 앞의 것까지 망가진다</h2>
+<h2>3. 종료 보호가 해제되지 않으면 서버가 남아요</h2>
 
-<p>여기서 문제를 발견했어요. 종료 보호에는 전제 조건이 있는데, <b>이 서비스가 그 조건을 만족하는지 확실하지 않습니다.</b></p>
+<p>적용 당시에는 ECS가 이 서비스의 태스크 상태에 따라 서버 보호를 관리하는지 확실하지 않았어요. 보호 설정을 켜는 것과 빈 서버의 보호가 자동으로 해제되는 것은 따로 확인해야 했어요.</p>
 
-<p>더 중요한 건 <b>실패했을 때 중립이 아니라는</b> 겁니다.</p>
+<p>보호 해제가 동작하지 않으면 서버 축소 자체가 막힐 수 있어요.</p>
 
-<p>인스턴스 축소 보호는 ECS 기능이 아니라 <b>ASG 자체 기능</b>이에요. 우리는 조치할 때 서버 3대에 보호를 손으로 걸었습니다. ECS가 그 플래그를 관리하지 않으면 걸어둔 값이 <b>영원히 그대로 남습니다.</b></p>
+<p>인스턴스 축소 보호는 ASG의 기능이에요. 조치할 때 서버 3대에 보호를 수동으로 설정했어요. ECS가 그 플래그를 관리하지 않으면 태스크가 사라진 뒤에도 보호가 남을 수 있어요.</p>
 
 <div class="obsv-code">00:00   태스크 3 → 2                    ①  동작한다
 00:10   ASG 축소 시도 → 전부 보호됨      ②  차단된다
@@ -143,22 +144,22 @@ ASG   종료할 서버를 고른다     종료 정책 — 가장 최근에 뜬 �
 결과:   태스크 2 / 서버 3
         절감액 전액 소멸.  그리고 Slack 은 조용하다</div>
 
-<p>세 번째 조치가 무력하면 <b>두 번째까지 망가집니다.</b> 안 켠 상태보다 나쁜 구성이고 그 상태를 우리가 만든 거예요. 비용을 지키려고 한 작업이 비용을 전부 날리는 방향으로 실패할 수 있었습니다.</p>
+<p>이 경우 태스크 예약은 실행돼도 서버 예약이 목표한 축소는 완료되지 않아요. 야간 서버 한 대를 줄여 얻으려던 절감 효과도 없어져요. 종료 보호를 추가한 뒤에는 서버 수가 실제로 줄었는지까지 확인해야 했어요.</p>
 
-<h2>4. 그 실패는 원래 알람이 잡지 못한다</h2>
+<h2>4. 배치 실패 알람으로는 남는 서버를 감지하지 못해요</h2>
 
-<p>이 대목에서 위험하다고 느꼈어요. 1편의 사고를 잡아낸 그 알람은 <b>배치 실패</b>를 감지합니다. 그런데 지금 상황은 자리가 없는 게 아니라 <b>자리가 남는</b> 거예요.</p>
+<p>1편에서 문제를 감지한 알람은 태스크 배치 실패를 확인해요. 서버가 부족할 때는 알림이 오지만, 태스크보다 서버가 많이 남는 상황은 감지 대상이 아니에요.</p>
 
-<p>배치 실패가 아니니 알람은 울리지 않습니다. 그리고 저는 조치 문서에 이렇게 써뒀어요.</p>
+<p>배치 실패가 없다는 이유만으로 조치 성공을 판단할 수는 없었어요. 조치 문서에 적었던 다음 문장도 그 구분이 부족했어요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">⚠️ 참인데 위험한 문장</div>
+  <div class="obsv-ct">⚠️ 알림이 없다는 것만으로는 부족해요</div>
   <b>"Slack 이 조용하면 알람도 해결된 것이다."</b><br><br>
-  틀린 문장은 아닙니다. 그런데 Slack 이 조용한 건 <b>배치 실패가 없다는 증거일 뿐</b>, 조치가 성공했다는 증거가 아니에요. 실패해도 조용하니까요.<br>
-  검증 절차를 적으면서 스스로 판정을 흐리는 문장을 넣어둔 셈이었습니다.
+  알림이 없다는 것만으로 배치 실패가 없다고 확정하거나 서버 축소가 성공했다고 판단할 수는 없어요.<br>
+  목표한 서버 수와 실제 서버 수를 별도로 확인해야 해요.
 </div>
 
-<p>그러니까 1편에서 며칠간 아무도 몰랐던 사고를 고치는 작업이, <span class="obsv-mark">감지 장치가 없는 상태에서 같은 모양의 새 사고를 만들 수 있는</span> 자리에 와 있었던 거예요. 방향만 반대였습니다.</p>
+<p>1편에서는 태스크에 비해 서버가 부족했어요. 이번에 추가한 종료 보호는 반대로 서버가 남는 상황을 만들 수 있었고, 당시 배치 실패 알람으로는 그 차이를 확인할 수 없었어요.</p>
 
 <div class="obsv-fig">
   <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -180,56 +181,56 @@ ASG   종료할 서버를 고른다     종료 정책 — 가장 최근에 뜬 �
 
       <path d="M468 150 C 532 147, 596 152, 656 148 C 659 174, 658 194, 657 214 C 596 217, 532 213, 470 215 C 467 194, 468 170, 468 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6"/>
       <text x="562" y="176" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">남는 쪽</text>
-      <text x="562" y="197" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">서버 &gt; 태스크 → 비용 누출</text>
+      <text x="562" y="197" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">서버 &gt; 태스크 → 비용 증가</text>
 
       <text x="138" y="248" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">알람 있음 ✅</text>
-      <text x="138" y="272" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">1편의 사고를 잡아낸 그것</text>
+      <text x="138" y="272" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">1편의 배치 실패 알람</text>
 
       <text x="562" y="248" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">알람 없음 ❌</text>
-      <text x="562" y="272" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">조용히 돈만 샌다</text>
+      <text x="562" y="272" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">서버가 남아도 알림 없음</text>
     </g>
   </svg>
 </div>
-<div class="obsv-figcap">그림 3. 불변식은 양쪽으로 깨지는데, 한쪽만 보고 있었다</div>
+<div class="obsv-figcap">그림 3. 서버 부족과 서버 초과는 감지 조건이 달라요</div>
 
-<h2>5. 유료 결정을 기다릴 필요가 없었다</h2>
+<h2>5. ASG 목표 용량과 실제 인스턴스 수를 비교했어요</h2>
 
-<p>남는 쪽을 잡는 알람은 목록에 아예 없었어요. 그래서 만들었는데 여기서 뜻밖의 소득이 있었습니다.</p>
+<p>서버가 목표 수보다 많이 남는 상황을 감지하는 알람을 추가했어요.</p>
 
-<p>태스크 수와 서버 수를 비교하려면 컨테이너 단위 지표가 필요하다고 생각해서 유료 모니터링 기능 도입 결정을 기다리고 있었어요. 그런데 <b>이 방향에는 그게 필요 없었습니다.</b></p>
+<p>처음에는 태스크 수와 서버 수를 비교하려고 컨테이너 단위 지표를 제공하는 유료 모니터링 기능의 도입 결정을 기다렸어요. 하지만 ASG가 목표 용량까지 줄지 못한 상황은 ASG 지표만으로 확인할 수 있었어요.</p>
 
 <div class="obsv-code">IF( 실제 서버 수 - 목표 서버 수 &gt; 0,  1,  0 )
    30분 이상 지속되면 알림</div>
 
-<p>ASG의 <code>GroupDesiredCapacity</code>와 <code>GroupInServiceInstances</code>만으로 잡힙니다. <span class="obsv-mark">ASG 안에서 목표와 실제가 어긋난 것</span>이니 태스크 쪽을 볼 필요조차 없었어요. 무료 그룹 지표고 며칠 전에 이미 켜둔 것이었습니다.</p>
+<p>ASG의 <code>GroupDesiredCapacity</code>는 목표 용량이고, <code>GroupInServiceInstances</code>는 서비스 중인 인스턴스 수예요. 두 값으로 목표보다 서버가 많이 남았는지 비교했어요. 사용한 그룹 지표는 별도 요금 없이 제공되며, 며칠 전에 이미 활성화해 둔 상태였어요.</p>
 
-<p>부족한 쪽 알람과 짝을 이루면 등식이 <b>양방향으로 강제</b>됩니다. 30분 지연을 두는 이유는 정상 전환 중(종료 대기, 시작 대기)에 잠깐 어긋나기 때문이에요. 실측 전환 시간이 6분쯤이라 여유가 충분합니다.</p>
+<p>이 알람은 배치 실패 알람에 더해 서버 축소가 끝나지 않은 상황을 감지해요. 다만 태스크 수를 직접 비교하지 않으므로 서버 수와 태스크 수가 항상 같다는 보장은 아니에요. 종료나 시작을 기다리는 정상 전환 구간을 제외하려고 30분 동안 초과 상태가 이어질 때 알리도록 했어요. 당시 전환 시간은 약 6분으로 기록했지만, 이를 뒷받침할 실측 로그는 확인하지 못했어요.</p>
 
-<h2>6. 그날 밤 판정했다</h2>
+<h2>6. 첫날 관찰 결과와 남은 확인 범위</h2>
 
-<p>조치는 세 개 다 적용했습니다. 설정만 바꾸는 작업이라 재시작 0회, 다운타임 0초였어요. 다만 세 개가 함께 도는 첫 밤이라 새벽에 직접 봤습니다.</p>
+<p>당시에는 세 가지 조치를 모두 적용했고, 설정 변경에 따른 재시작은 0회, 다운타임은 0초였다고 기록했어요. 첫날 야간 축소와 아침 복귀 결과는 아래와 같이 남겼어요.</p>
 
 <div class="obsv-code">00:05   보호 플래그 하나가 False      ← ECS 가 빈 서버의 보호를 풀었다
         서버 2 / 태스크 2                    성공
 00:30   최종 상태 일치
 06:00   서버 3 / 태스크 3 · 알람 0건         아침 복귀도 정상</div>
 
-<p>보호 하나가 풀렸다는 건 <b>ECS가 빈 서버를 알아보고 플래그를 내려줬다</b>는 뜻입니다. 문서에 "미확인"으로 적어뒀던 전제가 참이었어요.</p>
+<p>이 기록에서는 빈 서버의 보호 플래그가 해제된 것을 ECS의 보호 관리가 동작한 근거로 봤어요. 다만 이 결과를 뒷받침할 시각별 실행 로그는 확인하지 못했어요. 특히 00:05에 서버 2대라고 적힌 결과와 00:10 서버 축소 예약 사이의 시점 차이는 추가 확인이 필요해요.</p>
 
 <div class="obsv-callout">
-  <div class="obsv-ct">🌙 되돌릴 준비를 해뒀고, 쓰지 않았다</div>
-  세 번째 조치가 무력할 가능성이 있어서 즉시 롤백 절차와 근거까지 미리 적어뒀습니다. ASG 는 목표치를 향해 계속 재조정하니 보호를 풀면 그 자리에서 축소가 완료돼 <b>그날 밤 절감을 회수</b>할 수 있고, 대가인 재시작 몇 분은 야간 태스크 2개가 처리량이 아니라 <b>이중화</b>를 위한 것이라 그만큼 쌉니다.<br><br>
-  결과적으로 안 썼지만, <b>새벽 0시 5분에 졸면서 판단하지 않았다는 게 그 준비가 낸 효과</b>였어요. 성공했으니 필요 없었다가 아니라, 실패했어도 5분이면 끝났을 상태였다는 뜻입니다.
+  <div class="obsv-ct">🌙 보호 해제에 실패할 때의 롤백 준비</div>
+  보호 해제가 동작하지 않을 가능성에 대비해 수동으로 보호를 해제하는 롤백 절차를 적어뒀어요. ASG가 목표 용량으로 다시 조정할 수 있도록 하는 절차였어요. 당시 야간 태스크 2개는 처리량보다 이중화를 위한 구성으로 판단해, 롤백 시 몇 분간의 태스크 재시작도 함께 검토했어요.<br><br>
+  당시 기록에 따르면 이 절차는 쓰지 않았어요. 0시 5분 관찰 시점에 새로 판단하지 않도록 준비한 절차이며, 실패 시 5분 안에 끝난다는 실제 검증 결과는 아니에요.
 </div>
 
-<p>그리고 이 결과가 하나를 더 알려줍니다. 종료 보호와 자동 조절은 <b>같은 전제</b>에 걸려 있어요. ECS가 이 서비스의 태스크를 용량 공급자에 연결해서 보고 있는가 하는 전제입니다. 보호가 동작했다는 건 그 연결이 있다는 뜻이니, <span class="obsv-mark">예약을 걸지 않고 자동 조절에 맡기는 더 단순한 구조로 갈 길도 같이 열렸습니다.</span></p>
+<p>종료 보호가 동작했다는 관찰은 용량 공급자, 즉 ECS가 태스크에 필요한 서버 용량을 관리하는 연결도 살펴볼 이유가 됐어요. 다만 보호 해제 결과만으로 자동 용량 조절까지 정상 동작한다고 확정할 수는 없어요.</p>
 
-<p>확정은 아니고 이제 <b>관찰해볼 만해진</b> 겁니다. 그동안은 예약이 상한을 고정해버려서 자동 조절이 어떻게 동작하는지 관찰 자체가 불가능했어요. "검증된 적이 없어서 안 쓴다"가 영구히 자기 충족되는 구조였는데 실험 하나가 그 순환을 끊었습니다.</p>
+<p>예약으로 상한을 고정한 상태에서는 자동 조절 동작을 충분히 관찰하기 어려웠어요. 예약 없이 자동 조절에 맡기는 구성은 별도 관찰 대상으로 남겼고, 이번 야간 예약 조치로 그 검증까지 끝났다고 보지는 않았어요.</p>
 
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>
-  <b>고치는 작업이 같은 종류의 사고를 만들 수 있습니다. 1편은 자리가 없어서 조용했고, 이번엔 자리가 남아서 조용할 차례였어요. 알람은 한쪽만 보고 있었습니다.</b><br><br>
-  불변식은 양방향으로 깨지는데 감지는 보통 한 방향만 붙습니다. 그리고 돈이 새는 방향은 아무도 아프지 않아서 더 오래 안 보여요. <b>설계의 마지막 조각은 설정이 아니라 감시입니다.</b>
+  태스크와 서버의 예약 순서를 맞추고, 실행 중인 태스크가 있는 서버에는 종료 보호를 적용했어요. 보호가 해제되지 않아 서버가 남는 상황은 ASG 목표 용량과 실제 인스턴스 수를 비교하는 알람으로 감지하도록 했어요.<br><br>
+  첫날 축소와 아침 복귀는 정상이라고 기록했지만, 시각별 실행 로그와 약 6분이라는 실측 시간의 근거는 확인하지 못했어요. 자동 용량 조절도 별도 검증 대상으로 남아 있어요.
 </div>
 
 </div>
