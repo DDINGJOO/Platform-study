@@ -1,0 +1,44 @@
+# 재현: 수정 전 ./lab up 의 대기 조건(노드 Ready + DaemonSet/Deployment rollout)만으로 기다리면 어떻게 되나
+# ./lab stop 으로 4대를 끈 직후, VM 만 다시 켜고 수정 전 조건으로 기다린 뒤 바로 NodePort 를 부른다
+mac$ date +%T; limactl start --tty=false k8s-master >/dev/null 2>&1; for n in k8s-worker1 k8s-worker2 k8s-worker3; do limactl start --tty=false $n >/dev/null 2>&1 & done; wait; date +%T
+21:27:45
+21:28:09
+
+master$ kubectl wait --for=condition=Ready nodes --all --timeout=300s && kubectl -n kube-system rollout status daemonset/calico-node --timeout=300s && kubectl -n kube-system rollout status deployment/coredns --timeout=300s; date +%T
+node/k8s-master condition met
+node/k8s-worker1 condition met
+node/k8s-worker2 condition met
+node/k8s-worker3 condition met
+Waiting for daemon set "calico-node" rollout to finish: 3 of 4 updated pods are available...
+Waiting for daemon set "calico-node" rollout to finish: 0 of 4 updated pods are available...
+Waiting for daemon set "calico-node" rollout to finish: 1 of 4 updated pods are available...
+Waiting for daemon set "calico-node" rollout to finish: 2 of 4 updated pods are available...
+Waiting for daemon set "calico-node" rollout to finish: 3 of 4 updated pods are available...
+daemon set "calico-node" successfully rolled out
+deployment "coredns" successfully rolled out
+21:28:32
+
+mac$ for ip in 192.168.64.3 192.168.64.4 192.168.64.5; do curl -s -m3 -o /dev/null -w "$ip:30081 %{http_code}\n" http://$ip:30081; done; date +%T
+192.168.64.3:30081 200
+192.168.64.4:30081 200
+192.168.64.5:30081 200
+21:28:32
+
+master$ kubectl get pods -n kube-system -l k8s-app=calico-node; kubectl get pods -l app=web; date +%T
+NAME                READY   STATUS    RESTARTS      AGE
+calico-node-gc95j   1/1     Running   1 (27s ago)   8m52s
+calico-node-kn8n4   1/1     Running   1 (28s ago)   8m52s
+calico-node-lj6rx   1/1     Running   1 (27s ago)   8m52s
+calico-node-tvx2h   1/1     Running   1 (39s ago)   8m56s
+NAME                   READY   STATUS    RESTARTS      AGE
+web-844546cf5c-9mqds   1/1     Running   1 (28s ago)   118s
+web-844546cf5c-kdbp9   1/1     Running   1 (27s ago)   118s
+web-844546cf5c-lsfz8   1/1     Running   1 (27s ago)   118s
+21:28:32
+
+mac$ sleep 60; for ip in 192.168.64.3 192.168.64.4 192.168.64.5; do curl -s -m3 -o /dev/null -w "$ip:30081 %{http_code}\n" http://$ip:30081; done; date +%T
+192.168.64.3:30081 200
+192.168.64.4:30081 200
+192.168.64.5:30081 200
+21:29:32
+

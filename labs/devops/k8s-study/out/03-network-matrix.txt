@@ -1,0 +1,22 @@
+worker1$ ip -4 -br addr
+lo               UNKNOWN        127.0.0.1/8 
+eth0             UP             192.168.104.3/24 metric 200 
+lima1            UP             192.168.64.3/24 metric 100 
+tunl0@NONE       UNKNOWN        10.244.194.64/32 
+
+master$ ping -c2 -W2 192.168.104.3 | tail -2   # worker1 eth0 (user-v2)
+2 packets transmitted, 2 received, 0% packet loss, time 1051ms
+rtt min/avg/max/mdev = 0.240/0.252/0.264/0.012 ms
+
+master$ ping -c2 -W2 192.168.64.3 | tail -2    # worker1 lima1 (vzNAT)
+2 packets transmitted, 0 received, 100% packet loss, time 1023ms
+
+
+mac$ ping -c2 -t3 192.168.64.3 | tail -2    # Mac -> worker1 lima1 (vzNAT)
+2 packets transmitted, 2 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 0.340/0.344/0.347/0.003 ms
+
+mac$ ping -c2 -t3 192.168.104.3 | tail -2   # Mac -> worker1 eth0 (user-v2)
+--- 192.168.104.3 ping statistics ---
+2 packets transmitted, 0 packets received, 100.0% packet loss
+

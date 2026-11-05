@@ -1,0 +1,19 @@
+# VM 부팅 멈춤 (2026-11-04 21:55~22:05, 작업 세션의 명령 기록에서 그대로 옮김)
+# ./lab stop -> ./lab up 회귀 시험 중, 다른 3대는 15초 안에 떴는데 worker1 의 limactl start 만 10분 넘게 끝나지 않았다.
+
+mac$ date +%T; ps -o pid,etime,command -ax | grep -E "[l]imactl start"
+22:05:32
+47717    09:49 limactl start --tty=false --timeout 15m k8s-worker1
+
+mac$ tail -2 .lab/logs/k8s-worker1.log
+time="2026-11-04T21:55:45+09:00" level=info msg="[hostagent] Starting VZ (hint: to watch the boot progress, see `~/.lima/k8s-worker1/serial*.log`)"
+time="2026-11-04T21:55:45+09:00" level=info msg="[hostagent] [VZ] - vm state change: running"
+
+mac$ ls -la ~/.lima/k8s-worker1/ | grep serial
+-rw-------@  1 <사용자>  staff            0 Nov  4 21:55 serialv.log
+
+# 강제로 끄고 다시 켰다
+mac$ limactl stop -f k8s-worker1; S=$(date +%s); limactl start --tty=false --timeout 5m k8s-worker1 >/dev/null 2>&1; echo "start exit=$? $(( $(date +%s) - S ))s"; head -c 300 ~/.lima/k8s-worker1/serialv.log | tr -d '\r' | head -3
+start exit=0 17s
+
+Ubuntu 24.04.5 LTS lima-k8s-worker1 hvc0

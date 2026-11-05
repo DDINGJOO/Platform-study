@@ -1,0 +1,32 @@
+mac$ cat shared/web/index.html
+<h1>Hello from Mac - v1</h1>
+
+master$ kubectl apply -f /lab/examples/web-volume.yaml && kubectl rollout status deploy/web --timeout=120s
+deployment.apps/web created
+service/web created
+Waiting for deployment "web" rollout to finish: 0 of 3 updated replicas are available...
+Waiting for deployment "web" rollout to finish: 1 of 3 updated replicas are available...
+Waiting for deployment "web" rollout to finish: 2 of 3 updated replicas are available...
+deployment "web" successfully rolled out
+
+master$ kubectl get pods -l app=web -o wide | awk '{print $1, $3, $7}' | column -t
+NAME                  STATUS   NODE
+web-844546cf5c-9mqds  Running  k8s-worker3
+web-844546cf5c-kdbp9  Running  k8s-worker1
+web-844546cf5c-lsfz8  Running  k8s-worker2
+
+mac$ for ip in 192.168.64.3 192.168.64.4 192.168.64.5; do curl -s http://$ip:30081; done
+<h1>Hello from Mac - v1</h1>
+<h1>Hello from Mac - v1</h1>
+<h1>Hello from Mac - v1</h1>
+
+mac$ echo '<h1>Hello from Mac - v2 (Mac 에디터에서 고침)</h1>' > shared/web/index.html
+
+mac$ for ip in 192.168.64.3 192.168.64.4 192.168.64.5; do curl -s http://$ip:30081; done
+<h1>Hello from Mac - v2 (Mac 에디터에서 고침)</h1>
+<h1>Hello from Mac - v2 (Mac 에디터에서 고침)</h1>
+<h1>Hello from Mac - v2 (Mac 에디터에서 고침)</h1>
+
+worker2$ findmnt -n -o TARGET,SOURCE,FSTYPE /lab
+/lab   lima-e8a9ec3b02612c27 virtiofs
+

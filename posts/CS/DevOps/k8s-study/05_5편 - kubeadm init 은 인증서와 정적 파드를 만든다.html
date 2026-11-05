@@ -1,0 +1,392 @@
+<!-- ============================================================
+  k8s 스터디 5편: kubeadm init 은 인증서와 정적 파드를 만든다
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 복사했다.
+============================================================ -->
+<!-- lead: kubeadm init 한 줄이 80줄 넘게 출력했는데, 대부분이 인증서와 파일을 만들었다는 보고였어요. init 이 만드는 인증서·kubeconfig·정적 파드와, kubeadm join 이 토큰과 CA 해시로 워커와 마스터를 서로 확인하는 과정을 실제 출력으로 따라갔어요. -->
+<!-- tags: kubeadm init, kubeadm join, TLS Bootstrap, 정적 파드, 인증서 SAN -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 5편</div>
+  1편. 클러스터는 API 서버를 가운데 둔 프로그램 여러 개다<br>
+  2편. kubectl apply 한 번이 파드가 되기까지<br>
+  3편. 노드를 VM 으로 만들고 네트워크를 두 개 붙였다<br>
+  4편. swap 을 켜면 kubelet 이 시작하지 않는다<br>
+  <b>5편. kubeadm init 은 인증서와 정적 파드를 만든다</b> &larr; 지금 이 글<br>
+  6편. kubeadm 은 파드 네트워크를 만들지 않는다<br>
+  7편. 껐다 켠 직후의 Ready 는 재부팅 전 상태일 수 있다
+</div>
+
+<p><code style="font-family:Menlo,monospace;font-size:14px;">./lab up</code> 이 마스터 VM 에서 실행한 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm init</code> 부분만 로그에서 잘라 봤어요. 명령은 한 줄인데 출력은 80줄이 넘었습니다. 줄마다 <code style="font-family:Menlo,monospace;font-size:14px;">[certs]</code>, <code style="font-family:Menlo,monospace;font-size:14px;">[kubeconfig]</code> 같은 단계 이름이 앞에 붙어 있었고, 가장 많은 것은 인증서를 만들었다는 <code style="font-family:Menlo,monospace;font-size:14px;">[certs]</code> 15줄이었어요. 그다음이 <code style="font-family:Menlo,monospace;font-size:14px;">[bootstrap-token]</code> 8줄, 구성 요소 상태를 확인한 <code style="font-family:Menlo,monospace;font-size:14px;">[control-plane-check]</code> 7줄, <code style="font-family:Menlo,monospace;font-size:14px;">[kubeconfig]</code> 6줄 순이었습니다. 컨트롤 플레인을 띄우는 명령인데, 출력의 상당 부분은 프로그램을 실행했다는 말이 아니라 파일을 만들었다는 보고였어요.</p>
+<p>이 글은 그 출력을 위에서부터 읽어 내려가요. 질문은 두 가지예요. <b>kubeadm init 한 줄은 무엇을 만드는가. 그리고 kubeadm join 은 처음 만나는 워커와 마스터가 서로를 무엇으로 믿게 하는가.</b> 실습 환경은 Apple Silicon Mac 위의 Lima VM 4대(마스터 1대, 워커 3대)이고, 쿠버네티스는 v1.37.2 예요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; init 에 넘긴 설정 파일의 각 줄은 없으면 무엇이 잘못될까?<br>
+&middot; init 출력 맨 앞의 경고 두 줄은 무시해도 될까?<br>
+&middot; API 서버가 아직 없는데, API 서버 파드는 누가 띄울까?<br>
+&middot; 처음 만나는 워커와 마스터는 서로를 무엇으로 확인할까?<br>
+&middot; Mac 에서 IP 로 접속하면서 인증서는 왜 이름으로 확인할까?</p>
+
+<h2>1. 기본값에 맡기면 NIC 두 개 중 엉뚱한 쪽이 골라질 수 있다</h2>
+
+<p>kubeadm init 은 플래그로도 설정을 받지만, 우리는 설정 파일 하나를 만들어 <code style="font-family:Menlo,monospace;font-size:14px;">--config</code> 로 넘겼어요. 마스터 준비 스크립트 <code style="font-family:Menlo,monospace;font-size:14px;">scripts/master-init.sh</code> 가 VM 안에서 이 파일을 쓰고 바로 init 을 실행합니다. 마스터에 남은 파일을 주석만 빼고 옮기면 이래요.</p>
+
+<div class="obsv-code">master$ sudo cat /etc/kubernetes/kubeadm-config.yaml
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 192.168.104.1
+  bindPort: 6443
+nodeRegistration:
+  name: k8s-master
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: k8s-lab
+kubernetesVersion: v1.37.2
+apiServer:
+  certSANs:
+  - k8s-master
+  - 192.168.64.2
+  - 127.0.0.1
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd</div>
+<p>&rarr; 노드 한 대에 대한 설정(InitConfiguration), 클러스터 전체 설정(ClusterConfiguration), kubelet 설정(KubeletConfiguration) 세 문서를 <code style="font-family:Menlo,monospace;font-size:14px;">---</code> 로 이어 붙인 파일이에요. 192.168.104.1 과 192.168.64.2 는 스크립트가 실행될 때 마스터의 eth0 과 lima1 에서 읽어 넣은 값입니다.</p>
+
+<p>한 줄씩 보면 대부분은 "이 값을 비워 두면 무엇이 잘못 잡히나"에 대한 답이에요.</p>
+<p><b>advertiseAddress</b> 는 API 서버가 자기 주소라고 알리는 IP 이고, 워커는 join 할 때 이 주소로 접속해요. 비워 두면 kubeadm 은 기본 게이트웨이가 연결된 NIC(네트워크 인터페이스)에서 IP 를 고릅니다. 공식 문서는 게이트웨이가 둘 이상이면 처음 찾은 것을 쓰고, 그 순서는 OS 와 커널 버전에 따라 다를 수 있다고 적어요. 우리 VM 에는 NIC 가 둘 있어요. VM 끼리 통하는 eth0(192.168.104.0/24)과, Mac 에서 VM 으로는 닿지만 VM 끼리는 통하지 않는 lima1(192.168.64.0/24)입니다. lima1 쪽 IP 가 골라지면 워커는 닿지 않는 주소에서 API 서버를 찾게 돼요. <span class="obsv-mark">NIC 가 둘인 VM 에서는 주소를 기본값에 맡기지 않고 직접 적어야 했어요.</span></p>
+<p><b>nodeRegistration.name</b> 은 노드 객체의 이름이에요. 비워 두면 머신의 호스트 이름이 쓰이는데, Lima 가 붙인 호스트 이름은 <code style="font-family:Menlo,monospace;font-size:14px;">lima-k8s-master</code> 였어요. 이 이름은 kubelet 이 API 서버에 내미는 클라이언트 인증서의 CN(인증서 주인의 이름을 적는 칸)에도 들어갑니다. 워커도 join 명령 끝에 <code style="font-family:Menlo,monospace;font-size:14px;">--node-name k8s-worker1</code> 을 붙여 이름을 정했어요.</p>
+<p><b>certSANs</b> 는 API 서버 인증서에 더 넣을 이름이에요. Mac 의 kubectl 은 마스터의 lima1 IP 인 192.168.64.2 로 접속하는데, 이 IP 가 인증서에 없으면 TLS 검증 단계에서 접속이 거절돼요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: SAN (Subject Alternative Name)</div>
+  서버 인증서에 적힌 "이 인증서가 유효한 DNS 이름과 IP 목록"이에요. 클라이언트는 자기가 접속한 주소가 이 목록에 있는지 확인하고, 없으면 연결을 끊어요. kubeadm 은 기본 이름들을 알아서 넣고, certSANs 에 적은 이름을 거기에 더합니다.
+</div>
+<p><b>podSubnet · serviceSubnet</b> 은 파드와 서비스가 쓸 IP 대역이에요. 서비스 대역 10.96.0.0/12 는 kubeadm 기본값과 같은 값을 눈에 보이게 적어 둔 것이고, 파드 대역은 사정이 달랐어요. 공식 문서는 파드 네트워크가 호스트 네트워크와 겹치면 문제가 생기기 쉬우니, 겹칠 때는 다른 대역을 골라 init 과 네트워크 플러그인 설정 양쪽에 넣으라고 해요. Calico 설치 문서와 매니페스트 주석이 예로 드는 파드 대역 192.168.0.0/16 은 VM 대역 두 개를 모두 포함해요. 그래서 파드 대역은 겹치지 않는 10.244.0.0/16 으로 정했어요. Calico 가 이 값을 어떻게 따라가게 했는지는 6편에서 다룹니다.</p>
+<p><b>cgroupDriver: systemd</b> 는 사실상 효력이 없는 줄이에요. 4편에서 본 대로 v1.34 부터 kubelet 은 이 값을 무시하고 컨테이너 런타임(containerd)에게 cgroup 드라이버를 물어서 정해요. 실제로 효력이 있는 쪽은 containerd 설정의 <code style="font-family:Menlo,monospace;font-size:14px;">SystemdCgroup = true</code> 입니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 컨트롤 플레인 IP 는 처음에 정하고 바꾸지 않는다</div>
+  advertiseAddress 로 적은 IP 는 API 서버와 etcd 인증서 안에 들어가요(3절 출력). 공식 문서는 이 IP 를 바꾸려면 인증서를 새로 서명하고 해당 구성 요소를 재시작해야 한다고 적어요. 그래서 <code style="font-family:Menlo,monospace;font-size:14px;">./lab up</code> 은 이미 만든 클러스터를 다시 켤 때 설정 파일의 advertiseAddress 와 지금의 eth0 IP 를 비교합니다. 둘이 다르면 "마스터 IP 가 바뀌었습니다" 경고를 내고, 클러스터가 정상 동작하지 않으면 지우고 새로 만들라고 안내해요.
+</div>
+
+<h2>2. 경고 두 줄은 노드 이름을 DNS 에서 찾지 못했다는 뜻이었다</h2>
+
+<p>init 을 실행하면 맨 먼저 preflight(사전 점검)가 돌아요. 여기서 경고가 두 줄 나왔어요.</p>
+
+<div class="obsv-code">[preflight] Running pre-flight checks
+	[WARNING Hostname]: hostname "k8s-master" could not be reached
+	[WARNING Hostname]: hostname "k8s-master": lookup k8s-master on 127.0.0.53:53: server misbehaving</div>
+<p>&rarr; 노드 이름 k8s-master 를 DNS 로 조회했는데, VM 안의 DNS 리졸버(127.0.0.53)가 그런 이름을 모른다고 답했다는 뜻이에요.</p>
+
+<p>원인은 1절에서 정한 노드 이름이에요. k8s-master 는 kubeadm 에 넘긴 이름일 뿐 VM 의 호스트 이름(lima-k8s-master)이 아니고, 어느 DNS 에도 등록돼 있지 않아요. 공식 문서의 preflight 목록에서도 이 항목("host name cannot be reached via network lookup")은 오류가 아니라 경고로 분류돼 있어요. 오류로 분류된 항목이었다면 init 은 여기서 멈췄을 거예요.</p>
+<p>무시해도 된다고 판단한 근거는 두 가지예요. 첫째, 이 클러스터에는 노드를 이름으로 찾아가는 곳이 없어요. API 서버 주소, join 명령의 접속 주소, 각 노드 kubelet 의 <code style="font-family:Menlo,monospace;font-size:14px;">--node-ip</code> 가 모두 IP 로 적혀 있어요. 둘째, kubeadm 은 API 서버가 kubelet 에 접속할 때 쓸 주소의 우선순위를 <code style="font-family:Menlo,monospace;font-size:14px;">InternalIP,ExternalIP,Hostname</code> 으로 정해 둡니다. 공식 문서는 이 설정이 노드 호스트 이름이 해석되지 않는 환경에서도 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs</code> 같은 통신이 되게 하려는 것이라고 설명해요. 실제로 노드 4대가 모두 Ready 가 됐고, 워커의 join 에서도 같은 경고 두 줄이 나왔지만 조인은 끝까지 진행됐어요. <span class="obsv-mark">경고는 이름을 못 찾았다는 뜻이고, 이 클러스터는 이름이 아니라 IP 로 서로를 찾아요.</span></p>
+
+<h2>3. [certs] 15줄은 CA 셋과 그 CA 가 서명한 인증서다</h2>
+
+<p>컨트롤 플레인 구성 요소들은 서로 네트워크로 통신해요. API 서버는 etcd 에, controller-manager 와 scheduler 는 API 서버에, API 서버는 다시 각 노드의 kubelet 에 접속합니다. 상대를 확인할 수단이 없으면 같은 네트워크에 붙은 다른 프로그램이 API 서버나 kubelet 행세를 해도 구분할 수 없어요. 그래서 kubeadm 이 맨 먼저 하는 일이 클러스터 전용 CA 를 만드는 것이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: CA (Certificate Authority, 인증 기관)</div>
+  다른 인증서에 서명해 주는 인증서와 키 쌍이에요. 상대가 내민 인증서가 이 CA 의 서명을 받았는지 확인할 수 있으면, 그 상대를 클러스터가 인정한 구성 요소로 믿을 수 있어요. kubeadm 이 만든 CA 는 <code style="font-family:Menlo,monospace;font-size:14px;">/etc/kubernetes/pki/ca.crt</code> 와 <code style="font-family:Menlo,monospace;font-size:14px;">ca.key</code> 예요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/05/kubeadm-init.png" alt="마스터에서 kubeadm init 을 실행한 출력 앞부분. preflight 경고 2줄, [certs] 15줄, [kubeconfig] 6줄, etcd 와 control-plane 정적 파드 매니페스트 4개를 만든 줄이 차례로 나온다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. kubelet 을 켜기 전에 [certs] 15줄과 [kubeconfig] 6줄이 먼저 찍힌다</div>
+
+<p>출력의 <code style="font-family:Menlo,monospace;font-size:14px;">Generating</code> 줄은 11개예요. 그중 셋이 CA(<code style="font-family:Menlo,monospace;font-size:14px;">ca</code>, <code style="font-family:Menlo,monospace;font-size:14px;">front-proxy-ca</code>, <code style="font-family:Menlo,monospace;font-size:14px;">etcd/ca</code>)이고, <code style="font-family:Menlo,monospace;font-size:14px;">sa</code> 는 인증서가 아니라 ServiceAccount 토큰 서명에 쓰는 키 쌍이에요. 나머지 일곱 개가 CA 가 서명한 인증서입니다. API 서버의 서버 인증서, API 서버가 kubelet 과 etcd 에 접속할 때 쓰는 클라이언트 인증서, etcd 끼리 통신하거나 etcd 상태를 확인할 때 쓰는 인증서 등이에요. 만든 파일은 <code style="font-family:Menlo,monospace;font-size:14px;">/etc/kubernetes/pki</code> 에 <code style="font-family:Menlo,monospace;font-size:14px;">.crt</code> 와 <code style="font-family:Menlo,monospace;font-size:14px;">.key</code> 짝으로 남고, etcd 용은 그 아래 <code style="font-family:Menlo,monospace;font-size:14px;">etcd/</code> 폴더에 있어요.</p>
+<p>이 중 가장 눈여겨볼 줄은 API 서버 인증서가 어떤 이름으로 서명됐는지 보여 주는 줄이에요.</p>
+
+<div class="obsv-code">[certs] apiserver serving cert is signed for DNS names [k8s-master kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local] and IPs [10.96.0.1 192.168.104.1 192.168.64.2 127.0.0.1]</div>
+<p>&rarr; API 서버 인증서는 이 DNS 이름 5개와 IP 4개 중 하나로 접속한 클라이언트에게만 유효하다는 뜻이에요.</p>
+
+<p>이름마다 출처가 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">kubernetes</code> 로 시작하는 넷은 kubeadm 이 항상 넣는 기본 이름이고, 10.96.0.1 은 서비스 대역의 첫 주소로 클러스터 안의 파드가 API 서버를 찾아가는 <code style="font-family:Menlo,monospace;font-size:14px;">kubernetes</code> 서비스의 주소예요. k8s-master 는 노드 이름에서, 192.168.104.1 은 advertiseAddress 에서 왔어요. 192.168.64.2 와 127.0.0.1 은 certSANs 로 더한 이름입니다. 127.0.0.1 이 들어 있으니 VM 안에서 <code style="font-family:Menlo,monospace;font-size:14px;">https://127.0.0.1:6443</code> 으로 접속해도 검증을 통과해요. <span class="obsv-mark">1절의 설정 파일이 실제로 남는 곳이 바로 이 인증서예요.</span></p>
+
+<p>인증서 다음은 <code style="font-family:Menlo,monospace;font-size:14px;">[kubeconfig]</code> 6줄이에요. 첫 줄은 폴더를 알리고, 나머지 다섯 줄이 파일을 하나씩 썼다는 보고예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: kubeconfig</div>
+  API 서버 주소, 그 서버를 확인할 CA 인증서, 내가 누구인지 증명할 클라이언트 인증서와 키를 한 파일에 담은 접속 설정이에요. kubectl 도, controller-manager 와 scheduler 도 이 파일을 읽어 API 서버에 접속해요.
+</div>
+<p>다섯 파일은 쓰는 주체가 각각 달라요. <code style="font-family:Menlo,monospace;font-size:14px;">kubelet.conf</code>, <code style="font-family:Menlo,monospace;font-size:14px;">controller-manager.conf</code>, <code style="font-family:Menlo,monospace;font-size:14px;">scheduler.conf</code> 는 이름 그대로 각 구성 요소가 자기 신원으로 접속할 때 써요. <code style="font-family:Menlo,monospace;font-size:14px;">admin.conf</code> 는 관리자와 kubeadm 자신이 쓰는 파일이에요. 인증서의 그룹이 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm:cluster-admins</code> 이고, init 이 이 그룹에 클러스터 관리자 권한을 묶어 둡니다. <code style="font-family:Menlo,monospace;font-size:14px;">super-admin.conf</code> 의 그룹은 <code style="font-family:Menlo,monospace;font-size:14px;">system:masters</code> 인데, 이 그룹은 RBAC(역할별 권한 규칙)를 아예 거치지 않아요. 공식 문서는 RBAC 설정을 잘못해 클러스터가 잠긴 비상 상황에 쓰는 파일이라고 설명합니다.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: admin.conf 를 노드 밖으로 꺼낼 때</div>
+  실습이라 Mac 용 kubeconfig 를 admin.conf 에서 만들었어요(6절). 하지만 공식 문서는 admin.conf 를 컨트롤 플레인 노드에 두고 다른 사용자와 공유하지 말라고 하고, super-admin.conf 는 안전한 곳에 따로 보관하라고 해요. 두 파일 모두 인증 키가 그대로 들어 있기 때문이에요. 여러 사람이 쓰는 클러스터라면 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm kubeconfig user</code> 로 사용자별 파일을 따로 만들어 나눠 줍니다.
+</div>
+
+<h2>4. API 서버를 띄우는 건 kubeadm 이 아니라 kubelet 이다</h2>
+
+<p>여기서 순서 문제가 하나 생겨요. 보통 파드는 API 서버에 먼저 등록되고, 스케줄러가 노드를 정한 뒤, 그 노드의 kubelet 이 띄워요(2편). 그런데 지금 띄우려는 것이 바로 API 서버와 스케줄러예요. 아직 아무것도 떠 있지 않으니 그 경로를 쓸 수 없어요.</p>
+<p>kubeadm 은 이 문제를 정적 파드로 풀어요. 컨트롤 플레인 구성 요소를 직접 실행하지 않고, 파드 정의 파일 네 개를 <code style="font-family:Menlo,monospace;font-size:14px;">/etc/kubernetes/manifests</code> 에 써 둔 뒤 kubelet 을 켜요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 정적 파드 (static Pod)</div>
+  API 서버를 거치지 않고 kubelet 이 특정 폴더의 매니페스트 파일을 직접 읽어 띄우는 파드예요. 폴더에 파일이 생기면 띄우고, 사라지면 지워요. API 서버에는 "미러 파드"로 보이기만 해서, kubectl 로 미러 파드를 지워도 kubelet 은 정적 파드를 지우지 않고 미러 파드를 다시 만들어요.
+</div>
+
+<div class="obsv-code">[etcd] Creating static Pod manifest for local etcd in "/etc/kubernetes/manifests"
+[control-plane] Using manifest folder "/etc/kubernetes/manifests"
+[control-plane] Creating static Pod manifest for "kube-apiserver"
+[control-plane] Creating static Pod manifest for "kube-controller-manager"
+[control-plane] Creating static Pod manifest for "kube-scheduler"
+
+master$ ls /etc/kubernetes/manifests
+etcd.yaml
+kube-apiserver.yaml
+kube-controller-manager.yaml
+kube-scheduler.yaml</div>
+<p>&rarr; etcd 와 컨트롤 플레인 구성 요소 셋의 파드 정의를 파일로 썼고, 마스터의 그 폴더에 실제로 파일 네 개가 남아 있다는 뜻이에요. 워커의 같은 폴더는 비어 있어요.</p>
+
+<p>그다음 kubeadm 은 kubelet 설정 파일을 쓰고 kubelet 을 켠 뒤, 정적 파드가 뜨기를 기다려요.</p>
+
+<div class="obsv-code">[kubelet-start] Starting the kubelet
+[wait-control-plane] Waiting for the kubelet to boot up the control plane as static Pods from directory "/etc/kubernetes/manifests"
+[kubelet-check] Waiting for a healthy kubelet at http://127.0.0.1:10248/healthz. This can take up to 4m0s
+[kubelet-check] The kubelet is healthy after 330.1µs
+[control-plane-check] Waiting for healthy control plane components. This can take up to 4m0s
+[control-plane-check] Checking kube-apiserver at https://192.168.104.1:6443/livez
+[control-plane-check] Checking kube-controller-manager at https://127.0.0.1:10257/healthz
+[control-plane-check] Checking kube-scheduler at https://127.0.0.1:10259/livez</div>
+<p>&rarr; kubelet 을 켜고, 매니페스트 폴더의 정적 파드로 컨트롤 플레인이 뜨기를 기다리며, 세 구성 요소의 상태 확인 주소(<code style="font-family:Menlo,monospace;font-size:14px;">/livez</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/healthz</code>)를 차례로 확인했다는 뜻이에요.</p>
+<p>이어지는 세 줄에서 셋 모두 healthy 로 확인됐어요. controller-manager 와 scheduler 는 밀리초 단위로 응답했고, API 서버가 초 단위로 가장 늦었어요. 기다리는 동안 kubeadm 이 한 일은 상태 확인 주소에 요청을 보내 본 것뿐이에요.</p>
+
+<p>정리하면 <span class="obsv-mark">kubeadm 은 매니페스트를 쓰는 데까지만 하고, 컨트롤 플레인을 실제로 띄우고 지켜보는 쪽은 kubelet 이에요.</span> 1편에서 본 kube-system 목록에서 이 네 파드의 소유자(OWNER)가 Node 로 나오고, 이름 끝에 노드 이름 <code style="font-family:Menlo,monospace;font-size:14px;">-k8s-master</code> 가 붙어 있던 것도 이 때문이에요.</p>
+
+<p>API 서버가 응답하고 나면 출력의 성격이 바뀌어요. 이제부터는 디스크가 아니라 API 서버에 객체를 만듭니다. <code style="font-family:Menlo,monospace;font-size:14px;">[upload-config]</code> 는 init 에 넘긴 설정을 <code style="font-family:Menlo,monospace;font-size:14px;">kube-system</code> 의 ConfigMap(설정 값을 담아 두는 쿠버네티스 객체) <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm-config</code> 에, kubelet 공통 설정을 <code style="font-family:Menlo,monospace;font-size:14px;">kubelet-config</code> 에 저장해요. 워커의 join 출력에 kubeadm-config 를 읽었다는 줄이 나오는데, 바로 이 ConfigMap 이에요. <code style="font-family:Menlo,monospace;font-size:14px;">[upload-certs]</code> 는 컨트롤 플레인 인증서를 Secret 으로 올리는 단계인데, <code style="font-family:Menlo,monospace;font-size:14px;">--upload-certs</code> 를 주지 않아서 건너뛰었어요.</p>
+
+<div class="obsv-code">[mark-control-plane] Marking the node k8s-master as control-plane by adding the labels: [node-role.kubernetes.io/control-plane node.kubernetes.io/exclude-from-external-load-balancers]
+[mark-control-plane] Marking the node k8s-master as control-plane by adding the taints [node-role.kubernetes.io/control-plane:NoSchedule]</div>
+<p>&rarr; 마스터에 컨트롤 플레인이라는 라벨 두 개와, 일반 파드를 배치하지 말라는 taint 하나를 붙였다는 뜻이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: taint (테인트)</div>
+  노드에 붙이는 "이 표시를 견디겠다고 밝힌 파드만 받는다"는 표시예요. <code style="font-family:Menlo,monospace;font-size:14px;">NoSchedule</code> taint 가 붙은 노드에는, 파드 정의에 그 taint 를 허용하는 toleration 이 있는 파드만 스케줄러가 배치해요.
+</div>
+<p>공식 문서는 보안상의 이유로 기본적으로 컨트롤 플레인 노드에 파드를 스케줄하지 않는다고 적어요. 2편에서 hello 파드를 만들었을 때 스케줄러가 마스터를 후보에서 뺀 것도 이 taint 때문이에요. 반대로 이 taint 를 견디는 설정(toleration)이 있는 파드는 마스터에도 갈 수 있어요. coredns 가 그런 파드라서, 1편에서 coredns 가 마스터에 없었던 이유를 이 taint 로 단정할 수는 없어요. 노드 한 대로 실습할 때는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl taint nodes --all node-role.kubernetes.io/control-plane-</code> 로 이 taint 를 지워 마스터에도 파드를 올립니다.</p>
+<p><code style="font-family:Menlo,monospace;font-size:14px;">[bootstrap-token]</code> 8줄은 join 을 위한 준비예요. 토큰을 만들고, 그 토큰으로 인증한 노드가 인증서 발급 요청을 내고 자동으로 승인받을 수 있게 RBAC 규칙을 만들고, <code style="font-family:Menlo,monospace;font-size:14px;">kube-public</code> 네임스페이스에 <code style="font-family:Menlo,monospace;font-size:14px;">cluster-info</code> ConfigMap 을 만들어요. 이것들이 어떻게 쓰이는지는 5절에서 봐요. 마지막으로 <code style="font-family:Menlo,monospace;font-size:14px;">[addons]</code> 가 CoreDNS 와 kube-proxy 를 설치하고 init 이 끝나요. 다만 공식 문서는 CoreDNS 가 배포는 되지만 CNI 를 설치하기 전에는 스케줄되지 않는다고 적어요. 출력 끝의 "You should now deploy a pod network" 안내가 그 이야기이고, 6편의 주제예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k5arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">API 서버가 뜨기 전: 디스크에 파일을 쓴다</text>
+<path d="M20 56.2 C 57.0 57.2, 93.9 57.5, 132 56.9 C 133.2 86.4, 134.1 116.7, 131.1 148 C 93.9 147.8, 57.0 150.2, 20 148.3 C 22.0 116.7, 18.1 86.4, 20 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M156 55.9 C 193.0 54.7, 229.9 56.2, 268 56.1 C 265.6 86.4, 266.6 116.7, 267.6 148 C 229.9 150.1, 193.0 149.3, 156 147.3 C 157.5 116.7, 154.2 86.4, 156 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M292 56.2 C 329.0 54.1, 365.9 53.5, 404 56.7 C 402.5 86.4, 402.6 116.7, 405.0 148 C 365.9 149.9, 329.0 146.9, 292 148.9 C 292.2 116.7, 292.9 86.4, 292 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M428 55.4 C 465.0 58.2, 501.9 57.0, 540 56.9 C 542.0 86.4, 539.0 116.7, 539.7 148 C 501.9 146.3, 465.0 146.2, 428 147.1 C 427.0 116.7, 428.5 86.4, 428 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M564 55.0 C 601.0 56.9, 637.9 55.2, 676 55.6 C 677.6 86.4, 675.9 116.7, 675.6 148 C 637.9 147.9, 601.0 149.0, 564 147.1 C 566.4 116.7, 561.6 86.4, 564 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="76" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">① preflight</text>
+<text x="76" y="110" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">점검만 한다</text>
+<text x="76" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">경고 2줄</text>
+<text x="212" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">② certs</text>
+<text x="212" y="110" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">pki/</text>
+<text x="212" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">키 쌍 11개</text>
+<text x="348" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">③ kubeconfig</text>
+<text x="348" y="110" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">*.conf</text>
+<text x="348" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">파일 5개</text>
+<text x="484" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">④ control-plane</text>
+<text x="484" y="110" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">manifests/</text>
+<text x="484" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">매니페스트 4개</text>
+<text x="620" y="80" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">⑤ kubelet-start</text>
+<text x="620" y="110" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">설정을 쓰고</text>
+<text x="620" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">kubelet 을 켠다</text>
+<path d="M135 102 C 141 100, 147 103, 152 102" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<path d="M271 102 C 277 104, 283 101, 288 102" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<path d="M408 102 C 414 100, 419 103, 424 102" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<path d="M543 102 C 549 104, 555 101, 560 102" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<path d="M622 151 C 625 170, 614 190, 595 204" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<path d="M130 186.5 C 281.8 187.7, 433.6 183.6, 590 186.6 C 589.3 203.8, 590.4 221.6, 589.0 240 C 433.6 237.7, 281.8 238.4, 130 240.9 C 128.5 221.6, 131.3 203.8, 130 186 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="360" y="210" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">kubelet 이 manifests/ 를 읽어 정적 파드 4개를 띄운다</text>
+<text x="360" y="231" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">wait-control-plane, control-plane-check</text>
+<path d="M150 243 C 138 254, 112 263, 97 275" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<text x="420" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">API 서버가 뜬 뒤: API 로 객체를 만든다</text>
+<path d="M20 280.9 C 68.5 282.2, 117.0 279.2, 167 279.7 C 167.1 310.4, 168.4 340.7, 166.2 372 C 117.0 373.2, 68.5 373.5, 20 372.7 C 17.7 340.7, 22.2 310.4, 20 280 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M191 279.2 C 239.5 279.2, 288.0 280.6, 338 280.8 C 337.2 310.4, 340.1 340.7, 338.1 372 C 288.0 371.1, 239.5 371.1, 191 371.4 C 188.9 340.7, 189.2 310.4, 191 280 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M362 280.4 C 410.5 282.5, 459.0 278.3, 509 279.1 C 511.4 310.4, 509.2 340.7, 508.8 372 C 459.0 370.7, 410.5 372.5, 362 372.7 C 361.8 340.7, 361.6 310.4, 362 280 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M533 279.1 C 581.5 282.1, 630.0 277.7, 680 280.0 C 681.7 310.4, 678.2 340.7, 680.5 372 C 630.0 374.2, 581.5 372.7, 533 372.6 C 531.0 340.7, 532.7 310.4, 533 280 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="93" y="304" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">⑥ upload-config</text>
+<text x="93" y="334" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">설정을</text>
+<text x="93" y="356" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">ConfigMap 으로</text>
+<text x="264" y="304" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">⑦ mark-control-plane</text>
+<text x="264" y="334" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">라벨 2개</text>
+<text x="264" y="356" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f">taint NoSchedule</text>
+<text x="435" y="304" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">⑧ bootstrap-token</text>
+<text x="435" y="334" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">토큰 · RBAC 규칙</text>
+<text x="435" y="356" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">cluster-info</text>
+<text x="606" y="304" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">⑨ addons</text>
+<text x="606" y="334" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">CoreDNS</text>
+<text x="606" y="356" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">kube-proxy</text>
+<path d="M170 326 C 176 324, 182 327, 187 326" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<path d="M341 326 C 347 328, 353 325, 358 326" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<path d="M512 326 C 518 324, 524 327, 529 326" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr1)"/>
+<text x="350" y="406" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= 매니페스트를 쓰는 데까지가 kubeadm 의 몫, 띄우고 지키는 건 kubelet</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. API 서버가 응답하기 전에는 파일을 쓰고, 응답한 뒤에는 API 로 객체를 만든다</div>
+
+<h2>5. join 은 두 번 확인한다: 워커가 마스터를, 마스터가 워커를</h2>
+
+<p>워커 하나가 192.168.104.1:6443 에 접속한다고 해 볼게요. 워커 입장에서는 그 주소에서 응답하는 프로그램이 진짜 우리 API 서버인지 알 방법이 없어요. 서버 인증서를 확인하려면 CA 인증서가 있어야 하는데, 워커는 아직 그걸 받지 못했으니까요. 마스터 입장에서도 접속해 온 VM 을 아무 확인 없이 노드로 받아 줄 수는 없어요. join 명령에 들어가는 값들이 이 두 문제를 맡아요.</p>
+
+<div class="obsv-code">worker1$ sudo kubeadm join 192.168.104.1:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:&lt;CA 공개키 해시&gt; --node-name k8s-worker1</div>
+<p>&rarr; API 서버 주소, 부트스트랩 토큰, CA 공개키 해시, 노드 이름을 넘긴다는 뜻이에요. 토큰과 해시는 실물 대신 자리표시자로 바꿔 적었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 부트스트랩 토큰 (bootstrap token)</div>
+  <code style="font-family:Menlo,monospace;font-size:14px;">abcdef.0123456789abcdef</code> 모양의 짧은 토큰이에요. 앞 6자리는 토큰 ID 로 공개해도 되는 값이고, 뒤 16자리가 비밀이에요. 아직 인증서가 없는 노드가 클러스터에 처음 접속할 때 쓰는 임시 신원이고, kubeadm init 이 만드는 토큰은 24시간 동안 유효해요.
+</div>
+
+<p>공식 문서는 join 의 신뢰를 두 방향으로 나눠 설명해요. discovery 단계에서는 노드가 컨트롤 플레인을 믿고, TLS bootstrap 단계에서는 컨트롤 플레인이 노드를 믿어요.</p>
+<p><b>discovery</b> 에서 워커는 먼저 <code style="font-family:Menlo,monospace;font-size:14px;">kube-public</code> 의 <code style="font-family:Menlo,monospace;font-size:14px;">cluster-info</code> ConfigMap 을 인증 없이 읽어요. init 이 이 ConfigMap 만큼은 인증받지 않은 사용자도 읽을 수 있게 열어 두었어요. 안에는 API 서버 주소와 CA 인증서, 그리고 토큰으로 만든 서명이 들어 있어요. 워커는 두 가지를 확인해요. 하나는 그 서명이 자기가 받은 토큰의 비밀 부분으로 검증되는가예요. 다른 하나는 받아 온 CA 인증서의 공개키 해시가 <code style="font-family:Menlo,monospace;font-size:14px;">--discovery-token-ca-cert-hash</code> 로 넘겨받은 값과 같은가예요. 이 해시는 CA 인증서의 공개키 정보(SPKI)를 SHA-256 으로 계산한 값이고, init 출력 끝의 join 명령에 함께 찍혀 나와요. 둘 다 맞으면 워커는 그 CA 를 믿고, 이번에는 그 CA 로 검증한 연결에서 CA 인증서를 다시 받아 처음 받은 것과 같은지까지 비교해요.</p>
+<p>해시까지 확인하는 데는 이유가 있어요. 공식 문서는 부트스트랩 토큰을 가진 쪽이면 누구나 그 토큰으로 유효한 서명을 만들 수 있다고 경고해요. 토큰만으로 확인하면, 토큰을 얻은 다른 누군가가 API 서버 행세를 해도 워커는 구분하지 못해요. CA 공개키 해시는 init 이 만든 바로 그 CA 만 통과시켜요. <span class="obsv-mark">토큰은 여럿이 나눠 가진 비밀이라 마스터를 특정하지 못하고, 마스터를 특정하는 것은 CA 해시예요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 해시 검증을 끄는 플래그</div>
+  해시를 미리 알 수 없을 때 쓰라고 <code style="font-family:Menlo,monospace;font-size:14px;">--discovery-token-unsafe-skip-ca-verification</code> 이라는 플래그가 있어요. 공식 문서는 이 플래그가 kubeadm 의 보안 모델을 약하게 만든다고 적어요. 다른 노드가 컨트롤 플레인 행세를 할 수 있게 되기 때문이에요. 해시는 init 출력에도, 마스터에서 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm token create --print-join-command</code> 를 실행한 출력에도 나오므로, 실습에서도 이 플래그 없이 조인했어요.
+</div>
+
+<p><b>TLS bootstrap</b> 은 반대 방향이에요. 워커의 kubeadm 은 토큰을 담은 임시 접속 파일 <code style="font-family:Menlo,monospace;font-size:14px;">bootstrap-kubelet.conf</code> 를 쓰고 kubelet 을 켜요. kubelet 은 이 토큰으로 API 서버에 인증하는데, 이때 신원은 <code style="font-family:Menlo,monospace;font-size:14px;">system:bootstrap:&lt;토큰 ID&gt;</code> 사용자이고 init 이 권한을 준 그룹에 속해요. init 출력의 <code style="font-family:Menlo,monospace;font-size:14px;">[bootstrap-token]</code> 줄에 따르면 이 그룹에는 노드 조회와 CSR 제출 권한이 열려 있어요. kubelet 은 이 권한으로 자기 인증서를 발급해 달라는 CSR 을 내요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: CSR (CertificateSigningRequest)</div>
+  "이 공개키로 인증서를 만들어 달라"는 요청이에요. 쿠버네티스에서는 API 객체로 만들어지고, 승인되면 클러스터 CA 가 서명한 인증서가 그 객체에 채워져요. kubelet 은 키 쌍을 노드에서 직접 만들고 공개키만 담아 요청하므로, 개인 키는 노드 밖으로 나가지 않아요.
+</div>
+<p>kubelet 이 낸 CSR 은 controller-manager 의 CSR 승인 컨트롤러가 자동으로 승인해요. init 이 "부트스트랩 토큰으로 인증한 노드의 CSR 은 자동 승인한다"는 RBAC 규칙을 미리 만들어 두었기 때문이에요(init 출력의 <code style="font-family:Menlo,monospace;font-size:14px;">[bootstrap-token]</code> 줄들). 승인되면 kubelet 은 서명된 인증서를 받아 정식 접속 파일 <code style="font-family:Menlo,monospace;font-size:14px;">kubelet.conf</code> 를 만들고, 임시 파일 <code style="font-family:Menlo,monospace;font-size:14px;">bootstrap-kubelet.conf</code> 는 지워져요. 워커의 join 출력 마지막이 이 과정을 보고해요.</p>
+
+<div class="obsv-code">[kubelet-start] Waiting for the kubelet to perform the TLS Bootstrap
+
+This node has joined the cluster:
+* Certificate signing request was sent to apiserver and a response was received.
+* The Kubelet was informed of the new secure connection details.</div>
+<p>&rarr; kubelet 이 TLS Bootstrap 을 마치기를 기다렸고, CSR 을 보내 응답을 받았으며, kubelet 이 새 인증서로 접속하게 됐다는 뜻이에요. discovery 단계는 출력에 따로 찍히지 않아요.</p>
+
+<p>마스터에서 CSR 목록을 보면 이 과정이 남아 있어요.</p>
+
+<div class="obsv-code">master$ kubectl get csr
+NAME        AGE     SIGNERNAME                                    REQUESTOR                 REQUESTEDDURATION   CONDITION
+csr-5trwk   6m7s    kubernetes.io/kube-apiserver-client-kubelet   system:bootstrap:ttnlk6   &lt;none&gt;              Approved,Issued
+csr-lrnfd   6m21s   kubernetes.io/kube-apiserver-client-kubelet   system:node:k8s-master    &lt;none&gt;              Approved,Issued
+csr-q98fn   6m7s    kubernetes.io/kube-apiserver-client-kubelet   system:bootstrap:ixo4bs   &lt;none&gt;              Approved,Issued
+csr-zl6gp   6m7s    kubernetes.io/kube-apiserver-client-kubelet   system:bootstrap:ein9m8   &lt;none&gt;              Approved,Issued</div>
+<p>&rarr; 워커 3대의 요청은 요청자가 <code style="font-family:Menlo,monospace;font-size:14px;">system:bootstrap:&lt;토큰 ID&gt;</code> 이고, kubelet 클라이언트 인증서용 서명자(<code style="font-family:Menlo,monospace;font-size:14px;">kube-apiserver-client-kubelet</code>)를 지정했으며, 네 요청이 모두 승인되고 발급됐다(Approved,Issued)는 뜻이에요.</p>
+
+<p>표를 보다가 두 가지가 눈에 띄었어요. 첫째, 워커 셋의 토큰 ID 가 ttnlk6, ixo4bs, ein9m8 로 모두 달라요(토큰 ID 는 공개 정보라 그대로 옮겼어요). 워커들이 init 이 만든 토큰 하나를 같이 쓴 게 아니라는 뜻이에요. <code style="font-family:Menlo,monospace;font-size:14px;">./lab</code> 의 조인 함수는 워커마다 마스터에서 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm token create --print-join-command</code> 를 실행해, 새 토큰이 든 join 명령을 받아 씁니다. 둘째, 마스터의 요청자는 <code style="font-family:Menlo,monospace;font-size:14px;">system:node:k8s-master</code> 예요. 마스터의 kubelet 은 init 이 만든 kubelet.conf 로 이미 노드 신원을 갖고 있어서, 부트스트랩 토큰이 아니라 그 신원으로 요청했어요. init 은 <code style="font-family:Menlo,monospace;font-size:14px;">system:nodes</code> 그룹이 낸 인증서 갱신 요청도 자동 승인되게 설정해 둡니다(출력의 "certificate rotation" 줄).</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: join 명령은 필요할 때 새로 받는다</div>
+  init 출력 끝의 join 명령에 든 토큰은 24시간 뒤 만료돼요. 나중에 워커를 더 붙일 때는 마스터에서 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm token create --print-join-command</code> 를 실행해 새 토큰과 CA 해시가 든 join 명령을 받으면 됩니다. <code style="font-family:Menlo,monospace;font-size:14px;">./lab</code> 은 조인할 때마다 이 명령으로 새 토큰을 받기 때문에, init 의 토큰이 만료된 뒤에도 조인 단계가 그대로 동작해요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 500" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k5arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M20 17.3 C 69.5 19.7, 119.0 17.0, 170 17.9 C 172.5 35.2, 171.8 52.3, 171.0 70 C 119.0 69.8, 69.5 69.9, 20 70.5 C 19.9 52.3, 19.0 35.2, 20 18 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M530 17.8 C 579.5 16.2, 629.0 17.4, 680 19.0 C 682.3 35.2, 680.6 52.3, 680.0 70 C 629.0 69.2, 579.5 67.9, 530 69.5 C 531.4 52.3, 531.8 35.2, 530 18 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="42" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">🖥️ worker1</text>
+<text x="95" y="60" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">kubeadm join</text>
+<text x="605" y="42" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">마스터</text>
+<text x="605" y="60" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">API 서버 :6443</text>
+<path d="M95 73 C 97 200, 93 330, 95 470" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+<path d="M605 73 C 603 200, 607 330, 605 470" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="350" y="104" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5">discovery: 워커가 마스터를 확인한다</text>
+<text x="350" y="132" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">① kube-public 의 cluster-info 를 인증 없이 읽는다</text>
+<path d="M100 142 C 250 139, 450 145, 598 141" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k5arr2)"/>
+<text x="350" y="175" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">② API 서버 주소 · CA 인증서 · 토큰으로 만든 서명</text>
+<path d="M600 184 C 450 187, 250 181, 102 185" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k5arr2)"/>
+<path d="M110 199.7 C 232.1 201.4, 354.2 201.4, 480 200.4 C 480.8 221.8, 481.3 243.6, 479.7 266 C 354.2 267.0, 232.1 264.9, 110 266.0 C 111.3 243.6, 111.0 221.8, 110 200 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="126" y="226" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">③ 서명이 토큰의 비밀 부분으로 검증되는가</text>
+<text x="126" y="252" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">④ CA 공개키 해시가 넘겨받은 해시와 같은가</text>
+<text x="350" y="304" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">TLS bootstrap: 마스터가 워커를 확인한다</text>
+<text x="350" y="330" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">⑤ 토큰으로 인증하고 CSR 을 낸다</text>
+<path d="M100 340 C 250 337, 450 343, 598 339" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k5arr2)"/>
+<text x="350" y="357" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">user = system:bootstrap:&lt;토큰 ID&gt;</text>
+<path d="M300 367.6 C 395.7 370.2, 491.4 368.7, 590 368.2 C 587.6 383.8, 590.2 399.7, 589.5 416 C 491.4 416.9, 395.7 415.8, 300 416.6 C 300.7 399.7, 301.5 383.8, 300 368 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="445" y="398" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">⑥ 자동 승인 후 CA 가 서명</text>
+<text x="350" y="438" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">⑦ 서명된 인증서를 받아 kubelet.conf 를 만든다</text>
+<path d="M600 447 C 450 450, 250 444, 102 448" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k5arr2)"/>
+<text x="350" y="489" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 토큰은 나눠 가진 비밀이라, 마스터를 특정하는 건 CA 해시다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 앞 단계에서는 워커가 마스터를, 뒷 단계에서는 마스터가 워커를 확인한다</div>
+
+<h2>6. Mac 에서는 IP 로 접속하고, 인증서는 이름으로 확인한다</h2>
+
+<p>마지막은 Mac 에서 kubectl 을 쓰는 이야기예요. admin.conf 의 서버 주소는 advertiseAddress 인 <code style="font-family:Menlo,monospace;font-size:14px;">https://192.168.104.1:6443</code> 인데, 이 eth0 대역은 VM 끼리만 통해서 Mac 에서는 닿지 않아요(3편). Mac 에서 마스터에 닿는 주소는 lima1 의 192.168.64.2 예요. 그래서 <code style="font-family:Menlo,monospace;font-size:14px;">./lab up</code> 은 마지막 단계에서 admin.conf 를 Mac 쪽 <code style="font-family:Menlo,monospace;font-size:14px;">.lab/kubeconfig</code> 로 가져오면서 서버 주소를 바꿔요.</p>
+
+<div class="obsv-code">sed -E "s|^( *)server: https://.*\$|\1server: https://${HOST_IP}:6443\n\1tls-server-name: kubernetes|" /etc/kubernetes/admin.conf</div>
+<p>&rarr; admin.conf 의 server 줄을 지금의 lima1 IP 로 바꾸고, 그 바로 아래에 <code style="font-family:Menlo,monospace;font-size:14px;">tls-server-name: kubernetes</code> 한 줄을 끼워 넣는다는 뜻이에요. 결과는 Mac 쪽 <code style="font-family:Menlo,monospace;font-size:14px;">.lab/kubeconfig</code> 에 저장돼요.</p>
+
+<p>서버 주소만 바꿔도 지금은 접속이 돼요. 192.168.64.2 를 certSANs 로 인증서에 넣어 두었으니까요. 문제는 이 IP 가 바뀌는 경우예요. 인증서에는 init 할 때의 IP 만 들어 있어서, kubeconfig 의 주소를 새 IP 로 바꾸는 순간 검증이 실패해요.</p>
+<p><code style="font-family:Menlo,monospace;font-size:14px;">tls-server-name</code> 이 이 문제를 풀어요. kubeconfig 레퍼런스에 따르면 이 값은 서버 인증서를 확인할 때 쓰는 이름이고, 비어 있으면 접속에 쓴 호스트 이름(여기서는 IP)으로 확인해요. 값을 kubernetes 로 두면 kubectl 은 192.168.64.2 로 접속하되, 인증서에 kubernetes 라는 이름이 있는지를 확인해요. kubernetes 는 kubeadm 이 API 서버 인증서에 항상 넣는 기본 이름이라, IP 가 바뀌어도 이 확인은 통과해요. 그리고 <code style="font-family:Menlo,monospace;font-size:14px;">./lab up</code> 은 실행할 때마다 kubeconfig 를 다시 만들어 서버 주소를 그때의 IP 로 맞춥니다.</p>
+<p>검증을 끄는 것과는 달라요. CA 로 서명을 확인하는 과정은 그대로 두고, 인증서의 이름 목록에서 무엇을 찾을지만 바꾼 거예요. <span class="obsv-mark">접속 주소와 검증할 이름을 따로 적을 수 있어서, 주소가 바뀌어도 검증을 끌 필요가 없었어요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 405" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k5arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M392 21.7 C 488.4 22.7, 584.7 23.2, 684 22.7 C 683.3 130.2, 685.7 238.5, 684.7 350 C 584.7 350.9, 488.4 352.4, 392 350.9 C 392.1 238.5, 392.1 130.2, 392 22 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="408" y="54" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">📜 apiserver.crt 에 든 이름</text>
+<text x="408" y="80" font-family="Menlo, monospace" font-size="11" fill="#8a8272">DNS</text>
+<path d="M404 120 C 430 118, 458 122, 484 119" fill="none" stroke="#ffd54d" stroke-width="10" stroke-linecap="round" opacity="0.75"/>
+<text x="408" y="102" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">k8s-master</text>
+<text x="408" y="124" font-family="Menlo, monospace" font-size="12" font-weight="bold" fill="#3d3a34">kubernetes</text>
+<text x="408" y="146" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">kubernetes.default</text>
+<text x="408" y="168" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">kubernetes.default.svc</text>
+<text x="408" y="190" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">kubernetes.default.svc.cluster.local</text>
+<text x="408" y="218" font-family="Menlo, monospace" font-size="11" fill="#8a8272">IP</text>
+<text x="408" y="240" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">10.96.0.1</text>
+<text x="408" y="262" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">192.168.104.1</text>
+<text x="408" y="284" font-family="Menlo, monospace" font-size="12" font-weight="bold" fill="#c07f18">192.168.64.2</text>
+<text x="408" y="306" font-family="Menlo, monospace" font-size="12" font-weight="bold" fill="#c07f18">127.0.0.1</text>
+<text x="408" y="336" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">주황: certSANs 로 더한 IP</text>
+<path d="M20 95.3 C 96.6 97.7, 173.1 98.2, 252 96.0 C 253.0 110.5, 253.1 125.0, 252.5 140 C 173.1 138.4, 96.6 141.4, 20 140.2 C 20.8 125.0, 19.6 110.5, 20 96 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M20 196.2 C 96.6 197.4, 173.1 196.7, 252 196.4 C 249.6 210.5, 250.3 225.0, 251.9 240 C 173.1 240.8, 96.6 238.6, 20 240.4 C 20.7 225.0, 17.7 210.5, 20 196 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M20 247.9 C 96.6 246.6, 173.1 245.8, 252 247.3 C 251.1 262.5, 250.4 277.0, 251.4 292 C 173.1 289.7, 96.6 291.8, 20 291.8 C 20.6 277.0, 20.5 262.5, 20 248 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M20 299.5 C 96.6 302.0, 173.1 297.5, 252 299.8 C 250.9 314.5, 251.6 329.0, 251.2 344 C 173.1 345.7, 96.6 343.4, 20 343.1 C 20.6 329.0, 18.0 314.5, 20 300 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="136" y="116" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">💻 Mac 의 kubectl</text>
+<text x="136" y="133" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">tls-server-name: kubernetes</text>
+<text x="136" y="216" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">📦 클러스터 안의 파드</text>
+<text x="136" y="234" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">kubernetes 서비스로 접속</text>
+<text x="136" y="268" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">🖥️ 워커의 kubelet</text>
+<text x="136" y="286" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">advertiseAddress 로 접속</text>
+<text x="136" y="320" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">VM 안에서 localhost 로</text>
+<text x="136" y="337" text-anchor="middle" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">https://127.0.0.1:6443</text>
+<path d="M255 112 C 300 108, 350 114, 398 119" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k5arr3)"/>
+<text x="322" y="102" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">검증할 이름</text>
+<path d="M255 133 C 320 150, 362 220, 398 279" fill="none" stroke="#e5a33c" stroke-width="2.2" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#k5arr3)"/>
+<text x="292" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">접속 주소</text>
+<path d="M255 218 C 310 222, 360 230, 398 236" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr3)"/>
+<path d="M255 270 C 310 266, 360 262, 398 258" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr3)"/>
+<path d="M255 322 C 310 318, 360 308, 398 302" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k5arr3)"/>
+<text x="350" y="388" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= IP 가 바뀌어도 kubernetes 라는 이름은 늘 인증서에 있다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 인증서 하나에 이름이 9개 들어 있고, Mac 은 접속 주소와 검증할 이름을 따로 쓴다</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>kubeadm init 은 컨트롤 플레인을 직접 실행하지 않아요. 인증서와 kubeconfig, 정적 파드 매니페스트를 파일로 써 두고 kubelet 을 켜면, kubelet 이 매니페스트를 읽어 API 서버를 띄워요.</b><br><br>
+  API 서버가 응답한 뒤에는 taint, 부트스트랩 토큰, cluster-info, CoreDNS 와 kube-proxy 를 API 로 만들어요. join 에서는 워커가 CA 공개키 해시로 마스터를 확인하고, 마스터는 토큰으로 인증한 CSR 을 승인해 워커를 받아들여요. 클러스터의 신뢰는 init 이 맨 처음 만든 CA 한 쌍에서 시작합니다.
+</div>
+
+</div>

@@ -1,0 +1,31 @@
+worker1$ swapon --show; free -h | grep -i swap
+Swap:             0B          0B          0B
+
+worker1$ lsmod | grep -E "^(br_netfilter|overlay)"
+br_netfilter           32768  0
+overlay               204800  10
+
+worker1$ sysctl net.bridge.bridge-nf-call-iptables net.ipv4.ip_forward
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+
+worker1$ cat /etc/containerd/conf.d/k8s.toml
+version = 2
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+    sandbox_image = "registry.k8s.io/pause:3.10.2"
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+  [plugins."io.containerd.cri.v1.runtime".cni]
+    bin_dirs = ["/opt/cni/bin", "/usr/local/libexec/cni"]
+
+worker1$ sudo journalctl -u kubelet --no-pager -o cat | grep -i -m2 "cgroup driver"
+I1104 21:19:40.656302    8691 server.go:1502] "Using cgroup driver setting received from the CRI runtime" cgroupDriver="systemd"
+
+worker1$ cat /etc/default/kubelet
+KUBELET_EXTRA_ARGS=--node-ip=192.168.104.3
+

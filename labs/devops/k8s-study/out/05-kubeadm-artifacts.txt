@@ -1,0 +1,66 @@
+master$ sudo cat /etc/kubernetes/kubeadm-config.yaml
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 192.168.104.1      # 워커가 접속할 API 서버 주소 (VM 끼리 통하는 eth0)
+  bindPort: 6443
+nodeRegistration:
+  name: k8s-master
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: k8s-lab
+kubernetesVersion: v1.37.2
+apiServer:
+  certSANs:                         # 인증서에 넣을 추가 이름 — Mac 에서 lima1 IP 로 붙을 때 필요
+  - k8s-master
+  - 192.168.64.2
+  - 127.0.0.1
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+
+master$ sudo ls /etc/kubernetes /etc/kubernetes/pki
+/etc/kubernetes:
+admin.conf
+controller-manager.conf
+kubeadm-config.yaml
+kubelet.conf
+manifests
+pki
+scheduler.conf
+super-admin.conf
+
+/etc/kubernetes/pki:
+apiserver-etcd-client.crt
+apiserver-etcd-client.key
+apiserver-kubelet-client.crt
+apiserver-kubelet-client.key
+apiserver.crt
+apiserver.key
+ca.crt
+ca.key
+etcd
+front-proxy-ca.crt
+front-proxy-ca.key
+front-proxy-client.crt
+front-proxy-client.key
+sa.key
+sa.pub
+
+master$ kubectl get csr
+NAME        AGE     SIGNERNAME                                    REQUESTOR                 REQUESTEDDURATION   CONDITION
+csr-5trwk   6m7s    kubernetes.io/kube-apiserver-client-kubelet   system:bootstrap:ttnlk6   <none>              Approved,Issued
+csr-lrnfd   6m21s   kubernetes.io/kube-apiserver-client-kubelet   system:node:k8s-master    <none>              Approved,Issued
+csr-q98fn   6m7s    kubernetes.io/kube-apiserver-client-kubelet   system:bootstrap:ixo4bs   <none>              Approved,Issued
+csr-zl6gp   6m7s    kubernetes.io/kube-apiserver-client-kubelet   system:bootstrap:ein9m8   <none>              Approved,Issued
+
+master$ kubectl -n kube-public get configmap cluster-info
+NAME           DATA   AGE
+cluster-info   5      6m20s
+

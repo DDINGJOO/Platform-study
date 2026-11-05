@@ -1,0 +1,18 @@
+# 처음 발견했을 때의 출력 (2026-11-04 20:39 무렵, 작업 세션의 명령 기록에서 그대로 옮김).
+# ./lab stop -> ./lab up(수정 전)이 끝난 직후, 같은 셸에서 바로 실행했다. 당시 예제 앱은 nginx(NodePort 30080).
+mac$ ./lab kubectl get deploy nginx; curl -s -m 5 -o /dev/null -w "NodePort %{http_code}\n" http://192.168.64.4:30080
+NAME    READY   UP-TO-DATE   AVAILABLE   AGE
+nginx   3/3     3            3           2m4s
+NodePort 000
+
+# 잠시 뒤 다시 확인 (같은 명령 묶음의 출력에서 calico 줄만 발췌, 열은 awk 로 잘라 RESTARTS 와 "(28s ago)" 가 나뉘어 보인다)
+mac$ for ip in 192.168.64.3 192.168.64.4 192.168.64.5; do curl -s -m 5 -o /dev/null -w "$ip %{http_code}\n" http://$ip:30080; done; ./lab kubectl get pods -A -o wide | awk '{print $1,$2,$3,$4,$5,$6,$8}' | column -t
+192.168.64.3 200
+192.168.64.4 200
+192.168.64.5 200
+NAMESPACE    NAME                                      READY  STATUS   RESTARTS  AGE   NODE
+kube-system  calico-kube-controllers-846669895c-flkv2  1/1    Running  1         (40s  5m16s
+kube-system  calico-node-hkvnx                         1/1    Running  1         (28s  5m16s
+kube-system  calico-node-jwpcq                         0/1    Running  1         (40s  5m16s
+kube-system  calico-node-mwbxw                         1/1    Running  1         (28s  5m16s
+kube-system  calico-node-vp7t6                         0/1    Running  1         (29s  5m16s

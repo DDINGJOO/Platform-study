@@ -1,0 +1,39 @@
+master$ kubectl create deployment hello --image=nginx:1.29 && kubectl expose deployment hello --port=80 >/dev/null && kubectl rollout status deploy/hello --timeout=120s >/dev/null
+deployment.apps/hello created
+
+master$ kubectl get events --sort-by=.metadata.creationTimestamp -o custom-columns=SOURCE:.source.component,REASON:.reason,OBJECT:.involvedObject.name,MESSAGE:.message | grep -E "^SOURCE|hello"
+SOURCE                  REASON                    OBJECT                   MESSAGE
+deployment-controller   ScalingReplicaSet         hello                    Scaled up replica set hello-6c444d6966 from 0 to 1
+kubelet                 Pulling                   hello-6c444d6966-grmj4   Pulling image "nginx:1.29"
+replicaset-controller   SuccessfulCreate          hello-6c444d6966         Created pod: hello-6c444d6966-grmj4
+default-scheduler       Scheduled                 hello-6c444d6966-grmj4   Successfully assigned default/hello-6c444d6966-grmj4 to k8s-worker3
+kubelet                 Pulled                    hello-6c444d6966-grmj4   Successfully pulled image "nginx:1.29" in 13.06s (13.06s including waiting). Image size: 61310317 bytes.
+kubelet                 Created                   hello-6c444d6966-grmj4   Container created
+kubelet                 Started                   hello-6c444d6966-grmj4   Container started
+
+master$ kubectl get pod -l app=hello -o wide
+NAME                     READY   STATUS    RESTARTS   AGE   IP               NODE          NOMINATED NODE   READINESS GATES
+hello-6c444d6966-grmj4   1/1     Running   0          13s   10.244.100.193   k8s-worker3   <none>           <none>
+
+master$ kubectl -n kube-system exec etcd-k8s-master -- etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key get /registry --prefix --keys-only | grep hello | grep -v ^/registry/events
+/registry/deployments/default/hello
+/registry/endpointslices/default/hello-bjc56
+/registry/pods/default/hello-6c444d6966-grmj4
+/registry/replicasets/default/hello-6c444d6966
+/registry/services/endpoints/default/hello
+/registry/services/specs/default/hello
+
+worker3$ sudo crictl pods --name hello
+POD ID              CREATED             STATE               NAME                     NAMESPACE           ATTEMPT             RUNTIME
+8515f66a503b7       13 seconds ago      Ready               hello-6c444d6966-grmj4   default             0                   (default)
+
+worker3$ sudo crictl ps --name nginx
+CONTAINER           IMAGE               CREATED                  STATE               NAME                ATTEMPT             POD ID              POD                      NAMESPACE
+dc07c0539df83       8524ce6c9242e       Less than a second ago   Running             nginx               0                   8515f66a503b7       hello-6c444d6966-grmj4   default
+
+worker3$ sudo iptables -t nat -S KUBE-SERVICES 2>/dev/null | grep default/hello
+-A KUBE-SERVICES -d 10.111.63.251/32 -p tcp -m comment --comment "default/hello cluster IP" -m tcp --dport 80 -j KUBE-SVC-STDNOFAI3EEZDIVA
+
+master$ kubectl -n kube-system logs ds/kube-proxy 2>/dev/null | grep -m1 Proxier
+I1104 12:19:36.991843       1 server_linux.go:144] "Using iptables Proxier"
+

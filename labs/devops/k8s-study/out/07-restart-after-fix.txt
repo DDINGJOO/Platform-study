@@ -1,0 +1,14 @@
+mac$ ./lab stop >/dev/null; S=$(date +%s); ./lab up >/dev/null 2>&1; echo "up 소요: $(( $(date +%s) - S ))초"
+up 소요: 50초
+
+mac$ grep '재기동 중' .lab/logs/k8s-master.log | tail -4
+kube-system 컨테이너 13 개가 아직 재기동 중
+kube-system 컨테이너 8 개가 아직 재기동 중
+kube-system 컨테이너 7 개가 아직 재기동 중
+kube-system 컨테이너 6 개가 아직 재기동 중
+
+mac$ for ip in 192.168.64.3 192.168.64.4 192.168.64.5; do curl -s -m3 -o /dev/null -w "$ip:30081 %{http_code}\n" http://$ip:30081; done
+192.168.64.3:30081 200
+192.168.64.4:30081 200
+192.168.64.5:30081 200
+

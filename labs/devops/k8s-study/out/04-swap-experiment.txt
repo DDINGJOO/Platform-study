@@ -1,0 +1,27 @@
+worker3$ sudo fallocate -l 512M /swapfile-test && sudo chmod 600 /swapfile-test && sudo mkswap /swapfile-test >/dev/null && sudo swapon /swapfile-test && echo ok
+ok
+
+worker3$ swapon --show
+NAME           TYPE SIZE USED PRIO
+/swapfile-test file 512M   0B   -2
+
+worker3$ sudo systemctl restart kubelet; sleep 15; systemctl is-active kubelet
+activating
+
+worker3$ sudo journalctl -u kubelet --since -1min --no-pager -o cat | grep 'command failed' | tail -2
+E1104 21:23:52.732059   10576 run.go:72] "command failed" err="failed to run Kubelet: running with swap on is not supported, please disable swap or set --fail-swap-on flag to false"
+E1104 21:24:02.958659   10600 run.go:72] "command failed" err="failed to run Kubelet: running with swap on is not supported, please disable swap or set --fail-swap-on flag to false"
+
+master$ kubectl get nodes   # 1분 뒤
+NAME          STATUS     ROLES           AGE     VERSION
+k8s-master    Ready      control-plane   5m41s   v1.37.2
+k8s-worker1   Ready      worker          5m27s   v1.37.2
+k8s-worker2   Ready      worker          5m27s   v1.37.2
+k8s-worker3   NotReady   worker          5m27s   v1.37.2
+
+worker3$ sudo swapoff /swapfile-test && sudo rm -f /swapfile-test && sudo systemctl restart kubelet && echo ok
+ok
+
+master$ kubectl wait --for=condition=Ready node/k8s-worker3 --timeout=120s
+node/k8s-worker3 condition met
+
