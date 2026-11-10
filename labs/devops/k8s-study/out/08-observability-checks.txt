@@ -1,0 +1,82 @@
+master$ date
+Mon Nov  9 21:02:13 KST 2026
+
+master$ sudo grep -c -- '--event-ttl' /etc/kubernetes/manifests/kube-apiserver.yaml
+0
+
+master$ kubectl top nodes
+error: Metrics API not available
+
+master$ kubectl get apiservices | grep metrics
+(metrics.k8s.io 없음)
+
+mac$ date '+%H:%M:%S %Z'
+21:02:41 KST
+
+mac$ kubectl get events -A --field-selector reason=Unhealthy -o custom-columns=NS:.metadata.namespace,OBJ:.involvedObject.name,LAST:.lastTimestamp,COUNT:.count
+NS            OBJ                         LAST                   COUNT
+headlamp      headlamp-86c49cb4f4-9srjd   2026-11-09T11:14:10Z   1
+kube-system   headlamp-7c58fdf68b-9bdfk   2026-11-09T11:05:33Z   2
+kube-system   headlamp-86c49cb4f4-lpwl8   2026-11-09T11:06:11Z   1
+
+mac$ kubectl get events -A --sort-by=.lastTimestamp -o custom-columns=LAST:.lastTimestamp | sed -n 2p   # 가장 오래된 이벤트
+2026-11-09T11:05:01Z
+
+mac$ kubectl -n kube-system get pod headlamp-86c49cb4f4-lpwl8
+Error from server (NotFound): pods "headlamp-86c49cb4f4-lpwl8" not found
+
+mac$ kubectl -n kube-system logs headlamp-86c49cb4f4-lpwl8
+error: error from server (NotFound): pods "headlamp-86c49cb4f4-lpwl8" not found in namespace "kube-system"
+
+mac$ curl -s 'http://192.168.64.3:30003/api/v1/query' --data-urlencode 'query=count by (job) (up)' | jq -r '.data.result[] | [.metric.job, .value[1]] | @tsv'
+kubernetes-cadvisor	4
+kubernetes-service-endpoints	8
+kubernetes-nodes	4
+kubernetes-apiservers	1
+kube-state-metrics	1
+
+# 몇 분 뒤 다시 조회 (아래 Prometheus 질의 결과의 Unix 시각 1794226397 은 21:13:17 KST 로, 같은 묶음을 몇 분 뒤 이어서 실행한 것이다)
+mac$ date '+%H:%M:%S %Z'
+21:08:12 KST
+
+mac$ kubectl get events -A --field-selector reason=Unhealthy -o custom-columns=NS:.metadata.namespace,OBJ:.involvedObject.name,LAST:.lastTimestamp,COUNT:.count
+NS         OBJ                         LAST                   COUNT
+headlamp   headlamp-86c49cb4f4-9srjd   2026-11-09T11:14:10Z   1
+
+mac$ kubectl get events -A --sort-by=.lastTimestamp -o custom-columns=LAST:.lastTimestamp | sed -n 2p   # 가장 오래된 이벤트
+2026-11-09T11:14:09Z
+
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=count(node_uname_info)' | jq -c '.data.result'
+[{"metric":{},"value":[1794226397.241,"4"]}]
+
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=absent(node_uname_info)' | jq -c '.data.result'
+[]
+
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=absent(kube_node_status_allocatable_cpu_cores)' | jq -c '.data.result'
+[{"metric":{},"value":[1794226397.261,"1"]}]
+
+# 같은 질의를 값만 보이게 다시
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=count(node_uname_info)' | jq -r '.data.result | length, .[0].value[1]'
+1
+4
+
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=absent(node_uname_info)' | jq -r '.data.result | length, .[0].value[1]'
+0
+null
+
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=absent(kube_node_status_allocatable_cpu_cores)' | jq -r '.data.result | length, .[0].value[1]'
+1
+1
+
+
+mac$ jq -r '.. | objects | select(has("title") and has("targets")) | "\(.title)	\([.targets[].expr] | join(" || "))"' grafana/kubernetes-cluster-prometheus_rev1.json | grep -E '^(Cluster CPU Usage|Nodes Unavailable|Jobs Succeeded)'
+Cluster CPU Usage	sum(kube_pod_container_resource_requests_cpu_cores{node=~"$node"}) / sum(kube_node_status_allocatable_cpu_cores{node=~"$node"})
+Nodes Unavailable	sum(kube_node_spec_unschedulable{node=~"$node"})
+Jobs Succeeded	sum(kube_job_status_succeeded{namespace=~"$namespace"})
+Jobs Succeeded	sum(kube_job_status_active{namespace=~"$namespace"})
+
+mac$ grep -n -E 'storage|emptyDir' prometheus/prometheus-Deployment.yaml
+21:            - "--storage.tsdb.path=/prometheus/"
+27:            - name: prometheus-storage-volume
+34:        - name: prometheus-storage-volume
+35:          emptyDir: {}

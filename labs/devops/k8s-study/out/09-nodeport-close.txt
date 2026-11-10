@@ -1,0 +1,12 @@
+# 포트포워드로 접속되는 것을 확인한 뒤 NodePort 를 닫았다 (kube-system 시절)
+master$ helm upgrade headlamp headlamp/headlamp -n kube-system --reuse-values --set service.type=ClusterIP --set service.nodePort=null >/dev/null && helm get values headlamp -n kube-system && kubectl -n kube-system get svc headlamp
+USER-SUPPLIED VALUES:
+service:
+  type: ClusterIP
+NAME       TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)   AGE
+headlamp   ClusterIP   10.104.14.9   <none>        80/TCP    12m
+
+mac$ curl -s -m5 -o /dev/null -w "NodePort 30466 (닫힌 뒤): %{http_code}\n" http://192.168.64.3:30466/
+NodePort 30466 (닫힌 뒤): 000
+mac$ curl -s -m5 -o /dev/null -w "port-forward localhost:18809: %{http_code}\n" http://localhost:18809/
+port-forward localhost:18809: 200

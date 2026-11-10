@@ -1,0 +1,39 @@
+mac$ curl -s https://grafana.com/api/dashboards/6417 | jq -r '"\(.id) \(.name) revision=\(.revision) updated=\(.updatedAt)"'
+6417 Kubernetes Cluster (Prometheus) revision=1 updated=2018-06-06T23:51:56.000Z
+
+# 6417 rev1 패널 수식이 쓰는 메트릭이 우리 Prometheus 에 몇 개의 시계열로 있는지 (0 = 없음)
+kube_node_status_allocatable_cpu_cores               0
+kube_node_status_allocatable_memory_bytes            0
+kube_node_status_allocatable_pods                    0
+kube_node_status_capacity_cpu_cores                  0
+kube_node_status_capacity_memory_bytes               0
+kube_node_status_capacity_pods                       0
+kube_pod_container_resource_requests_cpu_cores       0
+kube_pod_container_resource_requests_memory_bytes    0
+kube_pod_container_status_restarts                   0
+node_filesystem_free                                 0
+node_filesystem_size                                 0
+kube_job_status_succeeded                            0
+
+# 지금 이름
+kube_node_status_allocatable                         32
+kube_node_status_capacity                            32
+kube_pod_container_resource_requests                 13
+kube_pod_container_status_restarts_total             23
+node_filesystem_free_bytes                           16
+node_filesystem_size_bytes                           16
+
+mac$ cd ~/k8s-playground/shared/k8s-prometheus/grafana && diff <(jq -r '.. | .expr? // empty' kubernetes-cluster-prometheus_rev1.json) <(jq -r '.. | .expr? // empty' kubernetes-cluster-prometheus_rev1_k8s-lab.json) | grep '^[<>]' | head -12
+< sum(kube_pod_info{node=~"$node"}) / sum(kube_node_status_allocatable_pods{node=~".*"})
+< sum(kube_pod_container_resource_requests_cpu_cores{node=~"$node"}) / sum(kube_node_status_allocatable_cpu_cores{node=~"$node"})
+< sum(kube_pod_container_resource_requests_memory_bytes{node=~"$node"}) / sum(kube_node_status_allocatable_memory_bytes{node=~"$node"})
+< (sum (node_filesystem_size{nodename=~"$node"}) - sum (node_filesystem_free{nodename=~"$node"})) / sum (node_filesystem_size{nodename=~"$node"})
+< sum(kube_node_status_allocatable_pods{node=~"$node"})
+< sum(kube_node_status_capacity_pods{node=~"$node"})
+> sum(kube_pod_info{node=~"$node"}) / sum(kube_node_status_allocatable{resource="pods",node=~".*"})
+> sum(kube_pod_container_resource_requests{resource="cpu",node=~"$node"}) / sum(kube_node_status_allocatable{resource="cpu",node=~"$node"})
+> sum(kube_pod_container_resource_requests{resource="memory",node=~"$node"}) / sum(kube_node_status_allocatable{resource="memory",node=~"$node"})
+> (sum (node_filesystem_size_bytes{nodename=~"$node"}) - sum (node_filesystem_free_bytes{nodename=~"$node"})) / sum (node_filesystem_size_bytes{nodename=~"$node"})
+> sum(kube_node_status_allocatable{resource="pods",node=~"$node"})
+> sum(kube_node_status_capacity{resource="pods",node=~"$node"})
+

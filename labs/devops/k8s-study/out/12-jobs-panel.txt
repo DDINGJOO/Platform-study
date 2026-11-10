@@ -1,0 +1,11 @@
+# Job 이 하나도 없을 때
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode "query=kube_job_status_succeeded" | jq ".data.result | length"
+0
+
+master$ kubectl create job hello --image=busybox:1.37 -- echo hi && kubectl wait --for=condition=complete job/hello --timeout=120s
+job.batch/hello created
+job.batch/hello condition met
+
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode "query=kube_job_status_succeeded" | jq -r ".data.result[] | [.metric.job_name, .value[1]] | @tsv"
+hello	1
+

@@ -1,0 +1,16 @@
+# 무한 로딩을 풀어 보려고 Headlamp 의 base URL 을 API 서버 프록시 경로로 맞춘 시도 (작업 세션의 명령 기록에서 옮김, kube-system 시절)
+master$ helm upgrade headlamp headlamp/headlamp -n kube-system --reuse-values --set config.baseURL=/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy
+master$ kubectl -n kube-system get pod -l app.kubernetes.io/instance=headlamp -o jsonpath="{.items[0].spec.containers[0].args}"
+["-in-cluster","-in-cluster-context-name=main","-plugins-dir=/headlamp/plugins","-session-ttl=86400","-base-url=/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy"]
+
+# 같은 브라우저 재현: 이번에는 첫 페이지부터 404
+1st page:  /api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/
+  404 GET /api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/
+
+# 되돌림
+master$ helm rollback headlamp 1 -n kube-system
+Rollback was a success! Happy Helming!
+master$ helm history headlamp -n kube-system | tail -3
+1       	Mon Nov  9 19:56:26 2026	superseded	headlamp-0.46.0	0.46.0     	Install complete
+2       	Mon Nov  9 20:05:01 2026	superseded	headlamp-0.46.0	0.46.0     	Upgrade complete
+3       	Mon Nov  9 20:06:10 2026	deployed  	headlamp-0.46.0	0.46.0     	Rollback to 1   

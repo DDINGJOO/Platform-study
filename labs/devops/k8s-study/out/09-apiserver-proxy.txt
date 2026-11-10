@@ -1,0 +1,27 @@
+# Mac 에서 API 서버 프록시 경로로 Headlamp 부르기. ca.crt · admin.crt · admin.key 는 ./lab 이 만든 kubeconfig 에서 꺼낸 클러스터 CA 와 관리자 클라이언트 인증서
+mac$ curl -s --cacert ca.crt -o /dev/null -w '%{http_code}\n' 'https://192.168.64.2:6443/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/'
+403
+
+mac$ curl -s --cacert ca.crt 'https://192.168.64.2:6443/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/' | head -c 400
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {},
+  "status": "Failure",
+  "message": "services \"http:headlamp:80\" is forbidden: User \"system:anonymous\" cannot get resource \"services/proxy\" in API group \"\" in the namespace \"kube-system\"",
+  "reason": "Forbidden",
+  "details": {
+    "name": "http:headlamp:80",
+    "kind": "services"
+  },
+  "code": 403
+}
+mac$ curl -s --cacert ca.crt --cert admin.crt --key admin.key -o index.html -w '%{http_code} %{size_download}B\n' 'https://192.168.64.2:6443/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/'
+200 5061B
+
+mac$ grep -o '<base[^>]*>' index.html
+<base href="/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/">
+
+mac$ curl -s -o /dev/null -w '%{http_code}\n' http://192.168.64.3:30466/   # 비교: NodePort 는 인증서 없이 열린다
+200
+

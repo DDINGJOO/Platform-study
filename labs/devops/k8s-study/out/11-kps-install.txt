@@ -1,0 +1,54 @@
+master$ helm install prometheus prometheus-community/kube-prometheus-stack --version 93.1.1 -n monitoring --create-namespace --wait --timeout 10m | head -8
+Error: INSTALLATION FAILED: context deadline exceeded
+
+(설치 소요: 613초)
+
+master$ kubectl -n monitoring get pods -o wide | awk '{print $1, $2, $3, $7}' | column -t
+NAME                                                  READY  STATUS            NODE
+prometheus-grafana-7f9f876497-2gmw2                   3/3    Running           k8s-worker1
+prometheus-kube-prometheus-operator-86db4c96dd-vthhs  0/1    ImagePullBackOff  k8s-worker3
+prometheus-kube-state-metrics-cb5d78584-p8hzp         1/1    Running           k8s-worker2
+prometheus-prometheus-node-exporter-d7qcg             1/1    Running           k8s-master
+prometheus-prometheus-node-exporter-flgsj             1/1    Running           k8s-worker1
+prometheus-prometheus-node-exporter-llnqz             1/1    Running           k8s-worker3
+prometheus-prometheus-node-exporter-vjz4h             1/1    Running           k8s-worker2
+
+
+# 설치를 기다리는 동안 확인한 상태 (작업 세션의 명령 기록에서 옮김, 2026-11-09 20:2x)
+master$ kubectl -n monitoring get pods -o wide | awk '{print $1, $2, $3, $4, $5, $7}' | column -t
+NAME                                                  READY  STATUS            RESTARTS  AGE    NODE
+prometheus-grafana-7f9f876497-2gmw2                   3/3    Running           0         9m58s  k8s-worker1
+prometheus-kube-prometheus-operator-86db4c96dd-vthhs  0/1    ImagePullBackOff  0         9m58s  k8s-worker3
+prometheus-kube-state-metrics-cb5d78584-p8hzp         1/1    Running           0         9m58s  k8s-worker2
+prometheus-prometheus-node-exporter-d7qcg             1/1    Running           0         9m58s  k8s-master
+prometheus-prometheus-node-exporter-flgsj             1/1    Running           0         9m58s  k8s-worker1
+prometheus-prometheus-node-exporter-llnqz             1/1    Running           0         9m58s  k8s-worker3
+prometheus-prometheus-node-exporter-vjz4h             1/1    Running           0         9m58s  k8s-worker2
+
+master$ kubectl -n monitoring get events --sort-by=.lastTimestamp | grep -i -E "warn|fail|error|pull" | tail -8
+9m28s       Normal    Pulling             pod/prometheus-grafana-7f9f876497-2gmw2                     Pulling image "docker.io/grafana/grafana:13.3.0-distroless"
+7m3s        Normal    Pulled              pod/prometheus-grafana-7f9f876497-2gmw2                     Successfully pulled image "docker.io/grafana/grafana:13.3.0-distroless" in 2m24.99s (2m24.99s incl
+6m50s       Normal    Pulling             pod/prometheus-kube-prometheus-operator-86db4c96dd-vthhs    Pulling image "quay.io/prometheus-operator/prometheus-operator:v0.95.1"
+6m49s       Warning   Failed              pod/prometheus-kube-prometheus-operator-86db4c96dd-vthhs    Error: ErrImagePull
+6m49s       Warning   Failed              pod/prometheus-kube-prometheus-operator-86db4c96dd-vthhs    Failed to pull image "quay.io/prometheus-operator/prometheus-operator:v0.95.1": rpc error: code = 
+4m33s       Warning   Failed              pod/prometheus-kube-prometheus-operator-86db4c96dd-vthhs    Error: ImagePullBackOff
+4m18s       Normal    BackOff             pod/prometheus-kube-prometheus-operator-86db4c96dd-vthhs    Back-off pulling image "quay.io/prometheus-operator/prometheus-operator:v0.95.1"
+# (rpc error 뒤 상세 원인은 출력에서 잘려 확인하지 못했다. 강의 저장소로 방향을 바꾸며 설치를 지웠다)
+
+# 글을 쓰면서(2026-11-09 21:19 KST) 같은 노드에서 같은 태그를 다시 받아 봤다. 잘렸던 rpc error 의 뒷부분이다.
+worker3$ uname -m
+aarch64
+worker3$ sudo crictl pull quay.io/prometheus-operator/prometheus-operator:v0.95.1
+E1109 21:19:23.949802   74183 remote_image.go:334] "PullImage from image service failed" err="rpc error: code = NotFound desc = get image config descriptor: no match for platform in manifest sha256:9c2490af910d58ec2abd77642d340e30bd5e2de5c80fd19ab4b49e28dc7bbb83: not found" image="quay.io/prometheus-operator/prometheus-operator:v0.95.1"
+
+# 같은 태그의 이미지 인덱스를 quay.io 레지스트리 API 로 열어 봤다(2026-11-09 21:4x KST). 인덱스 digest 는 위 오류의 sha256:9c2490af… 와 같다.
+mac$ curl -s "https://quay.io/api/v1/repository/prometheus-operator/prometheus-operator/tag/?specificTag=v0.95.1" | jq -r '.tags[] | [.name, .last_modified, .manifest_digest[:19]] | @tsv'
+v0.95.1	Thu, 05 Nov 2026 14:56:24 -0000	sha256:9c2490af910d
+
+# 인덱스의 항목: 플랫폼 표시(platform) / 각 이미지 설정(config)에 적힌 실제 아키텍처. 증명(attestation) 항목 5개는 뺐다.
+digest               index 의 platform   config 의 os/architecture
+sha256:83e33206d05b  linux/amd64        linux/amd64
+sha256:8f77cb79d184  linux/amd64        linux/arm64
+sha256:eca403b709af  linux/amd64        linux/arm/v7
+sha256:bc96a12f3df9  linux/amd64        linux/ppc64le
+sha256:b7a15b1981c0  linux/amd64        linux/s390x

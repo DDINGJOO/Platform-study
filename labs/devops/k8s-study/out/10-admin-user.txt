@@ -1,0 +1,27 @@
+# 이미 apply 한 상태에서 다시 실행 (unchanged 가 정상)
+master$ kubectl apply -f headlamp-admin-user.yaml -f ClusterRoleBinding-admin-user.yaml
+serviceaccount/admin-user unchanged
+clusterrolebinding.rbac.authorization.k8s.io/admin-user unchanged
+
+master$ kubectl -n kube-system get serviceaccount admin-user
+NAME         AGE
+admin-user   14s
+
+master$ kubectl get clusterrolebinding admin-user -o wide
+NAME         ROLE                        AGE   USERS   GROUPS   SERVICEACCOUNTS
+admin-user   ClusterRole/cluster-admin   14s                    kube-system/admin-user
+
+master$ kubectl auth can-i '*' '*' --as=system:serviceaccount:kube-system:admin-user
+yes
+
+master$ kubectl auth can-i '*' '*' --as=system:serviceaccount:kube-system:nobody   # 비교: 권한 없는 계정
+no
+
+# 강의 시절(1.23 이전) 방식: ServiceAccount 에 자동으로 붙던 토큰 Secret 을 찾는다
+master$ kubectl -n kube-system get serviceaccount admin-user -o jsonpath='{.secrets}'; echo "(secrets 필드: 비어 있음)"
+(secrets 필드: 비어 있음)
+
+# 지금 방식: 필요할 때 시간 제한 토큰을 발급한다 (토큰 원문 대신 내용 부분만 풀어 본다)
+master$ kubectl -n kube-system create token admin-user --duration=10m | cut -d. -f2 | python3 -c 'import sys,base64,json; p=sys.stdin.read().strip(); p+="="*(-len(p)%4); d=json.loads(base64.urlsafe_b64decode(p)); print(d["sub"], "유효시간", d["exp"]-d["iat"], "초")'
+system:serviceaccount:kube-system:admin-user 유효시간 600 초
+

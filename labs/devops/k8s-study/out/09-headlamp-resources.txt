@@ -1,0 +1,55 @@
+master$ helm list -n kube-system
+NAME    	NAMESPACE  	REVISION	UPDATED                                	STATUS  	CHART          	APP VERSION
+headlamp	kube-system	1       	2026-11-09 19:56:26.782112548 +0900 KST	deployed	headlamp-0.46.0	0.46.0     
+
+master$ helm get manifest headlamp -n kube-system | grep -E '^(kind|  name):'
+kind: ServiceAccount
+  name: headlamp
+kind: Secret
+  name: oidc
+kind: ClusterRoleBinding
+  name: headlamp-admin
+  name: cluster-admin
+  name: headlamp
+kind: Service
+  name: headlamp
+kind: Deployment
+  name: headlamp
+
+master$ kubectl -n kube-system get serviceaccount,service,deployment,replicaset,pod -l app.kubernetes.io/instance=headlamp
+NAME                      AGE
+serviceaccount/headlamp   78s
+
+NAME               TYPE       CLUSTER-IP    EXTERNAL-IP   PORT(S)        AGE
+service/headlamp   NodePort   10.104.14.9   <none>        80:30466/TCP   78s
+
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/headlamp   1/1     1            1           78s
+
+NAME                                  DESIRED   CURRENT   READY   AGE
+replicaset.apps/headlamp-86c49cb4f4   1         1         1       78s
+
+NAME                            READY   STATUS    RESTARTS   AGE
+pod/headlamp-86c49cb4f4-8rv48   1/1     Running   0          78s
+
+master$ kubectl get clusterrolebinding headlamp-admin -o wide
+NAME             ROLE                        AGE   USERS   GROUPS   SERVICEACCOUNTS
+headlamp-admin   ClusterRole/cluster-admin   78s                    kube-system/headlamp
+
+master$ kubectl -n kube-system get pod -l app.kubernetes.io/instance=headlamp -o jsonpath='{.items[0].spec.containers[0].image}{"\n"}{.items[0].spec.containers[0].args}{"\n"}{.items[0].spec.containers[0].ports}{"\n"}'
+ghcr.io/headlamp-k8s/headlamp:v0.46.0
+["-in-cluster","-in-cluster-context-name=main","-plugins-dir=/headlamp/plugins","-session-ttl=86400"]
+[{"containerPort":4466,"name":"http","protocol":"TCP"}]
+
+master$ kubectl -n kube-system describe secret oidc | sed -n '/^Type/,$p'
+Type:  Opaque
+
+Data
+====
+
+master$ helm get values headlamp -n kube-system
+USER-SUPPLIED VALUES:
+service:
+  nodePort: 30466
+  type: NodePort
+

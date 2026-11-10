@@ -1,0 +1,54 @@
+master$ kubectl create namespace monitoring
+namespace/monitoring created
+
+master$ kubectl apply -f prometheus/
+clusterrole.rbac.authorization.k8s.io/prometheus created
+clusterrolebinding.rbac.authorization.k8s.io/prometheus created
+configmap/prometheus-server-conf created
+daemonset.apps/node-exporter created
+service/node-exporter created
+deployment.apps/prometheus-deployment created
+service/prometheus-service created
+
+master$ kubectl apply -f kube-state/
+clusterrole.rbac.authorization.k8s.io/kube-state-metrics created
+clusterrolebinding.rbac.authorization.k8s.io/kube-state-metrics created
+deployment.apps/kube-state-metrics created
+service/kube-state-metrics created
+serviceaccount/kube-state-metrics created
+
+master$ kubectl apply -f grafana/
+deployment.apps/grafana created
+service/grafana created
+error: error validating "grafana/kubernetes-cluster-prometheus_rev1.json": error validating data: [apiVersion not set, kind not set]; if you choose to ignore these errors, turn validation off with --validate=false
+
+master$ kubectl -n monitoring rollout status deploy --timeout=300s; kubectl -n monitoring rollout status ds --timeout=300s; kubectl -n kube-system rollout status deploy/kube-state-metrics --timeout=300s
+Waiting for deployment "grafana" rollout to finish: 0 of 1 updated replicas are available...
+deployment "grafana" successfully rolled out
+deployment "prometheus-deployment" successfully rolled out
+daemon set "node-exporter" successfully rolled out
+deployment "kube-state-metrics" successfully rolled out
+
+master$ kubectl -n monitoring get pods -o wide | awk '{print $1, $2, $3, $4, $7}' | column -t; kubectl -n kube-system get pods -l app=kube-state-metrics -o wide | awk '{print $1, $2, $3, $4, $7}' | column -t
+NAME                                    READY  STATUS   RESTARTS  NODE
+grafana-6f6dd58ffc-nd9zq                1/1    Running  0         k8s-worker3
+node-exporter-6z7xv                     1/1    Running  0         k8s-worker1
+node-exporter-dhpln                     1/1    Running  0         k8s-worker2
+node-exporter-dp4qx                     1/1    Running  0         k8s-worker3
+prometheus-deployment-54f6c75f48-p8c9r  1/1    Running  0         k8s-worker2
+NAME                                 READY  STATUS   RESTARTS  NODE
+kube-state-metrics-849dd5cd8d-zzpgc  1/1    Running  0         k8s-worker1
+
+master$ kubectl get svc -A | grep -E 'NAMESPACE|prometheus|grafana|node-exporter|kube-state'
+NAMESPACE     NAME                 TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                  AGE
+kube-system   kube-state-metrics   ClusterIP   None             <none>        8080/TCP,8081/TCP        2m19s
+kube-system   node-exporter        NodePort    10.102.57.138    <none>        9100:31672/TCP           2m19s
+monitoring    grafana              NodePort    10.106.61.19     <none>        3000:30004/TCP           2m18s
+monitoring    prometheus-service   NodePort    10.106.79.156    <none>        8080:30003/TCP           2m19s
+
+
+# 강의 매니페스트의 kube-state-metrics 이미지 태그를 Docker Hub API 로 조회 (2026-11-09 21:4x KST)
+mac$ curl -s https://hub.docker.com/v2/repositories/liupeng0518/quay.io.coreos.kube-state-metrics/tags/v1.8.0-rc.1 | jq -r '.name, .tag_last_pushed, (.images[] | "\(.os)/\(.architecture)")'
+v1.8.0-rc.1
+2020-01-07T10:52:42.818316Z
+linux/amd64

@@ -1,0 +1,15 @@
+# 글을 쓰며 다시 확인한 것 (읽기 전용 + 저장되지 않는 TokenRequest 하나). 토큰 본문은 찍지 않았다.
+master$ date
+Mon Nov  9 21:26:33 KST 2026
+
+master$ sudo grep -c -E -- '--(event-ttl|service-account-max-token-expiration|encryption-provider-config)' /etc/kubernetes/manifests/kube-apiserver.yaml
+0
+
+master$ kubectl -n headlamp create token admin-user --duration=0 | (토큰 본문은 찍지 않고 iat·exp 만 꺼낸다)
+iat 1794227193 exp 1794230793 exp-iat 3600 초
+
+master$ kubectl auth whoami --token="$(getToken)"     # 평소 kubeconfig(클라이언트 인증서 포함) 그대로
+ATTRIBUTE                                           VALUE
+Username                                            kubernetes-admin
+Groups                                              [kubeadm:cluster-admins system:authenticated]
+Extra: authentication.kubernetes.io/credential-id   [X509SHA256=<클라이언트 인증서 지문>]

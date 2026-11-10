@@ -1,0 +1,10 @@
+master$ grep -A1 'Headlamp 로그인 토큰' ~/.bashrc
+# Headlamp 로그인 토큰 발급 (admin-user, 기본 1시간)
+alias getToken='kubectl -n headlamp create token admin-user'
+
+master$ type getToken
+getToken is aliased to `kubectl -n headlamp create token admin-user'
+
+master$ getToken | cut -d. -f2 | python3 -c 'import sys,base64,json; p=sys.stdin.read().strip(); p+="="*(-len(p)%4); d=json.loads(base64.urlsafe_b64decode(p)); print(d["sub"], "유효시간", d["exp"]-d["iat"], "초")'
+system:serviceaccount:headlamp:admin-user 유효시간 3600 초
+

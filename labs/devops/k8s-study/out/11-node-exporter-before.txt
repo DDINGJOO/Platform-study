@@ -1,0 +1,17 @@
+# 강의 매니페스트 그대로: node-exporter Service 는 kube-system, 파드(DaemonSet)는 monitoring
+master$ kubectl get pods -A -l k8s-app=node-exporter -o wide | awk '{print $1, $2, $3, $4, $8}' | column -t
+NAMESPACE   NAME                 READY  STATUS   NODE
+monitoring  node-exporter-6z7xv  1/1    Running  k8s-worker1
+monitoring  node-exporter-dhpln  1/1    Running  k8s-worker2
+monitoring  node-exporter-dp4qx  1/1    Running  k8s-worker3
+
+master$ kubectl -n kube-system get endpointslices -l kubernetes.io/service-name=node-exporter
+NAME                  ADDRESSTYPE   PORTS     ENDPOINTS   AGE
+node-exporter-cg8qg   IPv4          <unset>   <unset>     3m5s
+
+master$ kubectl -n kube-system get svc node-exporter -o jsonpath='{.metadata.annotations}'; echo '(annotations 끝)'
+{"kubectl.kubernetes.io/last-applied-configuration":"{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"annotations\":{},\"labels\":{\"k8s-app\":\"node-exporter\"},\"name\":\"node-exporter\",\"namespace\":\"kube-system\"},\"spec\":{\"ports\":[{\"name\":\"http\",\"nodePort\":31672,\"port\":9100,\"protocol\":\"TCP\"}],\"selector\":{\"k8s-app\":\"node-exporter\"},\"type\":\"NodePort\"}}\n"}(annotations 끝)
+
+mac$ curl -s -m5 -o /dev/null -w "%{http_code}\n" http://192.168.64.3:31672/metrics
+000
+

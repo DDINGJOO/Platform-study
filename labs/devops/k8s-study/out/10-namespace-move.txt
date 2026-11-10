@@ -1,0 +1,75 @@
+# kube-system 에 두었던 Headlamp 와 admin-user 를 전용 네임스페이스 headlamp 로 옮긴다
+master$ kubectl -n kube-system delete serviceaccount admin-user && kubectl delete clusterrolebinding admin-user
+serviceaccount "admin-user" deleted from kube-system namespace
+clusterrolebinding.rbac.authorization.k8s.io "admin-user" deleted
+
+master$ helm uninstall headlamp -n kube-system
+release "headlamp" uninstalled
+
+master$ kubectl create namespace headlamp
+namespace/headlamp created
+
+master$ helm install headlamp headlamp/headlamp -n headlamp | head -6
+NAME: headlamp
+LAST DEPLOYED: Mon Nov  9 20:14:10 2026
+NAMESPACE: headlamp
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+
+master$ kubectl -n headlamp rollout status deploy/headlamp --timeout=180s
+Waiting for deployment "headlamp" rollout to finish: 0 of 1 updated replicas are available...
+deployment "headlamp" successfully rolled out
+
+master$ cat headlamp-admin-user.yaml ClusterRoleBinding-admin-user.yaml | grep -v '^#'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-user
+  namespace: headlamp
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-user
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: admin-user
+  namespace: headlamp
+
+master$ kubectl apply -f headlamp-admin-user.yaml -f ClusterRoleBinding-admin-user.yaml
+serviceaccount/admin-user created
+clusterrolebinding.rbac.authorization.k8s.io/admin-user created
+
+master$ kubectl -n headlamp get all,serviceaccount
+NAME                            READY   STATUS    RESTARTS   AGE
+pod/headlamp-86c49cb4f4-9srjd   1/1     Running   0          1s
+
+NAME               TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)   AGE
+service/headlamp   ClusterIP   10.109.104.119   <none>        80/TCP    1s
+
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/headlamp   1/1     1            1           1s
+
+NAME                                  DESIRED   CURRENT   READY   AGE
+replicaset.apps/headlamp-86c49cb4f4   1         1         1       1s
+
+NAME                        AGE
+serviceaccount/admin-user   0s
+serviceaccount/default      2s
+serviceaccount/headlamp     1s
+
+master$ kubectl get clusterrolebinding -o wide | grep -E 'NAME|headlamp|admin-user'
+NAME                                                                    ROLE                                                                                AGE     USERS                            GROUPS                                            SERVICEACCOUNTS
+admin-user                                                              ClusterRole/cluster-admin                                                           0s                                                                                         headlamp/admin-user
+headlamp-admin                                                          ClusterRole/cluster-admin                                                           1s                                                                                         headlamp/headlamp
+
+master$ kubectl -n kube-system get all,serviceaccount 2>/dev/null | grep -i -E 'headlamp|admin-user' || echo '(kube-system 에 headlamp · admin-user 없음)'
+(kube-system 에 headlamp · admin-user 없음)
+
+master$ kubectl auth can-i '*' '*' --as=system:serviceaccount:headlamp:admin-user
+yes
+

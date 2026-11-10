@@ -1,0 +1,39 @@
+master$ helm install headlamp headlamp/headlamp --namespace kube-system --set service.type=NodePort --set service.nodePort=30466
+NAME: headlamp
+LAST DEPLOYED: Mon Nov  9 19:56:26 2026
+NAMESPACE: kube-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+1. Get the application URL by running these commands:
+  export NODE_PORT=$(kubectl get --namespace kube-system -o jsonpath="{.spec.ports[0].nodePort}" services headlamp)
+  export NODE_IP=$(kubectl get nodes --namespace kube-system -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+2. Get the token using
+  kubectl create token headlamp --namespace kube-system
+
+master$ kubectl -n kube-system rollout status deploy/headlamp --timeout=180s
+Waiting for deployment "headlamp" rollout to finish: 0 of 1 updated replicas are available...
+deployment "headlamp" successfully rolled out
+
+master$ kubectl -n kube-system get deploy,svc,pod -l app.kubernetes.io/name=headlamp -o wide
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES                                  SELECTOR
+deployment.apps/headlamp   1/1     1            1           31s   headlamp     ghcr.io/headlamp-k8s/headlamp:v0.46.0   app.kubernetes.io/instance=headlamp,app.kubernetes.io/name=headlamp
+
+NAME               TYPE       CLUSTER-IP    EXTERNAL-IP   PORT(S)        AGE   SELECTOR
+service/headlamp   NodePort   10.104.14.9   <none>        80:30466/TCP   31s   app.kubernetes.io/instance=headlamp,app.kubernetes.io/name=headlamp
+
+NAME                            READY   STATUS    RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES
+pod/headlamp-86c49cb4f4-8rv48   1/1     Running   0          31s   10.244.194.78   k8s-worker1   <none>           <none>
+
+mac$ curl -s -o /dev/null -w "%{http_code}\n" http://192.168.64.3:30466/
+000
+
+# 몇 초 뒤 다시 확인
+mac$ curl -s -o /dev/null -w "%{http_code}" http://192.168.64.3:30466/
+200
+mac$ curl -s -o /dev/null -w "%{http_code}" http://192.168.64.4:30466/
+200
+mac$ curl -s -o /dev/null -w "%{http_code}" http://192.168.64.5:30466/
+200

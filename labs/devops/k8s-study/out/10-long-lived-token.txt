@@ -1,0 +1,48 @@
+# kubectl create token --duration=0 은 '만료 없음'이 아니라 서버 기본값(1시간)
+master$ kubectl -n headlamp create token admin-user --duration=0 | cut -d. -f2 | python3 -c 'import sys,base64,json; p=sys.stdin.read().strip(); p+="="*(-len(p)%4); d=json.loads(base64.urlsafe_b64decode(p)); print("sub:", d["sub"]); print("exp:", d.get("exp", "(없음)"))'
+sub: system:serviceaccount:headlamp:admin-user
+exp: 1794226746
+
+# 만료 없는 토큰: service-account-token 타입 Secret
+master$ cat admin-user-token-secret.yaml | grep -v '^#'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: admin-user-token
+  namespace: headlamp
+  annotations:
+    kubernetes.io/service-account.name: admin-user
+type: kubernetes.io/service-account-token
+
+master$ kubectl apply -f admin-user-token-secret.yaml && sleep 2 && kubectl -n headlamp describe secret admin-user-token | sed -n '/^Type/,/^token/p' | sed -E 's/^(token: +).{12}.*/\1(가림)/'
+secret/admin-user-token created
+Type:  kubernetes.io/service-account-token
+
+Data
+====
+ca.crt:     1107 bytes
+namespace:  8 bytes
+token:      (가림)
+
+master$ kubectl -n headlamp get secret admin-user-token -o jsonpath='{.data.token}' | base64 -d | cut -d. -f2 | python3 -c 'import sys,base64,json; p=sys.stdin.read().strip(); p+="="*(-len(p)%4); d=json.loads(base64.urlsafe_b64decode(p)); print("sub:", d["sub"]); print("exp:", d.get("exp", "(없음)"))'
+sub: system:serviceaccount:headlamp:admin-user
+exp: (없음)
+
+# getToken 을 Secret 에서 꺼내도록 바꾼 뒤
+master$ type getToken
+getToken is aliased to `kubectl -n headlamp get secret admin-user-token -o jsonpath="{.data.token}" | base64 -d; echo'
+
+# 토큰만으로 인증해 본다 (kubeconfig 의 관리자 인증서를 쓰지 않도록 빈 kubeconfig)
+master$ kubectl --kubeconfig=/dev/null --server=https://192.168.104.1:6443 --certificate-authority=/etc/kubernetes/pki/ca.crt --token="$(getToken)" auth whoami
+ATTRIBUTE   VALUE
+Username    system:serviceaccount:headlamp:admin-user
+UID         d877ee99-2bf1-4e82-a4a5-d13085444da1
+Groups      [system:serviceaccounts system:serviceaccounts:headlamp system:authenticated]
+
+master$ kubectl --kubeconfig=/dev/null --server=https://192.168.104.1:6443 --certificate-authority=/etc/kubernetes/pki/ca.crt --token="$(getToken)" get nodes
+NAME          STATUS   ROLES           AGE     VERSION
+k8s-master    Ready    control-plane   4d23h   v1.37.2
+k8s-worker1   Ready    worker          4d22h   v1.37.2
+k8s-worker2   Ready    worker          4d22h   v1.37.2
+k8s-worker3   Ready    worker          4d22h   v1.37.2
+

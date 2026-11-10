@@ -1,0 +1,41 @@
+# 수정 뒤: Service 를 monitoring 으로 옮기고 수집 표시, DaemonSet 에 control-plane 허용
+master$ kubectl -n kube-system delete svc node-exporter
+service "node-exporter" deleted from kube-system namespace
+
+master$ kubectl apply -f prometheus/prometheus-DaemonSet-nodeexporter.yaml && kubectl -n monitoring rollout status ds/node-exporter --timeout=180s
+daemonset.apps/node-exporter configured
+service/node-exporter created
+Waiting for daemon set "node-exporter" rollout to finish: 1 out of 4 new pods have been updated...
+Waiting for daemon set "node-exporter" rollout to finish: 1 out of 4 new pods have been updated...
+Waiting for daemon set "node-exporter" rollout to finish: 2 out of 4 new pods have been updated...
+Waiting for daemon set "node-exporter" rollout to finish: 2 out of 4 new pods have been updated...
+Waiting for daemon set "node-exporter" rollout to finish: 2 out of 4 new pods have been updated...
+Waiting for daemon set "node-exporter" rollout to finish: 3 out of 4 new pods have been updated...
+Waiting for daemon set "node-exporter" rollout to finish: 3 out of 4 new pods have been updated...
+Waiting for daemon set "node-exporter" rollout to finish: 3 of 4 updated pods are available...
+daemon set "node-exporter" successfully rolled out
+
+master$ kubectl -n monitoring get pods -l k8s-app=node-exporter -o wide | awk '{print $1, $2, $3, $7}' | column -t
+NAME                 READY  STATUS   NODE
+node-exporter-47twj  1/1    Running  k8s-master
+node-exporter-9vx2k  1/1    Running  k8s-worker1
+node-exporter-n9tgx  1/1    Running  k8s-worker3
+node-exporter-ws9hd  1/1    Running  k8s-worker2
+
+master$ kubectl -n monitoring get endpointslices -l kubernetes.io/service-name=node-exporter
+NAME                  ADDRESSTYPE   PORTS   ENDPOINTS                                                 AGE
+node-exporter-wsrdn   IPv4          9100    10.244.235.193,10.244.194.84,10.244.100.208 + 1 more...   15s
+
+mac$ curl -s http://192.168.64.3:31672/metrics | grep -m3 "^node_"
+node_arp_entries{device="eth0"} 2
+node_boot_time_seconds 1.794220994e+09
+node_context_switches_total 2.4789649e+07
+
+mac$ curl -s 'http://192.168.64.3:30003/api/v1/targets?state=active' | jq -r '.data.activeTargets[] | select(.scrapeUrl | test(":9100")) | [.labels.job, .health, .scrapeUrl] | @tsv' | column -t
+kubernetes-service-endpoints  up  http://10.244.126.12:9100/metrics
+kubernetes-service-endpoints  up  http://10.244.194.84:9100/metrics
+kubernetes-service-endpoints  up  http://10.244.100.208:9100/metrics
+kubernetes-service-endpoints  up  http://10.244.235.193:9100/metrics
+
+mac$ curl -s 'http://192.168.64.3:30003/api/v1/query?query=count(node_uname_info)' | jq -r '.data.result[0].value[1]'
+4

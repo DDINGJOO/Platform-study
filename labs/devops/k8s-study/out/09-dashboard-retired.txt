@@ -1,0 +1,27 @@
+mac$ gh api repos/kubernetes-retired/dashboard --jq '"archived=\(.archived)"'
+archived=true
+
+mac$ gh api repos/kubernetes-retired/dashboard/readme --jq .content | base64 -d | sed -n '/## IMPORTANT/,/^## Introduction/p' | head -8
+## IMPORTANT
+
+**This project is now archived and no longer maintained due to lack of active maintainers and contributors.**
+
+Thank you to everyone who used, starred, or contributed to this project! Feel free to fork this repository if you want to continue development yourself.
+
+Please consider using **[Headlamp](https://github.com/kubernetes-sigs/headlamp)** instead. It was recently moved under the sig-ui. From the creators:
+> Headlamp is an easy-to-use and extensible Kubernetes web UI.
+
+mac$ curl -s -o /dev/null -w '%{http_code}\n' https://kubernetes.github.io/dashboard/index.yaml   # 강의식 helm repo add 주소
+404
+
+mac$ gh api repos/kubernetes-retired/dashboard/releases/tags/kubernetes-dashboard-7.14.0 --jq '"\(.tag_name) \(.published_at) " + (.assets[0].name)'
+kubernetes-dashboard-7.14.0 2025-10-30T14:00:18Z kubernetes-dashboard-7.14.0.tgz
+
+mac$ gh api repos/kubernetes-retired/dashboard/releases/tags/v2.7.0 --jq '.published_at, (.body | split("\n") | map(select(test("Kubernetes version|Compatibility  "))) | .[])'
+2022-09-16T11:34:57Z
+| Kubernetes version | 1.22 | 1.23 | 1.24 | 1.25 |
+| Compatibility            | ?   | ?   |   ?   |   ✓    |
+
+mac$ gh api repos/kubernetes-sigs/headlamp/releases/latest --jq '"\(.tag_name) \(.published_at)"'
+v0.46.0 2026-10-15T23:14:36Z
+

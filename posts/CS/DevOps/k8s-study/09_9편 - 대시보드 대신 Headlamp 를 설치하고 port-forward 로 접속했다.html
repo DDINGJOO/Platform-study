@@ -1,0 +1,490 @@
+<!-- ============================================================
+  k8s 스터디 9편: 대시보드 대신 Headlamp 를 설치하고 port-forward 로 접속했다
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 복사했다.
+============================================================ -->
+<!-- lead: 강의가 쓰는 Kubernetes Dashboard 저장소는 아카이브돼 있었어요. Headlamp 를 강의대로 API 서버 프록시 경로로 열자 로그인 뒤 /config 와 /plugins 가 404 를 받으며 멈췄고, kubectl port-forward 로 바꿨어요. -->
+<!-- tags: Headlamp, Kubernetes Dashboard, API 서버 프록시, kubectl port-forward, macOS 로컬 네트워크 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 9편</div>
+  7편. 껐다 켠 직후의 Ready 는 재부팅 전 상태일 수 있다<br>
+  8편. 옵저버빌리티는 왜 필요한가<br>
+  <b>9편. 대시보드 대신 Headlamp 를 설치하고 port-forward 로 접속했다</b> &larr; 지금 이 글<br>
+  10편. 토큰 수명 0 은 무한이 아니었다<br>
+  11편. node-exporter 를 띄웠는데 Prometheus 가 수집하지 않았다
+</div>
+
+<p>강의 자료에 적힌 대시보드 링크를 열었어요. 주소는 <code style="font-family:Menlo,monospace;font-size:14px;">github.com/kubernetes-retired/dashboard</code> 였습니다. 조직 이름에 retired 가 붙어 있었고, README 맨 위에는 이 프로젝트가 아카이브되어 더 이상 관리되지 않는다는 문장이 굵은 글씨로 적혀 있었어요.</p>
+<p>8편에서 정리한 관측 도구 가운데 강의가 가장 먼저 꺼낸 것이 이 Kubernetes Dashboard 예요. 파드·노드·이벤트 같은 클러스터 상태를 웹 화면으로 보여 주는 도구입니다. README 가 대신 쓰라고 한 Headlamp 를 설치하고, 강의가 말한 대로 API 서버를 거치는 경로로 열어 봤어요. 인증서 없이는 403, 관리자 인증서를 붙이면 200 이 나왔고 로그인 창도 떴습니다. 그런데 토큰을 넣고 로그인하자 화면이 로딩 표시에서 더 넘어가지 않았어요.</p>
+<p>클러스터는 1~7편에서 만든 실습 환경(Lima VM 4대, 쿠버네티스 v1.37.2, Calico v3.33.0)이고, 이번 실습부터 마스터에 Helm v3.22.1 을 설치해 썼어요. 이 글은 대시보드를 고르는 데서 시작해, Headlamp 를 설치하고 어느 길로 들어갈지 정하기까지를 따라갑니다.</p>
+
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 강의가 쓰는 Kubernetes Dashboard 는 왜 설치하지 않았고, 무엇으로 바꿨을까?<br>
+&middot; helm install 한 줄은 클러스터에 무엇을 만들었고, 그중 무엇을 조심해야 할까?<br>
+&middot; NodePort, API 서버 프록시, kubectl port-forward 는 Headlamp 에 닿기 전에 무엇이 다를까?<br>
+&middot; API 서버 경로로 연 Headlamp 는 왜 로그인 뒤에 멈췄을까?<br>
+&middot; 같은 Mac 에서 nc 는 되는데 kubectl 만 no route to host 를 낸 이유는 무엇일까?</p>
+
+<h2>1. 강의가 쓰는 대시보드는 이미 은퇴해 있었다</h2>
+
+<p>설치 명령을 치기 전에 저장소 상태부터 봤어요. GitHub API 로 아카이브 여부, README 첫 부분, 릴리스 두 개, 그리고 README 가 대신 쓰라고 한 Headlamp 의 최신 릴리스를 차례로 조회했습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/09/dashboard-retired.png" alt="kubernetes-retired/dashboard 저장소가 archived=true 이고 README 가 Headlamp 를 권하며, 강의식 helm 저장소 주소 index.yaml 이 404, 마지막 릴리스 7.14.0 이 2025-10-30, v2.7.0 호환표가 1.22~1.24 는 물음표이고 1.25 만 체크, Headlamp 최신 릴리스가 v0.46.0 인 터미널 화면" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 저장소는 archived=true, 강의식 helm 저장소 주소는 404, 강사가 쓴 v2.7.0 은 1.25 에만 ✓ 였다</div>
+
+<p>화면에서 확인할 것은 네 가지예요. 첫째, 저장소는 <code style="font-family:Menlo,monospace;font-size:14px;">archived=true</code> 였고 README 는 "활동하는 관리자와 기여자가 부족해 아카이브했고 더 이상 관리하지 않는다"고 적고 있었어요. 같은 README 는 Headlamp 를 대신 쓰라고 권하면서, Headlamp 가 최근 sig-ui 아래로 옮겨졌다고 덧붙였습니다. 둘째, Helm 저장소 주소 <code style="font-family:Menlo,monospace;font-size:14px;">https://kubernetes.github.io/dashboard/index.yaml</code> 이 404 를 돌려줬어요. 저장소의 차트 목록 파일이 없으니 <code style="font-family:Menlo,monospace;font-size:14px;">helm repo add</code> 로 이 저장소를 등록할 수 없습니다. 마지막 릴리스인 kubernetes-dashboard-7.14.0(2025-10-30)의 차트 파일은 릴리스 첨부 파일로 남아 있어서 내려받을 수는 있었어요. 하지만 받는다 해도 앞으로 고쳐 줄 사람이 없는 차트예요.</p>
+<p>셋째는 강의가 쓴 버전이에요. 강사는 Dashboard v2.7.0 을 매니페스트 한 장으로 설치했는데, 이 릴리스는 2022-09-16 에 나왔고 릴리스 노트의 호환표는 쿠버네티스 1.25 에만 ✓ 를 달고 1.22~1.24 는 ? 로 남겨 두었어요. 우리 클러스터는 v1.37.2 라서 표에 아예 없습니다. 그 매니페스트 주소는 지금도 200 으로 내려받아지지만, 내려받아진다는 것과 이 클러스터에서 제대로 돈다는 것은 다른 문제였어요. 넷째, Headlamp 의 최신 릴리스는 v0.46.0(2026-10-15)이었습니다.</p>
+<p>쿠버네티스 공식 문서의 <a href="https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/">Deploy and Access the Kubernetes Dashboard</a> 페이지도 맨 위에 같은 사실을 적고 있어요. "Kubernetes Dashboard is deprecated and unmaintained." 이어서 새로 설치한다면 Headlamp 를 고려하라고 하고, Dashboard 는 지금 Helm 설치만 지원한다고 적어 둡니다. 그런데 그 페이지 본문이 안내하는 <code style="font-family:Menlo,monospace;font-size:14px;">helm repo add kubernetes-dashboard https://kubernetes.github.io/dashboard/</code> 가 바로 위에서 404 를 받은 주소예요(2026-11-09 에 확인). <span class="obsv-mark">문서는 아직 설치 명령을 보여 주지만, 그 명령이 가리키는 저장소는 이미 비어 있었어요.</span></p>
+<p>"그러면 뭐 써?"라는 질문에 고를 수 있는 답은 하나였어요. Dashboard 의 README 와 쿠버네티스 문서가 둘 다 Headlamp 를 가리켰어요. Headlamp 는 kubernetes-sigs 조직의 저장소이고, 쿠버네티스 프로젝트 안에서 UI 를 맡는 분과(SIG UI) 아래에 있어요. Helm 저장소 <code style="font-family:Menlo,monospace;font-size:14px;">https://kubernetes-sigs.github.io/headlamp/</code> 도 200 으로 응답했습니다. 강의가 Dashboard 로 보여 주려던 것, 즉 파드·노드·이벤트를 웹 화면으로 보는 일은 Headlamp 로 따라가기로 했어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Helm (차트 · 릴리스 · 리비전)</div>
+  쿠버네티스 매니페스트 묶음을 패키지 단위로 설치하고 고치는 도구예요. 묶음 하나를 차트라고 하고, 차트를 클러스터에 한 번 설치한 단위를 릴리스라고 불러요. 같은 릴리스를 <code style="font-family:Menlo,monospace;font-size:14px;">helm upgrade</code> 로 고칠 때마다 리비전 번호가 하나씩 올라가고, <code style="font-family:Menlo,monospace;font-size:14px;">helm rollback</code> 으로 이전 리비전의 상태로 되돌릴 수 있습니다.
+</div>
+
+<h2>2. helm install 한 줄이 만든 것은 다섯 가지였다</h2>
+
+<p>마스터에서 Headlamp 차트를 설치했어요. 네임스페이스는 kube-system 으로 했습니다. Headlamp 의 <a href="https://headlamp.dev/docs/latest/installation/in-cluster/">클러스터 설치 문서</a> 예시도 <code style="font-family:Menlo,monospace;font-size:14px;">--namespace kube-system</code> 을 써요. 이 선택은 나중에 전용 네임스페이스로 바꿨고, 그 이유는 10편에서 다룹니다. 서비스는 Mac 에서 바로 열어 보려고 NodePort 로 하고 포트 번호를 30466 으로 고정했어요.</p>
+
+<div class="obsv-code">master$ helm install headlamp headlamp/headlamp --namespace kube-system --set service.type=NodePort --set service.nodePort=30466
+NAME: headlamp
+LAST DEPLOYED: Mon Nov  9 19:56:26 2026
+NAMESPACE: kube-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+1. Get the application URL by running these commands:
+  export NODE_PORT=$(kubectl get --namespace kube-system -o jsonpath="{.spec.ports[0].nodePort}" services headlamp)
+  export NODE_IP=$(kubectl get nodes --namespace kube-system -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+2. Get the token using
+  kubectl create token headlamp --namespace kube-system</div>
+<p>&rarr; 릴리스 headlamp 의 리비전 1 이 배포됐어요. 차트가 남긴 안내문(NOTES)은 노드 IP 와 노드 포트로 접속하고, 로그인 토큰은 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl create token</code> 으로 받으라고 알려 줍니다.</p>
+
+<p>롤아웃이 끝난 걸 확인하고 Mac 에서 워커 노드의 NodePort 로 요청을 보냈어요.</p>
+
+<div class="obsv-code">master$ kubectl -n kube-system rollout status deploy/headlamp --timeout=180s
+Waiting for deployment "headlamp" rollout to finish: 0 of 1 updated replicas are available...
+deployment "headlamp" successfully rolled out
+
+mac$ curl -s -o /dev/null -w "%{http_code}\n" http://192.168.64.3:30466/
+000
+
+# 몇 초 뒤 다시 확인
+mac$ curl -s -o /dev/null -w "%{http_code}" http://192.168.64.3:30466/
+200
+mac$ curl -s -o /dev/null -w "%{http_code}" http://192.168.64.4:30466/
+200
+mac$ curl -s -o /dev/null -w "%{http_code}" http://192.168.64.5:30466/
+200</div>
+<p>&rarr; 롤아웃 완료 직후의 첫 요청은 연결조차 맺지 못했고(000), 몇 초 뒤에는 워커 세 대의 30466 포트가 모두 200 을 돌려줬어요.</p>
+
+<p>롤아웃 완료와 노드 포트의 실제 응답 사이에 몇 초 틈이 있었다는 것만 기록해 둘게요. 원인은 확인하지 않았어요. 7편에서도 "준비 완료" 표시와 실제 응답이 어긋난 적이 있었는데, 이번에는 기다리면 저절로 맞춰지는 정도였습니다. 파드는 worker1 에 하나만 떴는데도 worker2·3 의 포트가 똑같이 응답했다는 점도 눈여겨 둘 만해요. 이 성질은 8장에서 NodePort 를 닫는 이유가 됩니다.</p>
+
+<p>차트가 실제로 무엇을 만들었는지는 <code style="font-family:Menlo,monospace;font-size:14px;">helm get manifest</code> 로 볼 수 있어요. 릴리스가 클러스터에 적용한 매니페스트 원문에서 종류와 이름만 골라냈습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/09/headlamp-helm-manifest.png" alt="helm list 에서 headlamp 릴리스가 kube-system 네임스페이스, 리비전 1, 차트 headlamp-0.46.0 으로 deployed 상태이고, helm get manifest 에서 ServiceAccount headlamp, Secret oidc, ClusterRoleBinding headlamp-admin, Service headlamp, Deployment headlamp 다섯 개가 나온 터미널 화면" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 리비전 1 이 만든 오브젝트는 ServiceAccount, Secret, ClusterRoleBinding, Service, Deployment 다섯 개였다</div>
+
+<p>목록은 ServiceAccount <code style="font-family:Menlo,monospace;font-size:14px;">headlamp</code>, Secret <code style="font-family:Menlo,monospace;font-size:14px;">oidc</code>, ClusterRoleBinding <code style="font-family:Menlo,monospace;font-size:14px;">headlamp-admin</code>, Service <code style="font-family:Menlo,monospace;font-size:14px;">headlamp</code>, Deployment <code style="font-family:Menlo,monospace;font-size:14px;">headlamp</code> 다섯 개예요. ClusterRoleBinding 아래에 이름이 세 개(headlamp-admin, cluster-admin, headlamp) 나온 것은 그 오브젝트 안에 바인딩 자신의 이름, 묶는 역할의 이름, 묶이는 계정의 이름이 함께 들어 있기 때문이에요. ReplicaSet 과 Pod 는 목록에 없어요. 2편에서 본 대로 그 둘은 Deployment 를 보고 컨트롤러가 만드는 것이라 차트가 직접 만들지 않습니다.</p>
+<p>이번에는 클러스터에 실제로 생긴 것을 종류별로 조회했어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/09/headlamp-resources.png" alt="kube-system 에서 조회한 serviceaccount headlamp, NodePort 서비스 10.104.14.9 80:30466/TCP, deployment 1/1, replicaset 1, 파드 1개 Running, ClusterRoleBinding headlamp-admin 이 ClusterRole/cluster-admin 을 kube-system/headlamp 에 묶은 모습, 컨테이너 이미지 v0.46.0 과 인자 네 개와 포트 4466, 데이터가 비어 있는 Secret oidc, 사용자가 준 values 두 줄이 보이는 터미널 화면" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. headlamp-admin 이 kube-system/headlamp 계정에 ClusterRole/cluster-admin 을 묶고 있었다</div>
+
+<p>위에서부터 읽으면 이래요. 서비스 <code style="font-family:Menlo,monospace;font-size:14px;">headlamp</code> 는 NodePort 타입이고 클러스터 IP 10.104.14.9, 포트 <code style="font-family:Menlo,monospace;font-size:14px;">80:30466/TCP</code> 예요. Deployment·ReplicaSet·Pod 는 모두 1개씩 준비돼 있고, 컨테이너는 <code style="font-family:Menlo,monospace;font-size:14px;">ghcr.io/headlamp-k8s/headlamp:v0.46.0</code> 이미지로 4466 포트를 엽니다. 서비스의 80 포트로 온 요청은 이 4466 으로 이어져요.</p>
+<p>컨테이너 인자 네 개는 차트의 기본값에서 왔어요. <code style="font-family:Menlo,monospace;font-size:14px;">-in-cluster</code> 는 클러스터 안에서 도는 모드예요. Headlamp 문서에 따르면 이 모드에서는 파드의 ServiceAccount 로 클러스터 컨텍스트를 메모리에 만들고, 그 이름이 <code style="font-family:Menlo,monospace;font-size:14px;">-in-cluster-context-name=main</code> 의 main 입니다. <code style="font-family:Menlo,monospace;font-size:14px;">-session-ttl=86400</code> 은 차트 values.yaml 에 "세션 토큰 TTL(초), 기본 24시간"으로 설명돼 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">-plugins-dir</code> 은 플러그인을 읽을 폴더예요.</p>
+<p>Secret <code style="font-family:Menlo,monospace;font-size:14px;">oidc</code> 는 타입이 Opaque 이고 데이터가 하나도 없어요. 차트 템플릿을 보면 이 Secret 은 OIDC 로그인 설정(clientID, issuerURL 같은 값)을 담는 자리이고, 값이 주어진 항목만 채워요. OIDC 를 설정하지 않았으니 빈 채로 만들어진 거예요. 마지막 <code style="font-family:Menlo,monospace;font-size:14px;">helm get values</code> 는 설치할 때 제가 직접 준 값만 보여 줍니다. <code style="font-family:Menlo,monospace;font-size:14px;">service.nodePort: 30466</code> 과 <code style="font-family:Menlo,monospace;font-size:14px;">service.type: NodePort</code> 두 줄뿐이었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ServiceAccount</div>
+  사람이 아니라 프로그램을 위한 쿠버네티스 계정이에요. 네임스페이스에 속하고, API 서버는 이 계정의 토큰을 받으면 <code style="font-family:Menlo,monospace;font-size:14px;">system:serviceaccount:&lt;네임스페이스&gt;:&lt;이름&gt;</code> 이라는 사용자로 요청을 처리해요. 여기서는 kube-system 의 headlamp 계정이 만들어졌고, 차트의 Deployment 는 Headlamp 파드를 이 계정으로 띄웁니다.
+</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ClusterRoleBinding 과 cluster-admin</div>
+  ClusterRoleBinding 은 역할(ClusterRole)에 적힌 권한을 사용자·그룹·ServiceAccount 에게 클러스터 전체 범위로 묶어 주는 오브젝트예요. cluster-admin 은 쿠버네티스에 기본으로 들어 있는 역할로, RBAC 문서는 "모든 리소스에 모든 동작을 할 수 있는 슈퍼유저 권한"이라고 설명해요. ClusterRoleBinding 으로 묶으면 모든 네임스페이스의 모든 리소스를 다룰 수 있게 됩니다.
+</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: NodePort</div>
+  Service 타입 중 하나예요. 지정한 포트(기본 범위 30000~32767)를 클러스터의 모든 노드에 같은 번호로 열고, 그 포트로 온 요청을 서비스의 파드로 보내요. 클러스터 밖에서 노드 IP 만 알면 들어올 수 있게 하는 가장 간단한 방법입니다.
+</div>
+
+<p>여기까지를 한 장에 모으면 이렇게 돼요. 위 두 줄은 화면을 띄우는 쪽이고, 아래 줄은 권한을 주는 쪽이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="k9arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M24 36 C 77 33, 130 38, 184 35 C 187 57, 185 78, 183 100 C 130 103, 77 98, 26 101 C 22 78, 25 57, 24 36 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="104" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">Deployment</text>
+  <text x="104" y="86" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">headlamp</text>
+  <path d="M188 68 C 199 64, 210 70, 222 68" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr1)"/>
+  <path d="M226 36 C 279 33, 332 38, 386 35 C 389 57, 387 78, 385 100 C 332 103, 279 98, 228 101 C 224 78, 227 57, 226 36 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="306" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">ReplicaSet</text>
+  <text x="306" y="86" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">headlamp-86c49cb4f4</text>
+  <path d="M390 68 C 401 64, 412 70, 424 68" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr1)"/>
+  <path d="M428 36 C 510 33, 592 38, 676 35 C 679 57, 677 78, 675 100 C 592 103, 510 98, 430 101 C 426 78, 429 57, 428 36 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="552" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">Pod (컨테이너 포트 4466)</text>
+  <text x="552" y="86" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">headlamp:v0.46.0 -in-cluster</text>
+  <path d="M24 140 C 143 137, 263 142, 386 139 C 389 161, 387 182, 385 204 C 263 207, 143 202, 26 205 C 22 182, 25 161, 24 140 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="205" y="166" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">우리가 값으로 준 것은 이 두 줄뿐</text>
+  <text x="205" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">service.type=NodePort  service.nodePort=30466</text>
+  <path d="M390 172 C 401 168, 412 174, 424 172" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr1)"/>
+  <path d="M428 140 C 510 137, 592 142, 676 139 C 679 161, 677 182, 675 204 C 592 207, 510 202, 430 205 C 426 182, 429 161, 428 140 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="552" y="166" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">Service headlamp</text>
+  <text x="552" y="190" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">NodePort 80:30466/TCP</text>
+  <path d="M552 137 C 552 124, 552 117, 552 105" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr1)"/>
+  <text x="588" y="126" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">셀렉터</text>
+  <path d="M24 250 C 77 247, 130 252, 184 249 C 187 271, 185 292, 183 314 C 130 317, 77 312, 26 315 C 22 292, 25 271, 24 250 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="104" y="276" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">ClusterRole</text>
+  <text x="104" y="298" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">cluster-admin</text>
+  <path d="M224 284 C 212 280, 201 286, 189 284" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr1)"/>
+  <path d="M226 250 C 279 247, 332 252, 386 249 C 389 271, 387 292, 385 314 C 332 317, 279 312, 228 315 C 224 292, 227 271, 226 250 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="306" y="276" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">ClusterRoleBinding</text>
+  <text x="306" y="298" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">headlamp-admin</text>
+  <path d="M390 284 C 401 280, 412 286, 424 284" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr1)"/>
+  <text x="306" y="332" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#8a8272">roleRef 는 왼쪽, subjects 는 오른쪽</text>
+  <path d="M428 250 C 510 247, 592 252, 676 249 C 679 271, 677 292, 675 314 C 592 317, 510 312, 430 315 C 426 292, 429 271, 428 250 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="552" y="276" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">ServiceAccount headlamp</text>
+  <text x="552" y="298" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">kube-system/headlamp</text>
+  <path d="M679 72 C 699 120, 699 220, 682 276" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round" marker-end="url(#k9arr1)"/>
+  <text x="600" y="234" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">파드는 이 계정으로 돈다</text>
+  <path d="M24 340 C 77 337, 130 342, 184 339 C 187 357, 185 374, 183 392 C 130 395, 77 390, 26 393 C 22 374, 25 357, 24 340 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="6 6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="104" y="362" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">Secret oidc</text>
+  <text x="104" y="382" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">Opaque, 데이터 없음</text>
+  <text x="440" y="374" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 값은 두 줄 줬는데 cluster-admin 바인딩이 같이 생겼다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 서비스 값 두 줄만 줬는데, 화면을 띄우는 쪽과 함께 cluster-admin 을 묶는 쪽이 생겼다</div>
+
+<p>값으로 준 것은 서비스 두 줄뿐인데, 클러스터 전체 관리자 권한을 가진 계정이 하나 생겼어요. <span class="obsv-mark">helm install 한 줄의 결과를 알려면 내가 준 값이 아니라 helm get manifest 를 봐야 했어요.</span></p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 값 두 줄에 cluster-admin 이 따라왔어요</div>
+  차트의 values.yaml 에는 <code style="font-family:Menlo,monospace;font-size:14px;">clusterRoleBinding.create: true</code> 와 <code style="font-family:Menlo,monospace;font-size:14px;">clusterRoleName: cluster-admin</code> 이 기본값으로 들어 있어요. 그 옆 주석은 클러스터에 있는 "제한된 권한의 Cluster Role" 이름을 넣으라며 <code style="font-family:Menlo,monospace;font-size:14px;">user-ro</code> 를 예로 듭니다. 기본값을 그대로 두면 headlamp 계정은 클러스터 전체 관리자이고, 같은 values.yaml 의 <code style="font-family:Menlo,monospace;font-size:14px;">automountServiceAccountToken: true</code> 에 따라 이 계정의 토큰은 Headlamp 파드 안에도 마운트돼요. 쿠버네티스 <a href="https://kubernetes.io/docs/concepts/security/rbac-good-practices/">RBAC good practices</a> 문서는 관리자도 꼭 필요할 때가 아니면 cluster-admin 계정을 쓰지 말라고 적고 있어요. 실습이라 이번에는 기본값을 그대로 두었고, 운영이라면 <code style="font-family:Menlo,monospace;font-size:14px;">clusterRoleName</code> 에 더 좁은 역할을 넣는 것부터 검토하게 됩니다. 이 계정에 실제로 어느 권한까지 필요한지는 확인하지 않았어요.
+</div>
+
+<h2>3. 첫 로그인: 토큰 한 줄을 붙여 넣자 노드 4대가 보였다</h2>
+
+<p>브라우저에서 NodePort 주소 <code style="font-family:Menlo,monospace;font-size:14px;">http://192.168.64.3:30466/</code> 을 열자 로그인 창이 떴어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/09/headlamp-login.png" alt="Headlamp 인증 화면. 인증 토큰을 붙여넣어 달라는 문구와 비어 있는 ID 토큰 입력칸, 서비스 계정 토큰 생성 방법 링크, 클러스터 설정 링크, 인증 버튼이 있다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. Headlamp 는 첫 화면에서 토큰부터 요구했다</div>
+
+<p>차트 values.yaml 에는 모든 사용자를 파드의 ServiceAccount 로 인증하게 바꾸는 <code style="font-family:Menlo,monospace;font-size:14px;">unsafeUseServiceAccountToken</code> 이라는 값이 있어요. 설명에는 이 값을 켜면 사용자별 인증이 꺼지고, 인증 프록시 뒤에서만 안전하다고 적혀 있습니다. 기본값은 false 라서 Headlamp 는 로그인한 사람마다 따로 인증해요. 화면은 열렸어도 토큰이 없으면 클러스터의 아무것도 볼 수 없다는 뜻이에요.</p>
+<p>토큰은 차트 안내문에 적힌 명령으로 발급했어요. 마스터에서 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl create token headlamp --namespace kube-system</code> 을 실행하면 긴 문자열 하나가 나와요. 이걸 ID 토큰 칸에 붙여 넣고 인증을 누르자 개요 화면이 열렸습니다. 이 토큰은 그림 4 의 headlamp 계정 것이라서, 이 화면에서 하는 일은 cluster-admin 권한으로 처리돼요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 첫 캡처에 토큰 일부가 찍혔어요</div>
+  이 글에 넣을 화면을 헤드리스 브라우저 스크립트로 찍었는데, 첫 시도에서 스크립트가 토큰을 로그인 입력칸이 아니라 숨어 있던 검색창에 입력했어요. 그 결과 찍힌 이미지에 토큰 일부가 보였습니다. 그 이미지는 바로 지우고, 입력칸을 "ID 토큰" 이라는 라벨로 찾도록 고쳐 다시 찍었어요. 토큰을 다루는 화면을 찍었다면 올리기 전에 이미지를 직접 열어 확인해야 해요. 그림 5 와 그림 6 에는 토큰이 없습니다.
+</div>
+
+<p>로그인 직후의 개요 화면이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/09/headlamp-cluster.png" alt="Headlamp 개요 화면. 왼쪽 위 Clusters main, CPU 8 단위, 메모리 15.25 GB, 파드 요청됨 16/16 100%, 노드 준비됨 4/4 100%, 경고만 보기 13건과 headlamp 파드·calico-kube-controllers 의 Readiness probe failed 이벤트가 보인다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 노드 4/4 와 파드 16/16 이 100% 였고, 바로 아래에 경고 이벤트 13건이 있었다</div>
+
+<p>숫자를 읽어 볼게요. CPU 는 8 단위로 노드 4대 × 2 CPU 와 같고, 메모리는 15.25 GB 로 표시됐어요. 파드는 16개 중 16개, 노드는 4대 중 4대가 준비됨이라 두 원이 모두 100% 였습니다. 왼쪽 위의 "Clusters main" 은 앞에서 본 <code style="font-family:Menlo,monospace;font-size:14px;">-in-cluster-context-name=main</code> 이 만든 이름이에요.</p>
+<p>아래쪽 이벤트 목록은 경고만 걸러 13건을 보여 줬어요. 맨 위 줄은 Headlamp 자신의 파드 <code style="font-family:Menlo,monospace;font-size:14px;">headlamp-86c49cb4f4-8rv48</code> 이 2분 50초 전에 남긴 Unhealthy 이벤트예요. 준비 검사(readiness probe)가 <code style="font-family:Menlo,monospace;font-size:14px;">http://10.244.194.78:4466/</code> 에 접속하다 <code style="font-family:Menlo,monospace;font-size:14px;">connection refused</code> 를 받았다는 내용이고, 횟수는 1이었어요. 컨테이너가 4466 포트를 열기 전에 첫 검사가 돈 것으로 보여요. 그 아래 줄은 15분 전 calico-kube-controllers 의 준비 검사 실패였습니다.</p>
+<p>초록 원 두 개만 보면 클러스터는 완벽해 보여요. 하지만 같은 화면 아래에 경고가 13건 쌓여 있었고, 그중 하나는 방금 설치한 Headlamp 자신의 것이었어요. 대시보드가 모두 초록이어도 실패가 숨어 있을 수 있다는 이야기는 <a href="https://dding-shark.tistory.com/460">추적과 디버깅 2편 - 모든 대시보드가 초록불인데, 주문은 실패하고 있었다</a>에서 다뤘고, 관측 도구 자체를 관측하는 문제는 8편에서 다뤘어요.</p>
+
+<h2>4. 강의는 API 서버를 거쳐 들어가라고 했다</h2>
+
+<p>여기까지는 NodePort 로 들어왔어요. 강의는 다른 길을 말했습니다. "접속하는 방법에는 프록시 포트, 노드포트, API 서버가 있는데, API 서버를 이용한 보안 접속을 해야 한다." 강의를 들으며 메모해 둔 문장이에요.</p>
+<p>쿠버네티스 문서 <a href="https://kubernetes.io/docs/tasks/access-application-cluster/access-cluster-services/">Access Services Running on Clusters</a> 도 클러스터 밖에서 서비스에 닿는 방법을 비슷하게 나눠요. 첫째는 NodePort 나 LoadBalancer 로 서비스를 밖에 여는 방법이에요. 문서는 여기에 노출하는 서비스가 안전한지, 서비스가 스스로 인증을 하는지 생각해 보라는 질문을 붙여 둡니다. 둘째는 API 서버의 프록시 기능(proxy verb)을 쓰는 방법이에요. 문서는 이 방법이 원격 서비스에 닿기 전에 API 서버의 인증과 인가를 거친다고 설명하고, 바로 아래에 일부 웹 애플리케이션에서는 프록시가 문제를 일으킬 수 있다는 경고도 적어 둡니다. 셋째는 클러스터 안의 노드나 파드에 들어가서 접속하는 방법이에요.</p>
+<p><a href="https://kubernetes.io/docs/concepts/cluster-administration/proxies/">Proxies in Kubernetes</a> 문서는 두 번째 방법에 쓰이는 프록시를 둘로 나눠요. 하나는 kubectl proxy 로, 내 컴퓨터의 localhost 주소에서 받은 요청에 인증 헤더를 붙여 API 서버로 보내요. 다른 하나는 API 서버 프로세스 안에서 도는 API 서버 프록시예요. 저는 강의의 "프록시 포트"를 kubectl proxy 로, "API 서버"를 API 서버 프록시 주소를 직접 여는 방법으로 이해했어요. 두 길 모두 결국 API 서버 프록시를 지나요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: API 서버 프록시 (apiserver proxy)</div>
+  kube-apiserver 안에 들어 있는 프록시예요. <code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/namespaces/&lt;네임스페이스&gt;/services/[https:]&lt;서비스&gt;[:&lt;포트&gt;]/proxy/</code> 경로로 요청을 받으면, 인증과 인가를 마친 뒤 그 서비스로 요청을 넘겨요. 클러스터 밖에서는 닿지 않는 클러스터 IP 에 API 서버를 거쳐 닿게 해 주는 기능입니다.
+</div>
+<p>우리 서비스에 맞추면 경로는 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/</code> 가 돼요. 서비스 이름 앞의 <code style="font-family:Menlo,monospace;font-size:14px;">http:</code> 는 API 서버가 서비스에 HTTP 로 붙으라는 표시(기본값도 HTTP)이고, 뒤의 <code style="font-family:Menlo,monospace;font-size:14px;">80</code> 은 서비스 포트예요. 세 길을 한 장에 놓으면 이렇습니다. 세 번째 길은 6장에서 고르게 되는 방법이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 448" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="k9arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M20 165 C 63 162, 106 167, 150 164 C 153 195, 151 224, 149 255 C 106 258, 63 253, 22 256 C 18 224, 21 195, 20 165 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="85" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">💻 Mac</text>
+  <text x="85" y="228" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">브라우저</text>
+  <path d="M566 165 C 604 162, 641 167, 680 164 C 683 195, 681 224, 679 255 C 641 258, 604 253, 568 256 C 564 224, 567 195, 566 165 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="623" y="200" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">Headlamp</text>
+  <text x="623" y="228" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">파드 :4466</text>
+  <path d="M220 28 C 306 25, 392 30, 480 27 C 483 56, 481 83, 479 112 C 392 115, 306 110, 222 113 C 218 83, 221 56, 220 28 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="54" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">① NodePort</text>
+  <text x="350" y="77" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">http://192.168.64.3:30466/</text>
+  <text x="350" y="101" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">인증 없이 화면까지 열린다 (200)</text>
+  <path d="M220 148 C 306 145, 392 150, 480 147 C 483 187, 481 226, 479 266 C 392 269, 306 264, 222 267 C 218 226, 221 187, 220 148 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="174" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">② API 서버 프록시</text>
+  <text x="350" y="196" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">https://192.168.64.2:6443</text>
+  <text x="350" y="211" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">/api/v1/namespaces/kube-system/</text>
+  <text x="350" y="226" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">services/http:headlamp:80/proxy/</text>
+  <text x="350" y="253" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">인증서 없으면 403, 있으면 200</text>
+  <path d="M220 300 C 306 297, 392 302, 480 299 C 483 334, 481 369, 479 404 C 392 407, 306 402, 222 405 C 218 369, 221 334, 220 300 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">③ kubectl port-forward</text>
+  <text x="350" y="348" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">http://localhost:18809/</text>
+  <text x="350" y="372" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">API 서버가 권한을 먼저 확인</text>
+  <text x="350" y="394" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">이 Mac 의 localhost 에만 열림</text>
+  <path d="M152 180 C 173 144, 194 119, 216 84" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr2)"/>
+  <path d="M484 84 C 510 112, 535 149, 562 180" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr2)"/>
+  <path d="M154 210 C 174 207, 195 210, 216 208" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr2)"/>
+  <path d="M484 208 C 510 207, 535 210, 562 210" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr2)"/>
+  <path d="M152 240 C 173 270, 194 311, 216 344" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr2)"/>
+  <path d="M484 344 C 510 306, 535 277, 562 240" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr2)"/>
+  <text x="350" y="434" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 셋 다 같은 파드에 닿는다. 다른 것은 누가 먼저 신원을 확인하느냐다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 7. 셋 다 같은 Headlamp 파드에 닿는다. 다른 점은 파드에 닿기 전에 누가 신원을 확인하느냐다</div>
+
+<p>Mac 에서 이 경로를 curl 로 두 번 불렀어요. 한 번은 클러스터 CA 만 주고, 한 번은 관리자 클라이언트 인증서까지 붙였습니다. 두 파일 모두 <code style="font-family:Menlo,monospace;font-size:14px;">./lab</code> 이 만든 kubeconfig 에서 꺼낸 것이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/09/apiserver-proxy-403-200.png" alt="인증서 없이 API 서버 프록시 경로를 부르자 403 과 system:anonymous cannot get resource services/proxy 메시지가 나오고, 관리자 인증서를 붙이자 200 5061B 와 base href 태그가 나오며, 비교로 NodePort 30466 은 인증서 없이 200 인 터미널 화면" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 8. 같은 주소가 인증서 없이는 403, 관리자 인증서를 붙이면 200 이었다. NodePort 는 아무것도 없이 200 이었다</div>
+
+<p>인증서 없이 보낸 요청은 403 을 받았어요. 응답의 message 를 옮기면 이렇습니다.</p>
+
+<div class="obsv-code">services "http:headlamp:80" is forbidden: User "system:anonymous" cannot get resource "services/proxy" in API group "" in the namespace "kube-system"</div>
+<p>&rarr; 이름 없는 사용자(system:anonymous)에게는 kube-system 네임스페이스에서 서비스 프록시를 쓸 권한이 없다는 뜻이에요.</p>
+
+<p>쿠버네티스 <a href="https://kubernetes.io/docs/reference/access-authn-authz/authentication/">인증 문서</a>에 따르면, 다른 인증 방법에 거절당하지 않은 요청은 익명 요청이 되고 사용자 이름 <code style="font-family:Menlo,monospace;font-size:14px;">system:anonymous</code>, 그룹 <code style="font-family:Menlo,monospace;font-size:14px;">system:unauthenticated</code> 를 받아요. 그리고 RBAC 은 익명 사용자에게 명시적으로 권한을 준 경우에만 허용합니다. 그러니까 이 403 은 "누구인지 모르겠다"는 거절이 아니라 "익명 사용자에게는 이 일을 허락하지 않는다"는 거절이에요. 관리자 인증서를 붙이자 200 과 5,061바이트짜리 HTML 이 돌아왔어요. 5편에서 본 대로 이 인증서의 그룹은 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm:cluster-admins</code> 이고, kubeadm 이 이 그룹에 클러스터 관리자 권한을 묶어 둡니다.</p>
+<p>받은 HTML 에서 눈여겨볼 줄이 하나 있었어요. <code style="font-family:Menlo,monospace;font-size:14px;">&lt;base href="/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/"&gt;</code> 입니다. 이 태그를 Headlamp 가 넣었는지 API 서버 프록시가 고쳐 넣었는지는 확인하지 않았어요. 응답에 이 태그가 있었다는 사실만 다음 장에서 씁니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: base 태그 (&lt;base href&gt;)</div>
+  HTML 문서에서 상대 경로를 풀 때 기준이 되는 주소를 정하는 태그예요. base 가 <code style="font-family:Menlo,monospace;font-size:14px;">/a/b/</code> 이면 <code style="font-family:Menlo,monospace;font-size:14px;">static/app.js</code> 는 <code style="font-family:Menlo,monospace;font-size:14px;">/a/b/static/app.js</code> 로 풀려요. 다만 <code style="font-family:Menlo,monospace;font-size:14px;">/config</code> 와 같이 슬래시로 시작하는 경로는 base 의 경로를 무시하고 그 서버의 맨 위(루트)에서부터 찾습니다.
+</div>
+<p>마지막 줄은 비교용이에요. NodePort 30466 은 인증서도 토큰도 없이 200 을 돌려줬어요. Headlamp 가 로그인 창에서 토큰을 요구하긴 하지만, 노드 IP 에 닿는 사람은 누구나 그 화면까지는 들어올 수 있다는 뜻이에요. 강의가 API 서버 경로를 쓰라고 한 이유를 저는 이 차이로 이해했어요. <span class="obsv-mark">API 서버 경로에서는 Headlamp 에 닿기 전에 API 서버가 신원과 권한을 먼저 확인합니다.</span></p>
+<p>브라우저로 이 경로를 열려면 한 가지가 더 필요했어요. 같은 Access Services 문서는 브라우저가 보통 토큰을 넘기지 못한다고 적고 있어요. 그래서 관리자 클라이언트 인증서를 브라우저가 쓸 수 있는 형식(.p12)으로 묶어 Mac 키체인에 넣고, 클러스터 CA 도 함께 넣었습니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 브라우저에 넣은 관리자 인증서는 관리자 권한 그 자체예요</div>
+  키체인에 넣은 인증서는 사용자 kubernetes-admin, 그룹 kubeadm:cluster-admins 의 인증서예요. 그 브라우저가 6443 포트로 보내는 요청은 Headlamp 화면을 거치든 아니든 모두 클러스터 관리자로 인증돼요. 5편에서 본 대로 공식 문서도 admin.conf 를 다른 사용자와 공유하지 말라고 합니다. 실습용 VM 이라 이렇게 했지만 실습이 끝나면 키체인에서 지우는 편이 안전하고, .p12 파일과 CA 파일은 실습 저장소에 올라가지 않도록 Git 제외 목록에 넣어 두었어요.
+</div>
+
+<h2>5. 로그인하자 화면이 끝없이 돌았다</h2>
+
+<p>인증서를 넣은 브라우저로 API 서버 경로를 열었어요. 로그인 창까지는 NodePort 때와 똑같이 떴고, 토큰을 넣고 인증을 누르는 것까지 됐습니다. 그다음부터 화면은 로딩 표시만 띄운 채 넘어가지 않았어요.</p>
+<p>무엇이 실패하는지 보려고 같은 상황을 헤드리스 크롬으로 재현했어요. 관리자 인증서를 쓰는 크롬으로 API 서버 경로를 열고 토큰으로 로그인한 뒤, 12초 동안 상태 코드가 400 이상인 응답만 모았습니다. 이 기록은 나중에 Headlamp 를 전용 네임스페이스 headlamp 로 옮긴 뒤 다시 재현한 것이라, 경로의 네임스페이스가 kube-system 이 아니라 headlamp 예요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/09/apiproxy-infinite-loading.png" alt="헤드리스 크롬으로 API 서버 프록시 경로의 Headlamp 에 로그인한 뒤 12초 동안 404 GET /plugins 와 404 GET /config 가 반복되고 total problems: 21 로 끝나는 터미널 화면" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 9. 로그인 뒤 12초 동안 /plugins 가 19번, /config 가 2번 404 를 받았다</div>
+
+<p>첫 페이지의 제목은 Headlamp 였고 주소도 프록시 경로 그대로였어요. 문제 응답은 모두 21건이었고 전부 두 경로에서 나왔습니다. <code style="font-family:Menlo,monospace;font-size:14px;">GET /plugins</code> 가 19번, <code style="font-family:Menlo,monospace;font-size:14px;">GET /config</code> 가 2번이에요. 둘 다 프록시 경로가 아니라 <code style="font-family:Menlo,monospace;font-size:14px;">/</code> 로 시작해요. 이 요청은 <code style="font-family:Menlo,monospace;font-size:14px;">https://192.168.64.2:6443/plugins</code> 로 갔고, API 서버에는 <code style="font-family:Menlo,monospace;font-size:14px;">/plugins</code> 라는 경로가 없으니 404 를 돌려줬어요. 같은 요청이 12초 동안 계속 반복된 것을 보면, 화면은 설정과 플러그인 목록을 받아야 다음으로 넘어가는데 계속 실패해서 다시 시도하고 있었던 것으로 보여요.</p>
+<p>앞 장의 base 태그로 돌아가 보면 이 결과가 설명돼요. 첫 페이지를 비롯해 base 경로를 따른 요청은 프록시 경로 아래로 가서 Headlamp 에 닿았어요. 400 이상 응답 목록에 다른 경로가 없었으니 그쪽은 실패하지 않았다는 뜻입니다. 반면 <code style="font-family:Menlo,monospace;font-size:14px;">/config</code> 와 <code style="font-family:Menlo,monospace;font-size:14px;">/plugins</code> 는 슬래시로 시작해서 base 를 무시하고 API 서버의 루트로 갔어요. 로그인 뒤에 화면이 보낸 요청이었으니, 페이지의 자바스크립트가 만든 주소로 보여요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 338" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="k9arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M20 96 C 84 93, 148 98, 214 95 C 217 142, 215 188, 213 236 C 148 239, 84 234, 22 237 C 18 188, 21 142, 20 96 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="117" y="126" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">🌐 브라우저</text>
+  <text x="117" y="152" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">API 서버 경로로 연 Headlamp</text>
+  <text x="117" y="184" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">&lt;base href=</text>
+  <text x="117" y="200" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">"/api/v1/.../proxy/"&gt;</text>
+  <text x="117" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272">응답 HTML 에 들어 있던 태그</text>
+  <path d="M258 28 C 329 25, 399 30, 472 27 C 475 56, 473 83, 471 112 C 399 115, 329 110, 260 113 C 256 83, 259 56, 258 28 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="365" y="54" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">프록시 경로 아래로 간 요청</text>
+  <text x="365" y="77" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">:6443/api/v1/.../proxy/...</text>
+  <text x="365" y="101" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">첫 페이지, 로그인까지 정상</text>
+  <path d="M512 28 C 567 25, 623 30, 680 27 C 683 56, 681 83, 679 112 C 623 115, 567 110, 514 113 C 510 83, 513 56, 512 28 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="596" y="54" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">API 서버가 넘김</text>
+  <text x="596" y="78" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">Headlamp 파드</text>
+  <text x="596" y="101" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41">400 이상 응답 없음</text>
+  <path d="M258 204 C 329 201, 399 206, 472 203 C 475 232, 473 259, 471 288 C 399 291, 329 286, 260 289 C 256 259, 259 232, 258 204 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="365" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">/config  /plugins</text>
+  <text x="365" y="253" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">:6443/config  :6443/plugins</text>
+  <text x="365" y="277" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">접두어 없이 루트로 간 요청</text>
+  <path d="M512 204 C 567 201, 623 206, 680 203 C 683 232, 681 259, 679 288 C 623 291, 567 286, 514 289 C 510 259, 513 232, 512 204 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="596" y="230" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">API 서버 자신</text>
+  <text x="596" y="254" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">모르는 경로</text>
+  <text x="596" y="277" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">404 x 21 (12초)</text>
+  <path d="M216 130 C 229 108, 241 95, 254 74" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr3)"/>
+  <path d="M476 70 C 487 68, 497 71, 508 70" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr3)"/>
+  <path d="M216 206 C 229 215, 241 233, 254 244" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr3)"/>
+  <path d="M476 246 C 487 244, 497 247, 508 246" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr3)"/>
+  <text x="350" y="322" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 프록시 접두어를 모르는 요청은 Headlamp 가 아니라 API 서버에 도착했다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 10. 프록시 경로 아래로 간 요청은 Headlamp 에 닿았고, 루트로 간 /config 와 /plugins 는 API 서버 자신이 404 로 받았다</div>
+
+<p>쿠버네티스 문서에 이 증상이 그대로 적혀 있었어요. 같은 Access Services 문서의 브라우저 항목은 API 서버 프록시 주소를 브라우저 주소창에 넣을 수 있다고 하면서 이렇게 경고합니다. "Some web apps may not work, particularly those with client side javascript that construct URLs in a way that is unaware of the proxy path prefix." <span class="obsv-mark">프록시 경로 접두어를 모르는 채 주소를 만드는 자바스크립트가 있는 웹 앱은 동작하지 않을 수 있다는 뜻이고, 이번 Headlamp 가 그 경우였어요.</span></p>
+<p>kubectl proxy 로 여는 방법은 시험하지 않았어요. 다만 그 길도 같은 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/.../proxy/</code> 접두어를 쓰기 때문에 같은 문제를 만날 것으로 봤습니다.</p>
+
+<h2>6. base URL 을 맞추자 이번엔 첫 페이지부터 404 였다</h2>
+
+<p>Headlamp 에는 루트가 아닌 하위 경로에서 도는 옵션이 있어요. <a href="https://headlamp.dev/docs/latest/installation/base-url">Base URL 문서</a>에 따르면 Headlamp 는 보통 도메인의 루트에서 돌지만, <code style="font-family:Menlo,monospace;font-size:14px;">-base-url</code> 인자로 <code style="font-family:Menlo,monospace;font-size:14px;">/headlamp</code> 같은 경로 아래에서 돌게 할 수 있어요. 차트에서는 <code style="font-family:Menlo,monospace;font-size:14px;">config.baseURL</code> 값이 이 인자가 됩니다. base URL 을 프록시 경로로 맞추면 <code style="font-family:Menlo,monospace;font-size:14px;">/config</code> 도 프록시 경로 아래로 갈 거라고 기대했어요.</p>
+
+<div class="obsv-code">master$ helm upgrade headlamp headlamp/headlamp -n kube-system --reuse-values --set config.baseURL=/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy
+master$ kubectl -n kube-system get pod -l app.kubernetes.io/instance=headlamp -o jsonpath="{.items[0].spec.containers[0].args}"
+["-in-cluster","-in-cluster-context-name=main","-plugins-dir=/headlamp/plugins","-session-ttl=86400","-base-url=/api/v1/namespaces/kube-system/services/http:headlamp:80/proxy"]
+
+# 같은 브라우저 재현: 이번에는 첫 페이지부터 404
+1st page:  /api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/
+  404 GET /api/v1/namespaces/kube-system/services/http:headlamp:80/proxy/</div>
+<p>&rarr; 컨테이너 인자 끝에 -base-url 이 붙었지만, 이번에는 프록시 경로의 첫 페이지 자체가 404 였어요.</p>
+
+<p>API 서버가 서비스에 어떤 경로를 넘기는지 보면 이유가 짐작돼요. 쿠버네티스 문서의 예시에서 <code style="font-family:Menlo,monospace;font-size:14px;">.../services/elasticsearch-logging/proxy/_search?q=user:kimchy</code> 는 Elasticsearch 의 <code style="font-family:Menlo,monospace;font-size:14px;">_search</code> 엔드포인트를 부릅니다. 프록시 경로 뒤에 붙인 부분이 서비스가 받는 경로가 된다는 뜻이에요. 그렇다면 <code style="font-family:Menlo,monospace;font-size:14px;">.../proxy/</code> 로 들어온 첫 요청은 Headlamp 에 <code style="font-family:Menlo,monospace;font-size:14px;">/</code> 로 도착했을 것이고, base URL 을 프록시 경로로 바꾼 Headlamp 는 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/.../proxy/</code> 로 시작하는 요청만 자기 것으로 받았을 거예요. Headlamp 로그는 확인하지 않았으니, 이 설명은 문서 예시와 관찰을 맞춰 본 해석입니다.</p>
+<p>그래서 바로 되돌렸어요. Helm 은 업그레이드할 때마다 리비전을 남기니, 설치 때의 리비전 1 로 돌아가면 됩니다.</p>
+
+<div class="obsv-code">master$ helm rollback headlamp 1 -n kube-system
+Rollback was a success! Happy Helming!
+master$ helm history headlamp -n kube-system | tail -3
+1       	Mon Nov  9 19:56:26 2026	superseded	headlamp-0.46.0	0.46.0     	Install complete
+2       	Mon Nov  9 20:05:01 2026	superseded	headlamp-0.46.0	0.46.0     	Upgrade complete
+3       	Mon Nov  9 20:06:10 2026	deployed  	headlamp-0.46.0	0.46.0     	Rollback to 1</div>
+<p>&rarr; 되돌리기도 새 리비전 3 으로 기록돼요. base URL 을 넣었던 리비전 2 는 superseded 로 남고, 지금 배포된 것은 "Rollback to 1" 인 리비전 3 이에요.</p>
+
+<p>되돌린 뒤 NodePort 는 다시 200 을 돌려줬어요. 그리고 Headlamp 의 Base URL 문서를 다시 읽다가 이 옵션을 쓰는 것 자체를 말리는 문장을 찾았어요. 같은 출처(origin)에 여러 앱을 올리면 앱끼리 서로의 정보에 접근하고 요청을 보낼 수 있으니, 확신이 없으면 Headlamp 를 별도 출처(도메인이나 포트)에 두고 <code style="font-family:Menlo,monospace;font-size:14px;">-base-url</code> 옵션을 쓰지 말라는 내용이에요. API 서버 프록시 경로로 연 Headlamp 는 API 서버와 같은 출처 <code style="font-family:Menlo,monospace;font-size:14px;">https://192.168.64.2:6443</code> 위에 올라가요. 경로를 맞추는 데 성공했더라도 Headlamp 문서가 피하라고 하는 배치였던 거예요.</p>
+<p>이 방식은 여기서 그만뒀어요. <span class="obsv-mark">Headlamp 는 API 서버의 서비스 프록시 경로로 여는 방식과 맞지 않았어요.</span> 대신 강의가 그 경로로 얻으려던 것을 다시 정리했습니다. 노드 포트를 아무에게나 열지 않아야 하고, Headlamp 에 닿기 전에 API 서버가 신원과 권한을 확인해야 해요. 이 두 조건을 모두 채우는 방법이 kubectl port-forward 였어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: kubectl port-forward</div>
+  내 컴퓨터의 포트 하나를 클러스터 안 파드의 포트에 이어 주는 kubectl 명령이에요. 서비스나 Deployment 이름을 주면 거기에 맞는 파드 하나를 골라 연결해요. 연결은 API 서버를 거치고, 명령이 실행되는 동안만 유지됩니다.
+</div>
+<p>쿠버네티스의 <a href="https://kubernetes.io/docs/tasks/access-application-cluster/port-forward-access-application-cluster/">port-forward 문서</a>는 이 명령의 접근이 RBAC 으로 통제되고, 인가는 kubectl 이 아니라 API 서버가 한다고 적고 있어요. 쓰려면 보통 파드에 대한 get 권한과 <code style="font-family:Menlo,monospace;font-size:14px;">pods/portforward</code> 에 대한 create 권한이 필요하다고 합니다. <a href="https://kubernetes.io/docs/reference/kubectl/generated/kubectl_port-forward/">kubectl port-forward 레퍼런스</a>를 보면 <code style="font-family:Menlo,monospace;font-size:14px;">--address</code> 의 기본값이 <code style="font-family:Menlo,monospace;font-size:14px;">localhost</code> 라서, 따로 주지 않으면 명령을 실행한 컴퓨터의 127.0.0.1 과 ::1 에서만 연결을 받아요.</p>
+<p>앞에서 본 Dashboard 문서도 지금은 접속 방법으로 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl -n kubernetes-dashboard port-forward svc/kubernetes-dashboard-kong-proxy 8443:443</code> 을 안내하면서, 명령을 실행한 컴퓨터에서만 UI 에 접근할 수 있다고 적고 있어요. Headlamp 의 클러스터 설치 문서에도 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl port-forward -n kube-system service/headlamp 8080:80</code> 이 나옵니다. 두 도구의 공식 문서가 모두 이 길을 안내하고 있었어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 별도 도메인, 인그레스, 그리고 OIDC</div>
+  port-forward 는 혼자 쓰는 실습에 맞는 방법이에요. 여러 사람이 쓰는 클러스터라면 사람마다 kubectl 과 port-forward 권한을 나눠 줘야 해요. Headlamp 의 클러스터 설치 문서는 흔한 구성으로 Headlamp 를 클러스터 안에 두고 인그레스로 사용자에게 여는 방식을 들고, 접속은 ServiceAccount 토큰이나 OIDC 로그인으로 설정하라고 해요. 이때도 Base URL 문서의 권고대로 Headlamp 에는 자기 도메인을 따로 주는 편이 안전합니다. 2장에서 빈 채로 만들어진 Secret oidc 가 이 OIDC 설정을 담는 자리예요.
+</div>
+
+<h2>7. port-forward 는 Mac 에서 no route to host 로 막혔다</h2>
+
+<p>Mac 터미널에서 처음에는 8080 포트로 port-forward 를 열었어요. Headlamp 문서 예시와 같은 번호예요. 그런데 포워딩이 시작되기도 전에 오류가 났습니다.</p>
+
+<div class="obsv-code">mac$ ./lab kubectl -n kube-system port-forward svc/headlamp 8080:80
+Unable to connect to the server: dial tcp 192.168.64.2:6443: connect: no route to host</div>
+<p>&rarr; kubectl 이 마스터의 API 서버(192.168.64.2:6443)에 TCP 연결을 맺으려 했는데, 운영체제가 그 주소로 가는 경로가 없다고 돌려줬다는 뜻이에요.</p>
+
+<p>몇 분 전까지 같은 Mac 에서 curl 로 6443 에 잘 접속했으니 이상했어요. 같은 시각에 몇 가지를 한꺼번에 확인했습니다.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/09/macos-local-network.png" alt="20:07:38 에 ./lab kubectl get nodes 는 no route to host 로 실패하고 nc -z 192.168.64.2 6443 은 succeeded, macOS 26.6.2, 경로 인터페이스 bridge100 이 찍히고, 로컬 네트워크 허용 뒤 port-forward 18809 가 4466 으로 이어지며 curl localhost:18809 가 200 인 터미널 화면" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 11. 20:07:38, kubectl 은 no route to host 인데 nc 는 같은 주소의 6443 연결에 성공했다</div>
+
+<p>20:07:38 에 <code style="font-family:Menlo,monospace;font-size:14px;">./lab kubectl get nodes</code> 도 같은 no route to host 로 실패했어요. 그런데 바로 이어서 실행한 <code style="font-family:Menlo,monospace;font-size:14px;">nc -z -G 3 192.168.64.2 6443</code> 은 연결에 성공했습니다. 라우팅 표도 192.168.64.2 로 가는 경로를 bridge100 인터페이스로 갖고 있었어요. 경로가 있고 포트도 열려 있고 다른 프로그램은 연결되는데, kubectl 만 막힌 거예요. macOS 버전은 26.6.2 였어요.</p>
+<p>이 증상은 macOS 의 로컬 네트워크 개인정보 보호로 설명됐어요. Apple 의 기술 노트 <a href="https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy">TN3179: Understanding local network privacy</a> 에서 확인한 내용은 이래요. 이 기능은 macOS 15 부터 들어왔고, 로컬 네트워크 주소로 나가는 TCP 연결에는 로컬 네트워크 접근 권한이 필요해요. 이 검사는 네트워크 스택 깊은 곳에서 이뤄져 BSD 소켓을 포함한 모든 네트워크 API 에 적용됩니다. 권한이 없으면 시스템이 그 동작을 막고, 사용자는 시스템 설정 &gt; 개인정보 보호 및 보안 &gt; 로컬 네트워크 에서 앱별로 켜고 꺼요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 로컬 네트워크 개인정보 보호 (local network privacy)</div>
+  프로그램이 같은 네트워크의 기기에 접속하려면 사용자 허락을 받게 하는 Apple 운영체제의 권한이에요. macOS 에는 15 부터 들어왔어요. TN3179 는 로컬 네트워크를 브로드캐스트가 되는 인터페이스(Wi-Fi, 이더넷 등)에 붙은 IP 네트워크로 정의하는데, Mac 과 VM 을 잇는 bridge100 의 192.168.64.0/24 도 여기에 들어간다고 봤어요.
+</div>
+<p>누가 자동으로 허용되는지도 문서에 있어요. macOS 는 launchd 가 띄운 데몬, root 로 도는 프로그램, 그리고 터미널(Terminal)이나 SSH 에서 실행한 명령줄 도구와 그 자식 프로세스를 자동으로 허용해요. 그 밖의 프로그램은 사용자가 권한을 줄 때까지 막힌다고 적혀 있습니다. 또 macOS 는 어떤 프로세스가 로컬 네트워크에 접속하면 책임 코드(responsible code)를 찾아요. 앱이 띄운 도우미 도구가 접속하면 그 앱을 책임 코드로 보고, 사용자의 선택도 앱 단위로 기록해 시스템 설정에 보여 준다고 해요.</p>
+<p>이 두 규칙을 제 상황에 대 보면 이렇게 읽혀요. 저는 macOS 기본 터미널 앱이 아니라 다른 앱 안에 들어 있는 터미널에서 kubectl 을 실행했어요. 그러면 kubectl 의 책임 코드는 그 앱이 되고, 그 앱에는 로컬 네트워크 권한이 없었어요. 실제로 시스템 설정 &gt; 개인정보 보호 및 보안 &gt; 로컬 네트워크 에서 터미널을 띄운 앱을 켜자, 같은 Mac 에서 port-forward 가 바로 열렸습니다.</p>
+
+<div class="obsv-code">mac$ ./lab kubectl -n kube-system port-forward svc/headlamp 18809:80
+Forwarding from 127.0.0.1:18809 -&gt; 4466
+Forwarding from [::1]:18809 -&gt; 4466
+mac$ curl -s -o /dev/null -w "localhost:18809 %{http_code}\n" http://localhost:18809/
+localhost:18809 200</div>
+<p>&rarr; Mac 의 18809 포트가 IPv4 와 IPv6 localhost 양쪽에서 Headlamp 파드의 4466 포트로 이어졌고, 그 주소로 보낸 요청이 200 을 받았어요.</p>
+
+<p>포트 번호 18809 는 다른 프로그램과 겹치지 않게 제가 정한 값이에요. 출력에 서비스 포트 80 이 아니라 4466 이 찍힌 점도 눈여겨볼 만해요. port-forward 는 서비스 이름을 받으면 그 서비스에 맞는 파드 하나를 골라 파드의 포트로 바로 잇기 때문에, 서비스의 80 이 가리키는 컨테이너 포트 4466 이 보이는 거예요.</p>
+<p>설명되지 않은 것도 남았어요. 그림 11 의 한 줄 명령 안에서 kubectl 은 막히고 nc 는 통과한 이유, 그리고 몇 분 전 curl 이 통과한 이유는 TN3179 의 내용만으로 알 수 없었어요. no route to host 라는 오류가 이 권한 때문에 난다고 문서가 직접 적고 있지도 않아요. 확인한 것은 앱을 허용하기 전에는 kubectl 이 실패했고, 허용한 뒤에는 성공했다는 사실까지예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 378" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+  <defs>
+    <marker id="k9arr4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+  </defs>
+  <path d="M20 36 C 97 33, 173 38, 252 35 C 255 74, 253 113, 251 152 C 173 155, 97 150, 22 153 C 18 113, 21 74, 20 36 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="136" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">다른 앱 안의 터미널</text>
+  <text x="136" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">./lab kubectl port-forward</text>
+  <text x="136" y="113" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">macOS 기본 터미널 앱이 아님</text>
+  <text x="136" y="139" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">책임 코드 = 터미널을 띄운 앱</text>
+  <path d="M292 46 C 336 43, 379 48, 424 45 C 427 78, 425 109, 423 142 C 379 145, 336 140, 294 143 C 290 109, 293 78, 292 46 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="358" y="78" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">🔒 로컬 네트워크</text>
+  <text x="358" y="102" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">권한 검사</text>
+  <text x="358" y="126" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272">macOS 15 부터</text>
+  <path d="M464 36 C 535 33, 607 38, 680 35 C 683 74, 681 113, 679 152 C 607 155, 535 150, 466 153 C 462 113, 465 74, 464 36 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="572" y="64" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">마스터 VM</text>
+  <text x="572" y="88" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">192.168.64.2:6443</text>
+  <text x="572" y="109" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d3a34">경로: bridge100</text>
+  <text x="572" y="136" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">nc -z 는 같은 시각 성공</text>
+  <path d="M255 94 C 266 92, 277 95, 289 94" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr4)"/>
+  <path d="M427 94 C 438 92, 449 95, 461 94" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k9arr4)"/>
+  <text x="350" y="182" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">허용 전 20:07  kubectl: no route to host</text>
+  <text x="350" y="206" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">그 앱을 허용한 뒤  port-forward 18809, curl 200</text>
+  <path d="M20 228 C 238 225, 456 230, 680 227 C 683 264, 681 299, 679 336 C 456 339, 238 334, 22 337 C 18 299, 21 264, 20 228 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="6 6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="350" y="254" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">Apple TN3179 가 적은 macOS 규칙</text>
+  <text x="350" y="280" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">자동 허용: launchd 데몬, root 로 도는 프로그램, 터미널이나 SSH 에서 실행한 명령줄 도구</text>
+  <text x="350" y="303" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">그 밖의 프로그램은 사용자가 로컬 네트워크 권한을 줄 때까지 막힌다</text>
+  <text x="350" y="326" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34">앱이 띄운 도구가 접속하면 macOS 는 그 앱을 책임 코드로 보고 앱 단위로 기록한다</text>
+  <text x="350" y="364" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 경로는 그대로였고, 터미널을 띄운 앱에 권한을 주자 같은 명령이 통했다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 12. 경로도 포트도 그대로였다. 바뀐 것은 터미널을 띄운 앱의 로컬 네트워크 권한 하나였다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: no route to host 가 늘 경로 문제는 아니에요</div>
+  오류 문구만 보면 VM 네트워크가 끊긴 것으로 읽혀요. 3편에서 Mac 에서 VM 으로 닿는 길(vzNAT)을 따로 붙인 이 환경에서는 더 그렇게 보입니다. 하지만 이번에는 경로도 포트도 멀쩡했어요. macOS 15 이상에서 특정 프로그램만 이 오류를 낸다면, 같은 시각에 <code style="font-family:Menlo,monospace;font-size:14px;">nc -z &lt;IP&gt; &lt;포트&gt;</code> 와 <code style="font-family:Menlo,monospace;font-size:14px;">route -n get &lt;IP&gt;</code> 로 경로와 포트부터 확인해 보세요. 둘 다 정상인데 그 프로그램만 실패하면, 시스템 설정 &gt; 개인정보 보호 및 보안 &gt; 로컬 네트워크 에서 그 프로그램을 띄운 앱이 꺼져 있지 않은지 봅니다.
+</div>
+
+<h2>8. 쓸 일이 없어진 NodePort 를 닫았다</h2>
+
+<p>port-forward 로 들어가는 것을 확인했으니 NodePort 는 더 열어 둘 이유가 없었어요. <a href="https://kubernetes.io/docs/concepts/services-networking/service/">Service 문서</a>에 따르면 NodePort 는 모든 노드가 같은 포트 번호로 받아 서비스로 넘겨요. 2장에서 파드가 worker1 에만 있는데도 worker2·3 의 30466 이 200 을 돌려준 것이 그 동작이에요. 노드 IP 에 닿는 사람은 누구나 Headlamp 로그인 화면까지 올 수 있다는 뜻이기도 합니다.</p>
+
+<div class="obsv-code">master$ helm upgrade headlamp headlamp/headlamp -n kube-system --reuse-values --set service.type=ClusterIP --set service.nodePort=null &gt;/dev/null &amp;&amp; helm get values headlamp -n kube-system &amp;&amp; kubectl -n kube-system get svc headlamp
+USER-SUPPLIED VALUES:
+service:
+  type: ClusterIP
+NAME       TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)   AGE
+headlamp   ClusterIP   10.104.14.9   &lt;none&gt;        80/TCP    12m
+
+mac$ curl -s -m5 -o /dev/null -w "NodePort 30466 (닫힌 뒤): %{http_code}\n" http://192.168.64.3:30466/
+NodePort 30466 (닫힌 뒤): 000
+mac$ curl -s -m5 -o /dev/null -w "port-forward localhost:18809: %{http_code}\n" http://localhost:18809/
+port-forward localhost:18809: 200</div>
+<p>&rarr; 서비스 타입이 ClusterIP 로 바뀌어 노드 포트가 사라졌고, 30466 은 응답하지 않게(000) 됐어요. port-forward 로 연 localhost:18809 는 그대로 200 이에요.</p>
+
+<p>명령에서 <code style="font-family:Menlo,monospace;font-size:14px;">service.nodePort=null</code> 을 같이 준 데는 이유가 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">--reuse-values</code> 는 <a href="https://helm.sh/docs/helm/helm_upgrade/">Helm 문서</a> 설명대로 지난 릴리스의 값을 다시 쓰고 명령줄에서 준 값을 그 위에 합쳐요. 타입만 바꾸면 설치 때 준 <code style="font-family:Menlo,monospace;font-size:14px;">nodePort: 30466</code> 이 값에 그대로 남게 됩니다. Helm 문서는 값에서 키를 지우고 싶으면 그 키를 null 로 덮어쓰라고 안내해요. 결과의 USER-SUPPLIED VALUES 에 <code style="font-family:Menlo,monospace;font-size:14px;">type: ClusterIP</code> 한 줄만 남은 것이 그 효과예요. 서비스를 지우지 않고 고쳤기 때문에 클러스터 IP 10.104.14.9 도 그대로 유지됐어요.</p>
+<p>이제 Headlamp 에 들어가는 길은 Mac 에서 port-forward 명령이 떠 있는 동안의 <code style="font-family:Menlo,monospace;font-size:14px;">http://localhost:18809/</code> 하나예요. 그 주소를 열면 그림 5 와 같은 로그인 화면이 뜨고, 토큰을 넣으면 개요가 열렸습니다. 브라우저에서 보면 달라진 것은 주소 하나뿐이지만, 그 사이에 API 서버의 인증과 인가가 들어갔어요.</p>
+<p>남은 질문은 로그인 칸에 넣는 토큰이에요. 지금까지 쓴 토큰은 차트가 cluster-admin 을 묶어 둔 headlamp 계정의 것이었어요. 이 토큰이 정확히 누구의 것이고 얼마나 사는지, 강의의 admin-user 실습을 이 클러스터에 맞게 바꾸면서 무엇을 봤는지는 10편에서 다룹니다.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>강의의 Kubernetes Dashboard 는 저장소가 아카이브돼 있었고, README 와 쿠버네티스 문서가 함께 추천한 Headlamp 로 바꿨어요.</b><br><br>
+  Helm 차트는 서비스 값 두 줄만 받고도 NodePort 서비스와 함께 cluster-admin 바인딩까지 만들었어요. 강의대로 API 서버 프록시 경로로 열자 인증서 없이는 403, 관리자 인증서로는 200 이 나왔지만, 로그인 뒤 루트로 간 /config 와 /plugins 가 API 서버에서 404 를 받으며 화면이 멈췄어요. base URL 을 맞추면 첫 페이지부터 404 가 나서 되돌렸고, API 서버를 거치면서 localhost 에만 열리는 kubectl port-forward 로 바꾼 뒤 NodePort 를 닫았습니다. 그 사이 macOS 의 로컬 네트워크 권한이 kubectl 만 막는 일도 있었어요. 웹 UI 에 들어가는 길은 누가 먼저 신원을 확인하는지와, 그 앱이 그 길의 경로 구조에서 동작하는지를 함께 보고 골라야 해요.
+</div>
+
+</div>

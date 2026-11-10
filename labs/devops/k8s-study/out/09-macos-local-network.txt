@@ -1,0 +1,19 @@
+# Mac 터미널에서 port-forward 를 열자 생긴 오류 (2026-11-09 20:07, 작업 세션의 명령 기록에서 옮김)
+mac$ ./lab kubectl -n kube-system port-forward svc/headlamp 8080:80
+Unable to connect to the server: dial tcp 192.168.64.2:6443: connect: no route to host
+
+# 같은 시각, 같은 Mac 에서 다시 확인
+mac$ date +%T; ./lab kubectl get nodes 2>&1 | head -3; nc -z -G 3 192.168.64.2 6443 && echo "tcp 192.168.64.2:6443 open"; sw_vers -productVersion; route -n get 192.168.64.2 | grep -E "interface|gateway"
+20:07:38
+Unable to connect to the server: dial tcp 192.168.64.2:6443: connect: no route to host
+Connection to 192.168.64.2 port 6443 [tcp/sun-sr-https] succeeded!
+tcp 192.168.64.2:6443 open
+26.6.2
+  interface: bridge100
+
+# 시스템 설정 > 개인정보 보호 및 보안 > 로컬 네트워크 에서 터미널을 띄운 앱(Orca)을 허용한 뒤
+mac$ ./lab kubectl -n kube-system port-forward svc/headlamp 18809:80
+Forwarding from 127.0.0.1:18809 -> 4466
+Forwarding from [::1]:18809 -> 4466
+mac$ curl -s -o /dev/null -w "localhost:18809 %{http_code}\n" http://localhost:18809/
+localhost:18809 200
