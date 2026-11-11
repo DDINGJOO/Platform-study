@@ -1,0 +1,23 @@
+master$ kubectl create deployment myweb --image=nginx:1.25.1-alpine --port=80 --replicas=3
+deployment.apps/myweb created
+
+master$ kubectl get po -o wide | grep myweb
+NAME                                READY   STATUS      RESTARTS   AGE   IP               NODE          NOMINATED NODE   READINESS GATES
+myweb-859c4764d4-4tjzk              1/1     Running     0          35s   10.244.194.88    k8s-worker1   <none>           <none>
+myweb-859c4764d4-5xtpv              1/1     Running     0          35s   10.244.100.213   k8s-worker3   <none>           <none>
+myweb-859c4764d4-n9rd8              1/1     Running     0          35s   10.244.126.19    k8s-worker2   <none>           <none>
+
+master$ for ip in 10.244.194.88 10.244.100.213 10.244.126.19; do curl -s -o /dev/null -w ... http://$ip/; done
+10.244.194.88 200 615B
+10.244.100.213 200 615B
+10.244.126.19 200 615B
+master$ kubectl expose deployment myweb --port=80
+service/myweb exposed
+master$ kubectl run loadgen --image=curlimages/curl:8.11.1 --command -- sleep infinity
+pod/loadgen created
+pod/loadgen condition met
+NAME    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)   AGE
+myweb   ClusterIP   10.105.164.156   <none>        80/TCP    8s
+NAME READY STATUS IP NODE
+loadgen 1/1 Running 10.244.194.89 k8s-worker1
+loadgen -> http://myweb  200 10.105.164.156

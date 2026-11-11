@@ -1,0 +1,27 @@
+# k9s 를 tmux(110x34) 안에서 'k9s --logoless -n default -c pod' 로 띄우고 키를 보내며 화면을 텍스트로 저장했다 (실습 저장소 shared/k9s-tour/tour.sh)
+# | #!/usr/bin/env bash
+# | # k9s 를 tmux 안에서 띄우고 키를 보내면서 화면을 텍스트로 저장한다.
+# | set -e
+# | command -v tmux >/dev/null || sudo apt-get install -y -qq tmux >/dev/null
+# | O=/lab/k9s-tour/cap; rm -rf $O; mkdir -p $O
+# | tmux kill-session -t k9s 2>/dev/null || true
+# | tmux new-session -d -s k9s -x 110 -y 34 "k9s --logoless -n default -c pod"
+# | cap() { sleep "${2:-3}"; tmux capture-pane -t k9s -p > "$O/$1.txt"; echo "captured $1"; }
+# | key() { tmux send-keys -t k9s "$@"; }
+# | cmd() { key ":"; sleep 0.5; key "$1"; sleep 0.3; key Enter; }
+# | cap 01-start 6
+# | cmd ns;             cap 02-namespaces
+# | key "/"; sleep 0.5; key "monitoring"; key Enter; sleep 1; key Enter; cap 03-ns-enter
+# | cmd pod;            sleep 2; key 0; cap 04-all-pods 4
+# | key "/"; sleep 0.5; key "myweb"; key Enter; cap 05-filter-myweb
+# | key Down; sleep 0.5
+# | key d;              cap 06-describe
+# | key Escape;         sleep 1; key l; cap 07-logs 5
+# | key Escape;         sleep 1; cmd deploy; cap 08-deploy
+# | cmd svc;            cap 09-svc
+# | cmd node;           cap 10-node
+# | cmd event;          cap 11-event
+# | key "?";            cap 12-help
+# | key Escape;         sleep 1; cmd q; sleep 1
+# | tmux kill-session -t k9s 2>/dev/null || true
+# | ls $O

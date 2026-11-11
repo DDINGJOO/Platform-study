@@ -1,0 +1,459 @@
+<!-- ============================================================
+  k8s 스터디 13편: eBPF와 kprobe는 어떻게 사이드카 없이 모든 파드의 연결을 볼까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 복사했다.
+============================================================ -->
+<!-- lead: Kubeshark는 앱 코드를 고치지도 파드에 사이드카를 붙이지도 않는데 노드의 연결과 TLS 평문까지 보여 줘요. worker1의 tcp_v4_connect에 kprobe를 5초 걸어 그 원리를 확인하고 eBPF 관측 도구를 고르는 기준을 정리했어요. -->
+<!-- tags: eBPF, kprobe, uprobe, tcp_v4_connect, OpenTelemetry eBPF Instrumentation -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 13편</div>
+  11편. node-exporter를 띄워도 Prometheus가 수집하지 않는 이유<br>
+  12편. Grafana 6417 대시보드에 No data가 뜨는 이유와 고치는 법<br>
+  <b>13편. eBPF와 kprobe는 어떻게 사이드카 없이 모든 파드의 연결을 볼까</b> &larr; 지금 이 글<br>
+  14편. Kubeshark를 설치하면 무엇이 생기고 어떤 권한과 자원을 쓸까<br>
+  15편. Kubeshark 서비스맵으로 파드 트래픽 쏠림을 찾는 법
+</div>
+
+<p>2026-11-11 강의에서 Kubeshark를 소개한 슬라이드에는 네 줄이 적혀 있었어요. 강의 자료라서 이미지는 싣지 않고 내용을 말로 옮길게요.</p>
+<p>&middot; eBPF로 구현했고 커널 공간과 유저 공간을 모니터링해 인사이트를 준다<br>
+&middot; kprobe로 TCP 커넥션의 출발지·목적지 IP와 포트를 저장하고 수집한 Trace로 요청과 응답을 하나로 묶어 보여 준다<br>
+&middot; 실제 TCP 패킷은 PCAP 파일로 임시 저장하고 내려받을 수 있다<br>
+&middot; TLS로 암호화된 패킷도 Kubeshark에서 평문으로 볼 수 있다</p>
+<p>슬라이드를 보고 처음 나온 질문은 "eBPF가 뭐지?"였고 바로 "kprobe는 또 뭐지?"가 이어졌어요. 이 실습 클러스터에서는 앱 코드를 한 줄도 바꾸지 않았고 파드에 컨테이너를 덧붙이지도 않았어요. 그런데 Kubeshark는 노드마다 수집기 파드를 하나씩 띄워 다른 파드들이 주고받는 요청을 보여 주고 TLS 평문까지 보여 준다고 해요. 질문을 하나로 줄이면 <b>"앱도 파드도 그대로인데 노드에 띄운 프로그램 하나가 어떻게 모든 파드의 연결을 보나"</b>예요.</p>
+<p>답을 확인하려고 worker1 커널의 tcp_v4_connect 함수에 kprobe를 직접 걸어 봤어요. 5초 동안 연결 9건이 잡혔는데 제가 일부러 만든 연결은 그중 2건이었어요. 나머지 가운데 4건은 kubelet과 Calico가 스스로 연 연결이었어요. 이 글에서는 이 9건을 근거로 삼아 eBPF와 kprobe·uprobe가 어디에서 무엇을 보는지 살펴볼게요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 앱이 내놓지 않은 연결은 어디에서 볼 수 있을까?<br>
+&middot; eBPF 프로그램은 어떤 단계를 거쳐 커널 안에서 실행될까?<br>
+&middot; kprobe, kretprobe, uprobe는 각각 어디에 걸릴까?<br>
+&middot; 슬라이드의 네 줄은 eBPF로 어떻게 읽을 수 있을까? TLS 평문은 암호를 깨서 보는 걸까?<br>
+&middot; 내 노드에서 kprobe로 연결을 직접 보려면 무엇을 확인하고 무엇을 입력할까?<br>
+&middot; eBPF 관측 도구에는 무엇이 있고 Prometheus·OTel SDK와는 어떻게 나눠 쓸까?</p>
+
+<h2>1. 앱이 내놓지 않은 연결은 어디에서 볼 수 있을까</h2>
+
+<p>11편의 Prometheus는 수집 대상의 <code style="font-family:Menlo,monospace;font-size:14px;">/metrics</code>에 요청을 보내 그 순간의 값을 가져왔어요. 이 방식은 앱이나 exporter가 수치를 HTTP로 내놓아야 성립해요. 그래서 "이 파드가 방금 어느 IP의 몇 번 포트로 연결을 열었나" 같은 정보는 누군가 그 값을 세어 내놓지 않는 한 Prometheus로 볼 수 없어요.</p>
+<p>앱을 고치지 않고 이런 정보를 얻는 익숙한 방법은 사이드카예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 사이드카 (sidecar container)</div>
+  같은 파드 안에서 주 앱 컨테이너와 함께 도는 보조 컨테이너예요. <a href="https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/">쿠버네티스 문서</a>에는 사이드카가 주 컨테이너와 같은 네트워크·스토리지 네임스페이스를 쓴다고 적혀 있어요. 그래서 앱 코드를 고치지 않고도 앱이 주고받는 트래픽을 바로 옆에서 볼 수 있어요.
+</div>
+<p>대신 사이드카는 관측하려는 파드마다 하나씩 들어가야 해요. 사이드카를 넣으려면 파드 정의를 바꾸고 파드를 다시 만들어야 하고 사이드카가 없는 파드는 보이지 않아요. 파드 수만큼 사이드카 컨테이너도 늘어나요.</p>
+<p>남은 곳은 노드의 커널이에요. 컨테이너는 노드 운영체제 위에서 도는 프로세스이고 한 노드의 컨테이너들은 그 노드의 커널 하나를 함께 써요. 파드 안의 앱이 열든 노드의 kubelet이 열든 TCP 연결은 같은 커널의 같은 코드를 지나요. <span class="obsv-mark">관측 코드를 커널에 두면 앱을 고치지 않고도 그 노드의 모든 컨테이너가 부르는 커널 함수를 볼 수 있어요.</span> 문제는 커널에 코드를 넣는 방법이에요. 커널 소스를 고쳐 다시 빌드하거나 커널 모듈을 올릴 수 있지만 커널 모듈은 커널과 같은 권한으로 돌아서 버그 하나로 노드 전체가 멈출 수 있어요.</p>
+<p>eBPF를 쓰면 이 위험을 줄이면서 커널 안에서 프로그램을 실행할 수 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: eBPF</div>
+  리눅스 커널 안에서 샌드박스에 갇힌 프로그램을 특권 문맥으로 실행하는 기술이에요. <a href="https://ebpf.io/what-is-ebpf/">ebpf.io의 설명</a>에 따르면 커널 소스를 고치거나 커널 모듈을 올리지 않고 커널의 기능을 넓힐 수 있어요. eBPF 프로그램은 커널이나 앱이 정해 둔 훅 지점을 지날 때마다 실행돼요.
+</div>
+
+<h3>eBPF 프로그램이 커널에서 실행되기까지</h3>
+<p>ebpf.io의 설명을 네 단계로 줄이면 그림 1과 같아요.</p>
+<p><b>① 작성.</b> eBPF 프로그램을 C 같은 언어로 쓰고 eBPF 바이트코드로 컴파일해요. 관측 도구를 쓰는 사람은 보통 이 단계를 직접 하지 않아요. 3절에서 볼 Kubeshark tracer 저장소에도 C로 쓴 eBPF 소스가 bpf 폴더에 들어 있어요.</p>
+<p><b>② 검증.</b> 도구는 프로그램을 bpf 시스템 콜로 커널에 올려요. 커널은 프로그램을 받으면 검증기로 먼저 검사해요. ebpf.io에 적힌 조건을 옮기면 이래요. unprivileged eBPF를 켜지 않은 시스템에서는 특권 프로세스만 프로그램을 올릴 수 있어요. 프로그램은 항상 끝까지 실행돼야 하고 반복문은 끝나는 조건을 검증기가 확인할 수 있을 때만 허용돼요. 시스템을 멈추거나 망가뜨리면 안 되고 초기화하지 않은 변수를 쓰거나 범위 밖 메모리에 접근해서도 안 돼요. 프로그램 크기와 복잡도에도 한도가 있어요. 검증을 통과하면 JIT 컴파일러가 바이트코드를 그 CPU의 기계어로 바꿔요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 검증기 (verifier)</div>
+  eBPF 프로그램을 실행하기 전에 커널을 망가뜨릴 수 있는지 검사하는 커널의 구성 요소예요. 반복문이 끝나는지, 범위 밖 메모리를 읽지 않는지를 실행 전에 따지고 통과하지 못한 프로그램은 올리지 않아요. 실행 전에 이런 검사를 받지 않는 커널 모듈과 가장 크게 다른 점이에요.
+</div>
+<p><b>③ 훅.</b> 검증을 통과한 프로그램은 정해 둔 훅에 붙어요. ebpf.io에는 미리 정해진 훅으로 시스템 콜, 함수 진입과 종료, 커널 tracepoint, 네트워크 이벤트 등이 적혀 있어요. 맞는 훅이 없으면 kprobe나 uprobe를 만들어 커널이나 유저 공간 프로그램의 거의 아무 곳에나 eBPF 프로그램을 붙일 수 있다고 해요. 슬라이드 둘째 줄의 kprobe가 바로 이 kprobe예요.</p>
+<p><b>④ 맵.</b> 훅에서 실행된 프로그램은 본 것을 맵에 남기고 끝나요. 유저 공간에 있는 관측 도구는 맵에서 데이터를 꺼내 화면과 저장소로 보내요. eBPF 프로그램은 임의의 커널 함수를 부를 수 없어서 맵 읽기·쓰기나 현재 시각 읽기 같은 일은 커널이 제공하는 헬퍼 함수로 해요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 맵 (eBPF map)</div>
+  커널 안의 eBPF 프로그램과 유저 공간 프로그램이 함께 읽고 쓰는 저장소예요. ebpf.io에는 해시 테이블, 배열, LRU, 링 버퍼, 스택 트레이스, LPM 같은 종류가 적혀 있어요. 관측 도구 화면에 나오는 요청과 숫자는 유저 공간 프로그램이 맵에서 꺼내 가공한 결과예요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k13arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k13arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k13arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">eBPF 프로그램이 커널에서 실행되기까지</text>
+<text x="24" y="66" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="start">유저 공간</text>
+<path d="M20 150 C 200 148, 480 152, 680 150" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="24" y="176" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="start">커널</text>
+<path d="M90 63 C 150 61, 210 64, 270 62 C 272 82, 269 102, 271 122 C 210 124, 150 121, 89 123 C 88 102, 91 82, 90 63 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="180" y="89" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle">① 작성</text>
+<text x="180" y="112" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">C 소스를 바이트코드로</text>
+<path d="M450 62 C 515 64, 580 61, 640 63 C 642 82, 639 102, 641 123 C 580 121, 515 124, 449 122 C 448 102, 451 82, 450 62 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="545" y="89" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">관측 도구</text>
+<text x="545" y="112" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">꺼내서 화면·저장소로</text>
+<path d="M40 191 C 95 189, 150 192, 200 190 C 202 212, 199 234, 201 256 C 150 258, 95 255, 39 257 C 38 234, 41 212, 40 191 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="217" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18" text-anchor="middle">② 검증기</text>
+<text x="120" y="242" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">끝나는가? 범위 밖 접근?</text>
+<path d="M270 190 C 325 192, 380 189, 430 191 C 432 212, 429 234, 431 257 C 380 255, 325 258, 269 256 C 268 234, 271 212, 270 190 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="217" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle">③ 훅에 붙음</text>
+<text x="350" y="242" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">kprobe · uprobe 등</text>
+<path d="M500 191 C 555 189, 610 192, 660 190 C 662 212, 659 234, 661 256 C 610 258, 555 255, 499 257 C 498 234, 501 212, 500 191 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="217" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">④ 맵에 기록</text>
+<text x="580" y="242" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">해시 · 배열 · 링 버퍼</text>
+<path d="M150 125 C 146 145, 134 166, 124 186" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k13arr1)"/>
+<text x="158" y="141" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">bpf 시스템 콜로 올림</text>
+<path d="M203 224 C 222 221, 244 222, 265 223" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k13arr1)"/>
+<text x="234" y="182" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">JIT 기계어로</text>
+<path d="M433 223 C 455 225, 476 222, 495 223" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k13arr1)"/>
+<text x="465" y="182" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">지날 때마다 실행</text>
+<path d="M585 187 C 583 166, 572 146, 560 127" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k13arr2)"/>
+<text x="598" y="160" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="start">읽기</text>
+<path d="M120 259 C 121 276, 119 292, 120 306" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="8 6" marker-end="url(#k13arr3)"/>
+<text x="120" y="326" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">통과 못 하면 올리지 않음</text>
+<text x="350" y="366" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 검증을 통과한 프로그램만 훅에 붙고 본 것은 맵을 거쳐 나간다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 검증기를 통과한 프로그램만 훅에 붙고 본 것은 맵을 거쳐 유저 공간으로 간다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 검증기는 프로그램이 무엇을 읽는지 보지 않아요</div>
+  ebpf.io에도 검증기는 프로그램이 무엇을 하는지 검사하는 보안 도구가 아니라고 적혀 있어요. 검증기가 막는 것은 커널을 멈추거나 망가뜨릴 수 있는 프로그램이에요. 어떤 데이터를 읽어 어디로 보내는지는 따지지 않아요. 그래서 누가 eBPF 프로그램을 올릴 수 있는지가 중요해요. unprivileged eBPF를 켜지 않은 시스템에서는 root나 CAP_BPF 같은 권한이 있어야 프로그램을 올릴 수 있어요. 6절에서 이 권한을 도구를 고르는 기준으로 다시 봐요.
+</div>
+
+<h2>2. kprobe, kretprobe, uprobe는 각각 어디에 걸릴까</h2>
+
+<p>kprobe가 무엇인지는 커널 문서에 가장 짧게 적혀 있어요. <a href="https://docs.kernel.org/trace/kprobes.html">커널의 Kprobes 문서</a>에 따르면 kprobe를 쓰면 커널의 거의 모든 루틴에 실행 중에 끼어들어 디버깅·성능 정보를 모을 수 있어요. 동작은 이래요. kprobe를 등록하면 커널은 대상 명령을 복사해 두고 그 명령의 첫 바이트를 브레이크포인트 명령으로 바꿔요. CPU가 그 지점에 오면 트랩이 걸리고 제어가 Kprobes로 넘어가요. Kprobes는 등록된 사전 핸들러를 실행하고 복사해 둔 원래 명령을 한 단계 실행한 뒤 사후 핸들러를 실행해요. 그다음 원래 흐름으로 돌아가요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: kprobe (커널 프로브)</div>
+  커널 함수의 원하는 지점에 실행 중에 거는 훅이에요. 커널을 다시 빌드하거나 재부팅하지 않고 걸고 뗄 수 있어요. 문서에 따르면 Kprobes 자신의 코드와 NOKPROBE_SYMBOL로 표시된 블랙리스트 함수에는 걸 수 없어요.
+</div>
+<p>kretprobe는 같은 장치로 함수가 반환하는 순간에 훅을 걸어요. 문서에는 지정한 함수가 반환할 때 실행되는 반환 프로브라고 적혀 있어요. 진입에서 인자를 보고 반환에서 반환값을 보면 "어디로 연결하려 했고 결과가 무엇이었나"를 함께 알 수 있어요. 진입과 반환의 시각 차이로 함수가 얼마나 걸렸는지도 잴 수 있어요.</p>
+<p>uprobe는 같은 일을 유저 공간 프로그램에 해요. <a href="https://docs.kernel.org/trace/uprobetracer.html">커널의 uprobe 추적 문서</a>에는 훅 위치를 실행 파일이나 라이브러리의 경로와 그 파일 안의 오프셋으로 정한다고 적혀 있어요. 예를 들어 OpenSSL 라이브러리 파일의 SSL_write 위치에 uprobe를 걸면 그 라이브러리를 쓰는 프로그램이 SSL_write를 부를 때 훅이 실행돼요. 반환 지점에 거는 uretprobe도 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: uprobe (유저 프로브)</div>
+  유저 공간 프로그램의 함수에 거는 훅이에요. 커널 함수가 아니라 실행 파일이나 공유 라이브러리 안의 위치를 가리켜요. 앱 코드를 고치지 않고도 앱이 부르는 라이브러리 함수의 인자와 반환값을 볼 수 있어서 TLS 평문을 읽는 데 쓰여요.
+</div>
+<p>정리하면 <span class="obsv-mark">kprobe는 노드에 하나뿐인 커널의 함수에 걸리고 uprobe는 앱이 쓰는 실행 파일과 라이브러리의 함수에 걸려요.</span> kprobe 하나를 걸면 그 커널 함수를 부르는 모든 프로세스가 대상이 돼요. 4절의 실습에서 이 성질이 그대로 드러나요.</p>
+<p>kprobe는 함수 이름만 알면 거의 어디에나 걸 수 있지만 그 함수가 다음 커널에서도 같은 이름과 인자로 남아 있다는 보장은 없어요. <a href="https://docs.kernel.org/process/stable-api-nonsense.html">커널 문서</a>에도 리눅스에는 안정된 커널 내부 인터페이스가 없고 사용자 공간과 맞닿은 시스템 콜 인터페이스는 오랫동안 안정적으로 유지된다고 적혀 있어요. 6절에서 다룰 "커널 버전" 비용이 여기서 나와요.</p>
+
+<h2>3. 슬라이드 네 줄을 eBPF로 다시 읽기</h2>
+
+<p>훅의 종류를 알고 나서 슬라이드를 다시 읽었어요. Kubeshark 문서와 공개 코드에서 확인한 내용과 한 줄씩 맞춰 볼게요.</p>
+
+<h3>첫째 줄: 커널 공간과 유저 공간을 본다</h3>
+<p><a href="https://docs.kubeshark.com/en/anatomy_of_kubeshark">Kubeshark 구조 문서</a>에 따르면 노드마다 뜨는 worker 파드에 컨테이너가 둘 있어요. sniffer는 네트워크 인터페이스에서 AF_PACKET이나 eBPF로 트래픽을 잡아 완전한 메시지로 다시 조립해요. tracer는 eBPF로 커널 공간과 유저 공간의 함수를 추적하고 문서에 적힌 일은 L4 트래픽 수집, TLS 트래픽 수집, 시스템 콜 수집이에요. 첫째 줄의 "커널 공간과 유저 공간"은 tracer가 거는 kprobe와 uprobe로 읽을 수 있어요. 실습 클러스터의 worker DaemonSet에도 sniffer와 tracer 두 컨테이너가 있었어요(14편).</p>
+
+<h3>둘째 줄: kprobe로 TCP 연결의 IP와 포트를 저장한다</h3>
+<p>문서에는 tracer가 어느 커널 함수에 훅을 거는지까지는 적혀 있지 않아요. 그래서 GitHub의 공개 저장소 <a href="https://github.com/kubeshark/tracer">kubeshark/tracer</a>를 열어 봤어요. 저장소 설명은 "TLS 트래픽을 잡으려고 컨테이너에 eBPF 프로브를 붙이는 커널 tracer"예요. bpf/tcp_kprobes.c에 kprobe가 두 개 있었어요.</p>
+<div class="obsv-code">// kubeshark/tracer  bpf/tcp_kprobes.c  (2026-02-03 커밋 c76eaf4, 필요한 줄만 옮기고 인자 일부를 ...로 줄임)
+SEC("kprobe/tcp_sendmsg")
+SEC("kprobe/tcp_recvmsg")
+
+struct sock* sk = (struct sock*)PT_REGS_PARM1(ctx);
+err = bpf_probe_read_kernel(&amp;address_info_ptr-&gt;saddr4, ..., (void*)&amp;sk-&gt;__sk_common.skc_rcv_saddr);
+err = bpf_probe_read_kernel(&amp;address_info_ptr-&gt;daddr4, ..., (void*)&amp;sk-&gt;__sk_common.skc_daddr);
+err = bpf_probe_read_kernel(&amp;address_info_ptr-&gt;dport, ..., (void*)&amp;sk-&gt;__sk_common.skc_dport);
+err = bpf_probe_read_kernel(&amp;address_info_ptr-&gt;sport, ..., (void*)&amp;sk-&gt;__sk_common.skc_num);</div>
+<p>&rarr; 데이터를 보내고 받는 커널 함수 tcp_sendmsg·tcp_recvmsg에 kprobe를 걸고 첫째 인자인 소켓 구조체에서 출발지 IP, 목적지 IP, 목적지 포트, 출발지 포트를 읽는다는 뜻이에요. IPv6 소켓이면 같은 자리에서 IPv6 주소를 읽어요.</p>
+<p>슬라이드의 "kprobe로 출발지·목적지 IP와 포트를 저장한다"가 이 코드예요. 다만 이 저장소의 마지막 커밋은 2026-02-03이고 이번에 설치한 v53.6.0의 worker 이미지에 든 tracer가 이 코드와 같은지는 확인하지 않았어요. 둘째 줄 뒷부분의 "요청과 응답을 하나로 묶는다"는 구조 문서에 sniffer가 트래픽을 완전히 조립된 메시지까지 처리한다고만 적혀 있어서 요청과 응답의 짝을 어떻게 맞추는지는 확인하지 못했어요.</p>
+
+<h3>셋째 줄: 실제 패킷은 PCAP으로 임시 저장한다</h3>
+<p>셋째 줄은 eBPF보다는 저장 방식의 이야기예요. 강의에서 실행한 kubeshark tap의 로그에는 노드마다 한도까지 트래픽을 저장하고 한도에 닿으면 가장 오래된 TCP/UDP 스트림부터 지운다는 안내와 함께 <code style="font-family:Menlo,monospace;font-size:14px;">limit=10Gi</code>가 찍혀 있었어요(14편). 구조 문서에도 worker는 주로 메모리에서 데이터를 처리하고 일부를 노드의 로컬 디스크에 두며 이 데이터는 기본으로 임시라서 정해 둔 TTL이 지나면 버린다고 적혀 있어요. CLI의 pcapdump 하위 명령 설명은 "복호화된 TLS를 포함해 잡은 트래픽을 모두 PCAP 파일로 저장한다"예요. PCAP은 Wireshark 같은 도구로 여는 패킷 저장 형식이에요. 이번 실습에서 pcapdump는 실행해 보지 않았어요.</p>
+
+<h3>넷째 줄: TLS로 암호화된 패킷도 평문으로 본다</h3>
+<p>이 줄이 강의 중에 가장 이상하게 들렸어요. TLS는 중간에서 내용을 엿보지 못하게 하려고 쓰는데 어떻게 평문이 보일까요. <a href="https://docs.kubeshark.com/en/encrypted_traffic">Kubeshark의 TLS 복호화 문서</a>에 답이 있었어요. 개인 키도, 인증서도, 사이드카도, 앱 변경도 필요 없고 대상 컨테이너 안의 암호화 라이브러리에 eBPF로 훅을 건다고 적혀 있어요. 읽을 때는 복호화한 뒤에, 쓸 때는 암호화하기 전에 프로세스 메모리에서 평문을 가져와요. <span class="obsv-mark">암호를 깨는 것이 아니라 암호화 직전과 복호화 직후의 평문을 앱 프로세스의 메모리에서 읽는 거예요.</span></p>
+<p>tracer 저장소의 bpf/openssl_uprobes.c를 보면 순서가 구체적으로 나와요.</p>
+<div class="obsv-code">// kubeshark/tracer  bpf/openssl_uprobes.c  (같은 커밋, 필요한 줄만. 오른쪽 주석은 제가 붙였어요)
+SEC("uprobe/ssl_write")       // SSL_write 진입
+SEC("uretprobe/ssl_write")    // SSL_write 반환
+SEC("uprobe/ssl_read")        // SSL_read 진입
+SEC("uretprobe/ssl_read")     // SSL_read 반환
+
+__u64 cgroup_id = compat_get_current_cgroup_id(NULL);
+if (!should_target_cgroup(cgroup_id)) {
+    return;
+}</div>
+<p>&rarr; OpenSSL의 SSL_write와 SSL_read에 진입 uprobe와 반환 uretprobe를 하나씩 걸고 훅이 실행될 때마다 현재 프로세스의 cgroup ID를 보고 대상이 아니면 바로 돌아간다는 뜻이에요. 같은 파일에 SSL_write_ex·SSL_read_ex용 훅도 있고 Go의 crypto/tls용 uprobe는 bpf/go_uprobes.c에 따로 있어요.</p>
+<p>쓰기 쪽을 순서대로 따라가면 이래요. ① 앱이 SSL_write에 평문 버퍼를 넘기면 진입 uprobe가 버퍼 주소를 LRU 해시 맵(openssl_write_context)에 적어 둬요. 맵의 키는 프로세스·스레드 ID예요. ② 라이브러리가 데이터를 암호화해 소켓으로 보내면 같은 스레드에서 커널의 tcp_sendmsg가 불리고 둘째 줄의 kprobe가 맵에서 그 스레드의 기록을 찾아 출발지·목적지 IP와 포트를 붙여요. ③ SSL_write가 반환하면 uretprobe가 쓴 바이트 수를 확인하고 버퍼의 평문을 주소와 함께 perf 이벤트 배열(chunks_buffer)로 유저 공간에 보내요. 읽기는 SSL_read 진입에서 버퍼 주소를 적어 두고 tcp_recvmsg에서 주소를 붙인 뒤 SSL_read가 반환할 때 복호화된 평문이 채워진 버퍼를 읽어요. 대상 파드를 거르는 일도 훅 안에서 cgroup ID로 해요. 그림 2가 이 경로예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 450" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k13arr4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">HTTPS 요청 하나가 지나는 길과 훅이 걸리는 자리</text>
+<text x="24" y="56" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">유저 공간: 파드 안의 앱 프로세스</text>
+<path d="M20 212 C 220 210, 470 214, 680 212" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="24" y="234" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">커널: 노드에 하나</text>
+<path d="M40 69 C 125 67, 215 70, 300 68 C 302 80, 299 92, 301 104 C 215 106, 125 103, 39 105 C 38 92, 41 80, 40 69 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="170" y="92" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">앱 코드가 요청을 만든다</text>
+<path d="M170 107 C 171 113, 169 118, 170 123" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k13arr4)"/>
+<path d="M40 127 C 125 125, 215 128, 300 126 C 302 144, 299 162, 301 180 C 215 182, 125 179, 39 181 C 38 162, 41 144, 40 127 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="170" y="150" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">SSL_write · SSL_read</text>
+<text x="170" y="171" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">라이브러리 안에서 암호화·복호화</text>
+<path d="M170 183 C 172 200, 168 220, 170 238" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k13arr4)"/>
+<text x="182" y="202" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">connect · send · recv 시스템 콜</text>
+<path d="M40 245 C 125 243, 215 246, 300 244 C 302 258, 299 274, 301 288 C 215 290, 125 287, 39 289 C 38 274, 41 258, 40 245 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="170" y="265" font-family="Menlo, monospace" font-size="14" fill="#4a7fb5" text-anchor="middle">tcp_v4_connect</text>
+<text x="170" y="282" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">연결을 열 때 한 번</text>
+<path d="M170 291 C 171 296, 169 300, 170 303" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k13arr4)"/>
+<path d="M40 307 C 125 305, 215 308, 300 306 C 302 320, 299 336, 301 350 C 215 352, 125 349, 39 351 C 38 336, 41 320, 40 307 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="170" y="327" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">tcp_sendmsg · tcp_recvmsg</text>
+<text x="170" y="344" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">데이터를 보내고 받을 때마다</text>
+<path d="M170 353 C 171 358, 169 362, 170 365" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k13arr4)"/>
+<path d="M40 369 C 125 367, 215 370, 300 368 C 302 380, 299 392, 301 404 C 215 406, 125 403, 39 405 C 38 392, 41 380, 40 369 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="170" y="392" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">네트워크 장치에서 선 위로</text>
+<path d="M303 153 C 311 152, 320 154, 328 153" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="1 5" stroke-linecap="round"/>
+<path d="M330 136 C 380 134, 430 137, 480 135 C 482 147, 479 160, 481 171 C 430 173, 380 170, 329 172 C 328 160, 331 147, 330 136 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="405" y="158" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="middle">uprobe · uretprobe</text>
+<text x="492" y="148" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">① 진입: 평문 버퍼 주소를 맵에</text>
+<text x="492" y="168" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">③ 반환: 평문과 주소를 내보냄</text>
+<path d="M303 266 C 311 265, 320 267, 328 266" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 5" stroke-linecap="round"/>
+<path d="M330 249 C 363 247, 397 250, 430 248 C 432 260, 429 271, 431 283 C 397 285, 363 282, 329 284 C 328 271, 331 260, 330 249 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="380" y="271" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5" text-anchor="middle">kprobe</text>
+<text x="442" y="262" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">목적지 IP·포트</text>
+<text x="442" y="280" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="start">4절 실습: 새 연결 하나에 1건</text>
+<path d="M303 328 C 311 327, 320 329, 328 328" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="1 5" stroke-linecap="round"/>
+<path d="M330 311 C 363 309, 397 312, 430 310 C 432 322, 429 333, 431 345 C 397 347, 363 344, 329 346 C 328 333, 331 322, 330 311 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="380" y="333" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5" text-anchor="middle">kprobe</text>
+<text x="442" y="324" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">② 소켓의 출발지·목적지 IP·포트를 붙임</text>
+<text x="442" y="342" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="start">Kubeshark tracer 공개 코드</text>
+<path d="M303 387 C 311 386, 320 388, 328 387" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 5" stroke-linecap="round"/>
+<path d="M330 371 C 363 369, 397 372, 430 370 C 432 381, 429 392, 431 403 C 397 405, 363 402, 329 404 C 328 392, 331 381, 330 371 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="380" y="392" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">패킷 캡처</text>
+<text x="442" y="392" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="start">TLS면 암호문만 보인다</text>
+<text x="350" y="436" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">= 평문은 유저 공간 라이브러리에서, IP와 포트는 커널에서 읽어 하나로 묶는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 평문은 라이브러리 함수에 건 uprobe로, IP와 포트는 커널 함수에 건 kprobe로 읽는다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 평문이 보이는 것은 문서에 적힌 라이브러리일 때예요</div>
+  Kubeshark 문서에 지원 라이브러리로 적힌 것은 OpenSSL, BoringSSL, Go의 crypto/tls예요. OpenSSL과 BoringSSL은 동적 링크와 정적 링크를 모두 지원하고 Go는 심볼을 지운 바이너리도 지원한다고 적혀 있어요. 지원 범위는 이미지마다 다르다고 하니 다른 TLS 구현을 쓰는 앱에서는 평문이 보인다고 기대하지 마세요. 그리고 평문이 보인다는 것은 인증 헤더나 개인정보도 수집기 쪽으로 넘어올 수 있다는 뜻이에요. 실습 클러스터에서 이 훅을 거는 worker 컨테이너는 privileged로 떴어요(14편).
+</div>
+
+<h2>4. worker1의 tcp_v4_connect에 kprobe를 5초 걸었더니</h2>
+
+<p>원리를 확인했으니 직접 걸어 봤어요. 이번 실습에서는 eBPF 프로그램을 쓰지 않았어요. 커널의 tracefs가 제공하는 kprobe 이벤트 기능만으로 kprobe 훅이 무엇을 보는지 확인했어요. eBPF 도구는 같은 kprobe 훅에 검증을 거친 eBPF 프로그램을 붙여요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: tracefs와 kprobe_events</div>
+  tracefs는 커널의 추적 기능을 파일로 다루는 가상 파일시스템이에요(/sys/kernel/tracing). <a href="https://docs.kernel.org/trace/kprobetrace.html">kprobe 이벤트 문서</a>에 따르면 kprobe_events 파일에 정의를 한 줄 쓰면 kprobe 이벤트가 생기고 events 아래의 enable 파일에 1을 쓰면 켜져요. 잡힌 기록은 trace 파일에 쌓여요. 커널을 CONFIG_KPROBE_EVENTS=y로 빌드해야 쓸 수 있어요.
+</div>
+
+<h3>커널이 eBPF와 kprobe를 지원하는지 본다</h3>
+<p>kprobe와 eBPF는 커널 빌드 설정이 켜져 있어야 쓸 수 있어요. worker1에서 확인한 커널 설정과 마운트는 그림 3과 같아요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/13/kernel-config.png" alt="worker1에서 uname -r이 6.8.0-147-generic이고 /boot/config에서 CONFIG_BPF, CONFIG_BPF_SYSCALL, CONFIG_BPF_JIT, CONFIG_KPROBES, CONFIG_UPROBES, CONFIG_DEBUG_INFO_BTF, CONFIG_BPF_EVENTS 7개가 모두 y이며 /sys/kernel/btf/vmlinux가 있고 bpf 파일시스템(/sys/fs/bpf)과 tracefs(/sys/kernel/tracing)가 마운트된 터미널 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. worker1의 커널 6.8.0-147-generic은 확인한 설정 7개가 모두 y였고 BTF 파일과 bpf·tracefs 마운트도 있었다</div>
+
+<p>커널은 6.8.0-147-generic이고 확인한 설정 7개가 모두 y였어요. 각각의 뜻은 이래요.</p>
+<p>&middot; CONFIG_BPF, CONFIG_BPF_SYSCALL: eBPF 자체와 프로그램을 올리는 bpf 시스템 콜<br>
+&middot; CONFIG_BPF_JIT: 바이트코드를 기계어로 바꾸는 JIT 컴파일러<br>
+&middot; CONFIG_KPROBES, CONFIG_UPROBES: 커널 함수와 유저 공간 함수에 거는 훅<br>
+&middot; CONFIG_BPF_EVENTS: kprobe·uprobe·tracepoint 이벤트에 eBPF 프로그램을 붙이는 기능(<a href="https://github.com/torvalds/linux/blob/v6.8/kernel/trace/Kconfig#L751-L758">Kconfig 도움말</a>)<br>
+&middot; CONFIG_DEBUG_INFO_BTF와 /sys/kernel/btf/vmlinux: 커널 자료 구조의 형식 정보(BTF). 5절의 OBI가 요구 조건으로 꼽아요</p>
+<p>bpf 파일시스템은 /sys/fs/bpf에, tracefs는 /sys/kernel/tracing에 마운트돼 있었어요. 이 클러스터의 CNI인 Calico는 iptables 모드(IPIP)라서 eBPF 데이터플레인을 쓰지 않아요(6편). CNI가 eBPF를 쓰지 않아도 커널이 지원하면 eBPF 관측 도구와 kprobe는 쓸 수 있어요.</p>
+
+<h3>tcp_v4_connect의 둘째 인자에서 주소를 꺼낸다</h3>
+<p>훅을 걸 함수는 tcp_v4_connect로 정했어요. <a href="https://github.com/torvalds/linux/blob/v6.8/net/ipv4/tcp_ipv4.c#L200-L203">커널 v6.8 소스</a>에서 이 함수 위에는 "나가는 연결을 시작한다"는 주석이 달려 있어요. 인자는 소켓(sk), 목적지 주소(uaddr), 주소 길이(addr_len) 세 개이고 함수 안에서 uaddr를 IPv4 주소 구조체 sockaddr_in으로 바꿔 읽어요.</p>
+<div class="obsv-code">/* net/ipv4/tcp_ipv4.c (Linux v6.8, 200~203행) */
+/* This will initiate an outgoing connection. */
+int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
+{
+    struct sockaddr_in *usin = (struct sockaddr_in *)uaddr;
+
+/* include/uapi/linux/in.h (Linux v6.8, 256~259행) */
+struct sockaddr_in {
+  __kernel_sa_family_t  sin_family;  /* Address family   */
+  __be16                sin_port;    /* Port number      */
+  struct in_addr        sin_addr;    /* Internet address */</div>
+<p>&rarr; 둘째 인자가 가리키는 메모리에는 주소 체계(2바이트), 포트(2바이트, 네트워크 바이트 순서), IPv4 주소(4바이트)가 차례로 놓여 있다는 뜻이에요.</p>
+<p>kprobe 이벤트 정의는 이 배치에 맞춰 썼어요.</p>
+<div class="obsv-code">p:k8slab/conn tcp_v4_connect p0=+2($arg2):u8 p1=+3($arg2):u8 a=+4($arg2):u8 b=+5($arg2):u8 c=+6($arg2):u8 d=+7($arg2):u8</div>
+<p>&rarr; tcp_v4_connect 진입에 k8slab 그룹의 conn 이벤트를 만들고 둘째 인자가 가리키는 주소에서 2~7바이트 떨어진 곳의 1바이트씩 여섯 개를 p0, p1, a, b, c, d라는 이름으로 꺼내라는 뜻이에요.</p>
+<p>kprobe 이벤트 문서에 맞춰 풀면 맨 앞의 p는 함수 진입에 거는 kprobe이고 k8slab/conn은 그룹/이벤트 이름이에요. $arg2는 함수의 둘째 인자인데 문서에 따르면 함수 진입 지점(오프셋 0)에 건 프로브에서 쓸 수 있어요. +2($arg2)는 그 값이 가리키는 주소에서 2바이트 떨어진 메모리를 읽으라는 뜻이고 :u8은 부호 없는 1바이트로 읽으라는 형식이에요. 꺼낸 바이트를 사람이 읽는 주소로 바꾸는 법은 그림 4와 같아요. worker1의 결과에서 포트와 주소가 제대로 읽혔으니 Ubuntu 커널에서도 이 배치가 맞았어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 305" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k13arr5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k13arr6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">tcp_v4_connect 둘째 인자에서 바이트 여섯 개를 읽는 법</text>
+<text x="105" y="64" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">+0</text>
+<text x="175" y="64" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">+1</text>
+<text x="245" y="64" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">+2</text>
+<text x="315" y="64" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">+3</text>
+<text x="385" y="64" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">+4</text>
+<text x="455" y="64" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">+5</text>
+<text x="525" y="64" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">+6</text>
+<text x="595" y="64" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">+7</text>
+<path d="M70 75 C 250 73, 450 76, 630 74 C 632 90, 629 108, 631 124 C 450 126, 250 123, 69 125 C 68 108, 71 90, 70 75 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M210 76 C 211 92, 209 108, 210 123" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M280 76 C 281 92, 279 108, 280 123" fill="none" stroke="#3d3a34" stroke-width="1.2" stroke-linecap="round"/>
+<path d="M350 76 C 351 92, 349 108, 350 123" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M420 76 C 421 92, 419 108, 420 123" fill="none" stroke="#3d3a34" stroke-width="1.2" stroke-linecap="round"/>
+<path d="M490 76 C 491 92, 489 108, 490 123" fill="none" stroke="#3d3a34" stroke-width="1.2" stroke-linecap="round"/>
+<path d="M560 76 C 561 92, 559 108, 560 123" fill="none" stroke="#3d3a34" stroke-width="1.2" stroke-linecap="round"/>
+<text x="140" y="105" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">(읽지 않음)</text>
+<text x="245" y="105" font-family="Menlo, monospace" font-size="14" fill="#4a7fb5" text-anchor="middle">p0=40</text>
+<text x="315" y="105" font-family="Menlo, monospace" font-size="14" fill="#4a7fb5" text-anchor="middle">p1=10</text>
+<text x="385" y="105" font-family="Menlo, monospace" font-size="14" fill="#2e6b41" text-anchor="middle">a=127</text>
+<text x="455" y="105" font-family="Menlo, monospace" font-size="14" fill="#2e6b41" text-anchor="middle">b=0</text>
+<text x="525" y="105" font-family="Menlo, monospace" font-size="14" fill="#2e6b41" text-anchor="middle">c=0</text>
+<text x="595" y="105" font-family="Menlo, monospace" font-size="14" fill="#2e6b41" text-anchor="middle">d=1</text>
+<path d="M74 132 C 76 142, 100 140, 140 141 C 180 140, 204 142, 206 132" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M214 132 C 216 142, 240 140, 280 141 C 320 140, 344 142, 346 132" fill="none" stroke="#4a7fb5" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M354 132 C 356 142, 420 140, 490 141 C 560 140, 624 142, 626 132" fill="none" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round"/>
+<text x="140" y="166" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="middle">sin_family</text>
+<text x="140" y="186" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">주소 체계 2바이트</text>
+<text x="280" y="166" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">sin_port</text>
+<text x="280" y="186" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">포트 2바이트</text>
+<text x="490" y="166" font-family="Menlo, monospace" font-size="13" fill="#2e6b41" text-anchor="middle">sin_addr</text>
+<text x="490" y="186" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">IPv4 주소 4바이트</text>
+<path d="M280 192 C 281 198, 279 204, 280 210" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#k13arr5)"/>
+<path d="M490 192 C 491 198, 489 204, 490 210" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" marker-end="url(#k13arr6)"/>
+<text x="280" y="234" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">40 × 256 + 10 = 10250</text>
+<text x="490" y="234" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">127.0.0.1</text>
+<text x="280" y="254" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">앞 바이트가 큰 자리 (네트워크 바이트 순서)</text>
+<text x="490" y="254" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">a.b.c.d 순서 그대로</text>
+<text x="350" y="290" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= curl-10526이 연 연결의 목적지는 127.0.0.1:10250 (kubelet 포트)</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 포트 2바이트는 앞 바이트가 큰 자리이고 IPv4 주소 4바이트는 순서대로 읽는다</div>
+
+<h3>직접 걸어 보는 명령</h3>
+<p>worker1에서는 아래 순서를 root로 한 번에 실행했어요. 출력의 바이트를 주소로 바꾸는 짧은 Python 코드는 빼고 옮겼어요.</p>
+<div class="obsv-code"># worker1, root (kprobe를 걸고 5초 뒤 떼기)
+cd /sys/kernel/tracing
+echo 'p:k8slab/conn tcp_v4_connect p0=+2($arg2):u8 p1=+3($arg2):u8 a=+4($arg2):u8 b=+5($arg2):u8 c=+6($arg2):u8 d=+7($arg2):u8' &gt;&gt; kprobe_events
+echo &gt; trace                                                    # 이전 기록 비우기
+echo 1 &gt; events/k8slab/conn/enable                              # 켜기
+curl -sk -o /dev/null https://127.0.0.1:10250/healthz || true     # 일부러 만든 연결 1
+curl -s -o /dev/null --max-time 2 http://10.96.0.1:443 || true    # 일부러 만든 연결 2
+sleep 5
+echo 0 &gt; events/k8slab/conn/enable                              # 끄기
+grep -v '^#' trace                                               # 잡힌 호출 보기
+echo '-:k8slab/conn' &gt;&gt; kprobe_events                           # 훅 떼기
+grep -c k8slab kprobe_events                                     # 0이면 정리 끝</div>
+
+<h3>5초에 9건, 그중 제가 만든 연결은 2건</h3>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/13/kprobe-result.png" alt="worker1에서 tcp_v4_connect에 kprobe를 걸고 5초 동안 잡힌 호출 9건을 출력한 터미널 화면. curl-10526이 127.0.0.1:10250, curl-10527이 10.96.0.1:443, kubelet이 10.244.194.85:8081과 10.244.194.86:4466, calico가 외부 공인 IP의 443과 127.0.0.1:9099, kubectl이 127.0.0.1:8080으로 3건을 연결했고 원본 한 줄에는 tcp_v4_connect+0x0/0x4e8과 p0=40 p1=10 a=127 b=0 c=0 d=1이 찍혀 있다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 5초 동안 tcp_v4_connect를 지난 연결 9건. 제가 만든 curl 2건 말고도 kubelet과 Calico의 연결이 함께 잡혔다</div>
+
+<p>원본 한 줄은 이렇게 생겼어요.</p>
+<div class="obsv-code">            curl-10526   [000] d....   318.178358: conn: (tcp_v4_connect+0x0/0x4e8) p0=40 p1=10 a=127 b=0 c=0 d=1</div>
+<p>&rarr; 프로세스 이름과 PID(curl-10526), CPU 번호([000]), 추적 시계의 시각(318.178358초), 이벤트 이름(conn), 훅이 걸린 위치(tcp_v4_connect 시작에서 0x0 떨어진 곳, 함수 길이 0x4e8), 꺼낸 바이트 여섯 개가 차례로 찍혔다는 뜻이에요. 가운데 d....는 ftrace가 붙이는 상태 표시라 이번에는 읽지 않았어요.</p>
+<p>9건을 연 프로세스로 나누면 이래요.</p>
+<p>&middot; <b>제가 만든 2건</b>: curl이 127.0.0.1:10250(worker1의 kubelet 포트)과 10.96.0.1:443(API 서버를 가리키는 kubernetes Service의 ClusterIP)으로 연 연결<br>
+&middot; <b>kubelet 2건</b>: 10.244.194.85:8081, 10.244.194.86:4466<br>
+&middot; <b>calico 2건</b>: 127.0.0.1:9099 1건, 외부 주소의 443 1건<br>
+&middot; <b>kubectl이라는 이름의 프로세스 3건</b>: 모두 127.0.0.1:8080</p>
+<p>kubelet의 두 목적지는 6편에서 본 worker1의 파드 블록 10.244.194.64/26 안의 주소예요. <a href="https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/">쿠버네티스 프로브 문서</a>에는 프로브를 kubelet이 주기적으로 실행하고 HTTP 프로브는 파드 IP의 지정한 포트와 경로로 GET 요청을 보낸다고 적혀 있어요. 포트를 보면 8081은 11편에서 readiness 경로를 /readyz로 맞춘 kube-state-metrics의 포트이고 4466은 9편에서 설치한 Headlamp의 컨테이너 포트예요. 그러니 kubelet이 두 파드에 프로브를 보내려고 연 연결로 보여요. 다만 두 IP가 그 파드들의 IP인지까지 대조하지는 않았어요. calico의 127.0.0.1:9099는 <a href="https://docs.tigera.io/calico/latest/reference/felix/configuration">Felix 설정 문서</a>에 적힌 Felix 헬스 포트의 기본값이에요. 나머지 calico의 외부 443 연결 1건과 kubectl이라는 이름의 3건은 출처를 따라가 보지 않았어요.</p>
+<p>이 결과에서 중요한 것은 건수보다 누가 잡혔는가예요. 저는 worker1 커널의 함수 하나에 훅을 걸었을 뿐이에요. kubelet을 다시 시작하지 않았고 Calico 파드에 컨테이너를 붙이지도 않았어요. 그런데 그 5초 동안 노드에서 IPv4 TCP 연결을 연 프로그램이 이름·PID·목적지와 함께 기록됐어요. <span class="obsv-mark">훅이 앱이 아니라 커널 함수에 걸려 있어서 그 함수를 지나는 프로세스는 누가 띄웠든 모두 기록돼요.</span> Calico는 calico-node 파드로 노드마다 떠 있으니(6편) calico 2건은 파드 안의 프로세스가 연 연결로 보여요.</p>
+<p>한계도 적어 둘게요. 이번에 잡힌 9건에는 자기 네트워크 네임스페이스를 쓰는 일반 파드의 앱이 연 연결이 없었어요. 그런 파드의 프로세스도 같은 커널의 tcp_v4_connect를 지나니 같은 방식으로 잡혀야 하지만 이번 출력으로 직접 확인하지는 못했어요. 3절에서 본 Kubeshark tracer 코드가 훅 안에서 cgroup ID로 대상 파드를 거르는 것도 훅이 노드의 모든 프로세스에서 실행된다는 것을 전제로 한 코드예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: tcp_v4_connect 하나로 보이는 것은 일부예요</div>
+  &bull; 새로 여는 IPv4 TCP 연결만 잡혀요. IPv6 연결은 tcp_v6_connect라는 다른 함수를 지나요<br>
+  &bull; 노드로 들어오는 연결, UDP(DNS 질의 등), 이미 열린 연결로 오가는 데이터는 이 훅에 나타나지 않아요<br>
+  &bull; 목적지는 connect를 부를 때의 주소예요. 10.96.0.1 같은 ClusterIP가 실제로 어느 엔드포인트로 바뀌었는지는 이 훅으로 알 수 없어요<br>
+  &bull; 그래서 Kubeshark tracer는 데이터를 보내고 받을 때마다 불리는 tcp_sendmsg·tcp_recvmsg에 kprobe를 걸고 sniffer는 따로 패킷을 잡아요
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 내 노드에서 kprobe를 걸어 볼 때</div>
+  &bull; 먼저 <code style="font-family:Menlo,monospace;font-size:14px;">grep -E "^CONFIG_(KPROBES|KPROBE_EVENTS)=" /boot/config-$(uname -r)</code>로 두 설정이 y인지 보세요. 그림 3에서는 KPROBE_EVENTS를 따로 출력하지 않았지만 kprobe_events에 쓴 정의로 이벤트가 잡혔으니 켜져 있었어요<br>
+  &bull; 이벤트 이름에 자기 그룹(k8slab)을 붙이면 다른 도구가 만든 이벤트와 섞이지 않고 뗄 때도 찾기 쉬워요<br>
+  &bull; 끝나면 <code style="font-family:Menlo,monospace;font-size:14px;">-:그룹/이벤트</code>로 떼고 kprobe_events에 남은 줄을 세어 보세요. worker1에서도 마지막에 남은 k8slab kprobe가 0개인 것을 확인했어요<br>
+  &bull; root로 커널 함수에 훅을 거는 일이에요. 운영 노드에 걸기 전에 실습 노드에서 먼저 해 보고 자주 불리는 함수는 짧게만 켜 두세요
+</div>
+
+<h2>5. eBPF를 쓰는 관측 도구는 무엇이 있고 각각 무엇을 볼까</h2>
+
+<p>kprobe 실습 뒤에 "옵저빌리티 라이브러리 중에도 eBPF를 쓰는 관측 플랫폼이 있지 않나?"라는 질문이 나왔어요. 여럿 있어요. 이름을 들어 본 도구를 공식 문서에서 하나씩 확인했고 확인한 것만 적을게요. 무엇을 보려는 도구인지에 따라 네 종류로 나눴어요.</p>
+
+<h3>요청과 서비스를 보는 도구 (APM)</h3>
+<p><b>OpenTelemetry eBPF Instrumentation(OBI)</b>는 Grafana Labs가 2025년에 OpenTelemetry 프로젝트에 기증한 Beyla 코드에서 출발했고 2026년 OpenTelemetry 블로그에 <a href="https://opentelemetry.io/blog/2026/obi-v1-release/">v1.0.0 도달 소식</a>이 올라왔어요. <a href="https://opentelemetry.io/docs/zero-code/obi/">OBI 문서</a>에 따르면 OBI는 eBPF로 앱 실행 파일과 OS 네트워크 계층을 자동으로 살펴 트레이스 span과 RED 메트릭(요청 수·오류·지연)을 만들고 앱 코드나 설정을 바꿀 필요가 없어요. 기능 목록에는 "TLS/SSL 트랜잭션을 복호화 없이 수집"이 있어요. 요구 조건은 amd64나 arm64 CPU, 리눅스 커널 5.8 이상(RHEL 계열은 필요한 eBPF 백포트가 들어간 4.18 이상), 커널의 BTF 지원, 그리고 root나 켜는 기능에 필요한 리눅스 capability예요.</p>
+<p><b>Grafana Beyla</b>는 <a href="https://grafana.com/docs/beyla/latest/obi/">Grafana Labs가 배포하는 OBI</a>예요. 문서에는 Beyla 저장소가 OBI의 자동 계측 코드를 라이브러리로 가져다 쓰고 OBI에 있는 기능은 모두 Beyla에도 있다고 적혀 있어요.</p>
+<p><b>Pixie</b>는 쿠버네티스용 오픈소스 관측 도구이고 <a href="https://www.cncf.io/projects/pixie/">2021-06-22에 CNCF Sandbox 단계로 들어갔어요</a>. <a href="https://blog.px.dev/ebpf-cncf/">Pixie 블로그</a>에는 New Relic이 처음 만들어 기여했다고 적혀 있어요. <a href="https://docs.px.dev/about-pixie/pixie-ebpf/">Pixie의 eBPF 설명</a>에 따르면 네트워크에 쓰이는 리눅스 시스템 콜에 kprobe를 걸어 데이터를 잡고 TLS는 TLS 라이브러리의 API에 uprobe를 직접 걸어 암호화되기 전의 데이터를 잡아요. 커널은 kprobe로, TLS는 uprobe로 보는 조합이 3절의 Kubeshark tracer와 같아요.</p>
+<p><b>Datadog Universal Service Monitoring(USM)</b>은 상용 서비스예요. <a href="https://www.datadoghq.com/blog/universal-service-monitoring-datadog/">Datadog 블로그</a>에 따르면 USM을 켜면 Datadog Agent가 eBPF로 커널 네트워크 스택의 HTTP(S) 트래픽을 파싱해 코드를 건드리지 않고 서비스를 찾아내고 핵심 지표를 보여 줘요. 이 글은 2021-10에 처음 올라왔고 2022-11에 갱신됐으며 USM이 정식 출시(GA)됐다고 적혀 있어요.</p>
+
+<h3>네트워크 흐름을 보는 도구</h3>
+<p><b>Kubeshark</b>는 14편과 15편에서 직접 설치하고 써 봐요. <b>Cilium Hubble</b>은 <a href="https://docs.cilium.io/en/stable/overview/intro/">Cilium 문서</a>에 Cilium과 eBPF 위에 만든 분산 네트워크·보안 관측 플랫폼으로 소개돼 있어요. 서비스 사이의 의존 관계, 통신 실패가 DNS·TCP·HTTP 중 어디에서 났는지, 서비스별 HTTP 4xx·5xx 비율과 지연, 네트워크 정책에 막힌 연결 같은 것을 볼 수 있어요. 다만 Cilium 위에서 동작하니 Cilium을 설치해야 써요. 이 실습 클러스터의 CNI는 Calico라서 Hubble은 쓸 수 없었어요. Cilium은 6편에서 Calico와 비교했던 eBPF 기반 CNI예요.</p>
+
+<h3>프로파일링 도구</h3>
+<p><b>Parca</b>는 지속 프로파일링 프로젝트이고 <a href="https://www.parca.dev/docs/overview">Parca Agent</a>는 eBPF 기반의 시스템 전체 프로파일러로 소개돼 있어요. <b>Grafana Pyroscope</b>는 <a href="https://grafana.com/docs/pyroscope/latest/configure-client/grafana-alloy/ebpf/">Grafana Alloy의 eBPF 프로파일러</a>로 CPU 프로파일을 모아요. 문서에는 C/C++, Go, Rust, Zig 같은 네이티브 언어와 Java, .NET, Python, Ruby, PHP, Node.js, Perl을 지원하고 메모리·락 프로파일은 eBPF로 모으지 못하며 eBPF를 쓰려면 호스트의 root 권한이 필요하다고 적혀 있어요.</p>
+
+<h3>보안 도구</h3>
+<p><b>Tetragon</b>은 <a href="https://tetragon.io/docs/overview/">eBPF 기반의 실시간 보안 관측과 런타임 강제</a>를 하는 도구예요. 프로세스 실행, 시스템 콜, 네트워크·파일 접근을 보고 커널 안에서 이벤트를 거르거나 막아요. 문서에는 시스템 콜이 끝나기 전에 프로세스를 종료하는 예가 나와요. <b>Falco</b>는 <a href="https://falco.org/docs/">CNCF 졸업 프로젝트</a>인 런타임 보안 도구예요. 실행 중에 커널의 리눅스 시스템 콜을 파싱해 규칙 엔진과 대조하고 이벤트를 모으는 드라이버로는 기본값인 modern eBPF probe와 커널 모듈이 있어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 415" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">eBPF 관측 도구 지도 (공식 문서로 확인한 것만)</text>
+<path d="M30 51 C 130 49, 240 52, 340 50 C 342 100, 339 150, 341 198 C 240 200, 130 197, 29 199 C 28 150, 31 100, 30 51 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="185" y="79" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">요청 · 서비스 (APM)</text>
+<text x="50" y="109" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">OBI v1.0 · Grafana Beyla</text>
+<text x="50" y="135" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Pixie (CNCF Sandbox)</text>
+<text x="50" y="161" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Datadog USM (상용)</text>
+<text x="50" y="186" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">요청 수 · 오류 · 지연, 트레이스</text>
+<path d="M360 50 C 460 52, 570 49, 670 51 C 672 100, 669 150, 671 199 C 570 197, 460 200, 359 198 C 358 150, 361 100, 360 50 Z" fill="#fffdf7" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="515" y="79" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18" text-anchor="middle">네트워크 흐름</text>
+<text x="380" y="109" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Kubeshark (14 · 15편)</text>
+<text x="380" y="135" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Cilium Hubble</text>
+<text x="380" y="161" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="start">Cilium이 있어야 한다: 이 클러스터는 불가</text>
+<text x="380" y="186" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">파드 사이 요청 내용, 의존 관계</text>
+<path d="M30 215 C 130 213, 240 216, 340 214 C 342 260, 339 305, 341 352 C 240 354, 130 351, 29 353 C 28 305, 31 260, 30 215 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="185" y="243" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41" text-anchor="middle">프로파일링</text>
+<text x="50" y="273" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Parca Agent</text>
+<text x="50" y="299" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Pyroscope (Alloy eBPF)</text>
+<text x="50" y="330" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">CPU 프로파일, 호스트 root 필요</text>
+<path d="M360 214 C 460 216, 570 213, 670 215 C 672 260, 669 305, 671 353 C 570 351, 460 354, 359 352 C 358 305, 361 260, 360 214 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="515" y="243" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">보안</text>
+<text x="380" y="273" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Tetragon (차단까지)</text>
+<text x="380" y="299" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Falco (CNCF 졸업)</text>
+<text x="380" y="330" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">프로세스 실행 · 시스템 콜</text>
+<text x="350" y="393" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 함께 따질 비용: 노드 권한 · 커널 버전과 BTF · 업무 의미는 모른다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. 무엇을 볼지에 따라 도구를 고르고 권한·커널·업무 의미라는 비용은 함께 따진다</div>
+
+<p>그림 6을 보면 <span class="obsv-mark">도구를 가르는 기준은 eBPF를 쓰는지가 아니라 무엇을 보고 싶은지예요.</span> 요청 단위의 지연과 오류는 APM 도구가 보여 주고 파드 사이에 오간 요청 내용은 네트워크 도구가 보여 줘요. 어느 함수가 CPU를 쓰는지는 프로파일러가, 수상한 프로세스 실행은 보안 도구가 잡아요.</p>
+
+<h2>6. Prometheus는 내놓은 것을 긁고 eBPF는 지나간 것을 본다</h2>
+
+<p>11편의 Prometheus와 나란히 놓으면 차이가 분명해요. Prometheus는 exporter나 앱이 <code style="font-family:Menlo,monospace;font-size:14px;">/metrics</code>에 내놓은 값만 가져가요. 무엇을 내놓을지 개발자가 정하니 "결제 실패 수" 같은 업무 지표도 담을 수 있지만 내놓지 않은 것은 보이지 않아요. eBPF 도구는 앱이 아무것도 내놓지 않아도 훅을 지나간 연결과 요청을 봐요. 대신 훅을 지나가지 않는 것은 보지 못하고 쓰는 데 대가도 있어요. 세 가지로 정리할게요.</p>
+<p><b>첫째, 권한이에요.</b> 4절의 kprobe도 root로 걸었어요. ebpf.io에 따르면 unprivileged eBPF를 켜지 않은 시스템에서는 특권 프로세스만 eBPF 프로그램을 올릴 수 있어요. <a href="https://opentelemetry.io/docs/zero-code/obi/security/">OBI 보안 문서</a>에는 CAP_BPF, CAP_PERFMON, CAP_SYS_PTRACE, CAP_NET_ADMIN, CAP_NET_RAW 같은 capability가 기능별로 나뉘어 적혀 있고 가장 간단한 방법은 OBI를 root로 돌리는 것이라고 나와 있어요. Pyroscope 문서에는 eBPF가 호스트의 root 권한을 요구해서 환경에 따라 문제가 될 수 있다고 적혀 있어요. 실습 클러스터의 Kubeshark worker에서는 sniffer와 tracer 컨테이너가 둘 다 privileged=true였고 hostNetwork=true에 노드의 /, /proc, /sys 등을 마운트했어요(14편). 관측 도구 하나에 노드 root에 가까운 권한을 주는 셈이에요.</p>
+<p><b>둘째, 커널 버전이에요.</b> OBI는 커널 5.8 이상과 BTF를 요구해요. 이 클러스터의 커널은 6.8.0-147이고 BTF 파일도 있으니 이 조건은 넘어요. 그런데 OBI 보안 문서에는 커널 6.6.128 이상, 6.12.75 이상, 6.18.14 이상, 6.19 이상에서는 호스트의 /sys/kernel/tracing을 같은 경로로 마운트해야 하고 그러지 않으면 컨텍스트 전파 기능을 끈다는 안내도 있어요. 최소 버전만 넘으면 끝나는 것이 아니라 커널 버전마다 챙길 조건이 달라질 수 있다는 뜻이에요. 4절에서 쓴 tcp_v4_connect의 인자 배치도 v6.8 소스를 보고 정했어요. 2절에서 본 대로 커널 내부 함수는 안정된 인터페이스가 아니어서 kprobe에 기대는 도구는 노드 커널을 올릴 때 함께 확인해야 해요.</p>
+<p><b>셋째, 업무 의미예요.</b> eBPF가 보는 것은 연결과 바이트와 프로토콜 필드예요. 이 요청이 어느 고객의 몇 번째 주문인지, 응답은 200인데 앱 안에서 재고 차감이 실패했는지는 훅을 지나는 데이터에 담겨 있지 않으면 알 수 없어요. <a href="https://opentelemetry.io/docs/zero-code/obi/">OBI 문서</a>에도 OBI가 모든 경우에 언어 수준 계측을 대신하지는 않는다며 사용자 정의 span, 앱 고유 속성, 업무 이벤트 같은 프로세스 안의 정보에는 언어 에이전트나 수동 계측을 쓰라고 적혀 있어요. v1.0 발표 글에도 OBI가 자동으로 관측하는 범위를 넘는 앱 고유의 맥락이 필요하면 언어 에이전트와 수동 계측이 여전히 필요하다고 적혀 있어요.</p>
+<p>그러니 eBPF와 OTel SDK 중 하나를 고르는 문제가 아니에요. <a href="https://opentelemetry.io/blog/2025/obi-announcing-first-release/">OBI 첫 알파 발표 글</a>에는 앱이 이미 다른 OpenTelemetry SDK로 계측돼 있으면 OBI가 그 사실을 알아채고 신호를 중복으로 만들지 않는다고 적혀 있어요. <span class="obsv-mark">eBPF로 코드를 고치지 않은 서비스까지 요청 수·오류·지연을 모으고 업무 의미가 필요한 코드에는 OTel SDK로 span과 속성을 직접 남기는 식으로 나눠 쓸 수 있어요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: eBPF 관측 도구를 고를 때 따질 것</div>
+  &bull; <b>무엇을 볼 건가</b>: 요청 단위 트레이스와 RED 메트릭(OBI·Beyla·Pixie·USM), 파드 사이 요청 내용(Kubeshark·Hubble), CPU 프로파일(Parca·Pyroscope), 보안 이벤트(Tetragon·Falco)<br>
+  &bull; <b>권한</b>: 수집기가 privileged로 뜨는지, capability를 좁혀 줄 수 있는지 매니페스트에서 확인하세요<br>
+  &bull; <b>커널</b>: 노드에서 <code style="font-family:Menlo,monospace;font-size:14px;">uname -r</code>, /boot/config의 CONFIG_BPF·CONFIG_KPROBES·CONFIG_UPROBES, /sys/kernel/btf/vmlinux를 먼저 보세요(그림 3)<br>
+  &bull; <b>클러스터 조건</b>: Hubble은 Cilium이 있어야 해요. CNI를 바꿀 계획이 없으면 후보에서 빠져요<br>
+  &bull; <b>업무 의미</b>: eBPF 도구가 보지 못하는 업무 흐름은 OTel SDK로 코드에 남기세요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>eBPF 관측 도구가 사이드카 없이 모든 파드를 보는 것은 훅이 앱이 아니라 노드의 커널 함수와 라이브러리 함수에 걸리기 때문이에요.</b><br><br>
+  eBPF 프로그램은 검증기를 통과한 뒤 kprobe·uprobe 같은 훅에 붙고 본 것을 맵에 남겨 유저 공간으로 넘겨요. worker1의 tcp_v4_connect에 kprobe를 5초 걸자 9건이 잡혔고 제가 만든 curl 2건 말고도 kubelet과 Calico가 스스로 연 연결이 함께 기록됐어요. TLS 평문은 암호를 깨서 보는 것이 아니라 SSL_write·SSL_read에 건 uprobe로 암호화 직전과 복호화 직후의 버퍼를 읽는 거예요. 그 대가로 수집기는 노드 root에 가까운 권한과 맞는 커널을 요구하고 요청이 업무에서 무슨 뜻인지는 알지 못해요. 앱이 내놓은 것은 Prometheus가, 커널을 지나간 것은 eBPF가 보고 둘 다 보지 못하는 업무의 의미는 코드에 직접 남겨야 해요.
+</div>
+
+</div>

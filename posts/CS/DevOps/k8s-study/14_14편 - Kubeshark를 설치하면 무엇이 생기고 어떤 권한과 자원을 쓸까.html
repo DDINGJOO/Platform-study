@@ -1,0 +1,547 @@
+<!-- ============================================================
+  k8s 스터디 14편: Kubeshark를 설치하면 무엇이 생기고 어떤 권한과 자원을 쓸까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: kubeshark tap 한 줄을 실행하자 Helm 리소스 21개가 생기고 워커마다 privileged 수집기가 떴어요. 수집기의 권한과 메모리, 무료 한도, 마스터의 파드가 빠지는 이유를 실습 클러스터에서 확인했어요. -->
+<!-- tags: Kubeshark, kubeshark tap, privileged 컨테이너, hostNetwork, Kubeshark 무료 한도 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 14편</div>
+  12편. Grafana 6417 대시보드에 No data가 뜨는 이유와 고치는 법<br>
+  13편. eBPF와 kprobe는 어떻게 사이드카 없이 모든 파드의 연결을 볼까<br>
+  <b>14편. Kubeshark를 설치하면 무엇이 생기고 어떤 권한과 자원을 쓸까</b> &larr; 지금 이 글<br>
+  15편. Kubeshark 서비스맵으로 파드 트래픽 쏠림을 찾는 법<br>
+  16편. Portainer를 설치할 때 PV를 직접 만들까, local-path로 받을까
+</div>
+
+<p>20:45에 마스터의 터미널에서 <code style="font-family:Menlo,monospace;font-size:14px;">ks tap</code>을 실행했어요. 대상 파드 이름이 한 줄씩 지나간 뒤 이런 줄이 찍혔습니다.</p>
+<div class="obsv-code">INF helm.go:132 &gt; Downloading Helm chart: ... url=https://github.com/kubeshark/kubeshark.github.io/releases/download/kubeshark-53.6.0/kubeshark-53.6.0.tgz
+INF helm.go:151 &gt; Installing using Helm: kube-version="&gt;= 1.16.0-0" release=kubeshark ... version=53.6.0
+INF helm.go:62 &gt; creating 21 resource(s)
+INF tapRunner.go:99 &gt; Installed the Helm release: kubeshark</div>
+<p>&rarr; Kubeshark CLI가 GitHub에서 Helm 차트 53.6.0을 내려받아 kubeshark라는 이름으로 설치했고 그 과정에서 리소스 21개를 만들었다는 뜻이에요.</p>
+<p>마스터에 설치한 것은 CLI 바이너리 하나였어요. 그런데 명령 한 줄에 Helm 릴리스가 생겼고 1초 뒤에 Ctrl+C로 명령을 끝냈는데도 리소스는 그대로 남았어요. 2분 13초 뒤에 파드 목록을 다시 보니 워커 3대에 수집기 파드가 하나씩 Running이었어요. 그 수집기는 privileged 컨테이너였고 노드의 루트 디렉터리 <code style="font-family:Menlo,monospace;font-size:14px;">/</code>를 붙이고 있었어요.</p>
+<p>13편에서는 eBPF와 kprobe가 사이드카 없이 노드의 연결을 보는 원리를 다뤘어요. 이번에는 그 원리로 만든 도구를 실제로 설치했을 때 클러스터에 무엇이 남는지 따라가요. 운영 클러스터에 Kubeshark를 늘 설치해 둘지 판단하려면 답해야 할 질문이 세 가지였어요. <b>tap 한 번이면 클러스터에 무엇이 생길까요? 수집기는 어떤 권한과 자원을 쓸까요? 그리고 무엇을 보지 못할까요?</b> 실습 클러스터는 Lima VM 4대(마스터 1대, 워커 3대, 각 2 CPU·4GiB)에 쿠버네티스 v1.37.2를 올린 것이고 Kubeshark는 v53.6.0을 썼어요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; <code style="font-family:Menlo,monospace;font-size:14px;">ks</code>는 공식 단축어일까? CLI를 설치하면 클러스터에 무엇이 생길까?<br>
+&middot; tap이 만든 리소스 21개는 각각 무슨 일을 할까?<br>
+&middot; 수집기 worker는 노드에서 어떤 권한으로 뜰까?<br>
+&middot; CLI는 대상 파드가 23개라고 했는데 대시보드는 왜 16개라고 했을까?<br>
+&middot; Mac에서 대시보드는 어떻게 열까? 무료로는 어디까지 쓸 수 있을까?<br>
+&middot; 노드마다 메모리를 얼마나 쓸까? 대상을 좁히면 줄어들까?</p>
+
+<h2>1. CLI를 설치해도 클러스터에는 아무것도 생기지 않는다</h2>
+
+<p>실습을 시작하면서 처음 궁금했던 것은 명령 이름이었어요. kubeshark는 아홉 글자라 매번 치기 번거로워서 보통 <code style="font-family:Menlo,monospace;font-size:14px;">ks</code>로 줄여 쓰는지 찾아봤어요. <a href="https://docs.kubeshark.com/en/install">설치 문서</a>와 GitHub README에는 ks라는 말이 나오지 않아요. v53.6.0 CLI 소스에도 명령 별칭은 정의돼 있지 않았어요. ks는 각자 셸에 거는 개인 별칭이에요. kubectl을 k로 줄여 쓰는 것과 같은 종류예요.</p>
+<p>마스터는 arm64라서 GitHub 릴리스에서 v53.6.0의 linux_arm64 바이너리를 받아 설치하고 별칭을 걸었어요.</p>
+<div class="obsv-code">master$ T=v53.6.0; curl -fsSLo kubeshark https://github.com/kubeshark/kubeshark/releases/download/$T/kubeshark_linux_arm64
+master$ curl -fsSLo kubeshark.sha256 https://github.com/kubeshark/kubeshark/releases/download/$T/kubeshark_linux_arm64.sha256
+expected: 5afdd92e413d2a11…
+actual:   5afdd92e413d2a11…
+master$ sudo install -m 755 kubeshark /usr/local/bin/kubeshark
+master$ kubeshark version
+v53.6.0
+
+master$ sed -n "/&gt;&gt;&gt; kubeshark &gt;&gt;&gt;/,/&lt;&lt;&lt; kubeshark &lt;&lt;&lt;/p" ~/.bashrc
+# &gt;&gt;&gt; kubeshark &gt;&gt;&gt;
+source &lt;(kubeshark completion bash)
+alias ks=kubeshark
+complete -o default -F __start_kubeshark ks
+# &lt;&lt;&lt; kubeshark &lt;&lt;&lt;
+
+master$ bash -ic "type ks; ks version; complete -p ks"
+ks is aliased to `kubeshark'
+v53.6.0
+complete -o default -F __start_kubeshark ks</div>
+<p>&rarr; 릴리스에 함께 올라온 체크섬과 받은 파일이 같은지 확인한 뒤 설치했고 .bashrc에 자동 완성, 별칭, 별칭용 자동 완성을 차례로 넣었다는 뜻이에요.</p>
+<p>셋째 줄이 있어야 ks 뒤에서도 Tab 키로 하위 명령이 완성돼요. <a href="https://kubernetes.io/docs/reference/kubectl/quick-reference/">kubectl 빠른 참조 문서</a>에도 별칭 k가 자동 완성과 함께 동작하게 하는 방법으로 <code style="font-family:Menlo,monospace;font-size:14px;">alias k=kubectl</code>과 <code style="font-family:Menlo,monospace;font-size:14px;">complete -o default -F __start_kubectl k</code> 두 줄이 나와 있어요. 하위 명령 목록에서 이 글과 이어지는 것은 네 개예요.</p>
+<div class="obsv-code">master$ kubeshark --help    # Available Commands 일부
+  clean       Removes all Kubeshark resources
+  pcapdump    Store all captured traffic (including decrypted TLS) in a PCAP file.
+  proxy       Open the web UI (front-end) in the browser via proxy/port-forward
+  tap         Capture the network traffic in your Kubernetes cluster</div>
+<p>&rarr; tap이 수집을 시작하고 proxy가 대시보드를 열며 clean이 Kubeshark 리소스를 모두 지운다는 설명이에요. pcapdump는 복호화한 TLS를 포함한 트래픽을 PCAP 파일로 저장해요.</p>
+<p>여기까지 한 일은 마스터에 바이너리를 놓고 .bashrc를 고친 것뿐이에요. <span class="obsv-mark">CLI를 설치한 것만으로는 클러스터에 아무것도 생기지 않아요. 리소스를 만드는 것은 tap이에요.</span> v53.6.0의 <a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/cmd/tapRunner.go">tapRunner.go</a>를 보면 tap은 대상 파드 목록을 로그로 찍은 뒤 Helm으로 kubeshark 릴리스를 설치해요. 같은 이름의 릴리스가 이미 있으면 설치를 건너뛰고 대상 조건 같은 설정 값만 다시 써요. 도입부의 "creating 21 resource(s)"가 그 Helm 설치였어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Helm 릴리스 (release)</div>
+  Helm 차트(쿠버네티스 매니페스트 묶음)를 클러스터에 한 번 설치한 단위예요. 이름이 붙고 Helm이 그 설치로 어떤 리소스를 만들었는지 기록해 둬요. 그래서 <code style="font-family:Menlo,monospace;font-size:14px;">helm uninstall</code> 한 번으로 그 리소스를 함께 지울 수 있어요. kubeshark tap은 이 릴리스를 대신 만들어 줘요.
+</div>
+<p>릴리스는 default 네임스페이스에 들어갔어요. 차트 values에서 릴리스 네임스페이스(<code style="font-family:Menlo,monospace;font-size:14px;">tap.release.namespace</code>)의 기본값이 default이기 때문이에요.</p>
+<div class="obsv-code">master$ helm list -A | grep -E "NAME|kubeshark"
+NAME       NAMESPACE  REVISION  UPDATED                        STATUS    CHART             APP VERSION
+kubeshark  default    1         2026-11-11 20:45:31 +0900 KST  deployed  kubeshark-53.6.0</div>
+<p>&rarr; 20:45:31에 default 네임스페이스로 첫 리비전이 배포됐고 차트는 kubeshark-53.6.0이라는 뜻이에요. APP VERSION 칸은 비어 있었어요.</p>
+<p>첫 tap은 설치 직후에 Ctrl+C로 끝났어요. 마지막 줄은 이랬어요.</p>
+<div class="obsv-code">INF tapRunner.go:180 &gt; Added: pod=kubeshark-hub
+^C WRN tapRunner.go:119 &gt; To re-establish a proxy/port-forward, run: command="kubeshark proxy"</div>
+<p>&rarr; tap 명령은 끝났고 대시보드에 다시 연결하려면 kubeshark proxy를 실행하라는 안내예요. 설치한 리소스를 지웠다는 말은 없어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: Ctrl+C는 설치를 지우지 않아요</div>
+  tap을 Ctrl+C로 끝내도 Helm 릴리스와 리소스 21개는 그대로예요. 실제로 64초 뒤에 tap을 다시 실행하자 "Found an existing installation, skipping Helm install"이 찍혔어요. 지우려면 <code style="font-family:Menlo,monospace;font-size:14px;">kubeshark clean</code>을 실행해야 해요(6절 끝). CLI 없이 Helm으로 직접 설치했다면 차트 README에 적힌 대로 <code style="font-family:Menlo,monospace;font-size:14px;">helm uninstall kubeshark</code>로 지워요.
+</div>
+
+<h2>2. tap 한 번이 만든 리소스 21개는 무슨 일을 하나</h2>
+
+<p>Helm이 만든 리소스를 종류와 이름으로 뽑아 셌어요.</p>
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/14/helm-resources.png" alt="helm list에서 kubeshark 릴리스가 default 네임스페이스, REVISION 1, 2026-11-11 20:45:31 KST, deployed, kubeshark-53.6.0으로 보이고 helm get manifest로 센 리소스 21개(ClusterRole 1, ClusterRoleBinding 1, ConfigMap 2, DaemonSet 1, Deployment 2, NetworkPolicy 4, Role 1, RoleBinding 1, Secret 3, Service 4, ServiceAccount 1)가 나열된 터미널 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 릴리스 하나에 리소스 21개가 들어 있었다. 실제로 일하는 것은 Deployment 2개와 DaemonSet 1개다</div>
+<p>21개를 하는 일로 나누면 다섯 묶음이에요.</p>
+<p>&middot; <b>실제로 일하는 것</b>: Deployment kubeshark-hub와 kubeshark-front, DaemonSet kubeshark-worker-daemon-set<br>
+&middot; <b>연결</b>: Service 4개. front(80), hub(80), hub-metrics(9100), worker-metrics(49100)이고 모두 ClusterIP예요<br>
+&middot; <b>권한</b>: ServiceAccount 1개, ClusterRole과 ClusterRoleBinding, Role과 RoleBinding (3절)<br>
+&middot; <b>설정</b>: ConfigMap 2개(kubeshark-config-map, kubeshark-nginx-config-map)와 Secret 3개(kubeshark-secret, SAML용 x509 인증서와 키)<br>
+&middot; <b>접근 제한</b>: NetworkPolicy 4개(dex, front, hub, worker)</p>
+<p>실행 단위 세 개가 하는 일은 <a href="https://docs.kubeshark.com/en/anatomy_of_kubeshark">Kubeshark 구성 문서</a>에 나와 있어요. worker는 노드 단위로 뜨는 DaemonSet이고 무거운 일을 맡아요. hub는 Deployment이고 worker들이 보낸 스트림을 하나로 모아요. 문서에는 hub가 대시보드 연결이 있을 때만 동작한다고 적혀 있어요. front는 React로 만든 대시보드를 내놓는 Deployment이고 hub와 WebSocket으로 통신해요. 수집한 데이터는 주로 worker의 메모리에서 처리하고 일부만 worker 노드의 디스크에 두는데 기본값에서는 임시 저장이에요. 사용자가 직접 내보내지 않는 한 데이터가 클러스터 밖으로 나가지 않는다고도 적혀 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: sniffer와 tracer</div>
+  worker 파드 안의 두 컨테이너예요. sniffer는 AF_PACKET(리눅스에서 네트워크 장치를 지나는 패킷을 받아 보는 소켓)으로 패킷을 잡아요. tracer는 eBPF로 커널 공간과 사용자 공간의 함수를 추적해요(13편). tracer는 선택 사항이라 차트 값 <code style="font-family:Menlo,monospace;font-size:14px;">tap.tls</code>로 켜고 끌 수 있어요.
+</div>
+<p>설치 직후와 2분 13초 뒤의 파드 목록이에요.</p>
+<div class="obsv-code">mac$ kubectl get pods -n default -o wide | grep kubeshark          # 20:46, 설치 직후
+kubeshark-front-7fb9788cdd-w7whb   0/1  ContainerCreating  0  29s  k8s-worker2
+kubeshark-hub-fbd9d8db-zcsjv       0/1  ContainerCreating  0  29s  k8s-worker2
+kubeshark-worker-daemon-set-kdxl2  0/2  Init:0/1           0  29s  k8s-worker2
+kubeshark-worker-daemon-set-wq4ps  0/2  Init:0/1           0  29s  k8s-worker1
+kubeshark-worker-daemon-set-zkf86  0/2  Init:0/1           0  29s  k8s-worker3
+
+mac$ kubectl get svc,ds,deploy -n default | grep -E "NAME|kubeshark"
+NAME                               TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)     AGE
+service/kubeshark-front            ClusterIP   10.110.107.238   &lt;none&gt;        80/TCP      29s
+service/kubeshark-hub              ClusterIP   10.111.237.62    &lt;none&gt;        80/TCP      29s
+service/kubeshark-hub-metrics      ClusterIP   10.103.87.26     &lt;none&gt;        9100/TCP    29s
+service/kubeshark-worker-metrics   ClusterIP   10.100.126.244   &lt;none&gt;        49100/TCP   29s
+NAME                                         DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+daemonset.apps/kubeshark-worker-daemon-set   3         3         0       3            0           &lt;none&gt;          29s
+NAME                              READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/kubeshark-front   0/1     1            0           29s
+deployment.apps/kubeshark-hub     0/1     1            0           29s
+
+mac$ kubectl get pods -n default -o wide | grep kubeshark          # 20:47:44
+kubeshark-front-7fb9788cdd-w7whb   1/1  Running  0  2m13s  k8s-worker2
+kubeshark-hub-fbd9d8db-zcsjv       1/1  Running  0  2m13s  k8s-worker2
+kubeshark-worker-daemon-set-kdxl2  2/2  Running  0  2m13s  k8s-worker2
+kubeshark-worker-daemon-set-wq4ps  2/2  Running  0  2m13s  k8s-worker1
+kubeshark-worker-daemon-set-zkf86  2/2  Running  0  2m13s  k8s-worker3</div>
+<p>&rarr; hub와 front는 worker2에 떴고 worker DaemonSet은 DESIRED 3으로 worker1~3에 하나씩 떴다는 뜻이에요. 처음에 Init:0/1이던 worker 파드는 2분 13초 뒤에 보니 컨테이너 두 개가 모두 준비된 2/2였어요.</p>
+<p>Init:0/1은 init 컨테이너가 아직 끝나지 않았다는 표시예요. 설치에 쓴 kubeshark-53.6.0.tgz를 받아 <a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/helm-chart/templates/09-worker-daemon-set.yaml">worker 템플릿</a>을 열어 보면 mount-bpf라는 init 컨테이너가 있어요. 노드에 BPF 파일시스템이 마운트돼 있지 않으면 <code style="font-family:Menlo,monospace;font-size:14px;">mount -t bpf bpf /sys/fs/bpf</code>로 마운트하는 컨테이너예요. <a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/helm-chart/README.md">차트 README</a>의 <code style="font-family:Menlo,monospace;font-size:14px;">tap.mountBpf</code> 항목에는 eBPF가 제대로 동작하려면 BPF 파일시스템이 마운트돼 있어야 한다고 적혀 있고 기본값은 true예요. 이 init 컨테이너도 privileged로 떠요.</p>
+<p>이미지는 docker.io/kubeshark의 worker, hub, front였고 태그는 v53.6이었어요. 크기는 worker 약 72MB, hub 약 46MB, front 약 59MB예요. 노드가 모두 arm64였는데 kubelet은 세 이미지를 모두 받아 문제없이 실행했어요. 받는 데 걸린 시간은 대기 시간까지 합쳐 hub가 1분 45초, front가 2분 4.5초였어요. 이 2분이 5절의 connection refused와 이어져요.</p>
+<p>kubeshark-secret에는 LICENSE, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, SCRIPTING_ENV 네 키가 있었어요. 값은 열어 보지 않았어요. 차트 템플릿에서 LICENSE 키에는 Helm 값 <code style="font-family:Menlo,monospace;font-size:14px;">license</code>가 들어가는데 이번에는 그 값을 주지 않았어요. 5절에서 볼 라이선스 표시 NOT DETECTED와 이어지는 부분이에요.</p>
+<p>NetworkPolicy 4개는 Kubeshark 자신의 파드에 거는 정책이에요. <a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/helm-chart/templates/17-network-policies.yaml">템플릿</a>을 보면 정책마다 hub, front, dex, worker 중 하나를 고르고 들어오는 연결을 정해진 포트로만 허용해요(hub 8080·9100, front 8080, dex 5556, worker 48999·49100). 나가는 연결은 모두 허용해요. dex는 인증에 쓰는 구성 요소인데 이번에는 dex 파드가 뜨지 않았어요. dex Deployment는 인증 설정이 있을 때만 만들어지지만 NetworkPolicy 4개는 조건 없이 만들어지기 때문이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: NetworkPolicy</div>
+  파드로 들어오고 나가는 연결을 라벨과 포트로 제한하는 쿠버네티스 리소스예요. <a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">쿠버네티스 문서</a>에 따르면 정책을 실제로 집행하는 것은 네트워크 플러그인(CNI)이고 NetworkPolicy를 지원하는 플러그인을 써야 효과가 있어요.
+</div>
+<p>지금까지 본 것을 노드 위에 놓으면 그림 2가 돼요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 470" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k14arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k14arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">ks tap 한 번이 띄운 것 (모두 default 네임스페이스)</text>
+<path d="M25 50 C 126 48, 238 51, 330 49 C 332 77, 329 105, 331 130 C 238 132, 126 129, 24 131 C 23 105, 26 77, 25 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8 6"/>
+<text x="177" y="73" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">k8s-master</text>
+<text x="177" y="97" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">수집기 없음 (control-plane taint)</text>
+<text x="177" y="120" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">etcd · API 서버 등 파드 7개는 수집되지 않는다</text>
+<text x="362" y="70" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Service 4개 (모두 ClusterIP)</text>
+<text x="362" y="93" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="start">front :80   hub :80</text>
+<text x="362" y="111" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="start">hub-metrics :9100</text>
+<text x="362" y="129" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="start">worker-metrics :49100</text>
+<path d="M25 154 C 88 152, 158 155, 215 153 C 217 220, 214 288, 216 346 C 158 348, 88 345, 24 347 C 23 288, 26 220, 25 154 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="176" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">k8s-worker1</text>
+<path d="M245 154 C 314 152, 392 155, 455 153 C 457 220, 454 288, 456 346 C 392 348, 314 345, 244 347 C 243 288, 246 220, 245 154 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="176" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">k8s-worker2</text>
+<path d="M485 154 C 548 152, 618 155, 675 153 C 677 220, 674 288, 676 346 C 618 348, 548 345, 484 347 C 483 288, 486 220, 485 154 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="176" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">k8s-worker3</text>
+<path d="M45 192 C 94 190, 150 193, 195 191 C 197 210, 194 230, 196 247 C 150 249, 94 246, 44 248 C 43 230, 46 210, 45 192 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="214" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">worker 파드</text>
+<text x="120" y="238" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">sniffer · tracer</text>
+<text x="120" y="272" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">privileged · hostNetwork</text>
+<text x="120" y="294" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">노드의 /를 읽기 전용으로</text>
+<path d="M505 192 C 554 190, 610 193, 655 191 C 657 210, 654 230, 656 247 C 610 249, 554 246, 504 248 C 503 230, 506 210, 505 192 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="214" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">worker 파드</text>
+<text x="580" y="238" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">sniffer · tracer</text>
+<text x="580" y="272" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">privileged · hostNetwork</text>
+<text x="580" y="294" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">노드의 /를 읽기 전용으로</text>
+<path d="M265 190 C 321 188, 384 191, 435 189 C 437 204, 434 220, 436 233 C 384 235, 321 232, 264 234 C 263 220, 266 204, 265 190 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="207" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">worker 파드</text>
+<text x="350" y="227" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">sniffer · tracer</text>
+<path d="M300 255 C 333 253, 370 256, 400 254 C 402 264, 399 275, 401 285 C 370 287, 333 284, 299 286 C 298 275, 301 264, 300 255 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="275" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">hub</text>
+<path d="M300 305 C 333 303, 370 306, 400 304 C 402 314, 399 325, 401 335 C 370 337, 333 334, 299 336 C 298 325, 301 314, 300 305 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="325" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">front</text>
+<path d="M197 222 C 240 232, 268 252, 296 266" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr2)"/>
+<path d="M503 222 C 460 232, 432 252, 404 266" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr2)"/>
+<path d="M350 236 C 351 240, 349 245, 350 249" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr2)"/>
+<path d="M350 288 C 351 292, 349 295, 350 299" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr1)"/>
+<path d="M240 384 C 313 382, 394 385, 460 383 C 462 398, 459 414, 461 428 C 394 430, 313 427, 239 429 C 238 414, 241 398, 240 384 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="411" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">Mac 브라우저 · localhost:8899</text>
+<path d="M350 338 C 352 352, 348 366, 350 378" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr1)"/>
+<text x="364" y="364" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">kubectl port-forward (API 서버 경유)</text>
+<text x="350" y="458" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 수집기는 워커 3대에만 떴고 화면은 front 하나로 모인다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 수집기는 워커 3대에 하나씩 떴고 hub와 front는 worker2에 떴다. 마스터에는 아무것도 뜨지 않았다</div>
+
+<p><span class="obsv-mark">리소스 21개 가운데 트래픽을 직접 보는 것은 worker DaemonSet 하나이고 나머지는 그 결과를 모으고 보여 주고 지키는 리소스예요.</span> 그래서 권한과 자원을 따질 때도 worker부터 봐야 해요.</p>
+
+<h2>3. 수집기 worker는 노드의 root와 거의 같은 권한으로 뜬다</h2>
+
+<p>worker DaemonSet의 보안 설정과 볼륨, 그리고 ServiceAccount에 묶인 ClusterRole을 출력했어요.</p>
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/14/worker-privileges.png" alt="kubeshark-worker-daemon-set의 sniffer와 tracer 컨테이너가 모두 docker.io/kubeshark/worker:v53.6 이미지에 privileged=true이고 hostNetwork=true이며, 볼륨이 hostPath /proc, /sys, /lib/modules, /etc/os-release, /(root)와 data, hub-internal-token이고, ClusterRole kubeshark-cluster-role-default가 nodes·pods·services·endpoints·persistentvolumeclaims와 namespaces를 get·list·watch하고 networkpolicies를 create·update·delete까지 하며 tokenreviews를 create하고, kubeshark-secret의 키가 LICENSE, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, SCRIPTING_ENV인 터미널 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 수집기는 privileged에 hostNetwork이고 노드의 /까지 붙인다. ClusterRole에는 NetworkPolicy를 지우는 권한도 있다</div>
+
+<h3>privileged, hostNetwork, hostPath</h3>
+<p>세 가지가 눈에 띄어요. 첫째, sniffer와 tracer가 모두 <code style="font-family:Menlo,monospace;font-size:14px;">privileged=true</code>예요. 쿠버네티스 <a href="https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/">Pod API 문서</a>의 privileged 필드 설명에는 "privileged 컨테이너의 프로세스는 호스트의 root와 본질적으로 같다(essentially equivalent to root on the host)"라고 적혀 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: privileged 컨테이너</div>
+  컨테이너를 노드에서 격리하는 장치 대부분을 풀고 띄운 컨테이너예요. 리눅스의 커널 권한(capability)을 모두 받고 노드의 장치에도 접근할 수 있어요. 보통 컨테이너는 이 권한 가운데 일부만 받아요.
+</div>
+<p>둘째, 파드에 <code style="font-family:Menlo,monospace;font-size:14px;">hostNetwork=true</code>가 걸려 있어요. 같은 문서에서 hostNetwork는 호스트의 네트워크 네임스페이스를 쓰라는 설정이에요. worker 파드는 자기만의 네트워크 공간 없이 노드의 네트워크 인터페이스를 그대로 써요. 차트 README에도 이 값을 켜면 worker 파드가 호스트의 네트워크 네임스페이스를 쓴다고 적혀 있고 기본값은 true예요.</p>
+<p>셋째, 노드의 디렉터리를 hostPath로 붙여요. /proc, /sys, /lib/modules, /etc/os-release, 그리고 노드의 루트 <code style="font-family:Menlo,monospace;font-size:14px;">/</code>예요. 템플릿을 보면 /proc은 /hostproc에, /sys는 /sys에 읽기 전용으로 붙고 노드의 <code style="font-family:Menlo,monospace;font-size:14px;">/</code>는 tracer 컨테이너의 /hostroot에 읽기 전용으로 붙어요. root 볼륨은 <code style="font-family:Menlo,monospace;font-size:14px;">tap.tls</code>가 켜져 있을 때만 생겨요. README에서 tap.tls는 OpenSSL 같은 암호화 라이브러리를 거치는 TLS 트래픽을 잡는 설정이고 기본값은 true예요. 읽기 전용이라도 노드의 파일 전체를 읽을 수 있는 경로예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: hostPath 볼륨</div>
+  노드의 파일이나 디렉터리를 파드 안에 그대로 붙이는 볼륨이에요. 파드는 붙인 경로 아래에 있는 노드의 파일을 읽을 수 있고 읽기 전용으로 붙이지 않았다면 쓸 수도 있어요. 파드를 지워도 노드의 파일은 남아요.
+</div>
+<p>목록 끝의 data와 hub-internal-token은 hostPath가 아니에요. data는 수집한 트래픽을 두는 emptyDir이에요(6절). hub-internal-token은 audience가 kubeshark-hub이고 유효 시간이 3600초인 ServiceAccount 토큰을 파일로 붙인 볼륨이에요.</p>
+<p>세 설정은 쿠버네티스가 정한 파드 보안 기준에서 모두 금지 항목이에요. <a href="https://kubernetes.io/docs/concepts/security/pod-security-standards/">Pod Security Standards</a>의 Baseline 정책에는 "privileged 파드는 대부분의 보안 장치를 끄므로 허용하지 않아야 한다", "호스트 네임스페이스 공유는 허용하지 않아야 한다", "hostPath 볼륨은 금지해야 한다"는 항목이 있어요. Baseline은 알려진 권한 상승을 막는 최소한의 기준이에요. Kubeshark worker는 그 최소 기준을 통과하지 못하는 설정으로 떠요. <span class="obsv-mark">사이드카 없이 노드의 모든 파드를 본다는 것은 노드마다 root에 가까운 프로세스를 하나씩 둔다는 뜻이에요.</span></p>
+<p>차트에는 privileged를 끄는 설정(<code style="font-family:Menlo,monospace;font-size:14px;">tap.securityContext.privileged: false</code>)도 있어요. 템플릿을 보면 그때는 privileged 대신 필요한 커널 권한만 골라 넣어요. 패킷 수집용으로 NET_RAW·NET_ADMIN, eBPF용으로 SYS_ADMIN·SYS_PTRACE·SYS_RESOURCE·IPC_LOCK이 values에 적혀 있어요. 이 설정은 시험하지 않았어요. 다만 Baseline이 더할 수 있게 허용하는 커널 권한 목록에는 NET_RAW도 SYS_ADMIN도 없고 hostNetwork와 hostPath는 그대로 남아요. privileged를 꺼도 Baseline을 통과하는 설정은 아니에요.</p>
+
+<h3>ClusterRole과 Role</h3>
+<p>차트 템플릿을 보면 hub, front, worker는 모두 kubeshark-service-account 하나를 써요. 이 ServiceAccount에 묶인 ClusterRole의 규칙은 네 줄이었어요.</p>
+<div class="obsv-code">mac$ kubectl get clusterrole kubeshark-cluster-role-default -o jsonpath='{rules: apiGroups resources verbs}'
+["","extensions","apps"] ["nodes","pods","services","endpoints","persistentvolumeclaims"] ["list","get","watch"]
+[""] ["namespaces"] ["get","list","watch"]
+["networking.k8s.io"] ["networkpolicies"] ["get","list","watch","create","update","delete"]
+["authentication.k8s.io"] ["tokenreviews"] ["create"]</div>
+<p>&rarr; 클러스터 전체의 노드·파드·Service·엔드포인트·PVC·네임스페이스를 읽고 모든 네임스페이스의 NetworkPolicy를 만들고 고치고 지울 수 있으며 토큰이 유효한지 API 서버에 물을 수 있다는 뜻이에요.</p>
+<p>눈여겨볼 것은 NetworkPolicy 쓰기 권한이에요. 차트 README의 <code style="font-family:Menlo,monospace;font-size:14px;">tap.networkPolicies.enabled</code> 항목을 보면 hub에는 NetworkPolicy를 만들고 지우는 기능이 있어요. 이 기능은 기본값이 꺼짐이고 꺼져 있으면 해당 요청에 409로 응답해요. CLI의 기본 설정도 false예요. 기능이 꺼져 있어도 ServiceAccount에 붙은 쿠버네티스 권한은 그대로 남아요.</p>
+<p>Role의 규칙은 클러스터에서 출력해 보지 않았고 설치에 쓴 차트의 <a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/helm-chart/templates/02-cluster-role.yaml">템플릿</a>에서 읽었어요. kubeshark-self-config-role은 릴리스 네임스페이스에서 Secret·ConfigMap 만들기와 읽기(kubeshark-secret 같은 자기 이름의 것은 수정·삭제까지), 파드 로그 읽기, PVC 만들기와 지우기, Job의 모든 동작을 허용해요. Secret을 읽는 규칙 하나에는 이름 제한이 없어서 그 네임스페이스의 Secret이면 무엇이든 읽을 수 있어요. 이번 설치에서 그 네임스페이스는 앱을 띄우는 default였어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 375" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k14arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k14arr4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">worker 파드 하나에 붙은 권한</text>
+<path d="M25 50 C 154 48, 298 51, 415 49 C 417 144, 414 240, 416 322 C 298 324, 154 321, 24 323 C 23 240, 26 144, 25 50 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="45" y="76" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="start">k8s-worker1 (노드)</text>
+<path d="M115 95 C 184 93, 262 96, 325 94 C 327 124, 324 155, 326 181 C 262 183, 184 180, 114 182 C 113 155, 116 124, 115 95 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="220" y="120" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">worker 파드</text>
+<text x="220" y="144" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">sniffer · tracer</text>
+<text x="220" y="168" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">privileged: 노드 root와 거의 같다</text>
+<path d="M40 239 C 76 237, 117 240, 150 238 C 152 259, 149 282, 151 301 C 117 303, 76 300, 39 302 C 38 282, 41 259, 40 239 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="263" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">노드 네트워크</text>
+<text x="95" y="287" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">hostNetwork</text>
+<path d="M162 239 C 198 237, 239 240, 272 238 C 274 259, 271 282, 273 301 C 239 303, 198 300, 161 302 C 160 282, 163 259, 162 239 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="217" y="263" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">/proc · /sys</text>
+<text x="217" y="287" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">/lib/modules</text>
+<path d="M284 239 C 322 237, 365 240, 400 238 C 402 259, 399 282, 401 301 C 365 303, 322 300, 283 302 C 282 282, 285 259, 284 239 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="342" y="263" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">노드의 /</text>
+<text x="342" y="287" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">읽기 전용 · tracer</text>
+<path d="M165 184 C 145 200, 122 216, 102 233" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr3)"/>
+<path d="M220 184 C 221 200, 218 216, 218 233" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr3)"/>
+<path d="M275 184 C 295 200, 320 216, 338 233" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr3)"/>
+<text x="228" y="214" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">hostPath</text>
+<path d="M455 60 C 528 58, 609 61, 675 59 C 677 91, 674 123, 676 151 C 609 153, 528 150, 454 152 C 453 123, 456 91, 455 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="565" y="86" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">API 서버 · 클러스터 전체</text>
+<text x="565" y="112" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">읽기: 노드·파드·Service·네임스페이스</text>
+<text x="565" y="137" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">쓰기: NetworkPolicy 생성·수정·삭제</text>
+<path d="M455 190 C 528 188, 609 191, 675 189 C 677 220, 674 252, 676 279 C 609 281, 528 278, 454 280 C 453 252, 456 220, 455 190 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="565" y="214" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">default 네임스페이스 (Role)</text>
+<text x="565" y="240" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">Secret·ConfigMap 읽기·만들기</text>
+<text x="565" y="264" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">PVC 만들기·지우기, Job 전부</text>
+<path d="M328 120 C 370 113, 412 106, 451 103" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr4)"/>
+<path d="M328 156 C 372 180, 412 210, 451 226" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k14arr4)"/>
+<text x="380" y="99" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">SA 토큰</text>
+<text x="565" y="303" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">앱과 같은 네임스페이스에 생겼다</text>
+<text x="350" y="355" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 노드 안에서는 root와 거의 같고 API로는 클러스터 전체를 읽는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. worker 파드 하나에 붙은 권한. 노드 안에서는 root에 가깝고 API로는 클러스터 전체를 읽는다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 운영 클러스터에 늘 설치해 두기 전에</div>
+  &bull; 노드마다 privileged·hostNetwork 컨테이너가 노드의 <code style="font-family:Menlo,monospace;font-size:14px;">/</code>를 붙인 채 떠 있게 돼요. 그 노드에 root와 거의 같은 프로세스가 하나 더 생기는 셈이에요<br>
+  &bull; 네임스페이스에 Pod Security의 baseline이나 restricted를 강제해 두었다면 Kubeshark를 설치할 네임스페이스는 privileged 수준으로 따로 열어야 해요<br>
+  &bull; 기본값대로 설치하면 default 네임스페이스에 들어가고 그 네임스페이스의 Secret을 읽을 수 있는 Role이 함께 생겨요. CLI에는 릴리스 네임스페이스를 바꾸는 <code style="font-family:Menlo,monospace;font-size:14px;">-s</code>(<code style="font-family:Menlo,monospace;font-size:14px;">--release-namespace</code>) 옵션이 있지만 이번에는 써 보지 않았어요<br>
+  &bull; 이 권한 범위라면 필요할 때 설치하고 확인이 끝나면 지우는 쓰임이 맞다고 봐요
+</div>
+
+<h2>4. CLI는 대상 23개, 대시보드는 16개: 마스터의 파드는 수집되지 않는다</h2>
+
+<p>64초 뒤에 실행한 두 번째 tap은 기존 설치를 찾았어요. 이 로그에는 대상 네임스페이스 6개와 "Targeted pod" 23줄이 모두 찍혔어요(줄 앞의 시각은 뺐어요).</p>
+<div class="obsv-code">master$ ks tap
+INF tapRunner.go:54 &gt; Kubeshark will store the traffic up to a limit (per node). Oldest TCP/UDP streams will be removed once the limit is reached. limit=10Gi
+INF tapRunner.go:70 &gt; Telemetry enabled=true notice="Telemetry can be disabled by setting the flag: --telemetry-enabled=false"
+INF tapRunner.go:72 &gt; Targeting pods in: namespaces=["default","headlamp","kube-node-lease","kube-public","kube-system","monitoring"]
+INF tapRunner.go:139 &gt; Targeted pod: headlamp-86c49cb4f4-9srjd
+INF tapRunner.go:139 &gt; Targeted pod: calico-kube-controllers-846669895c-j4sd8
+INF tapRunner.go:139 &gt; Targeted pod: calico-node-gc95j
+INF tapRunner.go:139 &gt; Targeted pod: calico-node-kn8n4
+INF tapRunner.go:139 &gt; Targeted pod: calico-node-lj6rx
+INF tapRunner.go:139 &gt; Targeted pod: calico-node-tvx2h
+INF tapRunner.go:139 &gt; Targeted pod: coredns-559f6c778d-bt7zz
+INF tapRunner.go:139 &gt; Targeted pod: coredns-559f6c778d-sqvxb
+INF tapRunner.go:139 &gt; Targeted pod: etcd-k8s-master
+INF tapRunner.go:139 &gt; Targeted pod: kube-apiserver-k8s-master
+INF tapRunner.go:139 &gt; Targeted pod: kube-controller-manager-k8s-master
+INF tapRunner.go:139 &gt; Targeted pod: kube-proxy-2rl74
+INF tapRunner.go:139 &gt; Targeted pod: kube-proxy-664vw
+INF tapRunner.go:139 &gt; Targeted pod: kube-proxy-kc292
+INF tapRunner.go:139 &gt; Targeted pod: kube-proxy-xjg9n
+INF tapRunner.go:139 &gt; Targeted pod: kube-scheduler-k8s-master
+INF tapRunner.go:139 &gt; Targeted pod: kube-state-metrics-849dd5cd8d-zzpgc
+INF tapRunner.go:139 &gt; Targeted pod: grafana-6f6dd58ffc-nd9zq
+INF tapRunner.go:139 &gt; Targeted pod: node-exporter-47twj
+INF tapRunner.go:139 &gt; Targeted pod: node-exporter-9vx2k
+INF tapRunner.go:139 &gt; Targeted pod: node-exporter-n9tgx
+INF tapRunner.go:139 &gt; Targeted pod: node-exporter-ws9hd
+INF tapRunner.go:139 &gt; Targeted pod: prometheus-deployment-54f6c75f48-p8c9r
+INF tapRunner.go:94 &gt; Found an existing installation, skipping Helm install...</div>
+<p>&rarr; 네임스페이스를 지정하지 않아서 클러스터의 네임스페이스 6개가 모두 대상이 됐고 그 안에서 이름 정규식(기본값 <code style="font-family:Menlo,monospace;font-size:14px;">.*</code>)에 맞는 파드 23개를 골랐다는 뜻이에요. 노드마다 10Gi까지 저장한다는 줄과 텔레메트리가 켜져 있다는 줄도 함께 찍혔어요.</p>
+<p>Mac에서 대시보드를 열자(5절) 맨 위에 다른 숫자가 떴어요.</p>
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/14/kubeshark-dashboard.png" alt="Mac에서 port-forward로 연 Kubeshark 대시보드 첫 화면. 위쪽에 Targeting 16 pods in 3 namespaces across 3 nodes가 있고 API STREAM에 prometheus-deployment에서 grafana의 /metrics로 간 GET 200(578.1 kB), kube-state-metrics의 /metrics로 간 GET 200(350.9 kB), coredns의 /health, kube-proxy의 TCP-FLOW가 eBPF 표시와 함께 보이며, 설정 창에 Pod regex .*, Namespaces all이 있고 아래쪽에 Displayed items 75, 11/11/2026 8:48:14 PM, 오른쪽 아래 NOT DETECTED가 보이는 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. CLI는 23개를 골랐는데 대시보드 위쪽에는 Targeting 16 pods in 3 namespaces across 3 nodes가 떴다</div>
+<p>"Targeting 16 pods in 3 namespaces across 3 nodes"였어요. 라이선스 없이도 트래픽은 바로 보였어요. API STREAM 탭에는 Prometheus가 Grafana의 /metrics를 긁은 요청(578.1kB)과 kube-state-metrics의 /metrics를 긁은 요청(350.9kB), CoreDNS의 /health, kube-proxy의 TCP-FLOW가 지나가고 있었어요. 줄마다 eBPF 표시가 붙어 있었고 20:48:14 기준으로 표시된 항목은 75개였어요. 설정 창에는 Pod regex가 <code style="font-family:Menlo,monospace;font-size:14px;">.*</code>, Namespaces가 all로 나와 있었어요.</p>
+<p>CLI는 23개라고 했고 화면은 16개라고 했어요. 차이 7개는 마스터에서 도는 파드 수와 같아요. 23개 가운데 마스터에 있는 것은 etcd, kube-apiserver, kube-controller-manager, kube-scheduler, 그리고 마스터의 calico-node·kube-proxy·node-exporter 하나씩이에요. 23에서 7을 빼면 16이고 남은 16개는 headlamp, kube-system, monitoring 세 네임스페이스에 있어서 화면의 "3 namespaces across 3 nodes"와도 맞아요. 대시보드가 이 계산을 보여 준 것은 아니고 제가 맞춰 본 거예요.</p>
+<p>CLI 소스에는 이 차이를 예고하는 주석이 있어요.</p>
+<div class="obsv-code">// cmd/tapRunner.go (kubeshark v53.6.0, 126~131행)
+/*
+This function is a bit problematic as it might be detached from the actual pods the Kubeshark that targets.
+The alternative would be to wait for Hub to be ready and then query it for the pods it listens to, this has
+the arguably worse drawback of taking a relatively very long time before the user sees which pods are targeted, if any.
+*/
+func printTargetedPodsPreview(ctx context.Context, kubernetesProvider *kubernetes.Provider, namespaces []string) error {</div>
+<p>&rarr; CLI가 찍는 대상 목록은 hub에 묻지 않고 API에서 바로 고른 미리보기라서 Kubeshark가 실제로 수집하는 파드와 어긋날 수 있다는 주석이에요. hub에 물으면 목록이 나오기까지 너무 오래 걸려서 이렇게 했다는 이유도 적혀 있어요.</p>
+<p><span class="obsv-mark">CLI의 Targeted pod 목록은 미리보기이고 실제로 어느 노드까지 수집하는지는 대시보드 숫자로 확인해야 해요.</span></p>
+
+<h3>마스터에 수집기가 뜨지 않은 이유</h3>
+<p>2절에서 DaemonSet의 DESIRED는 3이었어요. 마스터에는 처음부터 배치하지 않았다는 뜻이에요. 5편에서 본 대로 kubeadm은 마스터에 <code style="font-family:Menlo,monospace;font-size:14px;">node-role.kubernetes.io/control-plane:NoSchedule</code> taint를 붙여요. 이 taint를 허용하는 toleration이 있는 파드만 마스터에 배치돼요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: taint와 toleration</div>
+  taint는 노드에 붙이는 "이 조건을 받아들이는 파드만 오라"는 표시이고 toleration은 파드 쪽에서 그 표시를 받아들이겠다고 적는 설정이에요. effect가 NoSchedule인 taint가 있으면 맞는 toleration이 없는 새 파드는 그 노드에 배치되지 않아요. NoExecute는 이미 떠 있는 파드까지 내보내요.
+</div>
+<p>차트 values에서 worker의 toleration 기본값은 하나뿐이에요.</p>
+<div class="obsv-code"># helm-chart/values.yaml (kubeshark v53.6.0, 일부)
+  tolerations:
+    hub: []
+    workers:
+    - operator: Exists
+      effect: NoExecute
+    front: []</div>
+<p>&rarr; worker는 key와 상관없이 effect가 NoExecute인 taint만 허용한다는 뜻이에요.</p>
+<p><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/">Taint 문서</a>에는 key가 비어 있으면 operator는 Exists여야 하고 이때 모든 key와 value에 맞는다고 적혀 있어요. 다만 effect는 따로 맞아야 해요. 마스터의 taint는 effect가 NoSchedule이라서 이 toleration과 맞지 않아요. DaemonSet 컨트롤러가 자동으로 붙여 주는 toleration에도 control-plane taint는 없어요(<a href="https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/#taints-and-tolerations">DaemonSet 문서</a>). 11편에서 node-exporter가 마스터에 뜨지 않았던 것과 같은 이유예요.</p>
+
+<h3>그래서 보지 못하는 것</h3>
+<p>마스터에 수집기가 없으니 Kubeshark는 마스터의 네트워크 인터페이스를 지나는 패킷도, 마스터 커널의 함수 호출도 보지 못해요. 마스터 안에서만 오가는 연결(API 서버와 etcd 사이의 연결 등)은 이 구성으로는 볼 수 없다고 봐야 해요. 이 부분은 대시보드에서 따로 확인하지는 않았어요.</p>
+<p>반대로 한쪽 끝이 워커에 있는 연결은 워커 쪽에서 잡혀요. 15편 실험에서 마스터가 myweb 파드로 보낸 요청은 받는 쪽 워커에서 잡혔고 출발지는 마스터의 Calico 터널 주소 10.244.235.192로 나왔어요. 마스터가 관여한 연결 중에서는 워커에 닿는 연결만 보이는 셈이에요.</p>
+<p>컨트롤 플레인까지 보려면 worker의 toleration에 control-plane taint를 더하면 될 거예요. 시험해 보지는 않았어요.</p>
+<div class="obsv-code"># values 파일 예 (시험하지 않음)
+tap:
+  tolerations:
+    workers:
+    - operator: Exists
+      effect: NoExecute
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule</div>
+<p>&rarr; 기본값의 NoExecute 허용은 그대로 두고 마스터의 NoSchedule taint를 허용하는 줄을 더한 값이에요. values의 목록은 통째로 바뀌기 때문에 기본값 줄도 다시 적었어요.</p>
+<p>다만 마스터도 2 CPU·4GiB VM이고 컨트롤 플레인이 함께 돌아요. 6절에서 볼 수집기 메모리(노드당 0.7GiB 안팎)가 그 위에 더해져요. 라이선스의 노드 수는 수집기가 없는 지금도 이미 4로 셌기 때문에(5절) 이번 화면 기준으로는 마스터를 넣어도 노드 수가 늘지 않을 거예요.</p>
+
+<h2>5. 대시보드는 어디서 열리고 언제 잠기나</h2>
+
+<h3>ks proxy는 명령을 실행한 VM의 127.0.0.1에 열린다</h3>
+<p>첫 tap을 끝낼 때 안내받은 대로 마스터에서 <code style="font-family:Menlo,monospace;font-size:14px;">ks proxy</code>를 실행했어요(줄 앞의 시각은 뺐어요).</p>
+<div class="obsv-code">master$ ks proxy
+INF proxy.go:32 &gt; Starting proxy... namespace=default proxy-host=127.0.0.1 service=kubeshark-front src-port=8899
+WRN common.go:34 &gt; Couldn't connect using proxy, stopping proxy and trying to create port-forward... service=kubeshark-front
+INF proxy.go:124 &gt; Starting proxy using port-forward method... dst-port=8080 namespace=default pod=kubeshark-front-7fb9788cdd-w7whb src-port=8899
+E1111 20:46:02.969478    7164 portforward.go:424] "Unhandled Error" err="an error occurred forwarding 8899 -&gt; 8080: error forwarding port 8080 to pod …, uid : failed to execute portforward in network namespace …: failed to connect to localhost:8080 inside namespace …, IPv4: dial tcp4 127.0.0.1:8080: connect: connection refused IPv6 dial tcp6: address localhost: no suitable address found " logger="UnhandledError"
+ERR proxy.go:141 &gt; While Kubernetes port-forwarding! error="lost connection to pod"
+INF proxy.go:142 &gt; Please try running: command="kubectl port-forward -n default service/kubeshark-front 8899:80"
+ERR common.go:55 &gt; Couldn't connect to service. error="couldn't reach the URL: http://127.0.0.1:8899 after 3 retries" service=kubeshark-front
+ERR proxyRunner.go:89 &gt; Couldn't connect to Front.</div>
+<p>&rarr; 마스터의 127.0.0.1:8899에 프록시를 열어 front에 닿아 보고 안 되자 front 파드로 port-forward를 시도했지만 파드 안의 8080 포트가 연결을 거부해 실패했다는 뜻이에요.</p>
+<p>이 로그에서 두 가지를 알 수 있어요. 첫째, proxy는 마스터 VM의 127.0.0.1에 열려요. v53.6.0의 <a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/kubernetes/proxy.go">proxy.go</a>를 보면 CLI는 proxy-host(기본값 127.0.0.1)의 8899 포트에 작은 HTTP 서버를 열고 요청을 API 서버의 Service 프록시 경로(<code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/namespaces/default/services/kubeshark-front:80/proxy</code>)로 넘겨요. 이 방법이 안 되면 front 파드로 port-forward를 열어요. 어느 쪽이든 CLI를 실행한 기계의 127.0.0.1이라서 마스터 VM 안에서만 닿아요. 마스터에는 브라우저도 없어서 두 번째 tap의 끝에는 xdg-open을 찾지 못했다는 오류가 찍혔어요.</p>
+<p>둘째, connection refused는 시점 문제였어요. 오류 원문은 파드의 네트워크 네임스페이스 안에서 localhost:8080에 연결하지 못했다는 내용이에요. 네트워크 네임스페이스는 이미 있었는데 그 안에서 8080을 듣는 프로세스가 없었다는 뜻이에요. 20:46의 파드 목록에서 front는 아직 ContainerCreating이었고 front 이미지를 받는 데는 대기 시간까지 2분 4.5초가 걸렸어요. ks proxy를 실행한 시각은 20:45:43~20:46:27이라서 front 컨테이너가 뜨기 전이었어요. 20:47:44에 확인했을 때는 front가 Running이었어요.</p>
+<p>Mac에서는 마스터 VM의 127.0.0.1에 닿을 수 없어요. 그래서 Mac의 kubectl로 API 서버를 거치는 port-forward를 Mac의 localhost에 열었어요. 9편에서 Headlamp를 열 때 쓴 방법과 같아요.</p>
+<div class="obsv-code">mac$ kubectl -n default port-forward svc/kubeshark-front 8899:80
+Forwarding from 127.0.0.1:8899 -&gt; 8080
+Forwarding from [::1]:8899 -&gt; 8080
+
+mac$ curl -s -o /dev/null -w "front %{http_code}\n" http://127.0.0.1:8899/
+front 200</div>
+<p>&rarr; Service의 80 포트가 가리키는 front 컨테이너의 8080을 Mac의 8899로 이었고 http://127.0.0.1:8899/가 200으로 응답했다는 뜻이에요. 그림 5가 이렇게 연 화면이에요.</p>
+<p>문서에 나온 다른 방법도 있어요. 차트 README의 <code style="font-family:Menlo,monospace;font-size:14px;">tap.proxy.host</code> 항목에는 0.0.0.0으로 바꾸면 바깥에 열린다고 적혀 있어요. <a href="https://docs.kubeshark.com/en/install">설치 문서</a>에서는 Ingress 컨트롤러를 가장 권장하는 방법으로 꼽아요. 그런데 <a href="https://docs.kubeshark.com/en/plans">요금제 문서</a>의 Community 항목에는 SSO도, 권한 관리도, 민감 정보 마스킹도 없다고 적혀 있어요. 이 대시보드에는 클러스터 안의 HTTP 요청과 응답이 그대로 보여요. <span class="obsv-mark">Community 판을 인증 없이 바깥에 열면 그 주소에 닿는 누구나 클러스터의 트래픽을 읽을 수 있어요.</span></p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 대시보드는 port-forward로 열어요</div>
+  &bull; 대시보드를 볼 사람의 PC에서 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl port-forward svc/kubeshark-front 8899:80</code>를 실행하세요. API 서버를 거치니 kubeconfig 자격 증명이 있는 사람만 열 수 있어요<br>
+  &bull; CLI를 PC에 설치했다면 그 PC에서 <code style="font-family:Menlo,monospace;font-size:14px;">kubeshark proxy</code>를 실행해도 돼요. 소스로 보면 그 PC의 127.0.0.1에 열리는데 이번에는 시험하지 않았어요<br>
+  &bull; 열기 전에 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl -n default rollout status deploy/kubeshark-front</code>로 front가 준비됐는지 먼저 확인하세요. 이미지를 받는 동안에는 connection refused가 나요<br>
+  &bull; proxy-host를 0.0.0.0으로 바꾸거나 Community 판의 대시보드를 인증 없이 Ingress로 여는 것은 피하세요
+</div>
+
+<h3>무료 한도: 문서에는 3노드·60파드, 화면에는 Node limit 4/3</h3>
+<p><a href="https://docs.kubeshark.com/en/plans">요금제 문서</a>를 보면 무료인 Community는 "노드 3대 또는 파드 60개까지의 클러스터(Clusters of up to 3 nodes or 60 pods)"에서 쓸 수 있고 인터넷 연결이 필요해요. <a href="https://docs.kubeshark.com/en/license_portal">라이선스 문서</a>에는 Community 사용자도 License Portal에서 키를 받아 Helm 값 <code style="font-family:Menlo,monospace;font-size:14px;">license</code>로 넣는다고 나와 있어요. 그리고 "Community 라이선스는 인터넷 연결이 살아 있어야 하고 텔레메트리가 성공해야 라이선스가 유효하다"고 적혀 있어요. tap 로그에도 텔레메트리가 켜져 있다는 줄(<code style="font-family:Menlo,monospace;font-size:14px;">Telemetry enabled=true</code>)이 찍혔어요. 차트 README에는 <code style="font-family:Menlo,monospace;font-size:14px;">tap.telemetry.enabled</code>가 익명 사용 통계를 모으는 설정으로 적혀 있어요.</p>
+<p>우리는 키를 넣지 않았어요. 그래도 설치하고 약 20분 동안은 아무 창 없이 대시보드를 썼어요. 그러다 21:05~21:06 무렵 화면에 이 창이 떴어요.</p>
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/14/license-modal.png" alt="Kubeshark 대시보드 위에 LOG IN TO CONTINUE 창이 떠 있고 Please log in to continue using Kubeshark!, Node limit 4/3, Pod limit 29/60, Expires Never, Features realtime, snapshot과 Login/Signup 버튼이 보이며, 뒤쪽 목록은 Preparing, Displayed items 0, 11/11/2026 9:06:54 PM, 오른쪽 아래 NOT DETECTED가 빨간색인 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 설치 약 20분 뒤 로그인하라는 창이 떴다. 노드 칸은 4/3이었다</div>
+<div class="obsv-code">LOG IN TO CONTINUE
+Information - Please log in to continue using Kubeshark!
+Node limit: 4/3
+Pod limit: 29/60
+Expires: Never
+Features: realtime, snapshot
+[Login/Signup]</div>
+<p>&rarr; 계속 쓰려면 로그인하라는 안내이고 노드는 한도 3대에 4대, 파드는 한도 60개에 29개로 셌다는 뜻이에요.</p>
+<p>창 뒤의 목록은 Preparing에 멈춰 있었고 표시된 항목은 0개였어요. 창이 뜬 이유는 화면에 따로 적혀 있지 않았어요. 눈에 띄는 것은 노드 칸이에요. 수집기는 워커 3대에만 떠 있었는데 노드 수는 4로 셌어요. 이 화면은 수집기가 뜬 노드가 아니라 클러스터의 노드 전체를 센 것으로 보여요. 파드 29개는 처음 대상 23개에 그사이 15편 실험용으로 default에 띄운 파드 6개(myweb 5개, loadgen 1개)를 더한 수와 같아요. 세는 기준은 문서에서 찾지 못했어요.</p>
+<p>한도를 넘었을 때 어떻게 되는지는 요금제 문서에도 라이선스 문서에도 나오지 않아요. v53.1.0 <a href="https://github.com/kubeshark/kubeshark/releases/tag/v53.1.0">릴리스 노트</a>에 "노드·파드 한도를 넘었을 때 Community 라이선스의 유예 용량을 늘렸다(Extend community license grace capacity on node and pod limit overflow)"는 줄이 있을 뿐이에요. 우리가 20분 동안 창 없이 쓴 것이 이 유예 때문인지는 확인하지 못했어요. 로그인은 해 보지 않아서 로그인하면 창이 풀리는지도 확인하지 못했어요. 창이 뜬 뒤로는 대시보드 화면을 더 찍지 못했어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 수집기를 3노드에만 띄워도 노드는 4대로 셌어요</div>
+  수집기를 3노드에만 띄우면 Community 한도 안에 들 거라고 생각하기 쉬워요. 이번에는 마스터에 수집기가 없었는데도 노드 칸이 4/3이었어요. 노드가 4대 이상인 클러스터에 Community 판을 상시 설치할 계획이라면 이 창이 뜨는지부터 확인해 두세요. 공식 문서로 확인한 사실은 "노드 3대 또는 파드 60개"라는 한도와 인터넷 연결·텔레메트리 조건까지예요.
+</div>
+
+<h2>6. 워커 노드마다 0.7GiB를 쓰는 수집기, 대상을 좁히면 줄어들까</h2>
+
+<p>강의 슬라이드에는 "Kubeshark는 Network, Memory 자원을 많이 사용하므로 kubeshark tap 명령 사용 시 대상을 정확히 지정하여 Trace하는 것을 권장"한다는 문장이 있었어요. 강의에서 중요하다고 짚은 장이에요. 얼마나 쓰는지부터 쟀어요. 11편에서 띄운 Prometheus(NodePort 30003)에 cAdvisor가 내놓는 컨테이너별 메모리를 물었어요.</p>
+
+<h3>대상이 전체일 때</h3>
+<div class="obsv-code"># 20:59:30, 대상: 전체 (ks tap 기본값, 네임스페이스 6개)
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=sum by (pod, container) (container_memory_working_set_bytes{namespace="default", pod=~"kubeshark.*", container!=""})'
+kubeshark-front-7fb9788cdd-w7whb   kubeshark-front  3 MiB
+kubeshark-hub-fbd9d8db-zcsjv       hub              75 MiB
+kubeshark-worker-daemon-set-kdxl2  sniffer          359 MiB
+kubeshark-worker-daemon-set-kdxl2  tracer           422 MiB
+kubeshark-worker-daemon-set-wq4ps  sniffer          314 MiB
+kubeshark-worker-daemon-set-wq4ps  tracer           403 MiB
+kubeshark-worker-daemon-set-zkf86  sniffer          277 MiB
+kubeshark-worker-daemon-set-zkf86  tracer           418 MiB</div>
+<p>&rarr; Prometheus에 Kubeshark 파드의 컨테이너별 working set 메모리를 묻고 MiB 단위로 출력했다는 뜻이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: working set 메모리</div>
+  컨테이너가 쓰는 메모리 가운데 커널이 쉽게 비울 수 없는 부분이에요. cAdvisor는 메모리 사용량에서 비활성 파일 캐시를 뺀 값을 <code style="font-family:Menlo,monospace;font-size:14px;">container_memory_working_set_bytes</code>라는 이름으로 내놓아요. 컨테이너가 실제로 차지한 메모리를 볼 때 이 지표를 써요.
+</div>
+<p>노드별로 sniffer와 tracer를 더하면 worker1(wq4ps)이 717MiB, worker2(kdxl2)가 781MiB, worker3(zkf86)이 695MiB예요. VM에 준 메모리 4GiB(4,096MiB)의 17.0~19.1%에 해당해요. worker2에는 hub(75MiB)와 front(3MiB)도 떠 있어서 그 노드에서 Kubeshark가 쓴 메모리는 859MiB, 약 21%였어요. 같은 무렵 node-exporter로 본 워커 노드의 메모리 사용률은 36~47%였어요.</p>
+<p>이 숫자를 차트 기본값과 나란히 놓아 봤어요. v53.6.0 차트의 values와 CLI 기본 설정에서 sniffer와 tracer의 requests는 각각 CPU 50m, 메모리 50Mi이고 limits는 메모리 5Gi예요. CPU limit은 "0"으로 되어 있어서 템플릿이 아예 적지 않아요. 이번 설치에 실제로 들어간 값은 클러스터에서 출력해 보지 않았어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">워커 노드 메모리 4GiB 가운데 Kubeshark가 쓴 양 (20:59:30)</text>
+<path d="M275 78 C 276 120, 274 170, 275 214" fill="none" stroke="#d8cfba" stroke-width="1.6" stroke-dasharray="1 6" stroke-linecap="round"/>
+<path d="M400 78 C 401 120, 399 170, 400 214" fill="none" stroke="#d8cfba" stroke-width="1.6" stroke-dasharray="1 6" stroke-linecap="round"/>
+<path d="M525 78 C 526 120, 524 170, 525 214" fill="none" stroke="#d8cfba" stroke-width="1.6" stroke-dasharray="1 6" stroke-linecap="round"/>
+<text x="140" y="101" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="end">worker1</text>
+<path d="M150.0 84 C 163.4 83, 176.8 85, 188.3 84 C 189.3 92.8, 187.3 101.5, 188.3 109 C 176.8 110, 163.4 108, 150.0 109 C 149.0 101.5, 151.0 92.8, 150.0 84 Z" fill="#4a7fb5" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M188.3 84 C 205.5 83, 222.8 85, 237.5 84 C 238.5 92.8, 236.5 101.5, 237.5 109 C 222.8 110, 205.5 108, 188.3 109 C 187.3 101.5, 189.3 92.8, 188.3 84 Z" fill="#e5a33c" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M150 84 C 315 82, 500 85, 650 83 C 652 92, 649 102, 651 111 C 500 113, 315 110, 149 112 C 148 102, 151 92, 150 84 Z" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="248" y="102" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="start">717MiB · 17.5%</text>
+<text x="140" y="151" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="end">worker2</text>
+<path d="M150.0 134 C 165.3 133, 180.7 135, 193.8 134 C 194.8 142.8, 192.8 151.5, 193.8 159 C 180.7 160, 165.3 158, 150.0 159 C 149.0 151.5, 151.0 142.8, 150.0 134 Z" fill="#4a7fb5" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M193.8 134 C 211.9 133, 229.9 135, 245.3 134 C 246.3 142.8, 244.3 151.5, 245.3 159 C 229.9 160, 211.9 158, 193.8 159 C 192.8 151.5, 194.8 142.8, 193.8 134 Z" fill="#e5a33c" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M245.3 134 C 248.7 133, 252.0 135, 254.9 134 C 255.9 142.8, 253.9 151.5, 254.9 159 C 252.0 160, 248.7 158, 245.3 159 C 244.3 151.5, 246.3 142.8, 245.3 134 Z" fill="#8a8272" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M150 134 C 315 132, 500 135, 650 133 C 652 142, 649 152, 651 161 C 500 163, 315 160, 149 162 C 148 152, 151 142, 150 134 Z" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="265" y="152" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="start">859MiB · 21.0% (hub·front 포함)</text>
+<text x="140" y="201" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="end">worker3</text>
+<path d="M150.0 184 C 161.8 183, 173.7 185, 183.8 184 C 184.8 192.8, 182.8 201.5, 183.8 209 C 173.7 210, 161.8 208, 150.0 209 C 149.0 201.5, 151.0 192.8, 150.0 184 Z" fill="#4a7fb5" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M183.8 184 C 201.7 183, 219.5 185, 234.8 184 C 235.8 192.8, 233.8 201.5, 234.8 209 C 219.5 210, 201.7 208, 183.8 209 C 182.8 201.5, 184.8 192.8, 183.8 184 Z" fill="#e5a33c" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M150 184 C 315 182, 500 185, 650 183 C 652 192, 649 202, 651 211 C 500 213, 315 210, 149 212 C 148 202, 151 192, 150 184 Z" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="245" y="202" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="start">695MiB · 17.0%</text>
+<text x="150" y="234" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">0</text>
+<text x="275" y="234" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">1GiB</text>
+<text x="400" y="234" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">2GiB</text>
+<text x="525" y="234" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">3GiB</text>
+<text x="650" y="234" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">4GiB</text>
+<path d="M162 70 C 163 120, 161 170, 162 216" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
+<text x="168" y="64" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="start">스케줄러가 잡아 둔 양: requests 합 100Mi</text>
+<path d="M150.0 253 C 155.2 252, 160.5 254, 165.0 253 C 166.0 257.6, 164.0 262.1, 165.0 266 C 160.5 267, 155.2 265, 150.0 266 C 149.0 262.1, 151.0 257.6, 150.0 253 Z" fill="#4a7fb5" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="172" y="265" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="start">sniffer</text>
+<path d="M250.0 253 C 255.2 252, 260.5 254, 265.0 253 C 266.0 257.6, 264.0 262.1, 265.0 266 C 260.5 267, 255.2 265, 250.0 266 C 249.0 262.1, 251.0 257.6, 250.0 253 Z" fill="#e5a33c" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="272" y="265" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="start">tracer</text>
+<path d="M345.0 253 C 350.2 252, 355.5 254, 360.0 253 C 361.0 257.6, 359.0 262.1, 360.0 266 C 355.5 267, 350.2 265, 345.0 266 C 344.0 262.1, 346.0 257.6, 345.0 253 Z" fill="#8a8272" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="367" y="265" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="start">hub·front</text>
+<text x="350" y="294" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">limit은 컨테이너마다 5Gi: sniffer와 tracer를 더하면 10Gi로 막대 끝(4GiB)보다 크다</text>
+<text x="350" y="326" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 스케줄러가 잡아 둔 100Mi의 7~8배를 실제로 썼다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 7. 워커 노드 메모리 4GiB 가운데 수집기가 쓴 양과 스케줄러가 잡아 둔 양(requests)</div>
+
+<p>스케줄러는 requests를 보고 파드를 놓을 노드를 정해요. 그러니 스케줄러가 worker 파드 하나에 잡아 두는 메모리는 50Mi 두 개, 100Mi예요. 실제로는 그 7~8배를 썼어요. <span class="obsv-mark">스케줄러가 계산한 것보다 노드마다 메모리가 0.6~0.7GiB 적게 남아 있었던 셈이에요.</span> limit은 컨테이너마다 5Gi라서 노드 메모리 4GiB보다 커요. 이 노드에서는 컨테이너 단위의 메모리 상한이 사실상 걸려 있지 않아요.</p>
+<p>메모리 말고 디스크도 써요. tap 로그의 "Kubeshark will store the traffic up to a limit (per node) … limit=10Gi"는 노드마다 트래픽을 10Gi까지 저장하고 한도에 닿으면 오래된 TCP/UDP 스트림부터 지운다는 뜻이에요. 템플릿에서 이 저장 공간은 sizeLimit이 10Gi인 emptyDir이에요. emptyDir은 노드의 저장 장치에 만들어지니 노드 디스크의 여유도 함께 봐야 해요.</p>
+<p>CPU는 대상을 좁힌 뒤에 2분 평균으로 sniffer 28~41m, tracer 17~30m였어요. 노드별로 더하면 45~62m라서 노드의 CPU 2개(2000m)의 2~3%예요.</p>
+
+<h3>슬라이드 명령을 그대로 실행하면 calico는 잡히지 않는다</h3>
+<p>슬라이드의 예시 명령은 <code style="font-family:Menlo,monospace;font-size:14px;">kubeshark tap -n default "(calico*|myweb*)"</code>였어요. calico 파드와 myweb 파드만 보겠다는 의도로 읽혀요. 21:08:21에 그대로 실행했어요.</p>
+<div class="obsv-code">master$ kubeshark tap -n default "(calico*|myweb*)"
+INF tapRunner.go:54 &gt; Kubeshark will store the traffic up to a limit (per node). ... limit=10Gi
+INF tapRunner.go:72 &gt; Targeting pods in: namespaces=["default"]
+INF tapRunner.go:139 &gt; Targeted pod: myweb-859c4764d4-4tjzk
+INF tapRunner.go:139 &gt; Targeted pod: myweb-859c4764d4-5xtpv
+INF tapRunner.go:139 &gt; Targeted pod: myweb-859c4764d4-k2hfq
+INF tapRunner.go:139 &gt; Targeted pod: myweb-859c4764d4-n9rd8
+INF tapRunner.go:139 &gt; Targeted pod: myweb-859c4764d4-v87c6
+INF tapRunner.go:94 &gt; Found an existing installation, skipping Helm install...</div>
+<p>&rarr; 대상 네임스페이스가 default 하나로 줄었고 그 안에서 이름이 맞는 파드는 myweb 5개였으며 Helm 설치는 다시 하지 않았다는 뜻이에요.</p>
+<p>calico 파드는 하나도 잡히지 않았어요. calico-node와 calico-kube-controllers는 kube-system 네임스페이스에 있는데 <code style="font-family:Menlo,monospace;font-size:14px;">-n default</code>가 대상 네임스페이스를 default 하나로 정했기 때문이에요. CLI 소스(<a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/kubernetes/provider.go#L108">provider.go</a>)를 보면 지정한 네임스페이스마다 파드를 나열한 뒤 그 안에서만 이름을 정규식에 맞춰 봐요. 슬라이드의 의도대로 calico까지 보려면 네임스페이스도 함께 줘야 해요. <code style="font-family:Menlo,monospace;font-size:14px;">-n</code>은 여러 값을 받는 옵션이라 <code style="font-family:Menlo,monospace;font-size:14px;">-n default,kube-system</code>으로 쓸 수 있을 거예요. 이 형태는 시험하지 않았어요.</p>
+<p>정규식도 의도와 조금 달라요. calico*를 셸 와일드카드로 읽으면 "calico로 시작하는 이름"이지만 정규식에서 <code style="font-family:Menlo,monospace;font-size:14px;">*</code>는 바로 앞 글자 하나를 0번 이상 반복한다는 뜻이에요. 그래서 calico*는 "calic 뒤에 o가 0개 이상", myweb*는 "mywe 뒤에 b가 0개 이상"이에요. 그리고 CLI는 Go의 MatchString으로 파드 이름을 맞춰 봐요. <a href="https://pkg.go.dev/regexp#Regexp.MatchString">Go 문서</a>에 따르면 MatchString은 문자열 안에 정규식과 맞는 부분이 하나라도 있는지를 봐요. 앞뒤를 고정하지 않으니 calico*는 이름 어딘가에 calic만 있어도 맞아요. 이번에는 결과에 차이가 없었지만 "calico나 myweb으로 시작하는 파드"를 뜻하려면 <code style="font-family:Menlo,monospace;font-size:14px;">^(calico|myweb)</code>로 쓰는 쪽이 정확해요.</p>
+<p>"Found an existing installation, skipping Helm install"도 눈여겨볼 줄이에요. 1절에서 본 대로 tap은 기존 설치가 있으면 Helm 설치를 건너뛰고 kubeshark-config-map의 POD_REGEX와 NAMESPACES 같은 값을 다시 써요(tapRunner.go의 updateConfig). worker DaemonSet은 그대로라서 수집기는 여전히 워커 3대에 컨테이너 두 개씩 떠 있어요. <span class="obsv-mark">대상을 좁히는 것은 수집기를 줄이는 일이 아니라 수집기가 처리할 파드를 고르는 조건을 바꾸는 일이에요.</span></p>
+<p><a href="https://docs.kubeshark.com/en/pod_targeting">대상 지정 문서</a>에는 이 필터를 잘 쓰면 컴퓨팅 자원 사용을 크게 줄일 수 있다고 적혀 있어요. 좁힌 지 약 4분 뒤인 21:12:54에 같은 질의를 다시 실행했어요.</p>
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/14/resource-usage.png" alt="20:59:30에 전체 대상으로 잰 Kubeshark 컨테이너별 메모리(front 3MiB, hub 75MiB, sniffer 359·314·277MiB, tracer 422·403·418MiB)와 kubeshark tap -n default &quot;(calico*|myweb*)&quot; 실행 결과(Targeting namespaces default, Targeted pod myweb 5개, Found an existing installation), 그리고 21:12:54에 다시 잰 메모리(front 3MiB, hub 46MiB, sniffer 398·334·313MiB, tracer 425·404·420MiB)가 이어진 터미널 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 8. 대상을 좁히기 전(20:59:30)과 좁힌 지 약 4분 뒤(21:12:54)의 컨테이너별 메모리</div>
+<p>좁힌 뒤 sniffer는 313~398MiB, tracer는 404~425MiB였어요. 좁히기 전(sniffer 277~359MiB, tracer 403~422MiB)과 비슷하거나 조금 많았어요. 노드별 합은 733~823MiB예요. hub만 75MiB에서 46MiB로 줄었어요.</p>
+<p>그렇다고 "좁혀도 메모리는 그대로"라고 결론 내리기는 어려워요. 두 측정은 조건이 달랐어요. 앞의 측정은 15편의 트래픽 실험이 돌던 중이었고 대시보드도 정상이었어요. 뒤의 측정은 트래픽 실험이 없었고 대시보드는 5절의 로그인 창으로 잠긴 상태였어요. 4분이라는 시간도 짧아요. 이번에 확인한 것은 수집기가 워커 노드마다 0.7GiB 안팎을 쓰고 대상을 좁힌 지 4분 안에는 그 값이 줄지 않았다는 데까지예요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: tap 대상은 이렇게 정해요</div>
+  &bull; 네임스페이스는 <code style="font-family:Menlo,monospace;font-size:14px;">-n</code>으로, 이름은 정규식으로 따로 정해요. 정규식은 파드 이름에만 적용되고 네임스페이스 조건을 넘지 않아요<br>
+  &bull; "~로 시작하는 이름"은 <code style="font-family:Menlo,monospace;font-size:14px;">^</code>를 붙여 <code style="font-family:Menlo,monospace;font-size:14px;">^(calico|myweb)</code>로 써요. 셸 와일드카드의 <code style="font-family:Menlo,monospace;font-size:14px;">*</code>를 그대로 쓰면 뜻이 달라져요<br>
+  &bull; CLI 소스에는 실제로 tap하지 않고 정규식에 맞는 파드만 보여 주는 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run</code> 옵션이 있어요(옵션 설명: "Preview of all pods matching the regex, without tapping them"). 다만 그 목록도 4절에서 본 미리보기예요<br>
+  &bull; 대상을 좁혀도 worker DaemonSet은 워커마다 그대로 떠 있어요. 수집기가 쓰던 메모리를 노드에 돌려주려면 <code style="font-family:Menlo,monospace;font-size:14px;">kubeshark clean</code>으로 지워야 해요
+</div>
+
+<h3>정리: kubeshark clean</h3>
+<p>실습을 마치고 21:13:45에 <code style="font-family:Menlo,monospace;font-size:14px;">kubeshark clean</code>으로 지웠어요.</p>
+<div class="obsv-code">master$ kubeshark clean
+INF helm.go:177 &gt; Starting delete for "kubeshark-worker-network-policy" NetworkPolicy
+INF helm.go:177 &gt; Starting delete for "kubeshark-hub-network-policy" NetworkPolicy
+INF helm.go:177 &gt; Starting delete for "kubeshark-front-network-policy" NetworkPolicy
+INF helm.go:177 &gt; Starting delete for "kubeshark-dex-network-policy" NetworkPolicy
+INF helm.go:177 &gt; purge requested for kubeshark
+INF clean.go:28 &gt; Uninstalled the Helm release: kubeshark</div>
+<p>&rarr; Helm 릴리스 kubeshark를 지웠다는 뜻이에요. 로그에 줄로 찍힌 것은 NetworkPolicy 4개의 삭제와 릴리스 삭제예요.</p>
+<p>릴리스를 지우면 Helm이 그 릴리스로 만든 리소스를 함께 지워요. 15편 실험용 myweb과 loadgen은 kubectl로 따로 만든 것이라 Helm 릴리스와 상관이 없어서 남겨 뒀어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>kubeshark tap 한 줄은 default 네임스페이스에 Helm 릴리스(리소스 21개)를 만들고 워커 노드마다 privileged·hostNetwork 수집기를 띄워요.</b><br><br>
+  수집기는 노드의 <code style="font-family:Menlo,monospace;font-size:14px;">/</code>까지 읽기 전용으로 붙이고 ServiceAccount에는 클러스터 전체를 읽는 권한과 NetworkPolicy를 만들고 지우는 권한이 있어요. 마스터에는 control-plane taint를 허용하는 toleration이 없어서 수집기가 뜨지 않았고 CLI가 고른 23개 가운데 마스터의 파드 7개는 대시보드에서 빠졌어요. 대시보드는 VM 안의 ks proxy 대신 Mac에서 port-forward로 열었어요. 메모리는 워커 노드마다 0.7GiB 안팎을 썼는데 차트의 requests는 컨테이너당 50Mi였어요. Community 한도는 문서상 3노드·60파드이고 이번 화면은 수집기가 없는 마스터까지 4노드로 셌어요. Kubeshark가 사이드카 없이 파드의 트래픽을 보는 대가는 노드마다 떠 있는 root에 가까운 수집기예요. 그 수집기는 지우기 전까지 계속 떠 있어요.
+</div>
+
+</div>

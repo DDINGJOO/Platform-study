@@ -1,0 +1,526 @@
+<!-- ============================================================
+  k8s 스터디 8편: 쿠버네티스에서 관측성(옵저버빌리티)이 필요한 이유
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: Prometheus 수집 대상 14개가 모두 up이었는데 노드 수치를 내는 node-exporter는 목록에 없었고 Grafana 대시보드는 절반이 N/A였어요. 관측성이 왜 필요한지, 쿠버네티스에서 왜 더 필요한지 공식 자료를 따라가며 정리했어요. -->
+<!-- tags: 옵저버빌리티, 관측성, 네 가지 황금 신호, 쿠버네티스 이벤트, Prometheus up -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 8편</div>
+  6편. kubeadm 다음에 CNI를 따로 설치해야 하는 이유<br>
+  7편. 노드를 재시작한 직후의 Ready를 믿으면 안 되는 이유<br>
+  <b>8편. 쿠버네티스에서 관측성(옵저버빌리티)이 필요한 이유</b> &larr; 지금 이 글<br>
+  9편. Kubernetes Dashboard 대신 Headlamp를 설치하고 안전하게 접속하는 법<br>
+  10편. ServiceAccount 토큰 수명을 0으로 주면 왜 1시간짜리가 나올까
+</div>
+
+<p>Prometheus에게 지금 긁고 있는 수집 대상을 물었더니 14줄이 돌아왔어요. 줄마다 가운데 칸에 <code style="font-family:Menlo,monospace;font-size:14px;">up</code>이 찍혀 있었습니다. 구성은 API 서버 1개, 노드마다 하나씩인 kubelet 4개, 컨테이너 수치를 내는 cAdvisor 4개, kube-state-metrics 1개, 서비스 엔드포인트 4개였고 빨간 줄은 하나도 없었어요.</p>
+<p>그런데 목록 어디에도 포트 9100이 없었어요. 9100은 노드의 CPU·메모리·디스크 수치를 내놓는 node-exporter의 포트입니다. 강의 매니페스트대로 node-exporter를 DaemonSet으로 띄웠고 파드 세 개가 모두 Running이었는데 Prometheus는 그중 어느 것도 긁고 있지 않았어요. 이 문제를 고쳐 노드 4대의 수치가 들어오게 한 뒤 강의에서 자주 쓴다고 한 Grafana 대시보드 6417을 열었습니다. 이번에는 맨 윗줄 패널 네 개가 N/A였고 그 아래 용량 그래프 세 개는 No data였어요. Nodes Out of Disk 칸은 초록 바탕 위에 N/A를 띄우고 있었습니다.</p>
+<p>이날 강의에서는 관측 도구 묶음을 시작하면서 "옵저버빌리티가 중요하다", "옵저버빌리티가 비주얼라이제이션을 만나야 한다"고 했어요. 쓸 도구로는 Kubernetes Dashboard, Prometheus, Grafana, ELK, Kubewatch, Jaeger, OpenTelemetry 일곱 개를 꼽았고 대표적인 도구라서 골랐다고 했습니다. 그날 저녁에 겪은 일을 보면 이 두 문장이 왜 따로 있어야 하는지 알 수 있어요. 도구를 설치해 파드가 Running이 되기까지는 몇 분이면 충분했습니다. 하지만 화면에 나온 것이 클러스터의 실제 상태와 맞는지는 따로 확인해야 했고 확인하기 전까지는 틀렸다는 표시조차 없었어요.</p>
+<p>1~7편에서는 클러스터를 어떻게 만들었는지 다뤘고 8편부터는 그 위에 관측 도구를 올린 이야기를 합니다. 이 글은 그 묶음의 첫 편이라서 설치 과정 대신 질문을 다룹니다. node-exporter가 왜 빠졌는지는 11편에서, 대시보드가 왜 N/A였는지는 12편에서 자세히 다뤄요. 여기서는 이 장면이 무슨 뜻인지를 공식 자료와 1차 자료로 따라가 볼게요. 근거로 삼은 자료는 Google SRE 책의 모니터링 장, OpenTelemetry의 관측성 입문 문서, CNCF TAG Observability 백서, 그리고 kubernetes.io와 prometheus.io의 문서예요. 인용한 내용은 모두 원문을 직접 열어 확인했고 인용한 자리에 링크를 달아 두었습니다. <b>관측성은 왜 필요하고 쿠버네티스에서는 왜 더 필요할까요? 그리고 무엇을 어떻게 봐야 "보인다"고 말할 수 있을까요?</b></p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 수집 대상이 전부 up이었는데 왜 노드 수치는 없었을까?<br>
+&middot; 모니터링과 관측성은 무엇이 다르고 각각 왜 필요할까?<br>
+&middot; 쿠버네티스에서는 왜 kubectl만으로 부족할까?<br>
+&middot; 무엇을 봐야 할까? 신호의 종류와 강의 도구 일곱 개는 어떻게 짝지어질까?<br>
+&middot; 시각화는 왜 필요하고 화면은 어떻게 틀릴 수 있을까?<br>
+&middot; 관측 도구 자체는 누가 관측할까?</p>
+
+<h2>1. 수집 대상 14개가 전부 up이었다</h2>
+
+<p>먼저 그 화면부터 볼게요. 강의 저장소의 매니페스트로 Prometheus 3.16.0을 띄운 직후, Mac에서 Prometheus API로 활성 수집 대상을 조회한 결과예요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/11/prometheus-targets-before.png" alt="Prometheus 3.16.0의 활성 수집 대상 14개를 job, 상태, 주소로 나열한 터미널 화면. kube-state-metrics 1개, kubernetes-apiservers 1개, kubernetes-cadvisor 4개, kubernetes-nodes 4개, kubernetes-service-endpoints 4개가 모두 up이고 9100 포트 주소는 없다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 수집 대상 14개가 모두 up이었지만 노드 수치를 내는 9100 포트는 한 줄도 없었다</div>
+
+<p>14줄을 작업(job) 이름으로 묶으면 다섯 종류예요. kubernetes-apiservers 1개, kubernetes-nodes 4개(노드마다 kubelet), kubernetes-cadvisor 4개, kube-state-metrics 1개, kubernetes-service-endpoints 4개입니다. 마지막 4개는 CoreDNS 두 개(9153), Grafana(3000), 그리고 Prometheus 자신(9090)이었어요. 상태는 모두 up이었습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 수집 대상 (target)과 up</div>
+  Prometheus가 정해진 간격마다 HTTP 요청을 보내 수치를 읽어 오는 주소 하나하나예요. Prometheus 문서에서는 이 주소를 instance라고 부르고 목적이 같은 instance의 묶음을 job이라고 불러요. Prometheus는 대상을 긁을 때마다 <code style="font-family:Menlo,monospace;font-size:14px;">up</code>이라는 시계열을 스스로 만들어 닿았으면 1을, 수집에 실패했으면 0을 적습니다.
+</div>
+<p>Prometheus 문서에서는 <code style="font-family:Menlo,monospace;font-size:14px;">up</code>을 이렇게 설명해요. 대상이 건강하면, 즉 닿으면 1이고 수집에 실패하면 0이며 인스턴스의 가용성을 감시하는 데 유용하다고요(<a href="https://prometheus.io/docs/concepts/jobs_instances/">Prometheus: Jobs and instances</a>). 이 정의에는 전제가 하나 숨어 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">up</code>은 Prometheus가 긁으러 간 대상에 대해서만 생긴다는 점입니다.</p>
+<p>그러면 대상 목록은 어떻게 정해질까요. Prometheus 개요 문서에 따르면 시계열 수집은 HTTP 위의 pull 방식으로 일어나고 대상은 서비스 디스커버리나 정적 설정으로 찾아요(<a href="https://prometheus.io/docs/introduction/overview/">Prometheus: Overview</a>). 쿠버네티스 서비스 디스커버리는 쿠버네티스 REST API에서 수집 대상을 가져오고 클러스터 상태와 계속 맞춘다고 설정 문서에 나와 있어요(<a href="https://prometheus.io/docs/prometheus/latest/configuration/configuration/">Prometheus: Configuration</a>). 강의 설정의 kubernetes-service-endpoints 작업에는 Service의 엔드포인트를 대상으로 찾되 <code style="font-family:Menlo,monospace;font-size:14px;">prometheus.io/scrape</code> 주석이 true인 Service만 남기라고(keep) 적혀 있었어요.</p>
+<p>node-exporter의 Service에는 이 주석이 없었어요. 게다가 Service는 kube-system에, 파드는 monitoring에 있어서 Service가 파드를 하나도 고르지 못하고 있었습니다. 대상 목록에 오를 방법이 처음부터 없었던 거예요. 그래서 node-exporter는 down으로 보이는 대신 목록에서 아예 빠져 있었어요. <span class="obsv-mark">up이 0인 대상은 빨갛게 보이지만 목록에 오르지 못한 대상은 아무 색으로도 보이지 않아요.</span> 원인과 고친 과정은 11편에서 자세히 다룹니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "14개 중 14개 up"은 "있어야 할 것이 다 있다"는 뜻이 아니에요</div>
+  Prometheus 화면의 "N / N up"에서 분모는 Prometheus가 찾아낸 대상의 수예요. 있어야 할 대상의 수가 아닙니다. 그래서 무엇이 몇 개 있어야 하는지를 먼저 적어 두고 비교해야 빠진 것이 보여요. 이 클러스터라면 노드가 4대이니 node-exporter 대상도 4개여야 해요. node-exporter를 고친 뒤 이 글을 쓰면서 job별 대상 수를 다시 세어 보니 kubernetes-service-endpoints가 4개에서 8개로 늘어 전체가 18개였습니다.
+</div>
+
+<p>node-exporter를 고친 뒤에는 노드 4대의 수치가 들어왔어요. <code style="font-family:Menlo,monospace;font-size:14px;">count(node_uname_info)</code>의 결과가 4였습니다. 그다음 Grafana 13.3.0에 Prometheus를 데이터 소스로 연결하고 대시보드 6417을 가져왔어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/12/grafana-6417-original-top.png" alt="Grafana에 가져온 6417 Kubernetes Cluster (Prometheus) 대시보드 원본. Cluster Pod·CPU·Memory·Disk Usage 네 칸이 N/A, CPU·Mem·Disk Capacity 세 칸이 No data, Number Of Nodes는 4, Nodes Out of Disk는 초록 바탕의 N/A, Nodes Unavailable은 0" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 수집이 되는 상태에서 연 6417. 사용률 네 칸이 N/A, 용량 세 칸이 No data였고 Nodes Out of Disk는 초록 바탕의 N/A였다</div>
+
+<p>Cluster Pod·CPU·Memory·Disk Usage 네 칸이 N/A, CPU·Mem·Disk Capacity 세 칸이 No data였어요. 노드 수(4)와 Deployment 패널은 멀쩡히 숫자를 보여 줬습니다. 패널이 쓰는 질의에서 메트릭 이름을 하나씩 꺼내 우리 Prometheus에 그 이름의 시계열이 몇 개 있는지 세어 봤어요.</p>
+<div class="obsv-code">mac$ curl -s https://grafana.com/api/dashboards/6417 | jq -r '"\(.id) \(.name) revision=\(.revision) updated=\(.updatedAt)"'
+6417 Kubernetes Cluster (Prometheus) revision=1 updated=2018-06-06T23:51:56.000Z
+
+# 6417 rev1 패널 수식이 쓰는 메트릭이 우리 Prometheus 에 몇 개의 시계열로 있는지 (0 = 없음)
+kube_node_status_allocatable_cpu_cores               0
+...
+kube_pod_container_resource_requests_cpu_cores       0
+...
+node_filesystem_free                                 0
+node_filesystem_size                                 0
+kube_job_status_succeeded                            0
+
+# 지금 이름
+kube_node_status_allocatable                         32
+kube_node_status_capacity                            32
+kube_pod_container_resource_requests                 13
+...
+node_filesystem_free_bytes                           16
+node_filesystem_size_bytes                           16</div>
+<p>&rarr; 대시보드가 묻는 이름으로는 시계열이 0개였고 비슷한 다른 이름으로는 수십 개가 있었다는 뜻이에요. 수집은 되고 있었는데 대시보드가 다른 이름을 묻고 있었던 거예요.</p>
+<p>grafana.com에서 6417을 조회하면 revision 1, 마지막 갱신은 2018-06-06으로 나와요. 대시보드는 2018년에 쓰던 메트릭 이름으로 질의하고 있었고 우리 클러스터의 exporter들은 지금 이름으로 수치를 내놓고 있었어요. 질의 결과가 비면 Grafana는 에러 대신 N/A나 No data를 그립니다. 이 차이를 고친 과정과 고친 뒤에도 남은 N/A의 정체는 12편에서 다뤄요.</p>
+<p>두 장면을 나란히 놓으면 공통점이 하나 보여요. 문제가 생긴 자리는 달랐지만 어느 쪽도 빨간 에러를 내지 않았습니다. 대상이 빠지자 목록이 짧아졌고 이름이 틀리자 칸이 비었을 뿐이에요. "모니터링을 깔았다"는 말은 사실이었어요. Prometheus는 수집을 돌리고 있었고 Grafana는 그 결과를 그리고 있었습니다. 다만 보고 싶었던 것은 보이지 않았어요.</p>
+
+<h2>2. 모니터링은 무엇이 고장 났는지 묻고 관측성은 왜인지까지 묻는다</h2>
+
+<p>이 장면을 "설정을 잘못했다"로 정리하고 넘어가면 다음에도 같은 자리에서 걸려요. 무엇을 확인했어야 했는지가 남지 않기 때문이에요. 그래서 모니터링과 관측성이 원래 무엇을 하라고 정의된 말인지부터 찾아봤어요.</p>
+
+<h3>SRE 책: 무엇이 고장 났나, 그리고 왜</h3>
+<p>Google SRE 책의 "Monitoring Distributed Systems" 장(Rob Ewaschuk 씀, Betsy Beyer 편집)에서는 모니터링을 이렇게 정의해요. 시스템에 관한 실시간 정량 데이터를 모으고 처리하고 집계하고 보여 주는 일이에요. 그 데이터의 예로는 질의 수와 종류, 에러 수와 종류, 처리 시간, 서버 수명을 듭니다(<a href="https://sre.google/sre-book/monitoring-distributed-systems/">SRE 책: Monitoring Distributed Systems</a>). 정의 안에 "보여 주는 일"이 이미 들어 있다는 점을 기억해 두세요. 5절에서 다시 나와요.</p>
+<p>같은 장에서는 모니터링이 필요한 이유를 다섯 가지로 들어요. 첫째는 장기 추세 분석이에요(데이터베이스가 얼마나 크고 얼마나 빨리 커지나). 둘째는 시간대나 실험군 사이의 비교, 셋째는 경고(무언가 고장 났고 누군가 지금 당장 고쳐야 한다), 넷째는 대시보드 구성이에요. 다섯째는 사후 분석, 즉 디버깅입니다(방금 지연이 치솟았는데 같은 시각에 또 무슨 일이 있었나). 그리고 이 다섯 가지를 한 문장으로 묶어요. 모니터링과 경고가 있어야 시스템이 언제 고장 났는지를, 어쩌면 무엇이 곧 고장 날지를 우리에게 알려 줄 수 있다고요.</p>
+<p>이 장에서 오늘 장면에 가장 잘 맞는 대목은 증상과 원인을 나누는 부분이에요. 모니터링 시스템은 두 질문에 답해야 한다고 해요. 무엇이 고장 났나, 그리고 왜 고장 났나. 앞의 것이 증상이고 뒤의 것이 (중간 단계일 수도 있는) 원인입니다. 책의 표에는 "HTTP 500이나 404를 내고 있다"는 증상과 "데이터베이스 서버가 연결을 거부하고 있다"는 원인이 한 줄로 짝지어져 있어요. 책에는 여러 층으로 된 시스템에서는 한 사람의 증상이 다른 사람의 원인이 된다는 말도 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 증상과 원인 (symptom, cause)</div>
+  증상은 사용자나 화면 쪽에서 보이는 "무엇이 고장 났나"이고 원인은 그 증상을 만든 "왜"예요. 오늘 장면에서는 Grafana의 N/A가 증상이고 메트릭 이름이 달라진 것이 원인이었어요. 같은 모양의 증상에 원인이 여럿일 수 있어서 증상만 보고는 무엇을 고칠지 정할 수 없습니다.
+</div>
+<p>오늘 본 빈칸들을 이 틀에 넣어 보면 그림 3이 돼요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k8arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34" text-anchor="middle">같은 빈칸, 원인은 넷</text>
+<text x="170" y="64" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">증상: 무엇이 안 보였나</text>
+<text x="528" y="64" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">원인: 왜 안 보였나</text>
+
+<path d="M25 78 C 115 76, 225 80, 315 77 C 317 99, 314 122, 316 144 C 225 146, 115 142, 26 145 C 23 122, 26 99, 25 78 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M375 79 C 470 76, 590 80, 680 78 C 682 100, 679 122, 681 145 C 590 147, 470 143, 376 144 C 373 122, 376 100, 375 79 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M319 111 C 335 109, 352 113, 369 111" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k8arr1)"/>
+<text x="170" y="106" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">대상 14개가 전부 up</text>
+<text x="170" y="131" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">그런데 9100은 목록에 없음</text>
+<text x="528" y="106" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">Service가 다른 네임스페이스에 있음</text>
+<text x="528" y="131" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">파드를 못 고르고 수집 표시도 없음 · 11편</text>
+
+<path d="M26 158 C 115 156, 225 160, 314 157 C 316 179, 314 202, 315 224 C 225 226, 115 222, 25 225 C 23 202, 26 179, 26 158 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M376 158 C 470 160, 590 156, 681 158 C 683 180, 680 202, 680 225 C 590 227, 470 223, 375 224 C 373 202, 376 180, 376 158 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M319 191 C 335 193, 352 189, 369 191" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k8arr1)"/>
+<text x="170" y="186" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">CPU·메모리 요청 칸 N/A</text>
+<text x="170" y="211" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">…_requests_cpu_cores 시계열 0개</text>
+<text x="528" y="186" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">지금 이름은 resource 라벨을 씀</text>
+<text x="528" y="211" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">kube-state-metrics v2.20.0 기준 · 12편</text>
+
+<path d="M25 238 C 115 240, 225 236, 315 238 C 317 260, 314 282, 316 304 C 225 306, 115 302, 26 305 C 24 282, 26 260, 25 238 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M375 239 C 470 236, 590 240, 680 238 C 682 260, 679 282, 681 305 C 590 307, 470 303, 376 304 C 374 282, 376 260, 375 239 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M319 271 C 335 269, 352 273, 369 271" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k8arr1)"/>
+<text x="170" y="266" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">Disk Usage 칸 N/A</text>
+<text x="170" y="291" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">node_filesystem_free 시계열 0개</text>
+<text x="528" y="266" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">지금 이름에는 _bytes가 붙음</text>
+<text x="528" y="291" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">node_filesystem_free_bytes 16개</text>
+
+<path d="M26 318 C 115 316, 225 320, 314 318 C 316 340, 314 362, 315 384 C 225 386, 115 382, 25 385 C 23 362, 26 340, 26 318 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M376 318 C 470 320, 590 316, 681 318 C 683 340, 680 362, 680 385 C 590 387, 470 383, 375 384 C 373 362, 376 340, 376 318 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M319 351 C 335 353, 352 349, 369 351" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k8arr1)"/>
+<text x="170" y="346" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">Jobs 칸 N/A</text>
+<text x="170" y="371" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">kube_job_status_succeeded 0개</text>
+<text x="528" y="346" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">Job이 하나도 없음: 고장 아님 ✔</text>
+<text x="528" y="371" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">테스트 Job을 만들자 값 1 · 12편</text>
+
+<text x="350" y="422" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 화면에서는 같은 빈칸이었지만 원인은 층마다 달랐고, 하나는 정상이었다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 증상은 하나같이 "안 보임"이었다. 원인을 찾으려면 증상보다 한 층 아래를 봐야 했다</div>
+
+<p>네 증상은 화면에서 거의 같은 모습이었어요. 목록이 짧았거나 칸에 N/A가 떴습니다. 그런데 원인은 Service 설정, kube-state-metrics의 메트릭 이름, node-exporter의 메트릭 이름, 그리고 "Job이 하나도 없음"으로 전부 달랐어요. 마지막 것은 고장이 아니라 클러스터의 실제 상태가 비어 있어서 생긴 빈칸이었습니다. 증상만 보고 N/A를 전부 0으로 바꾸거나 패널을 지웠다면 이 넷을 구분할 기회도 같이 사라졌을 거예요.</p>
+<p>층이 바뀌면 증상과 원인도 자리를 바꿔요. 강의 저장소의 kube-state-metrics 이미지는 amd64 전용이라 arm64인 우리 노드에서 쓸 수 없었어요. 그래서 공식 이미지 v2.20.0으로 바꿨습니다(11편). 이미지를 바꾼 것은 그 층에서는 문제를 고친 일이었지만 대시보드 층에서는 CPU·메모리 요청 칸이 N/A가 된 원인이 됐습니다. SRE 책이 말한 "한 사람의 증상이 다른 사람의 원인"이 한 저녁 안에서 일어난 셈이에요.</p>
+
+<h3>화이트박스와 블랙박스, 그리고 네 가지 황금 신호</h3>
+<p>SRE 책은 감시 방식을 둘로 나눠요. 화이트박스 모니터링은 로그나 HTTP 엔드포인트 등 시스템 내부가 드러내는 지표를 계측으로 들여다보는 방식이에요. 블랙박스 모니터링은 사용자가 보는 것과 같은 바깥 동작을 시험하는 방식입니다. 책에 따르면 블랙박스는 증상 중심이라 지금 일어나고 있는 문제를 보여 주지만 아직 일어나지 않았는데 곧 닥칠 문제에는 거의 쓸모가 없어요. 곧 닥칠 문제를 미리 잡게 해 주는 쪽은 화이트박스입니다. Prometheus가 각 구성 요소의 /metrics를 긁는 방식은 화이트박스 쪽이에요.</p>
+<p>재야 할 것으로는 네 가지를 꼽아요. 지연(latency), 트래픽(traffic), 에러(errors), 포화도(saturation)입니다. 책에는 이 네 신호를 모두 재고 그중 하나에 문제가 생기면(포화도는 문제가 되기 직전에) 사람을 호출하는 서비스라면 모니터링이 적어도 꽤 괜찮은 수준이라고 적혀 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 네 가지 황금 신호 (four golden signals)</div>
+  지연은 요청 하나를 처리하는 데 걸린 시간, 트래픽은 시스템에 걸린 수요(예: 초당 HTTP 요청 수), 에러는 실패한 요청의 비율, 포화도는 서비스가 얼마나 "가득" 찼는지예요. 포화도는 가장 빠듯한 자원을 중심으로 봅니다. 메모리가 빠듯한 시스템이면 메모리를, I/O가 빠듯하면 I/O를 봐요.
+</div>
+<p>에러의 정의에는 눈여겨볼 대목이 있어요. 책은 실패를 세 가지로 나눕니다. HTTP 500 같은 명시적인 실패, HTTP 200으로 성공했다고 답했지만 내용이 틀린 암묵적인 실패, 그리고 정책으로 정한 실패예요. 마지막 것의 예로 책은 "응답 시간 1초를 약속했다면 1초를 넘긴 요청은 모두 에러"를 들어요. 두 번째 종류는 응답 코드만 봐서는 잡히지 않아요. 예전에 쓴 <a href="https://dding-shark.tistory.com/460">모든 대시보드가 초록불인데, 주문은 실패하고 있었다</a>에서 큐 뒤의 처리가 실패하는데도 200이 돌아오던 사례를 더 깊이 다뤘어요.</p>
+<p>제가 보기에 6417의 Cluster CPU·Memory·Disk Usage 칸은 이 넷 중 포화도에 가까운 패널이에요. 클러스터가 얼마나 찼는지를 보여 주려는 칸이니까요(이 칸이 실제로 무엇을 재는지는 5절에서 다시 봐요). 지연·트래픽·에러는 요청을 받는 서비스에서 재는 값이라 아직 앱을 올리지 않은 이 클러스터의 대시보드에는 없어요. 관측 도구를 깔았다고 해서 네 신호가 저절로 생기지는 않는다는 뜻이기도 합니다.</p>
+
+<h3>관측성: 미리 준비하지 않은 질문에 답할 수 있나</h3>
+<p>OpenTelemetry의 관측성 입문 문서에서는 관측성을 이렇게 정의해요. 시스템의 내부 동작을 몰라도 그 시스템에 질문을 던질 수 있게 해서 시스템을 바깥에서 이해하게 해 주는 성질이라고요. 이어서 관측성이 처음 보는 문제, 즉 "무엇을 모르는지도 모르는 문제(unknown unknowns)"를 쉽게 조사하고 다룰 수 있게 해 주고 "왜 이런 일이 일어나나"라는 질문에 답하도록 돕는다고 적습니다(<a href="https://opentelemetry.io/docs/concepts/observability-primer/">OpenTelemetry: Observability primer</a>).</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 관측성 (observability)</div>
+  시스템이 밖으로 내놓는 출력만 보고 안의 상태를 얼마나 잘 알아낼 수 있는지를 뜻해요. CNCF 백서는 제어 이론의 정의를 가져와 설명하고 OpenTelemetry 문서는 내부 동작을 몰라도 시스템에 질문을 던져 답을 얻을 수 있는 성질이라고 풀어요. 강의에서 말한 "옵저버빌리티"와 같은 말입니다.
+</div>
+<p>CNCF TAG Observability가 2023년 10월에 낸 관측성 백서 1.0은 정의를 제어 이론에서 가져와요(<a href="https://github.com/cncf/tag-observability/blob/whitepaper-v1.0.0/whitepaper.md">CNCF Observability Whitepaper 1.0</a>). 관측성은 시스템의 외부 출력에 대한 지식으로 내부 상태를 얼마나 잘 추론할 수 있는지를 재는 척도라고요. 덜 이론적으로는 사람과 기계가 시스템의 상태를 관찰하고 이해하고 그에 따라 행동할 수 있게 해 주는 시스템의 성질이라고 풀어 씁니다. 모니터링과의 차이도 한 문장으로 적어 둬요. 모니터링은 "무엇을 모르는지 아는 문제(known unknowns)"를 잡아내는 시스템으로 불리곤 하고 관측성은 거기에 더해 "무엇을 모르는지도 모르는 문제(unknown unknowns)"까지 찾아내고 따져 볼 수 있는 쪽을 강조한다고요. 이 백서를 펴낸 저장소는 지금 보관(archived) 상태라 읽기 전용이지만 1.0 본문은 태그로 남아 있어요.</p>
+<p>오늘 장면으로 옮기면 차이가 분명해져요. "노드 디스크 사용률이 80%를 넘었나"는 미리 패널과 경고를 만들어 둘 수 있는 질문이에요. 무엇을 모르는지 알고 있으니까요. 반면 "node-exporter 파드가 Running인데 왜 수집 목록에 없지?"는 아무도 미리 패널로 만들어 두지 않은 질문이었어요. 답을 찾으려면 EndpointSlice(Service가 고른 파드 주소 목록)가 비어 있는지 보고 Service와 파드의 네임스페이스를 비교하고 Service의 주석을 열어 봐야 했습니다. 다행히 이 정보는 모두 API 서버에 있었어요. OpenTelemetry 문서에는 애플리케이션이 "제대로 계측됐다"고 말할 수 있는 기준이 이렇게 적혀 있어요. 문제를 조사하려고 계측을 더 붙일 필요가 없을 만큼 필요한 정보를 이미 다 갖고 있는 상태라고요.</p>
+<p>백서에는 오늘 저녁의 장면과 그대로 겹치는 문단도 있어요. 처음 시작할 때는 남의 작업을 복사하기 쉽고 Helm 차트나 Ansible 플레이북, Terraform 모듈 같은 예제를 하나 돌리면 몇 분 만에 관측 스택이 떠서 돌아간다고 해요. 백서는 그런 스크립트를 쓰지 말라는 뜻은 아니라고 하면서도 관측성은 예쁘고 반짝이는 도구를 쓰는 일만이 아니라고 분명히 적어요. 시스템에서 어떤 출력이 나오고 있는지 알고 있어야 하고 무엇보다 목표가 있어야 한다고요. 목표 없이 "언젠가 필요할지 모르니" 데이터를 하나씩 더 모으다 보면 관측 시스템이 아니라 데이터 레이크를 짓게 된다고 경고합니다. <span class="obsv-mark">강의 매니페스트 세 폴더를 apply 하자 스택은 몇 분 만에 떴지만 노드 수치가 어디서 들어오고 대시보드가 무엇을 묻는지는 따로 확인하기 전까지 아무도 몰랐어요.</span></p>
+<p>모니터링과 관측성의 구분은 예전에 쓴 <a href="https://dding-shark.tistory.com/459">관찰 가능성은 로그를 쌓는 일이 아니다</a>에서 신호마다 질문을 나눠 맡기는 쪽으로 더 깊이 다뤘어요. 이 글에서는 두 말을 이렇게 구분해서 쓸게요. 모니터링은 미리 정한 질문을 계속 묻는 일이고 관측성은 미리 정하지 않은 질문에도 답할 수 있도록 시스템이 충분한 출력을 내놓는 성질이에요. 둘 중 하나를 고르는 관계는 아니에요. "있어야 할 대상이 다 있나"를 계속 묻는 모니터링이 있었다면 9100이 빠진 것을 바로 알았을 테고 왜 빠졌는지는 API 서버에 남은 오브젝트를 뒤져서 찾을 수 있었어요.</p>
+
+<h2>3. 쿠버네티스에서는 증거가 먼저 사라진다</h2>
+
+<p>그렇다면 쿠버네티스에서는 왜 이게 더 필요할까요. kubectl get으로 상태를 보고 describe로 이벤트를 보고 logs로 로그를 보면 되지 않을까요. 1~7편에서 클러스터를 살필 때 쓴 도구도 대부분 이것들이었어요. 그런데 이 도구들은 모두 "지금 클러스터에 남아 있는 것"만 보여 줘요. 그리고 쿠버네티스에서는 무언가가 클러스터에 남아 있는 기간이 생각보다 짧습니다. 문서로 확인한 사실을 하나씩 볼게요.</p>
+
+<h3>파드는 바뀌고 같은 자리로 돌아오지 않는다</h3>
+<p>파드 수명 문서에서는 파드를 영속적인 것이 아니라 비교적 일시적인 존재로 본다고 해요(<a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/">Kubernetes: Pod Lifecycle</a>). UID로 구분되는 파드 하나는 다른 노드로 "다시 스케줄"되지 않고 거의 같은 새 파드로 대체돼요. 새 파드는 이름이 같을 수도 있지만 UID는 다르고 쿠버네티스는 대체 파드가 이전 파드와 같은 노드에 놓인다고 보장하지 않아요. Service 문서는 여기에 하나를 더합니다. 파드마다 자기 IP를 받고 한 Deployment를 이루는 파드 묶음이 어느 순간과 바로 다음 순간에 다를 수 있다고요(<a href="https://kubernetes.io/docs/concepts/services-networking/service/">Kubernetes: Service</a>).</p>
+<p>오늘도 그랬어요. 11편에서 node-exporter DaemonSet을 고쳐 다시 적용하자 기존 파드 세 개(6z7xv, dhpln, dp4qx)가 모두 사라지고 이름이 다른 파드 네 개(47twj, 9vx2k, n9tgx, ws9hd)가 떴어요. Prometheus의 수집 대상은 파드 IP와 포트로 적히기 때문에 파드가 바뀌면 대상도 바뀝니다. 주소를 고정해 두고 지켜보는 방식으로는 대상을 따라갈 수 없어서 Prometheus는 API 서버에서 대상을 계속 새로 받아 오는 서비스 디스커버리를 써요. 1절에서 본 대로, 그 디스커버리가 고르지 못한 대상은 목록에 없습니다.</p>
+
+<h3>지운 파드는 kubectl로 찾을 수 없다</h3>
+<p>1·2편에서 본 대로 kubectl은 API 서버에 지금 적혀 있는 오브젝트를 읽어 와요. 지운 오브젝트는 목록에 없고 바뀌기 전의 값은 보여 주지 않아요. 7편에서는 그 "지금 값"조차 재부팅 전에 적힌 값일 수 있다는 것을 봤습니다. 이번에는 Headlamp를 kube-system에서 전용 네임스페이스로 옮길 때(10편) helm uninstall로 지운 파드 하나를 따라가 봤어요. 아래는 옮긴 직후 admin-user 토큰으로 Headlamp에 로그인했을 때의 개요 화면이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/10/headlamp-admin-user-overview.png" alt="Headlamp 개요 화면. CPU 8 단위, 메모리 15.25 GB, 파드 16/16, 노드 4/4가 100%로 표시되고 아래 경고 이벤트 목록(16건)에 headlamp 네임스페이스의 headlamp-86c49cb4f4-9srjd가 24초 전, kube-system의 headlamp-86c49cb4f4-lpwl8이 8분 23초 전에 Readiness probe failed, connection refused로 Unhealthy를 남긴 기록이 보인다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 위쪽 개요는 지금 상태(파드 16/16, 노드 4/4)를, 아래 이벤트는 최근 기록을 보여 준다. 두 번째 줄의 파드는 이 화면을 찍을 때 이미 지워진 뒤였다</div>
+
+<p>이벤트 목록의 두 번째 줄을 보세요. kube-system의 <code style="font-family:Menlo,monospace;font-size:14px;">headlamp-86c49cb4f4-lpwl8</code>이 8분 23초 전에 readiness probe에 실패했다는 기록이에요. 이 파드는 화면을 찍기 직전 helm uninstall로 지워졌는데 이벤트는 그대로 남아 있었어요. 이 글을 쓰면서 같은 파드를 다시 조회했습니다.</p>
+<div class="obsv-code">mac$ date '+%H:%M:%S %Z'
+21:02:41 KST
+
+mac$ kubectl get events -A --field-selector reason=Unhealthy -o custom-columns=NS:.metadata.namespace,OBJ:.involvedObject.name,LAST:.lastTimestamp,COUNT:.count
+NS            OBJ                         LAST                   COUNT
+headlamp      headlamp-86c49cb4f4-9srjd   2026-11-09T11:14:10Z   1
+kube-system   headlamp-7c58fdf68b-9bdfk   2026-11-09T11:05:33Z   2
+kube-system   headlamp-86c49cb4f4-lpwl8   2026-11-09T11:06:11Z   1
+
+mac$ kubectl get events -A --sort-by=.lastTimestamp -o custom-columns=LAST:.lastTimestamp | sed -n 2p   # 가장 오래된 이벤트
+2026-11-09T11:05:01Z
+
+mac$ kubectl -n kube-system get pod headlamp-86c49cb4f4-lpwl8
+Error from server (NotFound): pods "headlamp-86c49cb4f4-lpwl8" not found
+
+mac$ kubectl -n kube-system logs headlamp-86c49cb4f4-lpwl8
+error: error from server (NotFound): pods "headlamp-86c49cb4f4-lpwl8" not found in namespace "kube-system"</div>
+<p>&rarr; 21시 2분 기준으로 파드도, 그 파드의 로그도 이미 없었는데 그 파드가 20:06:11(UTC 11:06:11)에 readiness probe에 실패했다는 이벤트는 아직 남아 있었다는 뜻이에요. 클러스터 전체에서 가장 오래된 이벤트는 20:05:01이었고 그보다 앞선 이벤트는 하나도 없었습니다.</p>
+
+<h3>이벤트는 1시간 뒤 사라진다</h3>
+<p>이벤트가 언제까지 남는지는 kube-apiserver의 <code style="font-family:Menlo,monospace;font-size:14px;">--event-ttl</code> 플래그가 정해요. 레퍼런스 문서에 기본값은 <code style="font-family:Menlo,monospace;font-size:14px;">1h0m0s</code>, 설명은 "이벤트를 보관하는 시간"으로 적혀 있어요(<a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/">Kubernetes: kube-apiserver</a>). Event API 레퍼런스의 설명은 더 분명해요. 이벤트는 보관 기간이 정해져 있고 같은 Reason의 이벤트가 계속 존재하리라고 기대하면 안 되며 참고용이고 최선을 다할 뿐인(best-effort) 보조 데이터로 다뤄야 한다고요(<a href="https://kubernetes.io/docs/reference/kubernetes-api/core/event-v1/">Kubernetes: Event v1</a>).</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 이벤트 (Event)</div>
+  쿠버네티스 구성 요소가 "무슨 일이 있었다"를 API 서버에 남기는 오브젝트예요. 스케줄링, 이미지 pull, probe 실패 같은 기록이 여기에 쌓이고 kubectl describe 출력의 아래쪽이나 kubectl get events로 볼 수 있어요. 2편에서 Deployment 하나가 파드가 되는 과정을 따라갈 때 본 일곱 줄도 이벤트였습니다. 기본값으로는 1시간이 지나면 사라져요.
+</div>
+<p>우리 클러스터에 기본값이 그대로 적용돼 있는지 확인하고 1시간이 지난 뒤 같은 이벤트를 다시 조회했어요.</p>
+<div class="obsv-code">master$ sudo grep -c -- '--event-ttl' /etc/kubernetes/manifests/kube-apiserver.yaml
+0
+
+mac$ date '+%H:%M:%S %Z'
+21:08:12 KST
+
+mac$ kubectl get events -A --field-selector reason=Unhealthy -o custom-columns=NS:.metadata.namespace,OBJ:.involvedObject.name,LAST:.lastTimestamp,COUNT:.count
+NS         OBJ                         LAST                   COUNT
+headlamp   headlamp-86c49cb4f4-9srjd   2026-11-09T11:14:10Z   1
+
+mac$ kubectl get events -A --sort-by=.lastTimestamp -o custom-columns=LAST:.lastTimestamp | sed -n 2p   # 가장 오래된 이벤트
+2026-11-09T11:14:09Z</div>
+<p>&rarr; kube-apiserver 정적 파드 매니페스트에 <code style="font-family:Menlo,monospace;font-size:14px;">--event-ttl</code>이 없으니 기본값 1시간이 적용되고 21시 8분에는 kube-system의 Unhealthy 이벤트 두 건이 목록에서 빠졌다는 뜻이에요. 남은 것은 20:14:10에 생긴 headlamp 네임스페이스의 한 건뿐이었습니다.</p>
+<p>이 시점부터 lpwl8이라는 파드가 있었다는 사실은 kubectl로 찾을 수 있는 어디에도 남지 않았어요. Headlamp 화면을 다시 열어도 그 줄은 없을 거예요. Headlamp는 API 서버에서 이벤트를 읽어 보여 주는 화면이라 API 서버에 없는 이벤트를 보여 줄 수 없기 때문입니다.</p>
+
+<h3>로그는 파드와 함께 사라질 수 있다</h3>
+<p>쿠버네티스의 로그 아키텍처 문서는 이 문제를 정면으로 다뤄요(<a href="https://kubernetes.io/docs/concepts/cluster-administration/logging/">Kubernetes: Logging Architecture</a>). 컨테이너 엔진이나 런타임이 기본으로 주는 기능은 완전한 로깅 해법으로는 대개 부족하다고 하고 컨테이너가 죽거나 파드가 축출되거나 노드가 죽었을 때도 앱 로그를 보고 싶을 것이라고 예를 들어요. 그래서 클러스터에서는 로그의 저장소와 수명이 노드·파드·컨테이너와 독립적이어야 하고 이런 방식을 클러스터 수준 로깅이라고 부른다고 해요. 그런데 쿠버네티스는 로그 데이터를 저장할 곳을 직접 제공하지 않아요.</p>
+<p>문서에 적힌 기본 동작은 이래요. 파드가 노드에서 축출되면 그 파드의 컨테이너들도 로그와 함께 축출돼요. 컨테이너가 재시작하면 kubelet은 종료된 컨테이너 하나를 로그와 함께 남겨 두고 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs --previous</code>로 직전 인스턴스의 로그를 볼 수 있어요. 로그 파일은 kubelet 설정 <code style="font-family:Menlo,monospace;font-size:14px;">containerLogMaxSize</code>(기본 10Mi)와 <code style="font-family:Menlo,monospace;font-size:14px;">containerLogMaxFiles</code>(기본 5)에 따라 돌려 쓰는데 kubectl logs로는 가장 최근 파일의 내용만 볼 수 있어요. 문서의 예를 따르면 파드가 로그를 40MiB 썼고 kubelet이 10MiB마다 파일을 돌렸다면 kubectl logs로 볼 수 있는 양은 많아야 10MiB입니다.</p>
+<p>위에서 lpwl8의 로그를 조회했을 때 NotFound가 나온 것도 같은 구조 때문이에요. 오류 문구대로 kubectl logs는 먼저 그 이름의 파드를 찾고 파드 오브젝트가 없으면 거기서 멈춥니다. 노드 디스크에 로그 파일이 남았는지는 확인하지 않았지만 남았더라도 kubectl로는 닿을 수 없었어요.</p>
+
+<h3>CPU·메모리 수치도 기본으로는 없다</h3>
+<p>그럼 kubectl top은 어떨까요. 우리 클러스터에서 쳐 보면 이렇게 끝나요.</p>
+<div class="obsv-code">master$ kubectl top nodes
+error: Metrics API not available
+
+master$ kubectl get apiservices | grep -i metrics || echo '(metrics.k8s.io 없음)'
+(metrics.k8s.io 없음)</div>
+<p>&rarr; Metrics API를 내놓는 구성 요소가 클러스터에 없어서 kubectl top이 쓸 데이터가 없다는 뜻이에요.</p>
+<p>쿠버네티스 Observability 개념 문서에 따르면 Metrics API는 노드와 파드의 CPU·메모리 사용량을 주는 API이고 kubectl top과 HorizontalPodAutoscaler가 이 API를 써요. v1.37에서 Stable이 됐지만 쓰려면 클러스터에 Metrics Server나 다른 구현체가 돌고 있어야 합니다. 문서에는 이 API가 자동 확장과 기본적인 점검에 필요한 자원 지표만 일부러 제공하고 완전한 모니터링 파이프라인을 대신하지 않는다고 적혀 있어요(<a href="https://kubernetes.io/docs/concepts/cluster-administration/observability/">Kubernetes: Observability</a>). 리소스 메트릭 파이프라인 문서의 그림을 보면 kubelet에 들어 있는 cAdvisor가 컨테이너 수치를 모으고 metrics-server가 각 kubelet에서 그 수치를 가져와 API 서버를 통해 Metrics API로 내놓아요(<a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/">Kubernetes: Resource metrics pipeline</a>). 이 클러스터를 kubeadm으로 만들면서 metrics-server는 따로 설치하지 않았어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Metrics API와 metrics-server</div>
+  Metrics API는 노드·파드의 CPU·메모리 사용량을 쿠버네티스 API로 조회하게 해 주는 API예요. 이 API를 실제로 내놓는 구성 요소가 metrics-server이고 설치하지 않으면 kubectl top은 "Metrics API not available"로 끝나요. 자동 확장에 필요한 최소한의 수치만 다루기 때문에 지난 추이를 보거나 다른 수치를 보려면 Prometheus 같은 별도 파이프라인이 필요합니다.
+</div>
+
+<p>지운 파드 하나에 일어난 일을 시간표로 모으면 그림 5가 돼요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k8arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">kube-system의 Headlamp 파드 하나가 남긴 기록</text>
+
+<path d="M111 52 C 112 120, 110 200, 111 296" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="4 6" stroke-linecap="round"/>
+<path d="M179 52 C 180 120, 178 200, 179 296" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="4 6" stroke-linecap="round"/>
+<path d="M587 52 C 588 120, 586 200, 587 296" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="4 6" stroke-linecap="round"/>
+<path d="M638 52 C 639 120, 637 200, 638 296" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="4 6" stroke-linecap="round"/>
+
+<text x="125" y="70" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">파드 오브젝트 (kubectl get)</text>
+<path d="M111 88 C 130 87, 160 89, 179 88" fill="none" stroke="#4a7fb5" stroke-width="10" stroke-linecap="round"/>
+<path d="M190 88 C 330 89, 480 87, 670 88" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="300" y="82" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="start">20:14 이후 NotFound</text>
+
+<text x="125" y="128" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">컨테이너 로그 (kubectl logs)</text>
+<path d="M111 146 C 130 145, 160 147, 179 146" fill="none" stroke="#4a7fb5" stroke-width="10" stroke-linecap="round"/>
+<path d="M190 146 C 330 147, 480 145, 670 146" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="300" y="140" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="start">20:14 이후 NotFound</text>
+
+<text x="125" y="188" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="start">Unhealthy 이벤트 (readiness probe 실패)</text>
+<path d="M111 206 C 250 205, 480 207, 621 206" fill="none" stroke="#e5a33c" stroke-width="10" stroke-linecap="round"/>
+<text x="400" y="232" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18" text-anchor="middle">기록되고 1시간 동안 남아 있었다</text>
+<text x="584" y="178" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="end">21:02 있음</text>
+<text x="646" y="211" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="start">없음</text>
+<text x="190" y="262" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">20:14:34 Headlamp 화면에 "8m23s 전"으로 보임 (그림 4)</text>
+
+<path d="M45 298 C 250 299, 450 297, 680 298" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k8arr2)"/>
+<path d="M60 292 C 60 296, 61 300, 60 304" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<path d="M315 292 C 315 296, 316 300, 315 304" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<path d="M570 292 C 570 296, 571 300, 570 304" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="60" y="320" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">20:00</text>
+<text x="315" y="320" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">20:30</text>
+<text x="570" y="320" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">21:00</text>
+
+<text x="104" y="344" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">20:06 probe 실패</text>
+<text x="196" y="366" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">20:14 helm uninstall</text>
+<text x="572" y="344" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">21:02 조회</text>
+<text x="640" y="366" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">21:08 조회</text>
+
+<text x="350" y="398" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 1시간 뒤에는 kubectl로 찾을 수 있는 이 파드의 기록이 하나도 없었다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 파드를 지운 순간 오브젝트와 로그가 사라졌고 이벤트는 기록된 지 1시간을 채운 뒤 사라졌다</div>
+
+<p>정리하면 쿠버네티스에서 문제의 증거는 클러스터 안에 오래 머물지 않아요. 파드는 다른 이름과 IP로 바뀌고 kubectl은 지금 값만 보여 줘요. 이벤트는 1시간, 로그는 파드가 있는 동안만 남아요. 기본 설치에는 kubectl top이 쓸 수치조차 없었습니다. <span class="obsv-mark">문제를 늦게 알아챌수록 클러스터 안에서 찾을 수 있는 증거는 줄어들어요.</span> 그래서 관측 도구가 가장 먼저 할 일은 증거를 파드보다 오래 남는 곳으로 옮겨 두는 거예요. 메트릭은 Prometheus가, 로그는 ELK가, 리소스 변경 알림은 Kubewatch가, 트레이스는 Jaeger가 맡는 식입니다. 다만 6절에서 보겠지만 오늘 띄운 Prometheus 자신은 아직 그런 곳이 아니었어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 이벤트와 로그는 사라지기 전에 밖으로 보내요</div>
+  kubectl get events로 볼 수 있는 것은 기본값으로 최근 1시간뿐이에요. 장애를 회고하면서 이벤트를 다시 봐야 한다면 그 전에 클러스터 밖으로 옮겨 두는 경로가 있어야 해요. 강의 도구 중 Kubewatch는 README의 설명대로 클러스터의 리소스 변경을 지켜보다가 Slack이나 웹훅 같은 알림 채널로 보내는 도구예요(<a href="https://github.com/robusta-dev/kubewatch">kubewatch</a>). 로그는 쿠버네티스 Observability 문서에 적힌 대로 대부분의 클러스터에서 노드마다 로그 수집 에이전트(예: Fluent Bit, Fluentd)를 돌려 로그 파일을 읽고 중앙 로그 저장소로 보내요. <code style="font-family:Menlo,monospace;font-size:14px;">--event-ttl</code> 값을 바꾸는 방법도 있지만 이 실습에서는 바꿔 보지 않았어요.
+</div>
+
+<h2>4. 무엇을 볼까: 신호 다섯 종류와 강의 도구 일곱 개</h2>
+
+<p>증거를 옮겨야 한다면 무엇을 옮길지부터 정해야 해요. CNCF 백서에서는 시스템의 출력 중 사람이나 기계가 지식을 끌어낼 수 있는 것을 신호(signal)라고 불러요. 그리고 흔히 "관측성의 세 기둥(three pillars)"이라고 부르는 메트릭·로그·트레이스를 "주요 신호(primary signals)"라고 부르자고 제안합니다. 이유는 두 가지예요. 첫째, 기둥이라는 말에는 늘 다 갖춰야 하는 토대라는 뜻이 담겨 있지만 실제로는 셋이 동시에 꼭 필요하지 않아요. 신호 한두 개에 다른 신호를 조금 섞는 것도 비용 면에서 타당한 선택일 수 있다고 하고 그 예로 메트릭과 로그에 필요할 때만 쓰는 트레이스를 들어요. 둘째, 프로파일과 크래시 덤프 같은 신호가 새로 자리를 잡아 가고 있어요.</p>
+<p><b>메트릭</b>은 데이터를 숫자로 나타낸 것이에요. 원래 숫자인 데이터(온도)와 숫자로 집계한 데이터(웹 서버가 받은 HTTP 요청 수)가 있고 메트릭 이름과 라벨 묶음, 그리고 시점별 값으로 이뤄져요. 이름과 라벨이 같은 것끼리 시계열 하나가 됩니다(CNCF 백서). OpenTelemetry 문서에서는 메트릭을 인프라나 애플리케이션의 숫자 데이터를 일정 기간 집계한 것이라고 정의해요. 1절에서 <code style="font-family:Menlo,monospace;font-size:14px;">kube_node_status_allocatable</code>이라는 이름 하나에 시계열이 32개였던 것도 라벨 조합마다 시계열이 하나씩 생기기 때문이에요.</p>
+<p><b>로그</b>는 운영체제·애플리케이션·서버 같은 곳의 사용 양상과 활동, 동작을 적은 텍스트 기록이에요. 백서는 로그가 자유 형식 텍스트라서 의미를 뽑아내기 어렵다며 정말 중요한 데이터는 로그에만 두지 말라고 해요. 로그문은 전달이 보장되지 않기 때문이에요. OpenTelemetry 문서는 로그에 대개 어디서 호출됐는지 같은 맥락이 없어서 코드 실행을 따라가기에는 부족하고 스팬에 포함되거나 트레이스·스팬과 연결될 때 훨씬 쓸모가 커진다고 해요.</p>
+<p><b>트레이스</b>는 요청 하나가 여러 서비스를 거쳐 간 경로를 기록해요. 백서는 분산 트레이싱을 사용자가 시작한 요청 같은 분산 트랜잭션 동안, 그리고 그 요청 때문에 건드린 하위 마이크로서비스와 데이터 저장소 전체에서 무슨 일이 있었는지 이해하는 기법이라고 설명해요. 예시 화면으로는 Jaeger UI를 실었어요. 트레이스는 스팬의 트리이고 스팬은 자신을 시작한 부모 스팬을 기록하므로 서비스·큐·데이터베이스 사이의 인과 관계를 세울 수 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 트레이스와 스팬 (trace, span)</div>
+  스팬은 작업 하나의 단위예요(예: HTTP 요청 하나를 처리하는 일, DB 질의 하나). 트레이스는 요청 하나가 거쳐 간 스팬들을 부모·자식 관계로 이은 묶음입니다. 서비스 사이로 트레이스 정보를 실어 보내는 일을 컨텍스트 전파라고 해요. CNCF 백서에 따르면 W3C Trace Context가 그 표준 HTTP 헤더와 값 형식을 정해요.
+</div>
+<p><b>프로파일</b>은 코드의 어느 부분이 CPU·메모리 같은 자원을 얼마나 쓰는지 보여 주는 신호예요. 백서는 다른 도구가 성능 문제가 "있다"는 것을 보여 줄 때 프로파일을 계속 모으면 "왜" 그런지까지 파고들 수 있다고 해요. <b>덤프</b>는 프로세스가 죽은 순간의 메모리 이미지예요. 백서에는 클라우드 네이티브 환경에서 죽은 앱(예: 파드)이 재시작하기 전에 코어 덤프 파일을 영구 볼륨에 써 둘 수 있게 도와야 한다고 적혀 있어요. 3절의 "증거가 먼저 사라진다"는 문제가 덤프에도 그대로 있다는 뜻입니다.</p>
+<p>쿠버네티스 Observability 문서도 같은 틀을 써요. 쿠버네티스에서 관측성은 메트릭·로그·트레이스를 모으고 분석해 클러스터의 내부 상태와 성능, 건강을 더 잘 이해하는 과정이라고 정의해요. 그리고 신호가 어디서 나오는지를 구체적으로 적어 둡니다. kube-apiserver, kube-controller-manager, kube-scheduler, kube-proxy, kubelet이 /metrics 엔드포인트에서 Prometheus 형식으로 메트릭을 내고 kubelet은 /metrics/cadvisor, /metrics/resource, /metrics/probes도 낸다고요. kube-state-metrics 같은 애드온은 쿠버네티스 오브젝트의 상태로 이 신호를 보강한다고 해요.</p>
+<p>이 목록을 1절의 수집 대상과 맞춰 보면 오늘 무엇이 보였고 무엇이 안 보였는지가 정리돼요. 문서가 /metrics를 낸다고 적은 다섯 구성 요소 중 우리 목록에 있던 것은 API 서버(kubernetes-apiservers)와 kubelet(kubernetes-nodes, kubernetes-cadvisor) 둘이에요. kube-scheduler, kube-controller-manager, kube-proxy는 강의 설정의 어느 수집 작업에도 걸리지 않아 목록에 없었어요. 오브젝트 상태는 kube-state-metrics가, 노드 운영체제 수치는 고친 뒤의 node-exporter가 맡았습니다. 이번에도 목록에 없는 구성 요소는 빨간 줄로 보이지 않았어요.</p>
+<p>강의에서 꼽은 도구 일곱 개를 이 신호들 위에 놓아 보면 그림 6이 돼요. 각 도구가 하는 일은 공식 문서와 README의 설명만 옮겼어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 500" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">신호마다 모으는 곳과 보는 곳이 따로 있다</text>
+<text x="85" y="62" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">신호</text>
+<text x="245" y="62" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">어디서 나오나</text>
+<text x="425" y="62" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">모으고 저장</text>
+<text x="600" y="62" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">보여 주고 알리기</text>
+
+<path d="M20 74 C 230 71, 470 76, 685 73 C 687 95, 684 115, 686 134 C 470 137, 230 132, 21 135 C 18 115, 21 95, 20 74 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="110" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5" text-anchor="middle">상태·이벤트</text>
+<text x="245" y="110" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">API 서버의 오브젝트·이벤트</text>
+<text x="425" y="110" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">API 서버 (이벤트는 1시간)</text>
+<text x="600" y="99" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">Dashboard(은퇴) → Headlamp</text>
+<text x="600" y="122" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">Kubewatch → 웹훅 알림</text>
+
+<path d="M21 144 C 230 146, 470 141, 686 144 C 684 165, 686 185, 685 205 C 470 207, 230 203, 20 205 C 22 185, 19 165, 21 144 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="181" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5" text-anchor="middle">메트릭</text>
+<text x="245" y="170" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">/metrics 엔드포인트</text>
+<text x="245" y="192" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">API 서버·kubelet·exporter</text>
+<text x="425" y="181" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">Prometheus (pull로 수집)</text>
+<text x="600" y="181" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">Grafana</text>
+
+<path d="M20 215 C 230 212, 470 217, 685 214 C 687 235, 684 255, 686 275 C 470 278, 230 273, 21 276 C 18 255, 21 235, 20 215 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="8 8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="251" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">로그</text>
+<text x="245" y="251" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">stdout·stderr, /var/log</text>
+<text x="425" y="241" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">ELK: Elasticsearch</text>
+<text x="425" y="263" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">(분산 색인·검색)</text>
+<text x="600" y="251" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">ELK: Kibana (화면)</text>
+
+<path d="M21 285 C 230 287, 470 282, 686 285 C 684 306, 686 326, 685 346 C 470 348, 230 344, 20 346 C 22 326, 19 306, 21 285 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-dasharray="8 8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="322" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">트레이스</text>
+<text x="245" y="322" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">계측한 앱이 낸 스팬</text>
+<text x="425" y="322" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">Jaeger (수집)</text>
+<text x="600" y="322" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">Jaeger (화면)</text>
+
+<path d="M20 356 C 230 353, 470 358, 685 355 C 687 374, 684 391, 686 408 C 470 411, 230 406, 21 409 C 18 391, 21 374, 20 356 Z" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="1 7" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="388" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272" text-anchor="middle">프로파일·덤프</text>
+<text x="245" y="388" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">런타임, 죽은 프로세스</text>
+<text x="512" y="388" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">강의 도구 목록에는 없음</text>
+
+<path d="M160 420 C 330 418, 520 422, 686 419 C 688 430, 685 441, 687 452 C 520 454, 330 450, 161 453 C 158 441, 161 430, 160 420 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="85" y="442" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">세 신호 공통</text>
+<text x="423" y="442" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">OpenTelemetry: 앱 계측 + Collector가 텔레메트리를 받아 처리해 내보냄</text>
+
+<text x="350" y="485" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 이번 실습은 위 두 줄(실선)까지 왔다. 점선 줄은 다음 실습에서 채운다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. 신호마다 모으는 도구와 보는 화면이 따로 있다. 이번 실습은 상태·이벤트와 메트릭 두 줄까지 왔다</div>
+
+<p>Kubernetes Dashboard는 저장소가 보관 처리돼서 Headlamp로 대신했어요(9편). 둘 다 API 서버에서 오브젝트와 이벤트를 읽어 보여 주는 화면이라 신호로 치면 쿠버네티스가 스스로 남기는 상태 기록을 보는 도구예요. Prometheus는 메트릭을 pull로 모아 저장하고 질의하게 해 주고 Grafana는 그 결과를 그려요. Prometheus 개요 문서에도 수집한 데이터를 시각화하는 데 Grafana나 다른 API 소비자를 쓸 수 있다고 나와 있어요.</p>
+<p>ELK는 Elasticsearch, Logstash, Kibana의 머리글자예요. Elastic은 여기에 Beats를 더한 묶음을 Elastic Stack이라고 부르고 ELK Stack이라고도 한다고 적어요(<a href="https://www.elastic.co/elastic-stack">Elastic Stack</a>). 쿠버네티스 문서의 로깅 도구 목록에서는 Elasticsearch를 분산 로그 색인·검색 도구로 소개하고 Elastic은 Kibana를 데이터를 보여 주는 사용자 인터페이스라고 설명해요. Kubewatch는 클러스터의 리소스 변경을 지켜보다가 웹훅으로 알림을 보내는 도구이고 Jaeger는 쿠버네티스 문서의 표현대로 마이크로서비스의 분산 트레이스를 모아 보여 줘요.</p>
+<p>OpenTelemetry는 신호 하나에 속하지 않아요. OpenTelemetry 문서는 OpenTelemetry를 애플리케이션 코드를 계측해서 시스템을 관측 가능하게 만드는 수단이라고 소개하고 쿠버네티스 문서는 OpenTelemetry Collector가 트레이스를 포함한 텔레메트리를 받아 처리하고 내보낸다고 적어요. 쿠버네티스 1.37은 자기 구성 요소의 스팬을 OTLP(OpenTelemetry 프로토콜)로 내보낼 수도 있습니다.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 계측 (instrumentation)</div>
+  앱이나 구성 요소가 메트릭·로그·트레이스를 내놓도록 코드나 런타임에 수집 지점을 넣는 일이에요. Prometheus가 긁는 /metrics도 누군가 계측해 둔 결과입니다. 계측이 없으면 아무리 좋은 수집 도구를 깔아도 모을 것이 없어요.
+</div>
+<p>무엇부터 볼지는 백서에 권고가 있어요. 지금 무엇부터 할지 정해야 한다면 이미 가진 것부터 시작하라고요. 클라우드 네이티브 환경이라면 메트릭부터 시작할 수 있을 가능성이 크니 메트릭을 먼저 제대로 갖춘 뒤 다른 신호로 넓혀 가라고 해요. 그렇게 하는 쪽이 가치를 가장 빨리 얻고 비용 효율도 가장 좋을 것이라는 게 이유예요. 이번 실습에서 Prometheus·Grafana를 먼저 올리고 로그와 트레이스를 뒤로 미룬 순서는 이 권고와 맞아요. 다만 메트릭을 "제대로 갖춘다"는 말이 무슨 뜻인지는 1절에서 확인했어요. 목록에 오른 대상이 모두 up이라는 것만으로는 부족했습니다.</p>
+<p>클러스터가 아니라 그 위에서 도는 서비스를 볼 때는 2절의 네 가지 황금 신호가 출발점이에요. OpenTelemetry 문서는 여기에 사용자의 관점을 더해요. 신뢰성은 "서비스가 사용자가 기대하는 일을 하고 있나"라는 질문에 답하는 것이고 SLI는 서비스의 동작을 잰 값, SLO는 그 신뢰성을 조직과 다른 팀에 전하는 수단이라고 정의해요. SLI의 예로 웹 페이지가 뜨는 속도를 들고 좋은 SLI는 사용자의 관점에서 서비스를 잰다고 적어요. 오늘 클러스터에는 아직 사용자 요청을 받는 앱이 없어서 이 층은 앱을 올린 뒤 트레이스와 함께 볼 몫이에요. <span class="obsv-mark">무엇을 볼지는 도구가 아니라 누구의 질문에 답할지가 정해요.</span></p>
+
+<h2>5. 시각화를 만나야 판단할 수 있고 그 화면도 틀릴 수 있다</h2>
+
+<p>강의의 두 번째 문장으로 넘어갈게요. "옵저버빌리티가 비주얼라이제이션을 만나야 한다." 이 문장은 대시보드가 있으면 보기 편하다는 말로만 들릴 수도 있어요. 그런데 자료를 찾아보니 시각화는 모니터링의 정의 안에 들어 있는 일이었습니다.</p>
+<p>2절에서 본 SRE 책의 모니터링 정의는 데이터를 모으고 처리하고 집계하는 데서 끝나지 않고 "보여 주는(displaying)" 데까지 가요. 같은 장에서는 대시보드를 서비스의 핵심 지표를 요약해서 보여 주는 (대개 웹 기반의) 애플리케이션이라고 정의해요. 대시보드는 서비스에 관한 기본 질문에 답해야 하며 보통 네 가지 황금 신호를 어떤 형태로든 담는다고도 적었어요. CNCF 백서의 정의도 사람과 기계가 "관찰하고 이해하고 행동할 수 있게"였어요. 사람이 이해하려면 사람이 읽을 수 있는 모양이 필요합니다. 쿠버네티스 Observability 문서의 메트릭 파이프라인 그림도 Prometheus 수집기에서 시계열 저장소를 거쳐 "대시보드와 경고", "자동 조치"로 끝나요.</p>
+<p>숫자로 확인해 볼게요. 12편에서 고친 6417은 Cluster Pod Usage 5.23%, CPU Usage 23.1%, Memory Usage 1.58%, Disk Usage 21.9%를 보여 줬어요. CPU 칸 뒤에는 노드 4대의 할당 가능한 CPU 8코어와 파드들이 요청한 CPU 1.85코어라는 두 수치가 있고 그 두 수치는 다시 32개, 13개짜리 시계열을 라벨로 걸러 더한 결과예요. 파드 용량 440은 노드 4대 × 110입니다. 시계열 수십 개를 목록으로 받아서는 "클러스터에 여유가 있나"라는 기본 질문에 바로 답할 수 없지만 집계해서 그린 칸 하나로는 그 질문에 바로 답할 수 있어요. <span class="obsv-mark">시각화는 꾸미는 단계가 아니라 모은 데이터가 사람의 판단으로 넘어가는 단계예요.</span></p>
+<p>그런데 사람이 화면을 보고 판단한다는 것은 화면이 틀리면 판단도 틀린다는 뜻이기도 해요. 오늘 본 화면에서 틀릴 수 있는 지점을 네 가지 찾았어요.</p>
+<p><b>첫째, 분모가 보이지 않아요.</b> 1절의 "14개 전부 up"은 목록에 오른 대상만 센 값이었어요. 화면은 목록에 없는 것을 그리지 않습니다.</p>
+<p><b>둘째, 결과가 비어도 칸에 색이 칠해져요.</b> 그림 2의 Nodes Out of Disk 칸은 초록 바탕 위에 N/A를 띄웠어요. 이 칸의 질의는 <code style="font-family:Menlo,monospace;font-size:14px;">kube_node_status_condition{condition="OutOfDisk"}</code>를 세는데 우리 Prometheus에는 이 조건의 시계열이 없어서 결과가 비었어요. 그래도 패널의 바탕색은 초록으로 칠해졌습니다. 멀리서 보면 "디스크가 꽉 찬 노드 없음"으로 읽히는 화면이었어요.</p>
+<p><b>셋째, 수식이 패널 제목과 다른 것을 잴 수 있어요.</b> 6417 원본 JSON에서 패널 제목과 수식을 나란히 꺼내 봤어요.</p>
+<div class="obsv-code">mac$ jq -r '.. | objects | select(has("title") and has("targets")) | "\(.title)\t\([.targets[].expr] | join(" || "))"' grafana/kubernetes-cluster-prometheus_rev1.json | grep -E '^(Cluster CPU Usage|Nodes Unavailable|Jobs Succeeded)'
+Cluster CPU Usage	sum(kube_pod_container_resource_requests_cpu_cores{node=~"$node"}) / sum(kube_node_status_allocatable_cpu_cores{node=~"$node"})
+Nodes Unavailable	sum(kube_node_spec_unschedulable{node=~"$node"})
+Jobs Succeeded	sum(kube_job_status_succeeded{namespace=~"$namespace"})
+Jobs Succeeded	sum(kube_job_status_active{namespace=~"$namespace"})</div>
+<p>&rarr; "CPU Usage" 칸은 컨테이너가 요청한 CPU를 할당 가능한 CPU로 나누고 "Nodes Unavailable" 칸은 스케줄 불가 표시가 된 노드를 세며 제목이 같은 "Jobs Succeeded" 두 칸 중 두 번째는 실행 중(active)인 Job을 센다는 뜻이에요.</p>
+<p>kube-state-metrics 문서는 <code style="font-family:Menlo,monospace;font-size:14px;">kube_pod_container_resource_requests</code>를 컨테이너가 요청한 자원의 양으로, <code style="font-family:Menlo,monospace;font-size:14px;">kube_node_status_allocatable</code>을 시스템 데몬 몫을 떼고 파드에 할당할 수 있는 자원의 양으로 설명해요(<a href="https://github.com/kubernetes/kube-state-metrics/blob/v2.20.0/docs/metrics/workload/pod-metrics.md">kube-state-metrics: Pod metrics</a>, <a href="https://github.com/kubernetes/kube-state-metrics/blob/v2.20.0/docs/metrics/cluster/node-metrics.md">Node metrics</a>). 그러니 23.1%는 CPU를 실제로 23.1% 쓰고 있다는 뜻이 아니에요. 파드들이 요청해 둔 CPU가 할당 가능한 CPU의 23.1%라는 뜻입니다. 같은 문서는 <code style="font-family:Menlo,monospace;font-size:14px;">kube_node_spec_unschedulable</code>을 노드가 새 파드를 스케줄할 수 있는지를 나타내는 값으로 설명하고 노드의 상태 조건은 <code style="font-family:Menlo,monospace;font-size:14px;">kube_node_status_condition</code>이라는 다른 메트릭에 둬요. 그래서 Nodes Unavailable의 0은 "NotReady 노드가 없다"가 아니라 "스케줄을 막아 둔 노드가 없다"로 읽어야 해요. 4편에서 본 NotReady는 Ready 조건을 따로 봐야 보입니다. 두 번째 Jobs Succeeded는 제목을 잘못 붙인 경우였고 12편에서 우리 판을 만들며 제목을 고쳤어요.</p>
+<p><b>넷째, 빈칸을 0으로 덮고 싶어져요.</b> N/A가 보기 싫으면 질의 끝에 <code style="font-family:Menlo,monospace;font-size:14px;">or vector(0)</code>을 붙여 0을 띄울 수 있어요. 하지만 그러면 Job이 정말 0개인 경우와 수집이 끊겨 시계열이 없는 경우가 화면에서 똑같아져요. 그림 3에서 원인 넷을 가른 단서가 바로 그 빈칸이었습니다.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: N/A와 0은 다른 말이에요</div>
+  0은 "세어 봤더니 없다"이고 N/A는 "셀 대상이 없다"예요. 12편에서 Job을 하나 만들자 <code style="font-family:Menlo,monospace;font-size:14px;">kube_job_status_succeeded</code>의 결과가 0개에서 1개(hello 1)로 바뀌었어요. Job이 없으면 Job별 시계열 자체가 생기지 않기 때문이에요. 이렇게 "없음"이 정상인 칸도 있고 수집이 끊겨서 비는 칸도 있어요. 둘을 화면에서 구분하고 싶다면 N/A를 0으로 덮기보다 6절에서 볼 <code style="font-family:Menlo,monospace;font-size:14px;">absent()</code>로 "없음"을 따로 묻는 쪽이 안전해요. 대시보드는 질의 결과를 그릴 뿐, 그 질의가 무엇을 묻고 있는지는 그리지 않아요.
+</div>
+<p>이 마지막 문장은 예전에 쓴 <a href="https://dding-shark.tistory.com/460">모든 대시보드가 초록불인데, 주문은 실패하고 있었다</a>의 결론과도 같아요. 그 글에서는 "대시보드는 보고 있는 곳에만 불이 켜진다"는 것을 애플리케이션 쪽에서 확인했고 이번에는 같은 일을 클러스터 대시보드에서 확인했어요.</p>
+
+<h2>6. 관측 도구는 누가 관측하나</h2>
+
+<p>여기까지 오면 질문이 하나 남아요. 관측 도구는 클러스터를 지켜보는데 관측 도구 자신은 누가 지켜볼까요. 오늘 띄운 Prometheus, Grafana, node-exporter, kube-state-metrics는 모두 이 클러스터의 파드예요. 3절에서 본 일이 그대로 이 도구들에도 일어납니다.</p>
+
+<h3>관측 데이터도 파드 안에 있었다</h3>
+<p>강의 매니페스트의 Prometheus가 시계열을 어디에 쓰는지 봤어요.</p>
+<div class="obsv-code">mac$ grep -n -E 'storage|emptyDir' prometheus/prometheus-Deployment.yaml
+21:            - "--storage.tsdb.path=/prometheus/"
+27:            - name: prometheus-storage-volume
+34:        - name: prometheus-storage-volume
+35:          emptyDir: {}</div>
+<p>&rarr; Prometheus는 시계열 데이터베이스(TSDB)를 /prometheus/에 쓰고 그 경로에는 emptyDir 볼륨이 붙어 있다는 뜻이에요.</p>
+<p>쿠버네티스 볼륨 문서는 emptyDir을 이렇게 설명해요. 파드가 노드에 배정될 때 만들어지는 빈 볼륨이고 파드가 어떤 이유로든 노드에서 제거되면 emptyDir의 데이터는 영구히 삭제된다고요. 컨테이너가 죽는 것만으로는 파드가 노드에서 제거되지 않으니 컨테이너가 재시작해도 데이터는 남는다고 덧붙여요(<a href="https://kubernetes.io/docs/concepts/storage/volumes/">Kubernetes: Volumes</a>). Prometheus 저장소 문서에 따르면 보관 기간 플래그를 주지 않으면 기본 보관 기간은 15일이고 로컬 저장소는 클러스터링이나 복제를 하지 않아서 디스크나 노드 장애에 견디지 못한다고 해요(<a href="https://prometheus.io/docs/prometheus/latest/storage/">Prometheus: Storage</a>). 우리 Deployment에는 보관 기간을 따로 주지 않았으니 이 Prometheus는 최대 15일을 보관하되 파드가 그 노드에 있는 동안만 보관해요. Prometheus 파드가 다른 노드로 대체되면 오늘 저녁부터 모은 시계열도 같이 사라집니다. 3절의 결론이 "증거를 파드보다 오래 남는 곳으로 옮겨라"였는데 오늘 띄운 Prometheus는 아직 그런 곳이 아니었어요.</p>
+
+<h3>Prometheus는 자기 일을 보고한다</h3>
+<p>좋은 소식도 있어요. Prometheus는 자기가 일을 했는지를 스스로 보여 줘요. node-exporter를 고친 뒤 Prometheus 웹 화면의 Target health를 9100으로 걸러 본 모습이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/11/prometheus-targets-node-exporter.png" alt="Prometheus Target health 화면을 9100으로 거른 모습. kubernetes-service-endpoints 풀이 8 / 8 up이고 node-exporter 엔드포인트 4개가 kubernetes_namespace monitoring 라벨과 함께 UP 상태이며 Last scrape가 각각 5.477초, 6.606초, 7.906초, 8.447초 전, 수집 시간은 12ms, 5ms, 6ms, 5ms다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. 고친 뒤의 node-exporter 대상 4개. 마지막 수집이 몇 초 전이었는지가 Prometheus가 실제로 긁어 갔다는 증거다</div>
+
+<p>kubernetes-service-endpoints 풀이 8 / 8 up이고 그중 9100 대상 4개가 보여요. 각 줄의 Last scrape는 5.477초, 6.606초, 7.906초, 8.447초 전이고 수집에 걸린 시간은 12ms, 5ms, 6ms, 5ms였어요. 이 칸은 Prometheus가 대상을 찾아가 응답을 받았고 그게 몇 초 전이었는지를 스스로 적은 값이에요. pull 방식에서는 수집하는 쪽이 수집 결과를 기록하니 대상이 응답하지 않으면 그 사실도 Prometheus 쪽에 <code style="font-family:Menlo,monospace;font-size:14px;">up</code> 0으로 남아요. 1절의 수집 대상 14개에는 Grafana(3000)와 Prometheus 자신(9090)도 들어 있었어요. Grafana의 /metrics가 응답을 멈추면 Prometheus가 알아챌 수 있다는 뜻입니다.</p>
+<p>하지만 여기에는 한계가 둘 있어요. 하나는 1절에서 본 것이에요. 목록에 오르지 못한 대상은 <code style="font-family:Menlo,monospace;font-size:14px;">up</code> 0으로도 남지 않아요. 예전에 kind 클러스터에서 한 실험(<a href="https://dding-shark.tistory.com/595">앱이 죽으면 pull과 push는 다르게 조용해진다</a>)에서도 빨리 종료된 파드는 서비스 디스커버리 목록에서 바로 빠져 up이 0이 아니라 아예 없는 상태가 됐고 <code style="font-family:Menlo,monospace;font-size:14px;">up == 0</code> 경고는 울리지 않았어요. 다른 하나는 Prometheus 자신이 멈춘 경우예요. 멈춘 Prometheus는 자기가 멈췄다는 사실을 기록할 수 없어요. 그래서 관측 도구 바깥에서 한 번 더 확인하는 경로가 필요해요. SRE 책의 표현을 빌리면 사용자가 보는 것과 같은 바깥 동작을 시험하는 블랙박스 확인이에요. 1절의 수집 대상을 조회하기 전에 Mac에서 Prometheus API에 버전을 물은 curl(<code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/status/buildinfo</code>, 응답 3.16.0)도 가장 작은 블랙박스 확인이라고 볼 수 있어요.</p>
+
+<h3>"없음"을 묻는 질의</h3>
+<p>목록에 없는 것을 잡으려면 "없음"을 직접 묻는 질의가 필요해요. Prometheus의 <code style="font-family:Menlo,monospace;font-size:14px;">absent()</code> 함수는 넘겨받은 벡터에 원소가 있으면 빈 벡터를, 원소가 하나도 없으면 값이 1인 원소 하나를 돌려줘요. 문서에는 이 함수가 어떤 메트릭 이름과 라벨 조합의 시계열이 하나도 없을 때 경고하는 데 유용하다고 적혀 있어요(<a href="https://prometheus.io/docs/prometheus/latest/querying/functions/">Prometheus: Query functions</a>). 이 글을 쓰면서 우리 Prometheus에 직접 물어봤어요. 각 질의의 첫 줄은 결과 개수, 둘째 줄은 값이에요.</p>
+<div class="obsv-code">mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=count(node_uname_info)' | jq -r '.data.result | length, .[0].value[1]'
+1
+4
+
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=absent(node_uname_info)' | jq -r '.data.result | length, .[0].value[1]'
+0
+null
+
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=absent(kube_node_status_allocatable_cpu_cores)' | jq -r '.data.result | length, .[0].value[1]'
+1
+1</div>
+<p>&rarr; node-exporter의 시계열은 노드 4대 몫이 다 있어서 <code style="font-family:Menlo,monospace;font-size:14px;">absent()</code>가 빈 결과를 돌려줬고 6417이 찾던 옛 이름은 시계열이 하나도 없어서 <code style="font-family:Menlo,monospace;font-size:14px;">absent()</code>가 1을 돌려줬다는 뜻이에요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 관측 도구에도 기대값을 걸어 둬요</div>
+  &bull; 대상 수: 노드가 4대면 <code style="font-family:Menlo,monospace;font-size:14px;">count(node_uname_info)</code>도 4여야 해요. 노드 수와 다르면 수집에서 빠진 노드가 있다는 뜻입니다.<br>
+  &bull; 없음: 꼭 있어야 하는 메트릭은 <code style="font-family:Menlo,monospace;font-size:14px;">absent()</code>로 묻게 해 두면 서비스 디스커버리에서 빠지거나 이름이 바뀐 경우도 잡혀요. <code style="font-family:Menlo,monospace;font-size:14px;">up == 0</code>만으로는 목록에서 빠진 대상을 잡지 못해요.<br>
+  &bull; 바깥: Prometheus 자신은 클러스터 밖에서 한 번 더 확인해요. 멈춘 Prometheus는 자기 상태를 기록하지 못하니까요.<br>
+  &bull; 저장: 관측 데이터가 어느 볼륨에 쌓이고 얼마나 남는지 확인해요. 이 실습의 Prometheus는 emptyDir이라 파드가 노드에서 제거되면 데이터도 사라져요.<br>
+  이 네 가지는 문서가 정해 준 규칙이 아니라 오늘 겪은 일에서 끌어낸 점검 목록이에요.
+</div>
+
+<h3>Headlamp도 자기 이벤트를 보여 줬다</h3>
+<p>그림 4로 돌아가 볼게요. Headlamp의 이벤트 목록 맨 위 두 줄은 Headlamp 자신의 기록이었어요. Headlamp 파드가 뜬 직후 kubelet이 보낸 readiness probe가 <code style="font-family:Menlo,monospace;font-size:14px;">connection refused</code>로 실패한 기록이 파드마다 한 번씩 남았어요. 파드 수명 문서에 따르면 readiness probe는 컨테이너가 트래픽을 받을 준비가 됐는지를 정하는 진단이고 kubelet이 주기적으로 실행해요. 실패하면 EndpointSlice 컨트롤러가 그 파드의 IP를 해당 Service들의 EndpointSlice에서 빼요. 앱이 포트를 열기 전에 첫 확인이 들어간 것으로 보여요. 그림의 두 파드는 실패가 한 번씩뿐이었고 네임스페이스를 옮긴 직후 조회한 새 파드는 READY 1/1이었어요.</p>
+<p>이 화면에는 성격이 다른 두 정보가 함께 있어요. 위쪽의 "파드 16/16, 노드 4/4, 100%"는 지금 상태이고 아래쪽 이벤트는 최근 1시간의 기록이에요. 지금 상태가 모두 초록이어도 직전에 무슨 일이 있었는지는 아래쪽에만 있어요. 그리고 그 아래쪽도 3절에서 본 대로 1시간이 지나면 비어요. 관측 도구를 쓸 때는 지금 보고 있는 칸이 "지금"을 보여 주는지 "기록"을 보여 주는지, 기록이라면 얼마 동안의 기록인지를 같이 알아야 해요.</p>
+
+<p>지금까지의 확인을 아래에서 위로 쌓으면 그림 8이 돼요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 445" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k8arr4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+</marker>
+</defs>
+<text x="370" y="28" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">수집이 돈다에서 보인다까지, 네 번의 확인</text>
+<text x="38" y="46" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">보인다</text>
+<path d="M38 356 C 40 280, 36 160, 38 58" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k8arr4)"/>
+<text x="40" y="380" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">수집이 돈다</text>
+
+<path d="M75 50 C 280 47, 480 52, 685 49 C 687 72, 684 96, 686 118 C 480 121, 280 116, 76 119 C 73 96, 76 72, 75 50 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="90" y="80" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="start">④ 맞게 그리나</text>
+<text x="90" y="104" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">대시보드 패널</text>
+<text x="255" y="80" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="start">오늘: 초록 바탕의 N/A, 제목과 다른 수식</text>
+<text x="255" y="104" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="start">확인: N/A를 0으로 덮지 않고 수식을 읽는다</text>
+
+<path d="M76 130 C 280 132, 480 127, 686 130 C 684 152, 686 176, 685 198 C 480 200, 280 196, 75 199 C 77 176, 74 152, 76 130 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="90" y="160" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="start">③ 답이 있나</text>
+<text x="90" y="184" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">PromQL 질의</text>
+<text x="255" y="160" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="start">오늘: 6417이 찾는 메트릭 25개 중 14개가 0개</text>
+<text x="255" y="184" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="start">확인: count()로 세고 absent()로 없음을 묻는다</text>
+
+<path d="M75 210 C 280 207, 480 212, 685 209 C 687 232, 684 256, 686 278 C 480 281, 280 276, 76 279 C 73 256, 76 232, 75 210 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="90" y="240" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="start">② 긁히나</text>
+<text x="90" y="264" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">up · Last scrape</text>
+<text x="255" y="240" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="start">오늘: 목록에 오른 14개는 전부 up ✔</text>
+<text x="255" y="264" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="start">확인: up 값과 마지막 수집 시각을 본다</text>
+
+<path d="M76 290 C 280 292, 480 287, 686 290 C 684 312, 686 336, 685 358 C 480 360, 280 356, 75 359 C 77 336, 74 312, 76 290 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="90" y="320" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="start">① 목록에 있나</text>
+<text x="90" y="344" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">서비스 디스커버리</text>
+<text x="255" y="320" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="start">오늘: 9100이 목록에 없었다</text>
+<text x="255" y="344" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="start">확인: 노드 4대면 node-exporter 대상도 4개인가</text>
+
+<text x="370" y="410" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 아래 칸이 초록이어도 위 칸은 따로 확인해야 보인다</text>
+<text x="370" y="434" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">Prometheus 자신이 멈춘 것은 이 네 칸 바깥에서 확인한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 8. 오늘 초록이었던 칸은 ② 하나뿐이었다. 수집이 돈다는 것은 ②까지를 말할 뿐이다</div>
+
+<p>이 글에서 하고 싶은 말은 이 그림 한 장에 담겨 있어요. 수집이 돌고 있다는 것은 ②가 초록이라는 뜻이고 보인다는 것은 ①부터 ④까지가 모두 맞다는 뜻이에요. 오늘 저녁에는 ②만 처음부터 초록이었어요. ①은 11편에서, ③은 12편에서 고쳤고 ④는 12편에서 일부(Out of Disk 칸과 Jobs 칸의 제목)만 고쳤어요. Cluster CPU Usage라는 제목은 우리 판에도 그대로 남아 있어서 그 칸을 읽을 때는 요청량 비율이라는 점을 따로 기억해야 해요. <span class="obsv-mark">관측 도구를 깔았다는 사실도 관측해야 할 대상이에요.</span></p>
+<p>이어지는 네 편에서는 그 과정을 차례로 따라가요. 9편은 강의에서 쓴 Kubernetes Dashboard가 은퇴한 것을 확인하고 Headlamp를 설치해 접속하는 이야기예요. API 서버 경로로 접속했을 때 로그인 뒤 화면이 끝없이 로딩만 하던 문제와 port-forward로 바꾼 과정을 다뤄요. 10편은 Headlamp에 로그인할 서비스 어카운트와 권한, 그리고 토큰 수명 이야기예요. 11편은 Prometheus·node-exporter·kube-state-metrics 매니페스트를 적용하고 이 글의 1절에서 본 "14개 up, 9100 없음"의 원인을 찾아 고치는 이야기예요. 12편은 Grafana 6417의 N/A를 메트릭 이름 단위로 따라가 우리 판을 만드는 이야기예요. ELK, Kubewatch, Jaeger, OpenTelemetry는 아직 설치하지 않았고 다음 실습에서 그림 6의 점선 줄을 채울 때 다뤄요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>수집이 돌고 있다는 것과 보인다는 것은 따로 확인해야 하는 일이에요. 수집 대상 14개가 전부 up이어도 목록에 오르지 못한 node-exporter는 보이지 않았고 수집이 되는 상태에서도 대시보드가 옛 메트릭 이름을 물으면 칸이 비었어요.</b><br><br>
+  SRE 책은 모니터링이 "무엇이 고장 났나"와 "왜"에 답해야 한다고 하고 OpenTelemetry 문서와 CNCF 백서는 관측성을 미리 준비하지 않은 질문에도 답할 수 있는 성질로 정의해요. 쿠버네티스에서는 파드가 바뀌고 이벤트는 기본 1시간, 로그는 파드가 있는 동안만 남아요. 그래서 증거를 밖으로 옮기는 도구와 사람이 판단할 수 있게 그려 주는 시각화가 함께 필요해요. 다만 화면은 질의 결과만 그리니 대상 목록·up·질의 결과·패널 수식을 차례로 확인해야 하고 관측 도구 자신도 바깥에서 확인해야 해요. 관측 도구를 설치하는 일은 시작일 뿐이고 그 도구가 정말 보여 주고 있는지 확인하는 데까지가 관측입니다.
+</div>
+
+</div>

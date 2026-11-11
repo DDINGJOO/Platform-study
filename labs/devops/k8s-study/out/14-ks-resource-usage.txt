@@ -1,0 +1,52 @@
+# 2026-11-11 20:59:30 KST, 대상: 전체(ks tap 기본, 6개 네임스페이스)
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=sum by (pod, container) (container_memory_working_set_bytes{namespace="default", pod=~"kubeshark.*", container!=""})'
+kubeshark-front-7fb9788cdd-w7whb	kubeshark-front	3 MiB
+kubeshark-hub-fbd9d8db-zcsjv	hub	75 MiB
+kubeshark-worker-daemon-set-kdxl2	sniffer	359 MiB
+kubeshark-worker-daemon-set-kdxl2	tracer	422 MiB
+kubeshark-worker-daemon-set-wq4ps	sniffer	314 MiB
+kubeshark-worker-daemon-set-wq4ps	tracer	403 MiB
+kubeshark-worker-daemon-set-zkf86	sniffer	277 MiB
+kubeshark-worker-daemon-set-zkf86	tracer	418 MiB
+
+master$ kubeshark tap -n default "(calico*|myweb*)"
+2026-11-11T21:08:21+09:00 INF tapRunner.go:54 > Kubeshark will store the traffic up to a limit (per node). Oldest TCP/UDP streams will be removed once the limit is reached. limit=10Gi
+2026-11-11T21:08:21+09:00 INF tapRunner.go:72 > Targeting pods in: namespaces=["default"]
+2026-11-11T21:08:21+09:00 INF tapRunner.go:139 > Targeted pod: myweb-859c4764d4-4tjzk
+2026-11-11T21:08:21+09:00 INF tapRunner.go:139 > Targeted pod: myweb-859c4764d4-5xtpv
+2026-11-11T21:08:21+09:00 INF tapRunner.go:139 > Targeted pod: myweb-859c4764d4-k2hfq
+2026-11-11T21:08:21+09:00 INF tapRunner.go:139 > Targeted pod: myweb-859c4764d4-n9rd8
+2026-11-11T21:08:21+09:00 INF tapRunner.go:139 > Targeted pod: myweb-859c4764d4-v87c6
+2026-11-11T21:08:22+09:00 INF tapRunner.go:94 > Found an existing installation, skipping Helm install...
+
+# 2026-11-11 21:12:54 KST, 대상: kubeshark tap -n default "(calico*|myweb*)" 로 좁힌 뒤 약 4분 (21:08:22 변경)
+mac$ curl -s http://192.168.64.3:30003/api/v1/query --data-urlencode 'query=sum by (pod, container) (container_memory_working_set_bytes{namespace="default", pod=~"kubeshark.*", container!=""})'
+kubeshark-front-7fb9788cdd-w7whb	kubeshark-front	3 MiB
+kubeshark-hub-fbd9d8db-zcsjv	hub	46 MiB
+kubeshark-worker-daemon-set-kdxl2	sniffer	398 MiB
+kubeshark-worker-daemon-set-kdxl2	tracer	425 MiB
+kubeshark-worker-daemon-set-wq4ps	sniffer	334 MiB
+kubeshark-worker-daemon-set-wq4ps	tracer	404 MiB
+kubeshark-worker-daemon-set-zkf86	sniffer	313 MiB
+kubeshark-worker-daemon-set-zkf86	tracer	420 MiB
+# CPU 2분 평균
+kubeshark-front-7fb9788cdd-w7whb	kubeshark-front	0m
+kubeshark-hub-fbd9d8db-zcsjv	hub	0m
+kubeshark-worker-daemon-set-kdxl2	sniffer	41m
+kubeshark-worker-daemon-set-kdxl2	tracer	17m
+kubeshark-worker-daemon-set-wq4ps	sniffer	28m
+kubeshark-worker-daemon-set-wq4ps	tracer	17m
+kubeshark-worker-daemon-set-zkf86	sniffer	32m
+kubeshark-worker-daemon-set-zkf86	tracer	30m
+
+# 비교 조건이 다르다: 앞 측정은 트래픽 실험(P1) 중·대시보드 정상, 뒤 측정은 트래픽 없음·대시보드 잠김(라이선스 창).
+
+master$ kubeshark clean
+2026-11-11T21:13:45+09:00 INF helm.go:177 > Starting delete for "kubeshark-worker-network-policy" NetworkPolicy
+2026-11-11T21:13:45+09:00 INF helm.go:177 > Starting delete for "kubeshark-hub-network-policy" NetworkPolicy
+2026-11-11T21:13:45+09:00 INF helm.go:177 > Starting delete for "kubeshark-front-network-policy" NetworkPolicy
+2026-11-11T21:13:45+09:00 INF helm.go:177 > Starting delete for "kubeshark-dex-network-policy" NetworkPolicy
+2026-11-11T21:13:45+09:00 INF helm.go:177 > purge requested for kubeshark
+2026-11-11T21:13:45+09:00 INF clean.go:28 > Uninstalled the Helm release: kubeshark
+0
+0

@@ -1,0 +1,99 @@
+# 2026-11-11 21:33~21:35 KST. kubectl 로 넣고 빼면서 Portainer 화면을 찍었다(images/17/). 실험은 demo 네임스페이스 안에서만.
+
+### 21:33:02
+master$ kubectl create namespace demo
+namespace/demo created
+
+### 21:33:12
+master$ kubectl -n demo create deployment web --image=nginx:1.25.1-alpine --replicas=2 --port=80 && kubectl -n demo rollout status deploy/web --timeout=120s
+deployment.apps/web created
+Waiting for deployment "web" rollout to finish: 0 of 2 updated replicas are available...
+Waiting for deployment "web" rollout to finish: 1 of 2 updated replicas are available...
+deployment "web" successfully rolled out
+
+### 21:33:28
+master$ kubectl -n demo scale deploy/web --replicas=4 && kubectl -n demo rollout status deploy/web --timeout=120s
+deployment.apps/web scaled
+Waiting for deployment "web" rollout to finish: 2 of 4 updated replicas are available...
+Waiting for deployment "web" rollout to finish: 3 of 4 updated replicas are available...
+deployment "web" successfully rolled out
+
+### 21:33:34
+master$ kubectl -n demo set image deploy/web nginx=nginx:does-not-exist && sleep 25 && kubectl -n demo get pods
+deployment.apps/web image updated
+NAME                   READY   STATUS             RESTARTS   AGE
+web-7b466b6cf6-mszr7   0/1     ImagePullBackOff   0          24s
+web-7b466b6cf6-twwb9   0/1     ImagePullBackOff   0          24s
+web-858dfd6ff8-7z79p   1/1     Running            0          47s
+web-858dfd6ff8-kd2lb   1/1     Running            0          47s
+web-858dfd6ff8-m546r   1/1     Running            0          30s
+
+### 21:34:09
+master$ kubectl -n demo rollout undo deploy/web && kubectl -n demo rollout status deploy/web --timeout=120s && kubectl -n demo get pods
+deployment.apps/web rolled back
+Waiting for deployment "web" rollout to finish: 3 out of 4 new replicas have been updated...
+Waiting for deployment "web" rollout to finish: 3 of 4 updated replicas are available...
+Waiting for deployment "web" rollout to finish: 3 of 4 updated replicas are available...
+deployment "web" successfully rolled out
+NAME                   READY   STATUS        RESTARTS   AGE
+web-7b466b6cf6-mszr7   0/1     Terminating   0          35s
+web-858dfd6ff8-7z79p   1/1     Running       0          58s
+web-858dfd6ff8-kd2lb   1/1     Running       0          58s
+web-858dfd6ff8-m546r   1/1     Running       0          41s
+web-858dfd6ff8-r9hd4   1/1     Running       0          0s
+
+### 21:34:15
+master$ kubectl -n demo expose deploy/web --type=NodePort --port=80 && kubectl -n demo get svc web
+service/web exposed
+NAME   TYPE       CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+web    NodePort   10.109.189.209   <none>        80:31725/TCP   0s
+
+### 21:34:26
+master$ cat <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: web-data, namespace: demo}
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: web-config, namespace: demo}
+data: {GREETING: hello-portainer}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web-data, namespace: demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: web-data}}
+  template:
+    metadata: {labels: {app: web-data}}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25.1-alpine
+        envFrom: [{configMapRef: {name: web-config}}]
+        volumeMounts: [{name: data, mountPath: /usr/share/nginx/html}]
+      volumes: [{name: data, persistentVolumeClaim: {claimName: web-data}}]
+EOF
+kubectl -n demo rollout status deploy/web-data --timeout=120s && kubectl get pv && kubectl -n demo get pvc
+persistentvolumeclaim/web-data created
+configmap/web-config created
+deployment.apps/web-data created
+Waiting for deployment "web-data" rollout to finish: 0 of 1 updated replicas are available...
+deployment "web-data" successfully rolled out
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                 STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+portainer-pv                               10Gi       RWO            Retain           Bound    portainer/portainer                  <unset>                          8m18s
+pvc-d08e5e04-c636-47f2-a862-2f24776e31b5   1Gi        RWO            Delete           Bound    demo/web-data         local-path     <unset>                          2s
+NAME       STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+web-data   Bound    pvc-d08e5e04-c636-47f2-a862-2f24776e31b5   1Gi        RWO            local-path     <unset>                 9s
+
+### 21:34:50
+master$ kubectl delete namespace demo --wait=true --timeout=180s; sleep 5; kubectl get pv; ls /opt/local-path-provisioner 2>/dev/null | head; echo done
+namespace "demo" deleted
+NAME           CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                 STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+portainer-pv   10Gi       RWO            Retain           Bound    portainer/portainer                  <unset>                          8m53s
+done

@@ -1,0 +1,56 @@
+# 2026-11-11 21:26 KST. 슬라이드의 portainer-pv.yaml (노드 이름만 k8s-node1 → k8s-worker1) 과 매니페스트 적용
+# | portainer-pv.yaml
+# | apiVersion: v1
+# | kind: PersistentVolume
+# | metadata:
+# |   name: portainer-pv
+# |   namespace: portainer        # PV 는 네임스페이스에 속하지 않아 무시된다(슬라이드 그대로 둠)
+# | spec:
+# |   capacity:
+# |     storage: 10Gi
+# |   accessModes:
+# |   - ReadWriteOnce
+# |   persistentVolumeReclaimPolicy: Retain
+# |   local:
+# |     path: /DATA1
+# |   nodeAffinity:
+# |     required:
+# |       nodeSelectorTerms:
+# |       - matchExpressions:
+# |         - {key: kubernetes.io/hostname, operator: In, values: [k8s-worker1]}   # 슬라이드의 k8s-node1
+
+worker1$ sudo mkdir -p /DATA1
+drwxr-xr-x 2 root root 4096 Nov 11 21:26 /DATA1
+master$ kubectl apply -f portainer-pv.yaml
+persistentvolume/portainer-pv created
+NAME           CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+portainer-pv   10Gi       RWO            Retain           Available                          <unset>                          0s
+
+master$ curl -O https://downloads.portainer.io/ce-lts/portainer.yaml
+-rw-r--r-- 1 dding dding 3874 Nov 11 21:26 portainer.yaml
+master$ kubectl apply -n portainer -f portainer.yaml
+namespace/portainer created
+serviceaccount/portainer-sa-clusteradmin created
+persistentvolumeclaim/portainer created
+clusterrolebinding.rbac.authorization.k8s.io/portainer created
+service/portainer created
+deployment.apps/portainer created
+
+mac$ (5초마다) kubectl -n portainer get pvc portainer; kubectl -n portainer get pods
+21:26:22 pvc=Bound→portainer-pv pod=0/1 ContainerCreating
+21:26:52 pvc=Bound→portainer-pv pod=1/1 Running
+pod/portainer-6d86bc584d-wrm86   1/1   Running   0   36s   10.244.194.90   k8s-worker1
+service/portainer   NodePort   10.108.83.43   <none>   9000:30777/TCP,9443:30779/TCP,30776:30776/TCP
+persistentvolumeclaim/portainer   Bound   portainer-pv   10Gi   RWO   <unset>
+mac$ curl -sk -o /dev/null -w "%{http_code}" https://192.168.64.3:30779/
+200
+
+# 첫 관리자 만들기 (설치 뒤 5분 안에). 비밀번호는 싣지 않는다.
+mac$ curl -sk https://192.168.64.3:30779/api/users/admin/check -w "%{http_code}"
+404        ← 아직 관리자 없음 (21:27:37)
+mac$ curl -sk -X POST https://192.168.64.3:30779/api/users/admin/init -d {"Username":"admin","Password":"<비밀번호>"}
+{"message":"Invalid or missing setup token. Provide the X-Setup-Token header with the token printed in the server logs at startup.","details":"Invalid or missing setup token"} HTTP403
+mac$ kubectl -n portainer logs deploy/portainer | grep -o "setup_token=…"   → 있음 (값은 싣지 않음)
+mac$ curl -sk -X POST .../api/users/admin/init -H "X-Setup-Token: <토큰>" -d {...}
+admin init: HTTP200     (21:27:53)
+login test: HTTP200

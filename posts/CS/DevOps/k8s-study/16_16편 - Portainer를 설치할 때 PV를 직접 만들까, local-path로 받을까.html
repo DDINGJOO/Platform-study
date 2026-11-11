@@ -1,0 +1,536 @@
+<!-- ============================================================
+  k8s 스터디 16편: Portainer를 설치할 때 PV를 직접 만들까, local-path로 받을까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: Portainer 매니페스트의 10Gi PVC를 받아 줄 StorageClass가 kubeadm 클러스터에 하나도 없었어요. 정적 PV와 local-path 동적 프로비저닝의 차이, 기본 StorageClass가 있으면 손으로 만든 PV가 무시되는 이유를 적었어요. -->
+<!-- tags: Portainer 설치, PersistentVolume, StorageClass, local-path-provisioner, PVC Pending -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 16편</div>
+  14편. Kubeshark를 설치하면 무엇이 생기고 어떤 권한과 자원을 쓸까<br>
+  15편. Kubeshark 서비스맵으로 파드 트래픽 쏠림을 찾는 법<br>
+  <b>16편. Portainer를 설치할 때 PV를 직접 만들까, local-path로 받을까</b> &larr; 지금 이 글<br>
+  17편. Portainer 화면에서 배포·장애·자원 한도를 확인하는 법<br>
+  18편. k9s로 kubectl 명령 없이 클러스터를 둘러보는 법
+</div>
+
+<p>Mac 터미널에서 강의 슬라이드에 적힌 Portainer 매니페스트 주소를 curl로 받았어요. 돌아온 것은 파일이 아니라 <code style="font-family:Menlo,monospace;font-size:14px;">curl: (56) The requested URL returned error: 404</code> 한 줄이었어요. Portainer 공식 문서가 안내하는 주소에서 다시 받은 매니페스트에는 10Gi짜리 PVC가 들어 있었어요. 그런데 이 클러스터에는 그 요청을 받아 줄 StorageClass도 PV도 하나도 없었습니다.</p>
+<p>Portainer 문서에는 기본 StorageClass가 있어야 한다고 적혀 있어서 저는 local-path-provisioner부터 설치하고 기본으로 지정했어요. 그 사이 강의에서는 다른 방법이 나왔어요. worker 노드 한 대에 /DATA1 디렉터리를 만들고 그 경로를 가리키는 PV를 손으로 적는 방법이었어요. 그때 나온 질문이 "두 개가 무슨 차이야?"였어요. 이번 글에서는 그 질문에 답해요. 정리하면 <b>"Portainer가 요구하는 PVC를 손으로 만든 PV로 받을까, local-path가 만들게 할까. 그리고 둘을 같이 두면 왜 손으로 만든 PV가 무시될까"</b>예요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 슬라이드의 매니페스트 주소는 왜 404였고 지금은 어디서 받을까?<br>
+&middot; Portainer를 적용하기 전에 클러스터에서 무엇부터 확인해야 할까?<br>
+&middot; 정적 PV와 local-path(동적 프로비저닝)는 무엇이 다르고 언제 무엇을 쓸까?<br>
+&middot; 기본 StorageClass가 있으면 손으로 만든 PV는 왜 무시될까?<br>
+&middot; PVC를 지우면 PV와 데이터는 어떻게 될까? Retain과 Delete는 무엇이 다를까?</p>
+
+<h2>1. 슬라이드의 매니페스트 주소에서 404가 났다</h2>
+
+<p>슬라이드에 적힌 주소는 GitHub의 portainer/k8s 저장소 master 브랜치에 있는 <code style="font-family:Menlo,monospace;font-size:14px;">deploy/manifests/portainer/portainer.yaml</code>이었어요. 이 주소로 받으니 404가 났어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/16/manifest-404.png" alt="Mac에서 슬라이드의 raw.githubusercontent.com Portainer 매니페스트 주소를 curl로 받자 404가 나고, GitHub API로 조회한 그 경로의 최근 커밋이 2026-02-27 cleaning up the helm chart repo (#206), 2026-02-26 Release 2.39.0 (#200), 2026-02-10 Update for 2.33.7 release (#198)이며, 공식 문서 주소 downloads.portainer.io/ce-lts/portainer.yaml은 200에 154줄인 터미널 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 슬라이드의 주소는 404였고 공식 문서가 안내하는 주소에서는 154줄짜리 매니페스트를 받았다</div>
+
+<div class="obsv-code">mac$ curl -fsSLO https://raw.githubusercontent.com/portainer/k8s/master/deploy/manifests/portainer/portainer.yaml
+curl: (56) The requested URL returned error: 404</div>
+<p>&rarr; 서버가 그 경로에 파일이 없다고 응답했다는 뜻이에요. <code style="font-family:Menlo,monospace;font-size:14px;">-f</code> 옵션을 줬기 때문에 curl은 오류 페이지를 파일로 저장하지 않고 오류로 끝났어요.</p>
+
+<p>GitHub API로 이 경로를 건드린 커밋을 최근 순서로 세 개 조회했어요. 가장 최근 커밋은 2026-02-27의 "cleaning up the helm chart repo (#206)"였고 그 앞은 2026-02-26의 "Release 2.39.0 (#200)"과 2026-02-10의 "Update for 2.33.7 release (#198)"였어요. 저장소를 정리한 커밋에서 이 파일이 빠진 것으로 보여요. 커밋 안의 변경 내용까지 열어 보지는 않았어요.</p>
+<p>지금 주소는 <a href="https://docs.portainer.io/start/install-ce/server/kubernetes/baremetal">Portainer 문서의 Kubernetes 설치 페이지</a>에 있어요. NodePort로 노출하려면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply -n portainer -f https://downloads.portainer.io/ce-lts/portainer.yaml</code>을 실행하라고 적혀 있고 HTTP는 30777, HTTPS는 30779로 열린다고 해요. 같은 페이지에는 Portainer용으로 portainer 네임스페이스를 쓰고 다른 네임스페이스는 지금 지원하지 않는다는 문장도 있어요. 이 주소에서 받은 파일은 154줄이었어요.</p>
+<p>매니페스트에 든 리소스는 여섯 개예요. Namespace portainer, ServiceAccount portainer-sa-clusteradmin, PersistentVolumeClaim portainer, ClusterRoleBinding portainer, Service portainer, Deployment portainer입니다. 이번 글에서 중요한 부분은 PVC와 Deployment의 볼륨 설정이에요.</p>
+
+<div class="obsv-code"># portainer.yaml (downloads.portainer.io/ce-lts, 일부)
+kind: "PersistentVolumeClaim"
+metadata:
+  name: portainer
+  namespace: portainer
+  annotations:
+    volume.alpha.kubernetes.io/storage-class: "generic"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"
+---
+kind: Deployment
+spec:
+  strategy:
+    type: "Recreate"
+  template:
+    spec:
+      nodeSelector:
+        {}
+      volumes:
+        - name: "data"
+          persistentVolumeClaim:
+            claimName: portainer
+      containers:
+        - name: portainer
+          image: "portainer/portainer-ce:lts"
+          volumeMounts:
+            - name: data
+              mountPath: /data</div>
+<p>&rarr; portainer 네임스페이스에 10Gi, ReadWriteOnce 볼륨을 요청하는 PVC를 만들고 Portainer 컨테이너의 /data에 그 볼륨을 붙이라는 뜻이에요. PVC의 spec에는 storageClassName이 없어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: PV와 PVC (PersistentVolume, PersistentVolumeClaim)</div>
+  PVC는 "이 크기, 이 접근 방식의 저장 공간이 필요하다"는 요청이에요. 네임스페이스에 속하고 파드는 PVC 이름으로 볼륨을 붙여요. PV는 실제 저장 공간 하나를 나타내는 오브젝트이고 네임스페이스에 속하지 않아요. 컨트롤 플레인이 조건이 맞는 PV를 찾아 PVC와 묶으면(바인딩) 둘 다 Bound 상태가 돼요. 한 번 묶이면 그 PV는 그 PVC만 써요.
+</div>
+
+<p>PVC에는 <code style="font-family:Menlo,monospace;font-size:14px;">volume.alpha.kubernetes.io/storage-class: "generic"</code> 어노테이션이 붙어 있어요. 이름만 보면 클래스를 정하는 설정 같아요. 하지만 <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.6.md">쿠버네티스 1.6 변경 기록</a>에는 알파 버전 동적 프로비저닝을 없애면서 이 어노테이션에 더 이상 특별한 의미가 없다고 적혀 있어요. 그러니 이 PVC는 <span class="obsv-mark">어떤 클래스도 요청하지 않은 PVC</span>예요. 4절에서 이 점이 문제가 돼요.</p>
+<p>나머지도 짧게 볼게요. Deployment의 전략은 Recreate예요. <a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#recreate-deployment">Deployment 문서</a>에 따르면 Recreate는 새 파드를 만들기 전에 기존 파드를 모두 종료해요. 그래서 업데이트 중에도 ReadWriteOnce 볼륨을 붙인 Portainer 파드가 둘이 되지 않아요. Service는 NodePort 타입이고 9000→30777(http), 9443→30779(https), 30776→30776(edge) 세 포트를 열어요. 30776은 컨테이너 인자 <code style="font-family:Menlo,monospace;font-size:14px;">--tunnel-port=30776</code>과 맞춰져 있는데 이번 실습에서는 쓰지 않았어요. ClusterRoleBinding은 portainer-sa-clusteradmin에 cluster-admin을 묶고 Namespace에는 <code style="font-family:Menlo,monospace;font-size:14px;">pod-security.kubernetes.io/enforce: privileged</code> 라벨이 붙어 있어요. 이 권한의 의미는 17편에서 다뤄요.</p>
+
+<h2>2. 매니페스트는 10Gi PVC를 요구하는데 StorageClass가 하나도 없었다</h2>
+
+<p>적용하기 전에 이 PVC를 받아 줄 곳이 있는지부터 봤어요.</p>
+<div class="obsv-code">mac$ kubectl get storageclass; kubectl get pv
+No resources found
+No resources found</div>
+<p>&rarr; 클러스터에 StorageClass도 PV도 하나도 없다는 뜻이에요.</p>
+
+<p>Portainer 설치 문서에는 Portainer가 데이터를 유지해야 해서 쓸 수 있는 StorageClass가 적어도 하나 필요하다고 적혀 있어요. 이어서 default로 표시된 StorageClass가 없으면 배포가 실패할 가능성이 크다는 경고도 있어요. 준비 조건 목록에도 "default StorageClass 설정"이 들어 있어요.</p>
+<p>이 클러스터는 5편에서 kubeadm으로 직접 만들었어요. <a href="https://kubernetes.io/docs/tasks/administer-cluster/change-default-storage-class/">기본 StorageClass 변경 문서</a>에는 설치 방법에 따라 기본으로 표시된 StorageClass가 함께 배포되는 클러스터도 있다고 적혀 있어요. 그런 클러스터에서는 그대로 되던 매니페스트가 기본 StorageClass가 없는 클러스터에서는 PVC 단계에서 멈출 수 있어요. 이 클러스터는 기본 StorageClass가 없는 쪽이었어요.</p>
+<p>이 상태로 적용하면 어떻게 될까요. <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#binding">PV 문서의 바인딩 절</a>에는 맞는 볼륨이 없으면 PVC는 계속 바인딩되지 않은 채로 남고 맞는 볼륨이 생기면 그때 바인딩된다고 적혀 있어요. <span class="obsv-mark">StorageClass도 PV도 없으면 Portainer의 PVC는 묶일 곳이 없어 Pending으로 남아요.</span> 그 PVC를 붙여야 하는 Portainer 파드도 시작하지 못해요. 이번에는 PV를 먼저 만든 뒤에 적용해서 이 상태를 직접 보지는 않았어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: StorageClass와 동적 프로비저닝</div>
+  StorageClass는 "이 클래스를 요청한 PVC가 오면 어느 provisioner로 PV를 만들고 어떤 정책을 붙일지"를 적은 오브젝트예요. provisioner는 PVC를 보고 실제 저장 공간과 PV를 자동으로 만드는 프로그램이고 이렇게 PV가 생기는 방식을 동적 프로비저닝이라고 해요. 관리자가 PV를 미리 손으로 만들어 두는 방식은 정적 프로비저닝이에요.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 설치 전에 먼저 볼 것</div>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get storageclass</code>: 이름 옆에 (default)가 붙은 클래스가 있는지 봐요<br>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pv</code>: 미리 만든 PV가 있는지, 있다면 STORAGECLASS 열이 비어 있는지 봐요<br>
+  &bull; 적용할 매니페스트의 PVC에 storageClassName이 있는지 봐요. 없으면 기본 StorageClass를 따라가요(4절)<br>
+  &bull; 적용한 뒤 PVC가 Pending이면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl describe pvc</code>의 Events부터 확인해요
+</div>
+
+<h2>3. 정적 PV와 local-path는 PV를 누가 언제 만드느냐가 다르다</h2>
+
+<p>Portainer 문서대로 기본 StorageClass부터 만들었어요. 고른 것은 Rancher의 <a href="https://github.com/rancher/local-path-provisioner/tree/v0.0.37">local-path-provisioner</a>예요. README의 설치 명령에 적힌 안정판 v0.0.37(2026-08-05 릴리스)을 썼어요.</p>
+<div class="obsv-code">master$ kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.37/deploy/local-path-storage.yaml
+namespace/local-path-storage created
+serviceaccount/local-path-provisioner-service-account created
+role.rbac.authorization.k8s.io/local-path-provisioner-role created
+clusterrole.rbac.authorization.k8s.io/local-path-provisioner-role created
+rolebinding.rbac.authorization.k8s.io/local-path-provisioner-bind created
+clusterrolebinding.rbac.authorization.k8s.io/local-path-provisioner-bind created
+deployment.apps/local-path-provisioner created
+storageclass.storage.k8s.io/local-path created
+configmap/local-path-config created
+
+master$ kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+storageclass.storage.k8s.io/local-path patched
+
+master$ kubectl get storageclass
+NAME                   PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+local-path (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  15s</div>
+<p>&rarr; local-path라는 StorageClass가 생겨 기본으로 지정됐다는 뜻이에요. 이 클래스로 만든 PV는 Delete 정책을 받고 바인딩은 파드가 생길 때까지 미뤄요(WaitForFirstConsumer). provisioner 파드는 k8s-worker2에서 Running이었어요.</p>
+
+<p>바로 그때 강의에서는 다른 방법이 나왔어요. 노드 한 대(슬라이드에서는 k8s-node1)에 /DATA1 디렉터리를 만들고 그 경로를 가리키는 PV를 YAML로 직접 적는 방법이에요. 이걸 보고 "두 개가 무슨 차이야?"라는 질문이 나왔어요. 둘 다 노드의 디스크에 데이터를 두니 결과는 비슷해 보여요. 차이는 PV를 누가, 언제 만드느냐에 있어요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:560px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">비교</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">정적 PV (강의 방식)</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">local-path (동적 프로비저닝)</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PV를 만드는 쪽</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">관리자가 YAML로 미리</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">provisioner가 PVC를 보고 자동으로</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">데이터 위치</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PV에 적은 경로(이번에는 worker1의 /DATA1). 디렉터리도 관리자가 만든다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">파드가 배치된 노드의 /opt/local-path-provisioner 아래 하위 디렉터리</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">노드를 정하는 쪽</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">관리자(PV의 nodeAffinity)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">스케줄러(파드를 배치한 노드에 PV가 생긴다)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PVC와 묶이는 때</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">클래스가 같은 PVC가 생기면 바로</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">그 PVC를 쓰는 파드가 배치된 뒤(WaitForFirstConsumer)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PVC를 지우면</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PV에 적은 정책대로. 이번 PV는 Retain</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">StorageClass를 따라 Delete. PV와 노드의 디렉터리를 지운다(README)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PV 종류</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">local</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">어노테이션이 없으면 hostPath(README)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">미리 할 일</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">노드마다 디렉터리, PVC마다 PV</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">provisioner 설치 한 번</td></tr>
+</tbody></table>
+</div>
+
+<p>정적 PV에서는 관리자가 노드와 경로를 먼저 정해요. PV를 만들 때 이미 "worker1의 /DATA1"이 정해져 있으니 그 PV를 쓰는 파드는 worker1로만 갈 수 있어요. local-path에서는 순서가 반대예요. PVC가 생겨도 바로 PV를 만들지 않고 그 PVC를 쓰는 파드가 노드에 배치되기를 기다려요. 노드가 정해지면 provisioner가 그 노드에 디렉터리와 PV를 만들어요. <a href="https://github.com/rancher/local-path-provisioner/tree/v0.0.37">README</a>에는 기본 경로가 모든 노드의 <code style="font-family:Menlo,monospace;font-size:14px;">/opt/local-path-provisioner</code>이고 볼륨마다 <code style="font-family:Menlo,monospace;font-size:14px;">{{ .PVName }}_{{ .PVC.Namespace }}_{{ .PVC.Name }}</code> 형식의 하위 디렉터리를 만든다고 적혀 있어요. provisioner는 만든 PV에 <code style="font-family:Menlo,monospace;font-size:14px;">kubernetes.io/hostname</code> 라벨로 nodeAffinity를 붙여서 그 노드에서만 쓰게 해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 425" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="a16arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="24" y="36" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5" text-anchor="start">🔧 정적 PV · 강의 방식</text>
+<text x="676" y="36" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="end">관리자가 노드부터 정한다</text>
+<path d="M20 50 C 66 48, 112 52, 160 51 C 162 89, 159 128, 161 168 C 112 170, 66 167, 21 169 C 18 128, 21 89, 20 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="90.0" y="76" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">① 관리자가</text>
+<text x="90.0" y="100" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">worker1에서</text>
+<text x="90.0" y="124" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">mkdir /DATA1</text>
+<text x="90.0" y="150" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">경로를 먼저 만든다</text>
+<path d="M164 109 C 172 106, 178 112, 186 109" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr1)"/>
+<path d="M190 50 C 236 48, 282 52, 330 51 C 332 89, 329 128, 331 168 C 282 170, 236 167, 191 169 C 188 128, 191 89, 190 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="260.0" y="76" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">② 관리자가</text>
+<text x="260.0" y="100" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">PV를 직접 작성</text>
+<text x="260.0" y="122" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34" text-anchor="middle">local: /DATA1</text>
+<text x="260.0" y="138" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">nodeAffinity: worker1</text>
+<text x="260.0" y="154" font-family="Menlo, monospace" font-size="10.5" fill="#4a7fb5" text-anchor="middle">Retain</text>
+<path d="M334 109 C 342 106, 348 112, 356 109" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr1)"/>
+<path d="M360 50 C 406 48, 452 52, 500 51 C 502 89, 499 128, 501 168 C 452 170, 406 167, 361 169 C 358 128, 361 89, 360 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="430.0" y="76" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">③ PVC 생성</text>
+<text x="430.0" y="100" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">클래스 없는 PV와</text>
+<text x="430.0" y="124" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">곧바로 Bound</text>
+<text x="430.0" y="150" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">클래스가 없으니 즉시</text>
+<path d="M504 109 C 512 106, 518 112, 526 109" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr1)"/>
+<path d="M530 50 C 576 48, 622 52, 670 51 C 672 89, 669 128, 671 168 C 622 170, 576 167, 531 169 C 528 128, 531 89, 530 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600.0" y="76" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">④ 스케줄러가</text>
+<text x="600.0" y="100" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">nodeAffinity를 보고</text>
+<text x="600.0" y="124" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">파드를 worker1로</text>
+<text x="600.0" y="150" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">다른 노드로는 못 감</text>
+<text x="24" y="208" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41" text-anchor="start">🌱 local-path · 동적 프로비저닝</text>
+<text x="676" y="208" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="end">파드가 노드를 정한 뒤 생긴다</text>
+<path d="M20 222 C 66 220, 112 224, 160 223 C 162 261, 159 300, 161 340 C 112 342, 66 339, 21 341 C 18 300, 21 261, 20 222 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="90.0" y="248" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">① PVC 생성</text>
+<text x="90.0" y="272" font-family="Menlo, monospace" font-size="10.5" fill="#3d3a34" text-anchor="middle">class: local-path</text>
+<text x="90.0" y="296" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">Pending으로 대기</text>
+<text x="90.0" y="320" font-family="Menlo, monospace" font-size="9.5" fill="#8a8272" text-anchor="middle">WaitForFirstConsumer</text>
+<path d="M164 281 C 172 278, 178 284, 186 281" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr1)"/>
+<path d="M190 222 C 236 220, 282 224, 330 223 C 332 261, 329 300, 331 340 C 282 342, 236 339, 191 341 C 188 300, 191 261, 190 222 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="260.0" y="248" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">② 파드 생성</text>
+<text x="260.0" y="272" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">스케줄러가</text>
+<text x="260.0" y="296" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">노드를 고른다</text>
+<text x="260.0" y="322" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">자원·taint 등을 따짐</text>
+<path d="M334 281 C 342 278, 348 284, 356 281" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr1)"/>
+<path d="M360 222 C 406 220, 452 224, 500 223 C 502 261, 499 300, 501 340 C 452 342, 406 339, 361 341 C 358 300, 361 261, 360 222 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="430.0" y="248" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">③ provisioner가</text>
+<text x="430.0" y="272" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">그 노드에</text>
+<text x="430.0" y="296" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">디렉터리와 PV 생성</text>
+<text x="430.0" y="320" font-family="Menlo, monospace" font-size="10.5" fill="#b3502f" text-anchor="middle">Delete</text>
+<path d="M504 281 C 512 278, 518 284, 526 281" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr1)"/>
+<path d="M530 222 C 576 220, 622 224, 670 223 C 672 261, 669 300, 671 340 C 622 342, 576 339, 531 341 C 528 300, 531 261, 530 222 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600.0" y="248" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">④ Bound</text>
+<text x="600.0" y="272" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">파드가 볼륨을</text>
+<text x="600.0" y="296" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">붙이고 시작</text>
+<text x="600.0" y="322" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">노드는 파드가 정함</text>
+<text x="350" y="382" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 정적은 노드를 먼저 정하고 그 노드에 맞춰 PV를 만든다</text>
+<text x="350" y="410" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 동적은 파드가 노드에 배치된 뒤 그 노드에 PV가 생긴다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 정적 PV는 관리자가 노드를 먼저 정하고 local-path는 파드가 노드를 정한 뒤 PV를 만든다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: local 볼륨과 nodeAffinity</div>
+  local 볼륨은 노드에 붙은 디스크·파티션·디렉터리를 PV로 쓰는 방식이에요. <a href="https://kubernetes.io/docs/concepts/storage/volumes/#local">쿠버네티스 문서</a>에 따르면 정적으로 만든 PV로만 쓸 수 있고 동적 프로비저닝은 지원하지 않아요. 데이터가 한 노드에만 있으니 PV에 nodeAffinity로 노드를 반드시 적어야 하고 스케줄러는 그 값을 보고 이 PV를 쓰는 파드를 그 노드로 보내요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: volumeBindingMode (Immediate, WaitForFirstConsumer)</div>
+  StorageClass에서 PVC와 PV를 언제 묶을지 정하는 값이에요. 값을 적지 않으면 Immediate이고 PVC가 생기자마자 묶거나 PV를 만들어요. WaitForFirstConsumer는 그 PVC를 쓰는 파드가 생길 때까지 미뤄요. <a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode">StorageClass 문서</a>에 따르면 미루는 동안 스케줄러가 파드의 자원 요구, 노드 셀렉터, 어피니티, taint와 toleration을 따져 노드를 고르고 그 노드에 맞는 PV를 고르거나 만들어요.
+</div>
+
+<p>local-path라는 이름 때문에 local 볼륨을 만든다고 생각하기 쉬워요. README에는 PVC나 StorageClass에 <code style="font-family:Menlo,monospace;font-size:14px;">volumeType</code>·<code style="font-family:Menlo,monospace;font-size:14px;">defaultVolumeType</code> 어노테이션이 없으면 hostPath 볼륨으로 만든다고 적혀 있어요. 6절에서 만든 PV도 README대로라면 hostPath였을 텐데 PV의 spec까지 열어 보지는 않았어요.</p>
+<p>어느 쪽이 맞는지는 데이터를 어떻게 다룰지에 달려 있어요. <span class="obsv-mark">어느 노드에 둘지 정해야 하고 PVC를 지워도 데이터가 남아야 하면 정적 PV, PVC를 자주 만들고 지우는 실습·테스트용이면 local-path가 편해요.</span> 다만 둘 다 노드 한 대의 디스크를 쓰는 방식이라는 점은 같아요. 노드가 멈추면 데이터에도 닿을 수 없어요(5절 주의 참고).</p>
+
+<h2>4. 기본 StorageClass를 켜 두면 손으로 만든 PV를 쓰지 못한다</h2>
+
+<p>강의 방식을 따르기로 하고 local-path의 기본 지정부터 풀었어요. 기본 StorageClass를 둔 채로는 Portainer의 PVC가 손으로 만든 PV를 찾지 못하기 때문이에요.</p>
+<div class="obsv-code">master$ kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
+storageclass.storage.k8s.io/local-path patched
+
+master$ kubectl get storageclass
+NAME         PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+local-path   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  36s</div>
+<p>&rarr; 이름 옆의 (default) 표시가 사라졌다는 뜻이에요. StorageClass 자체는 남아 있어서 <code style="font-family:Menlo,monospace;font-size:14px;">storageClassName: local-path</code>를 직접 적은 PVC는 계속 이 클래스로 PV를 받아요. 6절에서 그렇게 썼어요.</p>
+
+<p>왜 기본 지정을 풀어야 했는지는 규칙 세 개를 이어 보면 나와요.</p>
+<p><b>첫째, PV와 PVC는 클래스가 같아야 묶여요.</b> <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#class">PV 문서의 Class 절</a>에는 특정 클래스의 PV는 그 클래스를 요청한 PVC와만 묶이고 storageClassName이 없는 PV는 클래스가 없으므로 특정 클래스를 요청하지 않은 PVC와만 묶인다고 적혀 있어요. 강의의 PV YAML에는 storageClassName이 없어요.</p>
+<p><b>둘째, 기본 StorageClass가 있으면 storageClassName이 없는 PVC에 API 서버가 그 이름을 채워 넣어요.</b> 이 일은 DefaultStorageClass 어드미션 컨트롤러가 해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 어드미션 컨트롤러 (admission controller)</div>
+  API 서버가 요청을 저장하기 직전에 내용을 고치거나 요청을 거절하는 단계예요. DefaultStorageClass는 그중 하나이고 storageClassName이 없는 PVC가 만들어질 때 기본 StorageClass의 이름을 채워 넣어요. 만들 때만 동작하고 수정 요청에는 관여하지 않아요.
+</div>
+
+<p><a href="https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#defaultstorageclass">어드미션 컨트롤러 문서</a>에 따르면 이 컨트롤러는 특정 스토리지 클래스를 요청하지 않은 PVC가 만들어질 때 기본 스토리지 클래스를 자동으로 붙이고 기본 StorageClass가 없으면 아무것도 하지 않아요. <a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/">kube-apiserver 참조 문서</a>의 기본 활성 플러그인 목록에도 DefaultStorageClass가 들어 있어서 따로 켜지 않아도 동작해요.</p>
+<p><b>셋째, 비어 있던 클래스가 나중에 채워지기도 해요.</b> <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#retroactive-default-storageclass-assignment">PV 문서의 기본 StorageClass 소급 지정 절</a>(v1.28부터 stable)에는 기본 StorageClass가 없을 때 storageClassName 없이 만든 PVC는 그 값이 빈 채로 남다가 기본 StorageClass가 생기면 컨트롤 플레인이 새 기본 클래스로 채운다고 적혀 있어요. storageClassName을 빈 문자열 <code style="font-family:Menlo,monospace;font-size:14px;">""</code>로 적은 PVC는 이 대상에서 빠져요. v1.37.2의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/volume/persistentvolume/pv_controller.go#L336-L355">PV 컨트롤러 코드</a>를 보면 이 채우기는 아직 묶이지 않은 PVC가 맞는 PV를 찾지 못했을 때만 일어나요. 이미 Bound 상태인 PVC는 건드리지 않아요.</p>
+
+<p>세 규칙을 Portainer 매니페스트에 맞춰 보면 이래요. local-path가 기본인 채로 매니페스트를 적용하면 PVC portainer는 만들어지는 순간 <code style="font-family:Menlo,monospace;font-size:14px;">storageClassName: local-path</code>를 받아요. 그러면 클래스가 없는 portainer-pv는 후보에서 빠지고 local-path가 파드가 배치된 노드에 새 PV를 만들어요. /DATA1은 빈 채로 남고요. <a href="https://kubernetes.io/docs/tasks/administer-cluster/change-default-storage-class/">기본 StorageClass 변경 문서</a>에는 volumeName으로 특정 PV를 지목한 PVC도 정적 볼륨의 storageClassName과 PVC의 클래스가 다르면 Pending으로 남는다고 적혀 있어요. <span class="obsv-mark">기본 StorageClass가 켜져 있으면 PV를 이름으로 지목해도 클래스가 다르면 묶이지 않아요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 460" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="a16arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M350 22 C 352 140, 348 260, 350 392" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="185" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">A. local-path가 기본이면</text>
+<text x="185" y="52" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">(문서 규칙대로 그린 것, 실행하지 않음)</text>
+<text x="520" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41" text-anchor="middle">B. 기본 지정을 푼 뒤</text>
+<text x="520" y="52" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">(이번에 실제로 한 것)</text>
+<path d="M40 66 C 136 64, 231 68, 330 67 C 332 82, 329 99, 331 116 C 231 118, 136 115, 41 117 C 38 99, 41 82, 40 66 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="185" y="89" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">PVC portainer 생성</text>
+<text x="185" y="109" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">storageClassName이 비어 있음</text>
+<path d="M185 119 C 187 130, 183 138, 185 149" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr2)"/>
+<text x="195" y="139" font-family="Menlo, monospace" font-size="10" fill="#c07f18" text-anchor="start">DefaultStorageClass</text>
+<path d="M40 152 C 136 150, 231 154, 330 153 C 332 168, 329 185, 331 202 C 231 204, 136 201, 41 203 C 38 185, 41 168, 40 152 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="185" y="175" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">storageClassName: local-path</text>
+<text x="185" y="195" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">API 서버가 만들 때 채운다</text>
+<path d="M185 205 C 187 216, 183 224, 185 235" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr2)"/>
+<path d="M40 238 C 136 236, 231 240, 330 239 C 332 257, 329 276, 331 296 C 231 298, 136 295, 41 297 C 38 276, 41 257, 40 238 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="185" y="262" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">portainer-pv (클래스 없음)</text>
+<text x="185" y="285" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">✗ 클래스가 달라 후보에서 빠짐</text>
+<path d="M185 299 C 187 310, 183 318, 185 329" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr2)"/>
+<path d="M40 332 C 136 330, 231 334, 330 333 C 332 351, 329 370, 331 390 C 231 392, 136 389, 41 391 C 38 370, 41 351, 40 332 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="185" y="356" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">local-path가 새 PV를 만든다</text>
+<text x="185" y="379" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">/DATA1은 빈 채로 남는다</text>
+<path d="M375 66 C 471 64, 566 68, 665 67 C 667 82, 664 99, 666 116 C 566 118, 471 115, 376 117 C 373 99, 376 82, 375 66 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="89" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">PVC portainer 생성</text>
+<text x="520" y="109" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">storageClassName이 비어 있음</text>
+<path d="M520 119 C 522 130, 518 138, 520 149" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr2)"/>
+<text x="530" y="139" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">기본 클래스가 없어 그대로</text>
+<path d="M375 152 C 471 150, 566 154, 665 153 C 667 168, 664 185, 666 202 C 566 204, 471 201, 376 203 C 373 185, 376 168, 375 152 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="175" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">storageClassName: (없음)</text>
+<text x="520" y="195" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">클래스 없는 PVC</text>
+<path d="M520 205 C 522 216, 518 224, 520 235" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr2)"/>
+<path d="M375 238 C 471 236, 566 240, 665 239 C 667 257, 664 276, 666 296 C 566 298, 471 295, 376 297 C 373 276, 376 257, 375 238 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="262" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">✓ portainer-pv와 Bound</text>
+<text x="520" y="285" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">클래스 없는 PV끼리 묶인다</text>
+<path d="M520 299 C 522 310, 518 318, 520 329" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr2)"/>
+<path d="M375 332 C 471 330, 566 334, 665 333 C 667 351, 664 370, 666 390 C 566 392, 471 389, 376 391 C 373 370, 376 351, 375 332 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="356" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">파드는 worker1로</text>
+<text x="520" y="379" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">/DATA1을 /data에 붙인다</text>
+<text x="350" y="424" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 기본 StorageClass는 PVC를 만드는 순간 붙는다</text>
+<text x="350" y="448" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">A에서도 portainer-pv를 쓰려면 PVC에 storageClassName: ""</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 기본 StorageClass가 있으면 클래스 없는 PVC가 만들어지는 순간 클래스를 받아 손으로 만든 PV와 묶이지 않는다</div>
+
+<p>순서도 함정이에요. 기본 StorageClass가 없는 상태에서 PV보다 Portainer를 먼저 적용하면 PVC가 Pending으로 기다려요. 이때 다른 StorageClass를 기본으로 켜면 셋째 규칙 때문에 그 PVC가 새 기본 클래스를 받아요. 뒤늦게 PV를 만들어도 이미 클래스가 달라져서 묶이지 않아요. 정적 PV를 쓸 생각이라면 PV를 먼저 만들고 PVC가 Bound 상태가 된 것을 확인한 뒤에 기본 StorageClass를 정하는 편이 안전해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 기본 StorageClass와 정적 PV를 함께 쓰려면</div>
+  &bull; PVC에 <code style="font-family:Menlo,monospace;font-size:14px;">storageClassName: ""</code>를 적어요. 빈 문자열은 "클래스 없는 PV만 달라"는 뜻이라 기본 StorageClass가 붙지 않고 소급 지정 대상에서도 빠져요<br>
+  &bull; 특정 PV에만 묶으려면 PVC에 <code style="font-family:Menlo,monospace;font-size:14px;">volumeName</code>, PV에 <code style="font-family:Menlo,monospace;font-size:14px;">claimRef</code>를 적어 예약해요. <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reserving-a-persistentvolume">PV 문서의 예약 예제</a>도 양쪽에 <code style="font-family:Menlo,monospace;font-size:14px;">storageClassName: ""</code>를 적어요<br>
+  &bull; 반대로 PV에 클래스 이름을 붙이고 PVC에 같은 이름을 적는 방법도 있어요. 클래스가 같아야 묶인다는 첫째 규칙을 이용하는 거예요. <a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#local">StorageClass 문서의 local 예제</a>는 provisioner를 <code style="font-family:Menlo,monospace;font-size:14px;">kubernetes.io/no-provisioner</code>로, volumeBindingMode를 WaitForFirstConsumer로 둔 local-storage 클래스를 만들어요. 자동으로 PV를 만들지는 않고 바인딩만 파드 배치 때까지 미루는 클래스예요<br>
+  &bull; Portainer를 Helm으로 설치한다면 <a href="https://docs.portainer.io/start/install-ce/server/kubernetes/baremetal">설치 문서</a>의 <code style="font-family:Menlo,monospace;font-size:14px;">--set persistence.storageClass=&lt;이름&gt;</code>으로 쓸 클래스를 고를 수 있어요<br>
+  &bull; 매니페스트를 고치지 않을 거라면 이번에 한 대로 기본 지정을 풀고 적용해요
+</div>
+
+<p>아래는 앞의 두 방법을 portainer-pv에 맞춰 적은 예시예요. 이번 실습에서 적용하지는 않았어요.</p>
+<div class="obsv-code"># PVC 쪽: 클래스 없는 PV 중에서 portainer-pv만
+spec:
+  storageClassName: ""
+  volumeName: portainer-pv
+
+# PV 쪽: portainer 네임스페이스의 PVC portainer만 받도록 예약
+spec:
+  storageClassName: ""
+  claimRef:
+    name: portainer
+    namespace: portainer</div>
+<p>&rarr; PVC는 기본 클래스를 받지 않고 portainer-pv를 지목하며 PV는 다른 PVC가 먼저 가져가지 못하게 자리를 잡아 둔다는 뜻이에요.</p>
+
+<h2>5. 정적 PV로 Portainer를 띄우고 5분 안에 관리자를 만들었다</h2>
+
+<p>강의 방식대로 PV를 만들었어요. 슬라이드의 YAML에서 노드 이름만 우리 클러스터의 이름으로 바꿨어요.</p>
+<div class="obsv-code"># portainer-pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: portainer-pv
+  namespace: portainer        # PV는 네임스페이스에 속하지 않는다(슬라이드 그대로 둠)
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  local:
+    path: /DATA1
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - {key: kubernetes.io/hostname, operator: In, values: [k8s-worker1]}   # 슬라이드에서는 k8s-node1</div>
+<p>&rarr; k8s-worker1의 /DATA1 디렉터리를 10Gi, ReadWriteOnce 볼륨으로 등록하고 이 볼륨은 k8s-worker1에서만 쓰며 PVC가 지워져도 PV를 지우지 않는다(Retain)는 뜻이에요. storageClassName은 적지 않았어요.</p>
+<p>metadata의 <code style="font-family:Menlo,monospace;font-size:14px;">namespace: portainer</code>는 효과가 없어요. PV는 네임스페이스에 속하지 않는 리소스라서 API 서버가 이 값을 지워요. v1.37.2 API 서버 코드에서 요청이 클러스터 범위일 때 오브젝트의 네임스페이스를 비우는 부분(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/registry/rest/meta.go#L59-L62">meta.go 59~62행</a>)을 확인했어요. 그래서 적용할 때 오류 없이 created가 나왔어요.</p>
+
+<div class="obsv-code">worker1$ sudo mkdir -p /DATA1
+drwxr-xr-x 2 root root 4096 Nov 11 21:26 /DATA1
+
+master$ kubectl apply -f portainer-pv.yaml
+persistentvolume/portainer-pv created
+NAME           CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+portainer-pv   10Gi       RWO            Retain           Available                          &lt;unset&gt;                          0s</div>
+<p>&rarr; PV가 만들어졌고 아직 묶인 PVC가 없어서 Available이며 STORAGECLASS 열이 비어 있다는 뜻이에요.</p>
+
+<p>그다음 공식 주소에서 받은 매니페스트(3874바이트)를 적용했어요. Mac에서는 5초마다 PVC와 파드 상태를 확인했어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/16/pv-bound.png" alt="worker1에 /DATA1을 만들고 portainer-pv를 적용해 10Gi RWO Retain Available 상태가 되고, portainer.yaml을 적용해 리소스 6개가 created된 뒤 21:26:22에 PVC가 portainer-pv와 Bound이고 파드는 0/1 ContainerCreating, 21:26:52에 1/1 Running, 파드 portainer-6d86bc584d-wrm86이 10.244.194.90으로 k8s-worker1에 있고 Service가 9000:30777, 9443:30779, 30776:30776인 터미널 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. PV를 먼저 만들어 두자 PVC는 portainer-pv와 바로 묶였고 파드는 k8s-worker1에 떴다</div>
+
+<p>21:26:22에 PVC는 이미 portainer-pv와 Bound 상태였고 파드는 ContainerCreating이었어요. 21:26:52에는 파드가 1/1 Running이 됐어요. 파드 portainer-6d86bc584d-wrm86은 k8s-worker1에서 10.244.194.90을 받았고 Service는 9000:30777, 9443:30779, 30776:30776으로 열렸어요. Mac에서 worker1 주소의 30779로 요청하니 200이 왔어요.</p>
+<div class="obsv-code">mac$ curl -sk -o /dev/null -w "%{http_code}" https://192.168.64.3:30779/
+200</div>
+<p>&rarr; Portainer가 HTTPS NodePort에서 응답했다는 뜻이에요. <code style="font-family:Menlo,monospace;font-size:14px;">-k</code>는 자체 서명 인증서를 검증하지 않는 옵션이에요.</p>
+
+<p>파드가 worker1에 뜬 것은 우연이 아니에요. 매니페스트의 Deployment에는 <code style="font-family:Menlo,monospace;font-size:14px;">nodeSelector: {}</code>로 아무 조건도 없어요. 파드를 worker1로 보낸 것은 PV의 nodeAffinity예요. <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#node-affinity">PV 문서의 Node Affinity 절</a>에 따르면 PV를 쓰는 파드는 그 PV의 nodeAffinity가 고른 노드에만 배치돼요. <span class="obsv-mark">정적 local PV를 쓰면 파드가 갈 노드를 Deployment가 아니라 PV가 정해요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: worker1이 멈추면 Portainer도 다른 노드로 가지 못해요</div>
+  <a href="https://kubernetes.io/docs/concepts/storage/volumes/#local">local 볼륨 문서</a>에는 노드가 비정상이 되면 local 볼륨에 접근할 수 없고 그 볼륨을 쓰는 파드는 실행되지 못한다고 적혀 있어요. local 볼륨을 쓰는 앱은 이런 가용성 저하와 디스크 특성에 따른 데이터 손실 가능성을 견딜 수 있어야 한다는 문장도 있어요. 같은 문서에서는 local 볼륨에 WaitForFirstConsumer로 설정한 StorageClass를 만들라고 권해요. 바인딩을 파드 배치 때까지 미뤄야 파드의 자원 요구나 노드 셀렉터까지 함께 따져 PV를 고를 수 있기 때문이에요. portainer-pv에는 클래스가 없어서 이 미루기가 적용되지 않아요. 이번에는 worker1에 파드가 들어갈 자리가 있어서 문제없이 떴어요.
+</div>
+
+<p>Portainer가 뜨고 나면 첫 관리자를 만들 시간에 제한이 있어요. <a href="https://docs.portainer.io/faqs/installing/setup-token">setup token FAQ</a>에는 첫 관리자를 5분 안에 만들어야 한다고 적혀 있어요. <a href="https://docs.portainer.io/faqs/installing/your-portainer-instance-has-timed-out-for-security-purposes-error-fix">시간 초과 안내 페이지</a>에 따르면 새로 설치하고 5분 안에 설정을 끝내지 않으면 Portainer 서비스가 멈추고 로그에 "the Portainer instance timed out for security purposes"가 남아요. 다른 사람이 새 설치를 먼저 차지하지 못하게 막는 장치라고 해요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: setup token</div>
+  Portainer가 시작할 때 서버 로그에 <code style="font-family:Menlo,monospace;font-size:14px;">setup_token=</code> 뒤에 찍는 값이에요. 첫 관리자를 만들 때 이 값을 함께 내야 해서 로그를 읽을 수 있는 사람만 첫 관리자를 만들 수 있어요. 화면에서는 Setup token 칸에 붙여 넣고 API로 만들 때는 <code style="font-family:Menlo,monospace;font-size:14px;">X-Setup-Token</code> 헤더에 넣어요.
+</div>
+
+<p>이번에는 Mac에서 API로 관리자를 만들었어요. 비밀번호와 토큰 값은 싣지 않았어요.</p>
+<div class="obsv-code">mac$ curl -sk https://192.168.64.3:30779/api/users/admin/check -w "%{http_code}"
+404
+
+mac$ curl -sk -X POST https://192.168.64.3:30779/api/users/admin/init -d '{"Username":"admin","Password":"&lt;비밀번호&gt;"}'
+{"message":"Invalid or missing setup token. Provide the X-Setup-Token header with the token printed in the server logs at startup.","details":"Invalid or missing setup token"}</div>
+<p>&rarr; 21:27:37에 받은 404는 아직 관리자가 없다는 뜻이에요. 토큰 없이 보낸 생성 요청은 HTTP 403으로 거절됐어요. 시작할 때 서버 로그에 찍힌 토큰을 X-Setup-Token 헤더에 넣어 보내라는 안내예요.</p>
+<div class="obsv-code">mac$ kubectl -n portainer logs deploy/portainer | grep setup_token=
+(토큰 값은 싣지 않음)
+
+mac$ curl -sk -X POST https://192.168.64.3:30779/api/users/admin/init -H "X-Setup-Token: &lt;토큰&gt;" -d '{...}'
+HTTP 200</div>
+<p>&rarr; 로그에서 찾은 토큰을 헤더에 넣자 21:27:53에 관리자가 만들어졌다는 뜻이에요. 같은 계정으로 로그인한 요청도 200이었어요. 파드가 Running이 된 21:26:52에서 1분 남짓 지난 시각이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 5분을 넘겼거나 토큰을 미리 정하고 싶다면</div>
+  &bull; 시간을 넘겼다면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl -n portainer rollout restart deployment/portainer</code>로 다시 시작해요. 시간 초과 안내 페이지에 따르면 이렇게 하면 설정할 시간을 새로 받아요<br>
+  &bull; setup token FAQ에는 토큰을 직접 정하는 <code style="font-family:Menlo,monospace;font-size:14px;">--setup-token</code>, 토큰 요구를 끄는 <code style="font-family:Menlo,monospace;font-size:14px;">--no-setup-token</code>, 시작할 때 관리자 비밀번호를 정하는 <code style="font-family:Menlo,monospace;font-size:14px;">--admin-password</code>·<code style="font-family:Menlo,monospace;font-size:14px;">--admin-password-file</code> 플래그가 나와요. <code style="font-family:Menlo,monospace;font-size:14px;">--no-setup-token</code>은 완전히 통제하는 네트워크에서만 쓰라고 해요<br>
+  &bull; 이 매니페스트는 NodePort로 열리니 노드 주소에 닿는 사람이면 누구나 설정 화면에 들어올 수 있어요. 토큰을 로그에서만 꺼내 쓰고 글이나 채팅에 붙이지 마세요
+</div>
+
+<p>로그인하면 Environment summary 화면이 나와요. Environment는 local이고 URL은 kubernetes.default.svc예요. 클러스터 안에서 API 서버를 부르는 주소이니 Portainer가 자기 파드 안에서 API 서버에 연결했다는 뜻이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/16/portainer-dashboard.png" alt="Portainer Community Edition 2.45.3 LTS의 Environment summary 대시보드. Environment local, URL kubernetes.default.svc이고 Namespaces 8, Applications 13, Services 9, Ingresses 0, ConfigMaps 18, Secrets 3, Volume 1이 보이는 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 첫 로그인 뒤 대시보드. Volume은 1이고 왼쪽 아래에 Portainer CE 2.45.3 LTS가 찍혀 있다</div>
+
+<p>숫자는 Namespaces 8, Applications 13, Services 9, Ingresses 0, ConfigMaps 18, Secrets 3, Volume 1이었어요. 왼쪽 아래에는 Portainer Community Edition 2.45.3 LTS가 찍혀 있어요. <a href="https://github.com/portainer/portainer/releases/tag/2.45.3">2.45.3</a>은 2026-10-21에 나온 LTS 릴리스예요. 이 화면으로 무엇을 보고 무엇을 할 수 있는지는 17편에서 다뤄요.</p>
+
+<h2>6. 네임스페이스를 지우자 local-path의 PV만 사라졌다</h2>
+
+<p>local-path는 기본 지정만 풀었을 뿐 StorageClass는 그대로 남아 있어요. 17편의 Portainer 실험 중에 demo 네임스페이스에서 이 클래스를 직접 지정한 PVC를 만들었어요. 1Gi짜리 PVC web-data, 그리고 그 PVC를 nginx의 <code style="font-family:Menlo,monospace;font-size:14px;">/usr/share/nginx/html</code>에 붙이는 Deployment web-data예요.</p>
+<div class="obsv-code"># demo 네임스페이스에 적용한 PVC (일부)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: web-data, namespace: demo}
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+
+master$ kubectl get pv &amp;&amp; kubectl -n demo get pvc
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                 STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+portainer-pv                               10Gi       RWO            Retain           Bound    portainer/portainer                  &lt;unset&gt;                          8m18s
+pvc-d08e5e04-c636-47f2-a862-2f24776e31b5   1Gi        RWO            Delete           Bound    demo/web-data         local-path     &lt;unset&gt;                          2s
+NAME       STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+web-data   Bound    pvc-d08e5e04-c636-47f2-a862-2f24776e31b5   1Gi        RWO            local-path     &lt;unset&gt;                 9s</div>
+<p>&rarr; local-path가 PV pvc-d08e5e04-c636-47f2-a862-2f24776e31b5를 만들어 web-data와 묶었고 이 PV는 StorageClass를 따라 Delete 정책을 받았다는 뜻이에요. 손으로 만든 portainer-pv는 Retain이에요.</p>
+
+<p>AGE를 보면 PVC는 9초 전, PV는 2초 전에 만들어졌어요. PVC가 생기고 7초쯤 지나서 PV가 생긴 거예요. Deployment의 파드가 노드에 배치된 뒤에 provisioner가 PV를 만드는 WaitForFirstConsumer의 순서와 맞아요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/16/volumes-two-pv.png" alt="Portainer Volumes 화면의 Persistent volume claims 탭. System resources are hidden 안내 아래 web-data 한 줄만 있고 Namespace demo, Used by web-data, Status Bound, Capacity 1Gi, ReadWriteOnce, Storage class local-path, Volume pvc-d08e5e04-c636-47f2-a862-2f24776e31b5인 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. Volumes 화면에는 local-path가 만든 web-data만 보이고 portainer의 PVC는 시스템 리소스로 숨겨졌다</div>
+
+<p>Portainer의 Volumes 화면에서도 이 PVC가 보여요. web-data, 네임스페이스 demo, Used by web-data, Bound, 1Gi, ReadWriteOnce, local-path, 볼륨 pvc-d08e5e04-c636-47f2-a862-2f24776e31b5예요. 그런데 portainer 네임스페이스의 PVC는 목록에 없어요. 표 위에 "System resources are hidden, this can be changed in the table settings"라는 안내가 있어요. Portainer 2.45.3 코드(<a href="https://github.com/portainer/portainer/blob/2.45.3/api/kubernetes/cli/namespace.go#L30-L37">namespace.go</a>)에는 kube-system, kube-public, kube-node-lease, portainer가 기본 시스템 네임스페이스로 적혀 있어요. 이 무렵 대시보드의 Volume 숫자는 2였어요. 목록에서 숨긴 하나가 Portainer 자신의 PVC로 보여요.</p>
+
+<p>실험이 끝나고 demo 네임스페이스를 통째로 지웠어요.</p>
+<div class="obsv-code">master$ kubectl delete namespace demo --wait=true --timeout=180s; sleep 5; kubectl get pv
+namespace "demo" deleted
+NAME           CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                 STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+portainer-pv   10Gi       RWO            Retain           Bound    portainer/portainer                  &lt;unset&gt;                          8m53s</div>
+<p>&rarr; 네임스페이스와 함께 PVC web-data가 지워졌고 그 PVC에 묶여 있던 PV pvc-d08e5e04…도 목록에서 사라졌다는 뜻이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/16/volumes-after-delete.png" alt="demo 네임스페이스를 지운 뒤 Portainer Volumes 화면의 Persistent volume claims 탭이 No items available로 비어 있는 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. demo 네임스페이스를 지운 뒤 PVC 목록은 비었다. portainer의 PVC는 여전히 숨겨져 있다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 회수 정책 (reclaim policy)</div>
+  PVC가 지워진 뒤 PV를 어떻게 할지 정하는 값이에요. Delete는 PV 오브젝트와 실제 저장 공간을 함께 지우고 Retain은 PV를 Released 상태로 남겨 관리자가 직접 처리하게 해요. <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#delete">PV 문서</a>에 따르면 동적으로 만든 PV는 StorageClass의 정책을 따르고 StorageClass의 기본값은 Delete예요.
+</div>
+
+<p>Delete 쪽은 이렇게 확인했어요. local-path <a href="https://github.com/rancher/local-path-provisioner/tree/v0.0.37">README</a>에는 PVC를 지우면 노드에 저장된 볼륨 내용도 자동으로 정리된다고 적혀 있어요. 볼륨을 지운 뒤 helper 파드가 teardown 스크립트로 노드의 디렉터리를 치우는 방식이에요. 다만 이번에는 PV가 어느 노드에 만들어졌는지 기록하지 않았고 노드의 디렉터리가 실제로 지워졌는지도 확인하지 않았어요.</p>
+<p>여기서 portainer-pv가 남은 것을 Retain 덕분이라고 읽으면 안 돼요. 삭제 뒤 목록을 보면 portainer-pv는 여전히 Bound이고 CLAIM은 portainer/portainer예요. 지운 것은 demo 네임스페이스였고 Portainer의 PVC는 그대로였으니 PV가 남는 것이 당연해요. <span class="obsv-mark">이번 실습에서 직접 본 것은 Delete 쪽뿐이고 Retain은 문서로만 확인했어요.</span></p>
+<p><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#retain">PV 문서의 Retain 절</a>에는 PVC가 지워져도 PV는 남아 released 상태가 되지만 이전 사용자의 데이터가 남아 있어서 다른 PVC가 쓸 수는 없다고 적혀 있어요. 관리자가 직접 회수하는 순서는 세 단계예요. PV를 지운 뒤 저장 공간의 데이터를 정리하고 마지막으로 저장 공간을 지워요. 같은 저장 공간을 다시 쓰려면 같은 정의로 새 PV를 만들어요. <a href="https://kubernetes.io/docs/concepts/storage/volumes/#local">volumes 문서의 local 절</a>에는 외부 static provisioner로 관리하지 않는 local PV는 사용자가 직접 정리하고 지워야 한다는 안내도 있어요. 그러니 portainer PVC를 지워도 worker1의 /DATA1 안 데이터는 그대로 남아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 385" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="a16arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="24" y="32" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="start">🗑️ Delete · pvc-d08e5e04… (local-path)</text>
+<text x="676" y="32" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="end">이번에 본 것</text>
+<path d="M20 46 C 86 44, 152 48, 220 47 C 222 76, 219 105, 221 136 C 152 138, 86 135, 21 137 C 18 105, 21 76, 20 46 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120.0" y="72" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">PVC web-data 삭제</text>
+<text x="120.0" y="96" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">demo 네임스페이스째 지움</text>
+<text x="120.0" y="118" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">21:34:50</text>
+<path d="M224 91 C 232 88, 238 94, 246 91" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr3)"/>
+<path d="M250 46 C 316 44, 382 48, 450 47 C 452 76, 449 105, 451 136 C 382 138, 316 135, 251 137 C 248 105, 251 76, 250 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350.0" y="72" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">✓ PV 오브젝트 삭제</text>
+<text x="350.0" y="96" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">kubectl get pv에서 사라짐</text>
+<text x="350.0" y="118" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">삭제 5초 뒤 목록</text>
+<path d="M454 91 C 462 88, 468 94, 476 91" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr3)"/>
+<path d="M480 46 C 546 44, 612 48, 680 47 C 682 76, 679 105, 681 136 C 612 138, 546 135, 481 137 C 478 105, 481 76, 480 46 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 6"/>
+<text x="580.0" y="72" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">노드 디렉터리 정리</text>
+<text x="580.0" y="96" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">README: teardown 스크립트</text>
+<text x="580.0" y="118" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18" text-anchor="middle">이번엔 확인하지 않음</text>
+<text x="24" y="188" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="start">🔒 Retain · portainer-pv (정적, /DATA1)</text>
+<text x="676" y="188" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="end">문서로 확인한 것</text>
+<path d="M20 202 C 86 200, 152 204, 220 203 C 222 232, 219 261, 221 292 C 152 294, 86 291, 21 293 C 18 261, 21 232, 20 202 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 6"/>
+<text x="120.0" y="228" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">PVC portainer 삭제</text>
+<text x="120.0" y="252" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18" text-anchor="middle">이번엔 지우지 않음</text>
+<path d="M224 247 C 232 244, 238 250, 246 247" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr3)"/>
+<path d="M250 202 C 316 200, 382 204, 450 203 C 452 232, 449 261, 451 292 C 382 294, 316 291, 251 293 C 248 261, 251 232, 250 202 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350.0" y="228" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">PV가 Released로 남음</text>
+<text x="350.0" y="252" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">이전 데이터가 남아</text>
+<text x="350.0" y="274" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">다른 PVC는 못 쓴다</text>
+<path d="M454 247 C 462 244, 468 250, 476 247" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#a16arr3)"/>
+<path d="M480 202 C 546 200, 612 204, 680 203 C 682 232, 679 261, 681 292 C 612 294, 546 291, 481 293 C 478 261, 481 232, 480 202 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580.0" y="228" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">관리자가 직접 정리</text>
+<text x="580.0" y="252" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">PV 삭제 → 데이터 정리</text>
+<text x="580.0" y="274" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">다시 쓰려면 새 PV</text>
+<text x="350" y="336" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 이번에 portainer-pv가 남은 이유는 Retain이 아니다</text>
+<text x="350" y="364" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">지운 것은 demo였고 Portainer의 PVC가 그대로 portainer-pv를 쓰고 있었다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 8. Delete는 이번에 확인했고 Retain은 문서로만 확인했다. portainer-pv는 PVC가 아직 쓰고 있어서 남았다</div>
+
+<p><b>local-path의 1Gi는 한도가 아니에요.</b> local-path-provisioner README의 단점 항목 첫 줄에 지금은 볼륨 용량 제한을 지원하지 않고 용량 제한은 무시된다고 적혀 있어요. web-data의 1Gi는 PVC와 PV에 적힌 숫자일 뿐이고 파드가 더 많이 쓰면 그 노드 디스크가 찰 때까지 쓸 수 있다는 뜻이에요. 이번에 1Gi를 넘겨 써 보지는 않았어요. 정적 PV의 /DATA1도 mkdir로 만든 디렉터리일 뿐이고 10Gi로 크기를 제한하는 설정은 따로 하지 않았어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: PVC를 지우기 전에 RECLAIM POLICY부터 봐요</div>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pv</code>의 RECLAIM POLICY가 Delete인 PV는 PVC를 지우면 PV 오브젝트와 실제 저장 공간이 함께 지워져요(PV 문서). 네임스페이스를 지워도 그 안의 PVC가 지워지니 결과가 같아요<br>
+  &bull; 지우면 안 되는 데이터가 동적 PV에 있다면 <a href="https://kubernetes.io/docs/tasks/administer-cluster/change-pv-reclaim-policy/">reclaim policy 변경 문서</a>대로 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl patch pv &lt;PV 이름&gt; -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'</code>로 먼저 바꿔요<br>
+  &bull; 처음부터 Retain으로 받고 싶다면 <code style="font-family:Menlo,monospace;font-size:14px;">reclaimPolicy: Retain</code>을 적은 StorageClass를 따로 만들어요. StorageClass에 값을 적지 않으면 Delete예요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>Portainer 매니페스트의 PVC에는 storageClassName이 없어서 기본 StorageClass가 있으면 그 클래스를 받고 없으면 클래스 없는 PV와 묶여요.</b><br><br>
+  kubeadm으로 만든 이 클러스터에는 StorageClass도 PV도 없었는데 Portainer 문서에는 기본 StorageClass가 있어야 한다고 적혀 있어요. 강의 방식대로 worker1의 /DATA1에 local PV를 만들 때는 기본 StorageClass를 두지 않거나 PVC에 <code style="font-family:Menlo,monospace;font-size:14px;">storageClassName: ""</code>를 적어야 손으로 만든 PV와 묶여요. 그 PV의 nodeAffinity 때문에 Portainer 파드는 worker1로만 가요. local-path는 파드가 배치된 노드에 PV를 만들어 주고 PVC가 지워지면 PV도 지워요. 이번에 Delete는 직접 확인했고 Retain은 문서로만 확인했어요. 손으로 만든 PV가 쓰일지는 PV가 아니라 PVC에 붙은 storageClassName이 먼저 정해요.
+</div>
+
+</div>

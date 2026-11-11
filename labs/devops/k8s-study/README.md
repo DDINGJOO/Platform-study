@@ -49,6 +49,13 @@
 | `out/11-node-exporter-before.txt` · `11-node-exporter-after.txt` | node-exporter Service 가 파드를 못 고른 문제와 고친 뒤 | 11편 |
 | `out/12-grafana-6417.txt` · `12-jobs-panel.txt` | 6417 대시보드가 찾는 메트릭과 지금 이름, Jobs 패널 확인 | 12편 |
 | `out/12-recheck.txt` | 글을 쓰며 다시 조회한 노드 할당량·요청량 합계, 노드 조건 종류, node-exporter 가 보는 파일 시스템과 노드의 실제 df | 12편 |
+| `out/13-ebpf-kernel.txt` · `13-kprobe-demo.txt` | 노드 커널의 eBPF·kprobe 설정, worker1 의 tcp_v4_connect 에 5초 건 kprobe 결과(외부 공인 IP 1건은 가림) | 13편 |
+| `out/14-ks-cli.txt` · `14-ks-tap.txt` | Kubeshark CLI 설치와 ks 별칭, 사용자가 실행한 ks tap·ks proxy 출력 | 14편 |
+| `out/14-ks-resources.txt` · `14-ks-license.txt` · `14-ks-resource-usage.txt` | Helm 리소스 21개, worker 권한·마운트, ClusterRole, 라이선스 창, 대상 좁히기 전후 메모리, kubeshark clean | 14편 |
+| `out/15-myweb-setup.txt` · `15-phases.txt` · `15-nginx-counts.txt` | 샘플 앱 준비, 4단계 트래픽 실험(traffic.sh, KFL 필터), nginx 접근 로그로 센 파드별 요청 수 | 15편 |
+| `out/16-portainer-manifest.txt` · `16-local-path.txt` · `16-portainer-install.txt` | 슬라이드 매니페스트 404 와 공식 주소, local-path 설치와 기본 지정 해제, 정적 PV·Portainer 설치·첫 관리자(값은 싣지 않음) | 16편 |
+| `out/17-portainer-steps.txt` · `17-portainer-quota.txt` | kubectl 로 넣고 빼며 본 Portainer 화면 변화, Quota 512M 네임스페이스와 두 앱(0/2, 3/5) | 17편 |
+| `out/18-k9s-install.txt` · `18-k9s-tour.txt` · `18-k9s-01-start.txt` ~ `18-k9s-12-help.txt` | k9s 설치, tmux 안에서 k9s 를 돌리며 저장한 화면 12장 | 18편 |
 
 ## 손댄 곳
 
@@ -58,7 +65,8 @@
 - `07-stale-ready-first-seen.txt` · `07-boot-hang.txt` · `09-macos-local-network.txt` · `09-baseurl-attempt.txt` · `11-kps-install.txt`(뒷부분) 는 작업 세션의 명령 기록에서 옮겼다(그 실행의 원본 로그 파일은 없다). 홈 경로의 사용자 이름은 `<사용자>` 로 바꿨다.
 - `10-*.txt` 에는 토큰 본문을 싣지 않았다. 토큰은 `iat`·`exp`·`sub` 만 꺼내 찍었고, `10-recheck.txt` 의 클라이언트 인증서 지문은 `<클라이언트 인증서 지문>` 으로 바꿨다.
 
-## 8~12편 환경 추가
+## 8~18편 환경 추가
 
 - Helm v3.22.1(마스터), Headlamp 0.46.0(차트 0.46.0, 네임스페이스 headlamp), Prometheus 3.16.0 · node-exporter(latest) · Grafana 13.3.0 · kube-state-metrics v2.20.0 (강의 저장소 github.com/brayanlee/k8s-prometheus 매니페스트를 고쳐 적용, 네임스페이스 monitoring)
 - 강의 저장소에서 고친 내용은 실습 저장소 `shared/k8s-prometheus` 의 `git diff` 로 볼 수 있다. 강의 저장소에는 라이선스가 없어 파일 전체를 이 저장소에 옮기지 않았다.
+- 13~18편(2026-11-11): Kubeshark v53.6.0(Helm 차트 53.6.0, default 네임스페이스, 실습 뒤 kubeshark clean), local-path-provisioner v0.0.37(기본 지정 해제), Portainer CE 2.45.3 LTS(portainer 네임스페이스, 정적 PV portainer-pv = worker1 의 /DATA1), k9s v0.51.0(마스터)

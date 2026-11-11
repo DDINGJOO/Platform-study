@@ -1,0 +1,51 @@
+# 트래픽 스크립트 (실습 저장소 shared/kubeshark-lab/traffic.sh, 마스터의 /lab/kubeshark-lab/traffic.sh)
+# | #!/usr/bin/env bash
+# | # 사용법: traffic.sh <초> <URL당 초당 요청 수> <URL>...
+# | # 각 URL 에 초당 rps 번씩 curl 을 보낸다. 끝나면 보낸 요청 수를 찍는다.
+# | dur=$1; rps=$2; shift 2
+# | end=$(( $(date +%s) + dur )); rounds=0
+# | interval=$(awk "BEGIN{print 1/$rps}")
+# | while [ "$(date +%s)" -lt "$end" ]; do
+# |   for u in "$@"; do curl -s -o /dev/null --max-time 2 "$u" & done
+# |   rounds=$((rounds+1)); sleep "$interval"
+# | done
+# | wait
+# | echo "$(date +%T) 끝: URL ${#}개 x ${rounds}번 = $(( rounds * $# ))건 (${dur}초, URL당 ${rps}/s)"
+# 서비스맵 필터(KFL): dst.pod.name.startsWith("myweb") || src.pod.name == "loadgen"
+# 각 단계: 대시보드를 새로 열어 필터를 걸고 MAP 탭으로 간 뒤 트래픽을 60초 흘리고 68초 뒤 화면을 찍었다. 지도 숫자는 '페이지를 연 뒤 초당 평균'.
+
+=== P1 균등: 파드 3개에 각각 1/s (20:59:00)
+cmd: IPS=$(kubectl get po -l app=myweb -o jsonpath="{.items[*].status.podIP}"); /lab/kubeshark-lab/traffic.sh 60 1 $(for i in $IPS; do echo http://$i/; done)
+start 20:59:09 | items: Displayed items: 183
+since: since 8:59:08 PM UTC
+21:00:09 끝: URL 3개 x 60번 = 180건 (60초, URL당 1/s)
+
+=== P2 쏠림: worker1 파드 10/s, 나머지 1/s (21:00:23)
+cmd: A=$(kubectl get po -l app=myweb --field-selector spec.nodeName=k8s-worker1 -o jsonpath="{.items[0].status.podIP}"); O=$(kubectl get po -l app=myweb -o jsonpath="{.items[*].status.podIP}" | tr " " "\n" | grep -v "^$A$"); /lab/kubeshark-lab/traffic.sh 60 10 http://$A/ & /lab/kubeshark-lab/traffic.sh 60 1 $(for i in $O; do echo http://$i/; done); wait
+start 21:00:32 | items: Displayed items: 721
+since: since 9:00:31 PM UTC
+21:01:33 끝: URL 1개 x 593번 = 593건 (60초, URL당 10/s)
+21:01:33 끝: URL 2개 x 61번 = 122건 (60초, URL당 1/s)
+
+=== P3 Service 경유: master -> ClusterIP 10/s (21:01:46)
+cmd: C=$(kubectl get svc myweb -o jsonpath="{.spec.clusterIP}"); echo "ClusterIP $C"; /lab/kubeshark-lab/traffic.sh 60 10 http://$C/
+start 21:01:55 | items: Displayed items: 589
+since: since 9:01:54 PM UTC
+ClusterIP 10.105.164.156
+21:02:55 끝: URL 1개 x 586번 = 586건 (60초, URL당 10/s)
+
+=== P4 loadgen 파드 -> http://myweb 약 10/s, 30초째 replicas 3->5 (21:03:10)
+cmd: (sleep 30; echo "$(date +%T) scale"; kubectl scale deploy/myweb --replicas=5) & kubectl exec loadgen -- sh -c "end=\$(( \$(date +%s)+60 )); n=0; while [ \$(date +%s) -lt \$end ]; do curl -s -o /dev/null http://myweb; n=\$((n+1)); sleep 0.1; done; echo loadgen: \$n건"; wait; kubectl get po -l app=myweb -o wide | awk "{print \$1,\$3,\$6,\$7}"
+start 21:03:18 | items: Displayed items: 1424
+since: since 9:03:17 PM UTC
+21:03:48 scale
+deployment.apps/myweb scaled
+loadgen: 574건
+NAME STATUS IP NODE
+myweb-859c4764d4-4tjzk Running 10.244.194.88 k8s-worker1
+myweb-859c4764d4-5xtpv Running 10.244.100.213 k8s-worker3
+myweb-859c4764d4-k2hfq Running 10.244.126.20 k8s-worker2
+myweb-859c4764d4-n9rd8 Running 10.244.126.19 k8s-worker2
+myweb-859c4764d4-v87c6 Running 10.244.100.214 k8s-worker3
+
+ALL DONE 21:04:33

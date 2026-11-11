@@ -1,0 +1,46 @@
+# 실행한 스크립트 (worker1 에서 sudo bash -s 로 실행)
+# | set -e
+# | cd /sys/kernel/tracing
+# | echo '# tcp_v4_connect(sk, uaddr, len) 의 두 번째 인자(sockaddr_in)에서 포트 2바이트, IPv4 주소 4바이트를 꺼낸다'
+# | DEF='p:k8slab/conn tcp_v4_connect p0=+2($arg2):u8 p1=+3($arg2):u8 a=+4($arg2):u8 b=+5($arg2):u8 c=+6($arg2):u8 d=+7($arg2):u8'
+# | echo "# echo '$DEF' >> /sys/kernel/tracing/kprobe_events"
+# | echo "$DEF" >> kprobe_events
+# | echo > trace
+# | echo 1 > events/k8slab/conn/enable
+# | curl -sk -o /dev/null https://127.0.0.1:10250/healthz || true
+# | curl -s -o /dev/null --max-time 2 http://10.96.0.1:443 || true
+# | sleep 5
+# | echo 0 > events/k8slab/conn/enable
+# | echo '# 5초 동안 잡힌 tcp_v4_connect 호출 (프로세스-PID, CPU, 시각 → 목적지 IP:포트)'
+# | grep -v '^#' trace > /tmp/k8slab-trace.txt || true
+# | python3 - /tmp/k8slab-trace.txt <<'PY'
+# | import sys,re
+# | n=0
+# | for l in open(sys.argv[1]):
+# |     m=re.search(r"^\s*(\S+)\s+\[(\d+)\].*?(\d+\.\d+): conn: .*p0=(\d+) p1=(\d+) a=(\d+) b=(\d+) c=(\d+) d=(\d+)",l)
+# |     if m:
+# |         who,cpu,ts,p0,p1,a,b,c,d=m.groups(); n+=1
+# |         if n<=15: print(f"{who:30} cpu{cpu} {ts}  -> {a}.{b}.{c}.{d}:{int(p0)*256+int(p1)}")
+# | print(f"(모두 {n}건)")
+# | PY
+# | echo '# 원본 한 줄'; head -1 /tmp/k8slab-trace.txt; rm -f /tmp/k8slab-trace.txt
+# | echo '-:k8slab/conn' >> kprobe_events
+# | echo "# 정리 확인: 남은 k8slab kprobe 수 = $(grep -c k8slab kprobe_events || true)"
+
+# 2026-11-11 20:5x KST, worker1. eBPF 없이 커널 tracefs 의 kprobe 이벤트로 tcp_v4_connect 에 훅을 걸었다가 뗐다.
+worker1$ sudo bash -s < kprobe_demo.sh
+# echo 'p:k8slab/conn tcp_v4_connect p0=+2($arg2):u8 p1=+3($arg2):u8 a=+4($arg2):u8 b=+5($arg2):u8 c=+6($arg2):u8 d=+7($arg2):u8' >> /sys/kernel/tracing/kprobe_events
+# 5초 동안 잡힌 tcp_v4_connect 호출 (프로세스-PID, CPU, 시각 → 목적지 IP:포트)
+curl-10526                     cpu000 318.178358  -> 127.0.0.1:10250
+curl-10527                     cpu000 318.183013  -> 10.96.0.1:443
+kubelet-1678                   cpu001 318.427951  -> 10.244.194.85:8081
+calico-9690                    cpu000 319.431578  -> <외부 공인 IP>:443
+kubelet-1649                   cpu000 319.443995  -> 10.244.194.86:4466
+kubectl-10531                  cpu000 321.103610  -> 127.0.0.1:8080
+kubectl-10529                  cpu001 321.103900  -> 127.0.0.1:8080
+kubectl-10531                  cpu000 321.105629  -> 127.0.0.1:8080
+calico-10556                   cpu000 321.328640  -> 127.0.0.1:9099
+(모두 9건)
+# 원본 한 줄
+            curl-10526   [000] d....   318.178358: conn: (tcp_v4_connect+0x0/0x4e8) p0=40 p1=10 a=127 b=0 c=0 d=1
+# 정리 확인: 남은 k8slab kprobe 수 = 0

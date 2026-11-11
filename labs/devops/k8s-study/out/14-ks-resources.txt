@@ -1,0 +1,92 @@
+# 2026-11-11 20:46~20:50 KST. ks tap 이 만든 것 (네임스페이스 default, Helm 릴리스 kubeshark)
+# jsonpath·go-template 이 긴 명령은 무엇을 뽑았는지만 줄여 적었다. 출력은 그대로다.
+mac$ kubectl get pods -n default -o wide | grep kubeshark          # 20:46, 설치 직후
+kubeshark-front-7fb9788cdd-w7whb   0/1  ContainerCreating  0  29s  k8s-worker2
+kubeshark-hub-fbd9d8db-zcsjv       0/1  ContainerCreating  0  29s  k8s-worker2
+kubeshark-worker-daemon-set-kdxl2  0/2  Init:0/1           0  29s  k8s-worker2
+kubeshark-worker-daemon-set-wq4ps  0/2  Init:0/1           0  29s  k8s-worker1
+kubeshark-worker-daemon-set-zkf86  0/2  Init:0/1           0  29s  k8s-worker3
+
+mac$ kubectl get svc,ds,deploy -n default | grep -E "NAME|kubeshark"
+NAME                               TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)     AGE
+service/kubeshark-front            ClusterIP   10.110.107.238   <none>        80/TCP      29s
+service/kubeshark-hub              ClusterIP   10.111.237.62    <none>        80/TCP      29s
+service/kubeshark-hub-metrics      ClusterIP   10.103.87.26     <none>        9100/TCP    29s
+service/kubeshark-worker-metrics   ClusterIP   10.100.126.244   <none>        49100/TCP   29s
+NAME                                         DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+daemonset.apps/kubeshark-worker-daemon-set   3         3         0       3            0           <none>          29s
+NAME                              READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/kubeshark-front   0/1     1            0           29s
+deployment.apps/kubeshark-hub     0/1     1            0           29s
+
+mac$ kubectl get pods -n default -o wide | grep kubeshark          # 20:47:44, 모두 Ready
+kubeshark-front-7fb9788cdd-w7whb   1/1  Running  0  2m13s  k8s-worker2
+kubeshark-hub-fbd9d8db-zcsjv       1/1  Running  0  2m13s  k8s-worker2
+kubeshark-worker-daemon-set-kdxl2  2/2  Running  0  2m13s  k8s-worker2
+kubeshark-worker-daemon-set-wq4ps  2/2  Running  0  2m13s  k8s-worker1
+kubeshark-worker-daemon-set-zkf86  2/2  Running  0  2m13s  k8s-worker3
+
+mac$ kubectl -n default get events --sort-by=.lastTimestamp | grep kubeshark | grep Pulled   # 이미지 (arm64 노드에서 정상)
+Successfully pulled image "docker.io/kubeshark/worker:v53.6" in 1.199s ... Image size: 72410400 bytes.
+Successfully pulled image "docker.io/kubeshark/hub:v53.6" in 23.905s (1m45.455s including waiting). Image size: 45716685 bytes.
+Successfully pulled image "docker.io/kubeshark/front:v53.6" in 19.324s (2m4.512s including waiting). Image size: 59103519 bytes.
+
+master$ helm list -A | grep -E "NAME|kubeshark"
+NAME     	NAMESPACE	REVISION	UPDATED                                	STATUS  	CHART           	APP VERSION
+kubeshark	default  	1       	2026-11-11 20:45:31 +0900 KST	deployed	kubeshark-53.6.0	           
+
+master$ helm get manifest kubeshark -n default | (kind, name 만 뽑아 센다)
+      1 ClusterRole	kubeshark-cluster-role-default
+      1 ClusterRoleBinding	kubeshark-cluster-role-binding-default
+      1 ConfigMap	kubeshark-config-map
+      1 ConfigMap	kubeshark-nginx-config-map
+      1 DaemonSet	kubeshark-worker-daemon-set
+      1 Deployment	kubeshark-front
+      1 Deployment	kubeshark-hub
+      1 NetworkPolicy	kubeshark-dex-network-policy
+      1 NetworkPolicy	kubeshark-front-network-policy
+      1 NetworkPolicy	kubeshark-hub-network-policy
+      1 NetworkPolicy	kubeshark-worker-network-policy
+      1 Role	kubeshark-self-config-role
+      1 RoleBinding	kubeshark-self-config-role-binding
+      1 Secret	kubeshark-saml-x509-crt-secret
+      1 Secret	kubeshark-saml-x509-key-secret
+      1 Secret	kubeshark-secret
+      1 Service	kubeshark-front
+      1 Service	kubeshark-hub
+      1 Service	kubeshark-hub-metrics
+      1 Service	kubeshark-worker-metrics
+      1 ServiceAccount	kubeshark-service-account
+
+mac$ kubectl -n default get ds kubeshark-worker-daemon-set -o jsonpath='{컨테이너 이름, 이미지, privileged, hostNetwork}'
+sniffer image=docker.io/kubeshark/worker:v53.6 privileged=true
+tracer image=docker.io/kubeshark/worker:v53.6 privileged=true
+hostNetwork=true
+
+mac$ kubectl -n default get ds kubeshark-worker-daemon-set -o jsonpath='{volumes: 이름 hostPath}'
+proc /proc
+sys /sys
+lib-modules /lib/modules
+os-release /etc/os-release
+root /
+data
+hub-internal-token
+
+mac$ kubectl get clusterrole kubeshark-cluster-role-default -o jsonpath='{rules: apiGroups resources verbs}'
+["","extensions","apps"] ["nodes","pods","services","endpoints","persistentvolumeclaims"] ["list","get","watch"]
+[""] ["namespaces"] ["get","list","watch"]
+["networking.k8s.io"] ["networkpolicies"] ["get","list","watch","create","update","delete"]
+["authentication.k8s.io"] ["tokenreviews"] ["create"]
+
+mac$ kubectl -n default get secret kubeshark-secret -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'   # 키 이름만, 값은 보지 않음
+LICENSE
+OIDC_CLIENT_ID
+OIDC_CLIENT_SECRET
+SCRIPTING_ENV
+
+# Mac 에서 접속: ks proxy 는 마스터 VM 안의 127.0.0.1:8899 에 열려 Mac 브라우저로는 닿지 않는다. 대신 API 서버를 거치는 port-forward 를 Mac 의 localhost 에 연다.
+mac$ kubectl -n default port-forward svc/kubeshark-front 8899:80
+Forwarding from 127.0.0.1:8899 -> 8080
+Forwarding from [::1]:8899 -> 8080
+mac$ curl -s -o /dev/null -w "front %{http_code}\n" http://127.0.0.1:8899/
+front 200

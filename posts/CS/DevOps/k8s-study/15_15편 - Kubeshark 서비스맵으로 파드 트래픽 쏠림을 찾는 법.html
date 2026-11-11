@@ -1,0 +1,484 @@
+<!-- ============================================================
+  k8s 스터디 15편: Kubeshark 서비스맵으로 파드 트래픽 쏠림을 찾는 법
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: Kubeshark 서비스맵에 찍힌 B/s 숫자로 파드 쏠림을 판단해도 될까요? nginx 파드 3개에 균등·쏠림·Service 경유·스케일아웃 트래픽을 60초씩 보내고 지도 숫자를 nginx 접근 로그와 맞춰 봤어요. -->
+<!-- tags: Kubeshark 서비스맵, KFL 필터, kube-proxy 부하 분산, 파드 트래픽 쏠림, ClusterIP -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 15편</div>
+  13편. eBPF와 kprobe는 어떻게 사이드카 없이 모든 파드의 연결을 볼까<br>
+  14편. Kubeshark를 설치하면 무엇이 생기고 어떤 권한과 자원을 쓸까<br>
+  <b>15편. Kubeshark 서비스맵으로 파드 트래픽 쏠림을 찾는 법</b> &larr; 지금 이 글<br>
+  16편. Portainer를 설치할 때 PV를 직접 만들까, local-path로 받을까<br>
+  17편. Portainer 화면에서 배포·장애·자원 한도를 확인하는 법
+</div>
+
+<p>강의 시간에 Kubeshark 대시보드의 MAP 탭을 처음 열었어요. 화면 가득 선이 얽혀 있었고 선마다 0.03B/s 같은 숫자가 붙어 있었어요. kube-proxy-kc292나 kubelet/kube-proxy-kc292 같은 이름표는 보였지만 어떤 선이 실습용 앱의 트래픽인지는 알아볼 수 없었어요. 화면 아래의 Displayed items는 페이지를 연 지 33초 만에 371이 돼 있었어요.</p>
+<p>처음 든 생각은 "서비스맵 재밌네"였어요. 하지만 지도가 재미있는 것과 지도의 숫자를 믿을 수 있는 것은 다른 문제예요. 파드 하나에 요청이 몰리는 것 같을 때 이 지도를 열어 본다면 선의 굵기와 숫자를 그대로 믿어도 될까요? 이번 글의 질문은 <b>"서비스맵의 숫자로 파드 트래픽 쏠림을 판단해도 되나, 판단한다면 무엇을 조심해야 하나"</b>예요. 확인하려고 nginx 파드 3개에 네 가지 방식으로 60초씩 요청을 보냈고 단계마다 지도의 숫자를 nginx 접근 로그와 하나씩 맞춰 봤어요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 필터 없는 서비스맵에서 내 앱의 선만 남기려면 무엇을 쓸까?<br>
+&middot; 지도의 B/s 숫자는 실제 요청 수와 얼마나 맞을까?<br>
+&middot; Service의 ClusterIP로 요청을 보내면 지도에는 왜 Service가 나오지 않을까?<br>
+&middot; 파드에서 이름으로 부르고 중간에 파드를 늘리면 지도에서 무엇이 달라질까?<br>
+&middot; 지도를 읽을 때 무엇을 따로 확인해야 할까?</p>
+
+<h2>1. 필터 없이 열면 시스템 파드의 선 때문에 내 앱이 보이지 않는다</h2>
+
+<p>Kubeshark는 13편에서 본 eBPF로 노드를 지나가는 트래픽을 읽어 14편에서 설치한 대시보드에 보여 줘요. 대시보드 위쪽에는 API STREAM, MAP, SNAPSHOTS 세 탭이 있어요. API STREAM에서는 요청과 응답을 묶은 항목이 하나씩 쌓이고 MAP에서는 같은 데이터로 누가 누구와 통신했는지를 선으로 그려 보여 줘요. 이 실습의 Kubeshark는 v53.6.0이고 이 글의 화면은 모두 마스터를 뺀 워커 3대의 트래픽을 수집하던 상태에서 찍었어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/15/map-unfiltered.png" alt="필터 없이 연 Kubeshark MAP 탭. 위쪽 띠에 Targeting 19 pods in 4 namespaces across 3 nodes, 오른쪽 위에 since 8:55:50 PM부터의 초당 평균이라는 안내, 왼쪽 설정 창에 Bandwidth와 Pod / Service가 고정돼 있고 Include request sizes와 Include response sizes가 켜져 있으며 kube-proxy-kc292 등으로 가는 선 대부분이 0.03B/s이고 아래에 Displayed items 371이 보이는 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 필터 없이 연 MAP 탭. 33초 동안 371개 항목이 쌓였고 어느 선이 무엇인지 알아보기 어려웠다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 서비스맵 (Kubeshark Workload Map)</div>
+  워크로드끼리 누가 누구와 통신하는지 선으로 그린 화면이에요. <a href="https://docs.kubeshark.com/en/v2/service_map">공식 문서</a>에서는 L4/L7 Workload Map이라는 이름으로 안내하고 연결마다 프로토콜을 색으로 구분한다고 설명해요. 이 실습 화면에서는 원 하나가 파드 하나였고 파드가 아닌 주소는 IP 그대로 나왔어요.
+</div>
+
+<p>그림 1에서는 왼쪽 위의 설정 창을 열어 두었어요. 지표는 Bandwidth, 묶는 단위는 Pod / Service로 되어 있고 Show cumulative bandwidth는 꺼져 있어요. Include request sizes와 Include response sizes는 켜져 있어요. <a href="https://docs.kubeshark.com/en/v2/service_map">서비스맵 문서</a>에 따르면 Bandwidth는 워크로드 사이의 데이터 양이고 다른 선택지인 Throughput은 패킷 속도예요. cumulative를 켜면 비율(rate) 대신 누적값을 보여 준다고 해요. 그러니 이 설정에서 선의 숫자는 요청과 응답 크기를 더한 데이터 양의 초당 값으로 읽을 수 있어요.</p>
+<p>오른쪽 위에는 "Aggregate figures represent average sizes per second since 8:55:50 PM UTC+09:00"라는 안내가 떠 있어요. 오후 8시 55분 50초부터 지금까지의 초당 평균 크기라는 뜻이에요. 이 한 줄은 5장에서 다시 중요해져요.</p>
+<p>위쪽 파란 띠의 "Targeting 19 pods in 4 namespaces across 3 nodes"는 네임스페이스 4개에 걸친 파드 19개가 수집 대상이라는 뜻이에요. 14편에서 본 대로 수집기는 워커 3대에만 떠 있어서 노드가 3개로 나와요. 아래쪽 범례에는 네임스페이스(headlamp, monitoring, kube-system)와 internal, 프로토콜(DNS, HTTP, ICMPv6, TCP-FLOW, UDP-FLOW), 노드(k8s-master, k8s-worker1~3, no node)가 색으로 나뉘어 있어요. 클러스터의 흐름이 한 화면에 모두 그려지니 실습 앱 하나의 흐름을 보려면 화면에 남길 선부터 줄여야 해요.</p>
+<p>선을 줄이는 방법은 둘이에요. 수집 대상 자체를 줄이는 캡처 필터와 이미 수집한 것 중에서 화면에 보일 것만 고르는 디스플레이 필터예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 캡처 필터 (Capture Filters)</div>
+  어떤 파드의 트래픽을 수집할지 정하는 설정이에요. <code style="font-family:Menlo,monospace;font-size:14px;">kubeshark tap</code> 뒤에 주는 네임스페이스(<code style="font-family:Menlo,monospace;font-size:14px;">-n</code>)와 파드 이름 정규식이 여기에 해당해요(14편). <a href="https://docs.kubeshark.com/en/pod_targeting">Capture Filters 문서</a>에 따르면 Kubeshark는 대상으로 정한 트래픽만 수집하고 색인하며 자원 사용량은 처리하는 트래픽 양과 직접 관련돼 있어요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: KFL (Kubeshark Filter Language)</div>
+  Kubeshark에서 트래픽을 거르는 식 언어예요. <a href="https://docs.kubeshark.com/en/v2/kfl2">KFL 문서</a>에 따르면 CEL(Common Expression Language)을 바탕으로 하고 <code style="font-family:Menlo,monospace;font-size:14px;">src.pod.name</code>(출발지 파드 이름), <code style="font-family:Menlo,monospace;font-size:14px;">dst.pod.name</code>(목적지 파드 이름) 같은 필드를 <code style="font-family:Menlo,monospace;font-size:14px;">==</code>, <code style="font-family:Menlo,monospace;font-size:14px;">&amp;&amp;</code>, <code style="font-family:Menlo,monospace;font-size:14px;">||</code>로 묶어 조건을 써요. 문자열의 앞부분이 같은지는 <code style="font-family:Menlo,monospace;font-size:14px;">startsWith</code>로 봐요.
+</div>
+
+<p><a href="https://docs.kubeshark.com/en/display_filters">Display Filters 문서</a>에는 디스플레이 필터가 대시보드에 보이는 것만 바꾸고 수집하는 트래픽에는 영향을 주지 않는다고 적혀 있어요. 적용 범위도 지금 보고 있는 브라우저 탭 하나여서 탭마다 다른 조건으로 같은 클러스터를 볼 수 있어요. 필터를 적용하면 식이 브라우저 주소에 들어가서 주소를 복사하면 같은 화면을 공유할 수 있다고 해요. 캡처 필터는 반대로 모든 사용자와 세션에 적용돼요. 서비스맵 문서에도 지도가 지금 걸려 있는 KFL 조건으로 거른 트래픽을 반영한다고 나와 있어요. 이번 실험에서는 수집 범위는 그대로 두고 대시보드 위쪽 입력 칸에 아래 식 하나를 넣은 뒤 Apply를 눌렀어요.</p>
+
+<div class="obsv-code">dst.pod.name.startsWith("myweb") || src.pod.name == "loadgen"</div>
+<p>&rarr; 목적지 파드 이름이 myweb으로 시작하거나 출발지 파드 이름이 loadgen인 항목만 보여 달라는 뜻이에요.</p>
+
+<p>앞 절반은 받는 쪽으로 거르는 조건이에요. 이 실험에서는 요청을 보낸 곳 하나가 파드가 아니라 마스터 노드 자체였어요. 노드에서 보낸 요청에는 출발지 파드 이름이 없으니 받는 쪽인 myweb 파드의 이름으로 걸러야 해요. 뒤 절반은 클라이언트 파드 loadgen이 보낸 것을 모두 남기는 조건이에요. loadgen이 myweb 말고 다른 곳으로 보낸 요청도 함께 남는데 5장에서 이 조건 때문에 DNS 선이 나타나요. <span class="obsv-mark">지도를 보기 전에 어떤 흐름을 볼지부터 식으로 정해야 해요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 지도를 열면 필터부터 걸어요</div>
+  &bull; 내 앱으로 들어오는 요청: <code style="font-family:Menlo,monospace;font-size:14px;">dst.pod.name.startsWith("앱 이름")</code><br>
+  &bull; 클라이언트 파드 하나가 보내는 것 전부: <code style="font-family:Menlo,monospace;font-size:14px;">src.pod.name == "파드 이름"</code><br>
+  &bull; 네임스페이스 단위: <code style="font-family:Menlo,monospace;font-size:14px;">dst.pod.namespace == "production"</code> (KFL 문서의 예시)<br>
+  &bull; 디스플레이 필터는 화면만 바꿔요. 수집기의 메모리와 CPU를 줄이려면 tap 대상을 좁혀야 해요(14편)<br>
+  &bull; 필터를 적용하면 식이 브라우저 주소에 들어가니 그 주소를 공유하면 같은 조건의 화면을 함께 볼 수 있어요
+</div>
+
+<h2>2. 지도를 믿으려면 지도와 따로 센 숫자가 있어야 한다</h2>
+
+<p>강의 슬라이드에는 nginx:1.25.1-alpine 이미지로 myweb을 3개 띄우고 curl로 요청을 보내는 예제가 있었어요. 강의 자료라서 슬라이드 이미지는 싣지 않고 내용만 옮겨요. 이 예제를 여러 번 반복하면서 서비스맵의 유량이 어떻게 바뀌는지 보기로 했어요. 준비는 이랬어요.</p>
+
+<div class="obsv-code">master$ kubectl create deployment myweb --image=nginx:1.25.1-alpine --port=80 --replicas=3
+deployment.apps/myweb created
+
+master$ kubectl get po -o wide | grep myweb      # 뒤쪽 열은 뺐다
+NAME                                READY   STATUS      RESTARTS   AGE   IP               NODE
+myweb-859c4764d4-4tjzk              1/1     Running     0          35s   10.244.194.88    k8s-worker1
+myweb-859c4764d4-5xtpv              1/1     Running     0          35s   10.244.100.213   k8s-worker3
+myweb-859c4764d4-n9rd8              1/1     Running     0          35s   10.244.126.19    k8s-worker2
+
+master$ for ip in 10.244.194.88 10.244.100.213 10.244.126.19; do curl -s -o /dev/null -w ... http://$ip/; done
+10.244.194.88 200 615B
+10.244.100.213 200 615B
+10.244.126.19 200 615B
+
+master$ kubectl expose deployment myweb --port=80
+service/myweb exposed
+master$ kubectl run loadgen --image=curlimages/curl:8.11.1 --command -- sleep infinity
+pod/loadgen created
+pod/loadgen condition met
+# Service와 loadgen 파드를 조회한 결과
+NAME    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)   AGE
+myweb   ClusterIP   10.105.164.156   &lt;none&gt;        80/TCP    8s
+NAME READY STATUS IP NODE
+loadgen 1/1 Running 10.244.194.89 k8s-worker1</div>
+<p>&rarr; myweb 파드 3개가 워커 3대에 하나씩 떴고 마스터에서 파드 IP로 직접 요청하면 셋 다 200과 615B 페이지로 응답했다는 뜻이에요. Service myweb의 ClusterIP는 10.105.164.156이고 클라이언트 파드 loadgen은 worker1에 10.244.194.89로 떴어요.</p>
+
+<p>지도 숫자가 맞는지 판단하려면 지도와 상관없이 센 숫자가 있어야 해요. 지도만 봐서는 지도가 틀린 것인지 요청이 정말 그렇게 간 것인지 구분할 수 없으니까요. 그래서 nginx의 접근 로그를 기준으로 삼았어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 접근 로그 (access log)</div>
+  nginx가 요청을 하나 처리할 때마다 남기는 한 줄 기록이에요. 줄마다 요청이 들어온 시각과 클라이언트 주소가 들어 있어요. 이 실습의 nginx 이미지에서는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs</code>로 이 로그를 볼 수 있었어요. 지도와 상관없이 nginx가 직접 남긴 기록이라 이번 실험에서는 이 건수를 정답지로 삼았어요.
+</div>
+
+<p>요청은 짧은 스크립트로 보냈어요. URL마다 정해진 간격으로 curl을 백그라운드로 하나씩 띄우고 다 끝나면 보낸 건수를 출력해요.</p>
+
+<div class="obsv-code">#!/usr/bin/env bash
+# 사용법: traffic.sh &lt;초&gt; &lt;URL당 초당 요청 수&gt; &lt;URL&gt;...
+# 각 URL 에 초당 rps 번씩 curl 을 보낸다. 끝나면 보낸 요청 수를 찍는다.
+dur=$1; rps=$2; shift 2
+end=$(( $(date +%s) + dur )); rounds=0
+interval=$(awk "BEGIN{print 1/$rps}")
+while [ "$(date +%s)" -lt "$end" ]; do
+  for u in "$@"; do curl -s -o /dev/null --max-time 2 "$u" &amp; done
+  rounds=$((rounds+1)); sleep "$interval"
+done
+wait
+echo "$(date +%T) 끝: URL ${#}개 x ${rounds}번 = $(( rounds * $# ))건 (${dur}초, URL당 ${rps}/s)"</div>
+<p>&rarr; <code style="font-family:Menlo,monospace;font-size:14px;">traffic.sh 60 10 http://주소/</code>는 60초 동안 그 주소에 초당 10번 요청하라는 뜻이에요. curl 프로세스 하나가 요청 하나를 보내고 요청마다 새 프로세스가 뜨니 TCP 연결도 요청마다 새로 열려요. 이 점은 4장에서 다시 나와요.</p>
+
+<p>단계마다 순서는 같았어요. 대시보드를 새로 열어 KFL 식을 걸고 MAP 탭으로 간 다음 60초 동안 요청을 보냈어요. 화면은 요청을 시작하고 68초 뒤에 찍었어요. 네 단계를 그림으로 정리하면 이래요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 495" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k15d1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k15d2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k15d3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">네 단계, 60초씩: 누가 어디로 보냈나</text>
+<text x="20" y="92" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="start">1단계 균등</text>
+<text x="20" y="114" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">파드마다 1/s</text>
+<path d="M150 71 C 183 69, 216 73, 250 70 C 252 87, 249 103, 251 119 C 216 121, 183 117, 149 120 C 148 103, 151 87, 150 71 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="101" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">마스터 노드</text>
+<path d="M385 59 C 483 57, 581 61, 682 58 C 684 83, 681 107, 683 131 C 581 133, 483 129, 384 132 C 383 107, 386 83, 385 59 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M253 95 C 295 97, 338 93, 380 95" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k15d1)"/>
+<text x="316" y="86" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">파드 IP로 직접</text>
+<path d="M462 98 C 462 105, 457 111, 450 110 C 443 110, 437 105, 438 98 C 438 91, 443 85, 450 86 C 457 86, 463 91, 462 99 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="450" y="126" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">4tjzk</text>
+<text x="470" y="82" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">1/s</text>
+<path d="M547 98 C 547 105, 542 111, 535 110 C 528 110, 522 105, 523 98 C 523 91, 528 85, 535 86 C 542 86, 548 91, 547 99 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="535" y="126" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">5xtpv</text>
+<text x="555" y="82" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">1/s</text>
+<path d="M632 98 C 632 105, 627 111, 620 110 C 613 110, 607 105, 608 98 C 608 91, 613 85, 620 86 C 627 86, 633 91, 632 99 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="620" y="126" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">n9rd8</text>
+<text x="640" y="82" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">1/s</text>
+<text x="20" y="182" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="start">2단계 쏠림</text>
+<text x="20" y="204" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">worker1 파드만 10/s</text>
+<path d="M150 161 C 183 159, 216 163, 250 160 C 252 177, 249 193, 251 209 C 216 211, 183 207, 149 210 C 148 193, 151 177, 150 161 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="191" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">마스터 노드</text>
+<path d="M385 149 C 483 147, 581 151, 682 148 C 684 173, 681 197, 683 221 C 581 223, 483 219, 384 222 C 383 197, 386 173, 385 149 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M253 185 C 295 187, 338 183, 380 185" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k15d1)"/>
+<text x="316" y="176" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">파드 IP로 직접</text>
+<path d="M466 188 C 466 197, 459 205, 450 204 C 441 204, 433 197, 434 188 C 434 179, 441 171, 450 172 C 459 172, 467 179, 466 189 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="450" y="216" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">4tjzk</text>
+<text x="474" y="172" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="start">10/s</text>
+<path d="M547 188 C 547 195, 542 201, 535 200 C 528 200, 522 195, 523 188 C 523 181, 528 175, 535 176 C 542 176, 548 181, 547 189 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="535" y="216" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">5xtpv</text>
+<text x="555" y="172" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">1/s</text>
+<path d="M632 188 C 632 195, 627 201, 620 200 C 613 200, 607 195, 608 188 C 608 181, 613 175, 620 176 C 627 176, 633 181, 632 189 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="620" y="216" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">n9rd8</text>
+<text x="640" y="172" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">1/s</text>
+<text x="20" y="272" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="start">3단계 Service</text>
+<text x="20" y="294" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">ClusterIP로 10/s</text>
+<path d="M150 251 C 183 249, 216 253, 250 250 C 252 267, 249 283, 251 299 C 216 301, 183 297, 149 300 C 148 283, 151 267, 150 251 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="281" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">마스터 노드</text>
+<path d="M385 239 C 483 237, 581 241, 682 238 C 684 263, 681 287, 683 311 C 581 313, 483 309, 384 312 C 383 287, 386 263, 385 239 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M270 253 C 300 251, 331 255, 362 252 C 364 268, 361 282, 363 297 C 331 299, 300 295, 269 298 C 268 282, 271 268, 270 253 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="316" y="274" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18" text-anchor="middle">ClusterIP</text>
+<text x="316" y="290" font-family="Menlo, monospace" font-size="9" fill="#c07f18" text-anchor="middle">10.105.164.156</text>
+<path d="M253 275 C 258 275, 262 275, 267 275" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k15d1)"/>
+<path d="M365 275 C 370 275, 375 275, 380 275" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k15d1)"/>
+<path d="M462 278 C 462 285, 457 291, 450 290 C 443 290, 437 285, 438 278 C 438 271, 443 265, 450 266 C 457 266, 463 271, 462 279 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="450" y="306" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">4tjzk</text>
+<path d="M547 278 C 547 285, 542 291, 535 290 C 528 290, 522 285, 523 278 C 523 271, 528 265, 535 266 C 542 266, 548 271, 547 279 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="535" y="306" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">5xtpv</text>
+<path d="M632 278 C 632 285, 627 291, 620 290 C 613 290, 607 285, 608 278 C 608 271, 613 265, 620 266 C 627 266, 633 271, 632 279 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="620" y="306" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">n9rd8</text>
+<text x="535" y="258" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">kube-proxy가 무작위로 고른다</text>
+<text x="20" y="362" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="start">4단계 확장</text>
+<text x="20" y="384" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">파드에서 이름으로</text>
+<path d="M150 341 C 183 339, 216 343, 250 340 C 252 357, 249 373, 251 389 C 216 391, 183 387, 149 390 C 148 373, 151 357, 150 341 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="371" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">loadgen 파드</text>
+<path d="M385 329 C 483 327, 581 331, 682 328 C 684 353, 681 377, 683 401 C 581 403, 483 399, 384 402 C 383 377, 386 353, 385 329 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M270 343 C 300 341, 331 345, 362 342 C 364 358, 361 372, 363 387 C 331 389, 300 385, 269 388 C 268 372, 271 358, 270 343 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="316" y="363" font-family="Menlo, monospace" font-size="11" fill="#c07f18" text-anchor="middle">http://myweb</text>
+<text x="316" y="380" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#c07f18" text-anchor="middle">약 10/s</text>
+<path d="M253 365 C 258 365, 262 365, 267 365" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k15d1)"/>
+<path d="M365 365 C 370 365, 375 365, 380 365" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k15d1)"/>
+<text x="316" y="415" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#c07f18" text-anchor="middle">먼저 CoreDNS에 이름을 묻는다</text>
+<path d="M427 368 C 427 375, 422 381, 415 380 C 408 380, 402 375, 403 368 C 403 361, 408 355, 415 356 C 422 356, 428 361, 427 369 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="415" y="395" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">4tjzk</text>
+<path d="M490 368 C 490 375, 485 381, 478 380 C 471 380, 465 375, 466 368 C 466 361, 471 355, 478 356 C 485 356, 491 361, 490 369 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="478" y="395" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">5xtpv</text>
+<path d="M553 368 C 553 375, 548 381, 541 380 C 534 380, 528 375, 529 368 C 529 361, 534 355, 541 356 C 548 356, 554 361, 553 369 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="541" y="395" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">n9rd8</text>
+<path d="M616 368 C 616 375, 611 381, 604 380 C 597 380, 591 375, 592 368 C 592 361, 597 355, 604 356 C 611 356, 617 361, 616 369 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 4"/>
+<text x="604" y="395" font-family="Menlo, monospace" font-size="11" fill="#c07f18" text-anchor="middle">k2hfq</text>
+<path d="M672 368 C 672 375, 667 381, 660 380 C 653 380, 647 375, 648 368 C 648 361, 653 355, 660 356 C 667 356, 673 361, 672 369 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 4"/>
+<text x="660" y="395" font-family="Menlo, monospace" font-size="11" fill="#c07f18" text-anchor="middle">v87c6</text>
+<text x="538" y="348" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18" text-anchor="middle">30초째 3개 → 5개 (점선이 새 파드)</text>
+<text x="350" y="455" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">정답지: 단계마다 nginx 접근 로그를 파드별로 센다</text>
+<text x="350" y="481" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 지도의 숫자(B/s)를 로그 건수와 비율로 맞춰 본다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 앞의 세 단계는 마스터 노드가 보냈고 마지막 단계는 클라이언트 파드가 Service 이름으로 보냈다</div>
+
+<p>실험이 끝난 뒤 Mac에서 파드마다 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs</code>로 접근 로그를 받았어요. 로그 줄의 시각이 어느 단계의 시작과 끝 사이에 있는지로 단계를 나눠 셌고 결과는 그림 3이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/15/nginx-counts.png" alt="nginx 접근 로그로 센 단계별·파드별 요청 수 터미널 화면. 1단계 60·60·60(합계 180), 2단계 593·61·61(715), 3단계 200·199·187(586), 4단계 앞 30초 96·98·81(275)과 뒤 30초 61·50·61·69·58(299), 출발지는 1~3단계가 10.244.235.192이고 4단계가 10.244.194.89" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. nginx 접근 로그로 센 단계별·파드별 요청 수. 이 표를 정답지로 삼았다</div>
+
+<p>먼저 보낸 건수와 로그 건수가 맞는지 봤어요. 스크립트가 출력한 건수는 1단계 180건, 2단계 715건(593건과 122건), 3단계 586건, 4단계 574건이었고 로그 합계도 180, 715, 586, 574로 같았어요. 보낸 요청이 모두 nginx에 닿았고 단계별로 나눈 건수도 보낸 건수와 맞았다는 뜻이에요. 출발지 주소는 앞의 세 단계가 모두 10.244.235.192였고 4단계는 loadgen의 10.244.194.89였어요. <span class="obsv-mark">지도와 따로 센 이 표가 있어야 지도의 숫자가 맞는지 틀리는지 말할 수 있어요.</span></p>
+
+<h2>3. 균등과 쏠림: 같은 시간이 지난 화면끼리는 지도 숫자가 요청 수에 비례했다</h2>
+
+<p>1단계에서는 마스터 노드에서 파드 IP 세 개에 초당 1번씩 요청했어요.</p>
+
+<div class="obsv-code">master$ IPS=$(kubectl get po -l app=myweb -o jsonpath="{.items[*].status.podIP}"); /lab/kubeshark-lab/traffic.sh 60 1 $(for i in $IPS; do echo http://$i/; done)
+21:00:09 끝: URL 3개 x 60번 = 180건 (60초, URL당 1/s)</div>
+<p>&rarr; 파드 IP 세 개에 60번씩, 모두 180건을 보냈다는 뜻이에요. 스크립트는 마스터의 /lab/kubeshark-lab/ 아래에 있어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/15/map-p1-even.png" alt="1단계 서비스맵. 필터 칸에 dst.pod.name.startsWith(&quot;myweb&quot;) || src.pod.name == &quot;loadgen&quot;을 건 상태에서 internal로 분류된 10.244.235.192에서 myweb 파드 4tjzk, 5xtpv, n9rd8로 가는 세 선이 모두 527.07B/s이고 since 8:59:08 PM, Displayed items 183인 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 1단계. 세 파드가 60건씩 받았고 세 선은 모두 527.07B/s였다</div>
+
+<p>세 선의 숫자는 소수점 둘째 자리까지 같았어요. 세 파드가 같은 기본 페이지를 같은 횟수만큼 응답했으니 바이트도 같아야 맞아요. 요청은 마스터 노드에서 보냈는데 지도의 출발지는 k8s-master가 아니라 노란 원의 10.244.235.192였어요. 범례에서는 이 원이 internal로 분류됐어요. 이 주소가 무엇인지는 4장에서 따라가요.</p>
+
+<p>2단계에서는 worker1에 있는 파드 하나에만 초당 10번, 나머지 둘에는 초당 1번씩 보냈어요. 노드 이름으로 파드를 고를 때는 <code style="font-family:Menlo,monospace;font-size:14px;">--field-selector spec.nodeName=k8s-worker1</code>을 썼어요.</p>
+
+<div class="obsv-code">master$ A=$(kubectl get po -l app=myweb --field-selector spec.nodeName=k8s-worker1 -o jsonpath="{.items[0].status.podIP}"); O=$(kubectl get po -l app=myweb -o jsonpath="{.items[*].status.podIP}" | tr " " "\n" | grep -v "^$A$"); /lab/kubeshark-lab/traffic.sh 60 10 http://$A/ &amp; /lab/kubeshark-lab/traffic.sh 60 1 $(for i in $O; do echo http://$i/; done); wait
+21:01:33 끝: URL 1개 x 593번 = 593건 (60초, URL당 10/s)
+21:01:33 끝: URL 2개 x 61번 = 122건 (60초, URL당 1/s)</div>
+<p>&rarr; worker1 파드에는 60초 동안 593번, 나머지 두 파드에는 61번씩 보냈다는 뜻이에요. 목표였던 600건보다 조금 적게 나갔어요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/15/map-p2-skew.png" alt="2단계 서비스맵. 10.244.235.192에서 화면 아래쪽에 잘린 파드로 가는 선이 5.20kB/s로 굵고 n9rd8과 5xtpv로 가는 선은 각각 535.87B/s이며 since 9:00:31 PM, Displayed items 721인 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 2단계. 아래쪽 파드로 가는 선만 5.20kB/s였고 나머지 두 선은 535.87B/s였다</div>
+
+<p>아래쪽 원은 화면 밖으로 잘려 이름이 보이지 않아요. 위의 두 원은 n9rd8과 5xtpv예요. 그러니 남은 하나는 worker1의 4tjzk예요. 지도에서 굵은 선과 가는 선의 비는 5.20kB/s ÷ 535.87B/s = 9.7배이고 로그에서는 593건 ÷ 61건 = 9.7배예요. 쏠림을 지도에서 찾는 방법은 이 그림 그대로예요. 같은 출발지에서 나가는 선들 가운데 혼자 굵은 선을 찾으면 돼요.</p>
+
+<p>두 단계를 이어 보면 하나가 더 보여요. 1단계의 60건은 527.07B/s였고 2단계의 61건은 535.87B/s였어요. 61 ÷ 60 = 1.0167이고 535.87 ÷ 527.07도 1.0167이에요. 두 화면 모두 since 시각에서 69초가 지났을 때 찍었어요(8:59:08 &rarr; 9:00:17, 9:00:31 &rarr; 9:01:40). <span class="obsv-mark">since 시각부터 같은 시간이 지난 화면끼리는 지도 숫자가 요청 건수에 비례했어요.</span></p>
+<p>화면 아래의 Displayed items는 1단계 183개, 2단계 721개였어요. 보낸 요청(180건, 715건)보다 각각 3개, 6개 많았는데 남는 항목이 무엇인지는 따라가지 않았어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 선의 숫자는 요청 수가 아니라 바이트예요</div>
+  지표를 Bandwidth로 두고 요청·응답 크기를 모두 더했으니 선의 숫자는 데이터 양이에요. 이번 실험에서는 모든 요청이 같은 페이지를 받아서 바이트의 비율이 요청 수의 비율과 같았어요. 응답 크기가 요청마다 다른 앱이라면 큰 파일을 받는 요청 몇 건이 작은 요청 수백 건보다 굵게 그려질 수 있어요. 요청이 몰렸는지 보려면 선의 굵기와 함께 파드별 요청 수(접근 로그나 요청 수 메트릭)도 같이 보세요.
+</div>
+
+<h2>4. ClusterIP로 보내면 지도에서 Service가 보이지 않는다</h2>
+
+<p>3단계에서는 파드 IP 대신 Service의 ClusterIP로 초당 10번 보냈어요. 어느 파드로 보낼지는 쿠버네티스에 맡긴 거예요.</p>
+
+<div class="obsv-code">master$ C=$(kubectl get svc myweb -o jsonpath="{.spec.clusterIP}"); echo "ClusterIP $C"; /lab/kubeshark-lab/traffic.sh 60 10 http://$C/
+ClusterIP 10.105.164.156
+21:02:55 끝: URL 1개 x 586번 = 586건 (60초, URL당 10/s)</div>
+<p>&rarr; Service myweb의 ClusterIP 10.105.164.156으로 60초 동안 586번 보냈다는 뜻이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/15/map-p3-service.png" alt="3단계 서비스맵. ClusterIP로 보냈는데 Service를 뜻하는 원 없이 10.244.235.192에서 4tjzk로 1.80kB/s, 5xtpv로 1.70kB/s, n9rd8로 1.60kB/s 선이 바로 이어지고 파드마다 0.01B/s짜리 가는 파란 선이 하나씩 더 있으며 since 9:01:54 PM, Displayed items 589인 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 3단계. ClusterIP로 보냈는데 Service를 뜻하는 원은 없고 10.244.235.192에서 파드 3개로 선이 바로 이어졌다</div>
+
+<p>지도의 세 선은 4tjzk로 가는 선이 1.80kB/s, 5xtpv로 가는 선이 1.70kB/s, n9rd8로 가는 선이 1.60kB/s였어요. 셋의 합에서 차지하는 몫으로 바꾸면 35%, 33%, 31%예요. 로그는 200건, 199건, 187건으로 34%, 33%, 31%였어요. 몫으로 보면 지도와 로그가 거의 같아요.</p>
+<p>더 눈에 띄는 것은 지도에 <b>없는</b> 것이에요. 요청은 10.105.164.156으로 보냈는데 Service myweb을 뜻하는 원이 없어요. 10.244.235.192에서 파드 3개로 선이 바로 이어져 있고 범례도 1단계와 같은 default와 internal뿐이에요. 그 이유는 패킷의 목적지가 어디서 바뀌는지 따라가면 보여요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ClusterIP와 kube-proxy</div>
+  ClusterIP는 Service를 만들면 쿠버네티스가 배정하는 클러스터 안의 주소예요. <a href="https://kubernetes.io/docs/concepts/services-networking/service/">Service 문서</a>에서는 가상 IP 방식에 쓰이는 주소라고 설명해요. 노드마다 도는 kube-proxy가 이 주소로 가는 트래픽을 Service 뒤의 파드 하나로 보내는 규칙을 노드에 넣어요. 목적지 주소를 바꾸는 이 처리를 DNAT(destination NAT)이라고 해요(2편).
+</div>
+
+<p><a href="https://kubernetes.io/docs/reference/networking/virtual-ips/">Virtual IPs and Service Proxies 문서</a>에 따르면 kube-proxy는 클러스터의 모든 노드에서 돌고 Service마다 노드를 설정해 ClusterIP와 포트로 가는 트래픽을 Service의 엔드포인트 하나로 보내요. 모드를 따로 정하지 않으면 Kubernetes 1.37의 기본은 iptables 모드예요. 이 클러스터의 kube-proxy 로그에도 "Using iptables Proxier"가 찍혀 있었어요(2편). iptables 모드에서는 엔드포인트별 규칙이 목적지 NAT으로 트래픽을 백엔드에 보내고 기본으로는 백엔드 파드를 무작위로 골라요. 문서에는 클라이언트가 Service의 가상 IP로 연결할 때 이 규칙이 작동해 백엔드를 고르고 클라이언트 IP를 바꾸지 않은 채 패킷을 백엔드로 넘긴다는 설명도 있어요.</p>
+<p>3단계의 요청을 이 설명에 맞춰 따라가면 이래요. curl은 마스터 노드에서 10.105.164.156:80으로 연결을 열어요. 마스터 노드의 kube-proxy가 넣어 둔 규칙에 따라 이 연결의 목적지가 파드 IP 하나로 바뀌어요. 그 파드가 다른 노드에 있으니 패킷은 6편에서 본 Calico의 IPIP 터널로 나가고 출발지 주소는 마스터의 tunl0 주소인 10.244.235.192가 돼요. 워커 노드에 도착한 패킷의 목적지는 이미 파드 IP예요. Kubeshark 수집기는 워커 3대에만 있으니(14편) 수집기가 본 것은 10.244.235.192에서 파드 IP로 가는 패킷이에요. 목적지가 ClusterIP였던 구간은 마스터 안에서 끝났고 마스터에는 수집기가 없어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: tunl0</div>
+  Calico가 IPIP 모드에서 노드마다 만드는 터널 인터페이스예요. 다른 노드의 파드 대역으로 가는 경로가 이 인터페이스를 지나요(6편). 노드 자신이 다른 노드의 파드에 보낸 패킷은 이 인터페이스의 주소를 출발지로 달고 나가서 받는 쪽에서는 노드 IP가 아니라 파드 대역 안의 주소로 보여요. 이 클러스터에서 마스터의 tunl0 주소는 10.244.235.192예요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 470" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k15s1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k15s2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k15s3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">3단계 요청이 지나간 길</text>
+<path d="M20 50 C 110 48, 200 52, 292 49 C 294 136, 291 223, 293 312 C 200 314, 110 310, 19 313 C 18 223, 21 136, 20 50 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="156" y="76" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">k8s-master (노드에서 직접 curl)</text>
+<path d="M40 92 C 117 90, 193 94, 272 91 C 274 105, 271 117, 273 130 C 193 132, 117 128, 39 131 C 38 117, 41 105, 40 92 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="156" y="116" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">curl → 10.105.164.156:80</text>
+<path d="M156 133 C 156 140, 156 143, 156 150" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k15s1)"/>
+<path d="M40 153 C 117 151, 193 155, 272 152 C 274 170, 271 186, 273 203 C 193 205, 117 201, 39 204 C 38 186, 41 170, 40 153 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="156" y="174" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="middle">kube-proxy가 넣어 둔 iptables 규칙</text>
+<text x="156" y="194" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="middle">목적지 → 파드 IP (DNAT)</text>
+<path d="M156 206 C 156 212, 156 216, 156 222" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k15s1)"/>
+<path d="M40 225 C 117 223, 193 227, 272 224 C 274 238, 271 251, 273 265 C 193 267, 117 263, 39 266 C 38 251, 41 238, 40 225 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="156" y="243" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5" text-anchor="middle">tunl0으로 나간다</text>
+<text x="156" y="258" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="middle">출발지 10.244.235.192</text>
+<text x="156" y="296" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">Kubeshark 수집기 없음 (14편)</text>
+<path d="M294 245 C 328 197, 362 136, 396 88" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k15s2)"/>
+<path d="M294 245 C 328 225, 362 194, 396 174" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k15s2)"/>
+<path d="M294 245 C 328 254, 362 251, 396 260" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k15s2)"/>
+<text x="345" y="296" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">IPIP 터널 (6편)</text>
+<path d="M400 52 C 493 50, 586 54, 682 51 C 684 76, 681 100, 683 124 C 586 126, 493 122, 399 125 C 398 100, 401 76, 400 52 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="470" y="80" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">k8s-worker1</text>
+<text x="470" y="104" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">myweb 4tjzk</text>
+<path d="M548 64 C 588 62, 629 66, 670 63 C 672 80, 669 96, 671 112 C 629 114, 588 110, 547 113 C 546 96, 549 80, 548 64 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="609" y="85" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">수집기가 본 것</text>
+<text x="609" y="103" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">목적지 = 파드 IP</text>
+<path d="M400 139 C 493 137, 586 141, 682 138 C 684 163, 681 187, 683 211 C 586 213, 493 209, 399 212 C 398 187, 401 163, 400 139 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="470" y="167" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">k8s-worker2</text>
+<text x="470" y="191" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">myweb n9rd8</text>
+<path d="M548 151 C 588 149, 629 153, 670 150 C 672 167, 669 183, 671 199 C 629 201, 588 197, 547 200 C 546 183, 549 167, 548 151 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="609" y="172" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">수집기가 본 것</text>
+<text x="609" y="190" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">목적지 = 파드 IP</text>
+<path d="M400 226 C 493 224, 586 228, 682 225 C 684 250, 681 274, 683 298 C 586 300, 493 296, 399 299 C 398 274, 401 250, 400 226 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="470" y="254" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">k8s-worker3</text>
+<text x="470" y="278" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">myweb 5xtpv</text>
+<path d="M548 238 C 588 236, 629 240, 670 237 C 672 254, 669 270, 671 286 C 629 288, 588 284, 547 287 C 546 270, 549 254, 548 238 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="609" y="259" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">수집기가 본 것</text>
+<text x="609" y="277" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">목적지 = 파드 IP</text>
+<text x="30" y="352" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="start">지도에 그려진 것</text>
+<path d="M126 390 C 126 399, 119 407, 110 406 C 101 406, 93 399, 94 390 C 94 381, 101 373, 110 374 C 119 374, 127 381, 126 391 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="424" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">10.244.235.192</text>
+<path d="M130 390 C 176 392, 222 388, 268 390" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k15s1)"/>
+<path d="M306 390 C 306 399, 299 407, 290 406 C 281 406, 273 399, 274 390 C 274 381, 281 373, 290 374 C 299 374, 307 381, 306 391 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="290" y="424" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">myweb 파드 3개</text>
+<path d="M420 368 C 503 366, 586 370, 672 367 C 674 383, 671 398, 673 414 C 586 416, 503 412, 419 415 C 418 398, 421 383, 420 368 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<text x="546" y="388" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">Service myweb (10.105.164.156)</text>
+<text x="546" y="407" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">지도에 없음</text>
+<text x="350" y="455" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 워커에 도착한 패킷의 목적지는 이미 파드 IP다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 7. 목적지가 파드 IP로 바뀌는 일은 마스터 안에서 끝나고 워커의 수집기는 바뀐 뒤의 패킷만 본다</div>
+
+<p><span class="obsv-mark">3단계 지도에 Service가 없었던 것은 수집기가 본 패킷의 목적지가 이미 파드 IP였기 때문이에요.</span> 그러면 Service가 파드에 고르게 나눠 주는지는 지도에서 어떻게 볼까요? 같은 출발지에서 Service 뒤의 파드들로 가는 선끼리 비교하면 돼요. 그림 6의 세 선이 그 비교예요. 출발지가 파드가 아니면 지도에는 이름 대신 주소가 나온다는 것도 함께 기억해 두면 좋아요. 1~3단계의 10.244.235.192는 "마스터 노드에서 온 요청"이라는 뜻이었어요.</p>
+<p>숫자를 읽을 때 조심할 것도 하나 있었어요. 200건과 199건은 한 건 차이인데 지도에서는 1.80kB/s와 1.70kB/s로 0.1kB/s만큼 달랐어요. 이번 화면들에서 kB 단위로 나온 숫자(1.80, 1.70, 1.60, 5.20, 1.50, 5.50)는 모두 소수 둘째 자리가 0이었고 B 단위 숫자(527.07, 535.87, 186.44, 155.37)는 둘째 자리까지 나왔어요. kB 단위 숫자는 0.1kB/s 단위로 끊겨 나오는 것으로 보여요. 그렇다면 한 건 차이가 0.1kB/s 차이로 보이기도 하고 수십 건 차이가 같은 숫자로 보이기도 해요. 지도로는 몫이 비슷한지까지만 보고 한두 건 차이는 로그로 확인하는 편이 안전해요.</p>
+<p>그림 6에는 파드마다 0.01B/s짜리 가는 파란 선도 하나씩 있어요. 범례의 색으로는 TCP-FLOW예요. 0.01B/s가 무엇을 센 값인지는 문서에서 찾지 못했어요. 그래서 이런 흐름 선은 연결이 있었다는 표시로만 읽었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: kube-proxy는 요청이 아니라 연결 단위로 골라요</div>
+  문서 설명대로라면 백엔드는 클라이언트가 가상 IP로 연결할 때 골라요. 이번 실험은 요청마다 curl을 새로 띄웠으니 586건이 586개의 연결로 나갔고 세 파드가 거의 3분의 1씩 받았어요. 연결 하나로 요청을 계속 보내는 클라이언트(HTTP keep-alive를 쓰는 커넥션 풀 등)라면 같은 Service 뒤에서도 이번과 다르게 나뉠 수 있어요. 이 경우는 이번 실습에서 재현하지 않았어요. 지도에서 파드 하나만 굵은데 Service 설정에 이상이 없다면 클라이언트가 연결을 어떻게 쓰는지도 확인해 보세요.
+</div>
+
+<h2>5. 파드에서 이름으로 부르면 DNS 선이 생기고 새 파드의 선은 가늘게 나온다</h2>
+
+<p>마지막 단계는 실제 서비스와 가장 비슷하게 짰어요. 클라이언트 파드 loadgen 안에서 Service 이름으로 <code style="font-family:Menlo,monospace;font-size:14px;">http://myweb</code>을 약 0.1초 간격으로 60초 동안 부르고 30초가 지났을 때 myweb을 3개에서 5개로 늘렸어요.</p>
+
+<div class="obsv-code">master$ (sleep 30; echo "$(date +%T) scale"; kubectl scale deploy/myweb --replicas=5) &amp; kubectl exec loadgen -- sh -c "end=\$(( \$(date +%s)+60 )); n=0; while [ \$(date +%s) -lt \$end ]; do curl -s -o /dev/null http://myweb; n=\$((n+1)); sleep 0.1; done; echo loadgen: \$n건"; wait; kubectl get po -l app=myweb -o wide | awk "{print \$1,\$3,\$6,\$7}"
+21:03:48 scale
+deployment.apps/myweb scaled
+loadgen: 574건
+NAME STATUS IP NODE
+myweb-859c4764d4-4tjzk Running 10.244.194.88 k8s-worker1
+myweb-859c4764d4-5xtpv Running 10.244.100.213 k8s-worker3
+myweb-859c4764d4-k2hfq Running 10.244.126.20 k8s-worker2
+myweb-859c4764d4-n9rd8 Running 10.244.126.19 k8s-worker2
+myweb-859c4764d4-v87c6 Running 10.244.100.214 k8s-worker3</div>
+<p>&rarr; 30초째인 21:03:48에 확장 명령이 들어갔고 loadgen은 60초 동안 574번 요청했으며 새 파드 k2hfq(worker2)와 v87c6(worker3)이 생겼다는 뜻이에요.</p>
+
+<p>로그로 보면 확장 전 30초에는 4tjzk 96건, 5xtpv 98건, n9rd8 81건으로 세 파드가 29~35%씩 받았어요. 확장 뒤 30초에는 4tjzk 61건, 5xtpv 50건, k2hfq 61건, n9rd8 69건, v87c6 58건으로 다섯 파드가 16~23%씩 받았어요. 새 파드 둘도 확장 뒤 30초 동안 다른 파드와 비슷한 건수를 받은 거예요. 출발지는 모두 loadgen의 파드 IP 10.244.194.89였어요. 클라이언트 IP를 바꾸지 않고 넘긴다는 문서 설명과 맞아요.</p>
+
+<div class="obsv-fig">
+<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/15/map-p4-pod-scale.png" alt="4단계 서비스맵을 확대된 상태로 찍어 가장자리가 잘린 화면. 가운데 loadgen에서 n9rd8로 1.50kB/s, k2hfq로 186.44B/s, 이름이 잘린 파드로 155.37B/s와 1.70kB/s 선이 이어지고 반대쪽 끝이 화면 밖인 5.50kB/s 선, 왼쪽 kube-system 파드 둘과 이어진 주황색 UDP-FLOW 선이 있으며 Targeting 22 pods, since 9:03:17 PM, Displayed items 1424인 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 8. 4단계. 확대된 상태로 찍혀 가장자리가 잘린 화면이다. 처음부터 있던 n9rd8은 1.50kB/s, 새 파드 k2hfq는 186.44B/s였다</div>
+
+<p>4단계 화면은 지도가 확대된 상태로 찍혀서 가장자리의 원과 이름이 잘렸어요. 축소해서 다시 찍으려던 때에는 노드 한도(Node limit: 4/3)를 알리는 로그인 창이 떠서 대시보드를 쓸 수 없었어요(14편). 그래서 이 화면이 4단계의 유일한 캡처예요. 화면에서 읽을 수 있는 것만 적으면 이래요.</p>
+<p>&middot; 가운데 원이 loadgen이에요. 출발지가 파드라서 이번에는 주소가 아니라 이름으로 나왔어요.<br>
+&middot; 이름이 보이는 myweb 파드는 둘이에요. 처음부터 있던 n9rd8로 가는 선이 1.50kB/s, 확장으로 생긴 k2hfq로 가는 선이 186.44B/s예요.<br>
+&middot; 155.37B/s 선과 1.70kB/s 선은 반대쪽 원의 이름이 화면 밖으로 잘렸어요.<br>
+&middot; 왼쪽 아래로 5.50kB/s 선이 하나 더 나가요. 반대쪽 끝이 화면 밖이라 무엇과 이어진 선인지 확인하지 못했어요.<br>
+&middot; 왼쪽의 보라색 원 두 개와 loadgen 사이에 주황색 선이 생겼어요. 원의 이름은 잘려서 끝부분만 보이는데 이 클러스터의 CoreDNS 파드 이름(coredns-559f6c778d-sqvxb, coredns-559f6c778d-bt7zz)과 끝부분이 같아요. 범례에서 보라색은 kube-system이고 주황색은 UDP-FLOW예요.<br>
+&middot; 1~3단계와 비교하면 범례에 DNS와 UDP-FLOW가 새로 생겼고 internal은 없어졌어요. 위쪽 띠의 수집 대상은 1~3단계의 20 pods에서 22 pods로 늘었어요. Kubeshark가 새 파드 둘을 수집 대상에 넣었다는 뜻이에요.</p>
+
+<p>CoreDNS로 가는 주황색 선부터 볼게요. 1~3단계에서는 IP 주소로 요청했기 때문에 이름을 물어볼 일이 없었어요. 4단계에서는 <code style="font-family:Menlo,monospace;font-size:14px;">myweb</code>이라는 이름을 주소로 바꿔야 해서 loadgen이 먼저 클러스터의 DNS 서버인 CoreDNS에 물어요. KFL 식의 뒤 절반(<code style="font-family:Menlo,monospace;font-size:14px;">src.pod.name == "loadgen"</code>)이 loadgen이 보낸 것을 모두 남기니 이 질의도 지도에 나타났어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 파드의 DNS 검색 목록 (search)</div>
+  kubelet이 파드마다 만들어 주는 /etc/resolv.conf에는 search 줄이 있어요. <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/">DNS for Services and Pods 문서</a>의 예시는 <code style="font-family:Menlo,monospace;font-size:14px;">search &lt;namespace&gt;.svc.cluster.local svc.cluster.local cluster.local</code>이고 data라고만 물어도 이 목록을 붙여 data.test.svc.cluster.local로 넓혀 물을 수 있다고 해요. 네임스페이스를 적지 않은 질의는 파드 자신의 네임스페이스 안에서 찾아요.
+</div>
+
+<p>같은 문서에 따르면 일반 Service의 이름은 Service의 ClusterIP로 풀려요. 그러니 loadgen의 요청은 CoreDNS에 myweb의 주소를 물어 ClusterIP를 받고 그 주소로 연결하는 순서로 진행돼요. 연결부터는 3단계와 같아요. 다만 이번에는 loadgen이 있는 worker1의 kube-proxy 규칙에 따라 목적지가 파드 IP로 바뀌어요. 주황색 선의 숫자는 0.03B/s로 HTTP 선과 견줄 수 없을 만큼 작았어요. 3단계의 TCP-FLOW 선과 마찬가지로 이 숫자가 무엇을 센 값인지는 확인하지 못했어요. 지도에서 CoreDNS로 가는 선이 보이면 그 파드가 이름을 주소로 바꾸는 질의를 보냈다는 표시로 읽으면 돼요.</p>
+
+<p>이제 새 파드의 선이에요. 로그로는 확장 뒤 30초 동안 k2hfq가 61건, n9rd8이 69건을 받아 거의 같았어요. 그런데 지도에서 k2hfq로 가는 선은 186.44B/s로 n9rd8로 가는 1.50kB/s보다 훨씬 가늘었어요. 이유는 그림 8 오른쪽 위의 안내문에서 찾을 수 있어요. "average sizes per second since 9:03:17 PM", 즉 9시 3분 17초부터의 초당 평균이에요.</p>
+<p>since 시각은 네 단계 모두 요청을 시작하기 1초 전이었어요(20:59:08, 21:00:31, 21:01:54, 21:03:17). 단계마다 페이지를 새로 열고 필터를 건 시각이에요. 4단계 화면은 그로부터 70초 뒤인 9:04:27에 찍었어요. 그 70초 가운데 n9rd8은 요청이 시작된 21:03:18부터 끝난 21:04:18 무렵까지 약 60초 동안 요청을 받았고 k2hfq는 확장된 21:03:48 뒤로 약 30초만 받았어요. 70초 전체로 나눈 평균이라면 k2hfq의 선이 가늘게 나올 수밖에 없어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 408" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">4단계 지도의 숫자는 페이지를 연 뒤 70초 동안의 평균이었다</text>
+<path d="M338 52 C 338 110, 338 164, 338 222" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="1 6"/>
+<path d="M578 52 C 578 110, 578 164, 578 222" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="1 6"/>
+<text x="98" y="74" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="start">n9rd8 · 처음부터 있던 파드</text>
+<path d="M98 84 C 256 82, 415 86, 578 83 C 580 93, 577 102, 579 112 C 415 114, 256 110, 97 113 C 96 102, 99 93, 98 84 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="338" y="104" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">앞 30초 81건 + 뒤 30초 69건 = 150건  →  지도 1.50kB/s</text>
+<text x="338" y="150" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="start">k2hfq · 31초에 생긴 파드</text>
+<path d="M338 160 C 417 158, 496 162, 578 159 C 580 169, 577 178, 579 188 C 496 190, 417 186, 337 189 C 336 178, 339 169, 338 160 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="458" y="180" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">뒤 30초 61건  →  지도 186.44B/s</text>
+<path d="M650 56 C 650 112, 650 166, 650 222" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="6 5"/>
+<text x="656" y="48" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="end">9:04:27 캡처</text>
+<path d="M90 225 C 250 224, 450 226, 655 225" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M90 219 C 90 223, 90 227, 90 231" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M338 219 C 338 223, 338 227, 338 231" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M578 219 C 578 223, 578 227, 578 231" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M650 219 C 650 223, 650 227, 650 231" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<text x="90" y="249" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">0초 9:03:17 페이지 열기</text>
+<text x="338" y="249" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18" text-anchor="middle">31초 21:03:48 3→5개</text>
+<text x="578" y="249" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">61초 무렵 요청 끝</text>
+<text x="658" y="249" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="end">70초</text>
+<text x="350" y="304" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">뒤 30초만 보면 n9rd8 69건, k2hfq 61건으로 거의 같다</text>
+<text x="350" y="330" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">70초로 나눈 평균이면 30초만 받은 새 파드가 가늘게 나온다</text>
+<text x="350" y="356" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">로그 비율 61 ÷ 150 = 41%, 지도 비율 약 12%: 나머지 차이는 확인하지 못했다</text>
+<text x="350" y="392" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">= 지도의 숫자는 지금의 분포가 아니라 since 시각부터 쌓인 양의 평균이다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 9. 확장 뒤에는 고르게 나눠 받았지만 since 시각부터의 평균으로 그린 지도에서는 새 파드의 선이 가늘었다</div>
+
+<p><span class="obsv-mark">서비스맵의 숫자는 지금 트래픽이 어떻게 나뉘는지가 아니라 since 시각부터 쌓인 양의 평균이에요.</span> 3장에서 같은 시간이 지난 화면끼리 비교한 것도 이 때문이에요.</p>
+<p>다만 평균으로 숫자까지 다 설명되지는 않았어요. 70초 동안 받은 건수로 따지면 n9rd8은 150건(81건 + 69건), k2hfq는 61건이니 k2hfq의 선은 n9rd8 선의 41% 정도여야 해요. 지도에서는 186.44B/s ÷ 1.50kB/s로 12% 안팎이었어요. 3장에서는 같은 계산이 소수 넷째 자리까지 맞았는데 4단계에서는 세 배 넘게 어긋났어요. 이 차이가 어디서 생겼는지는 확인하지 못했어요. 그래서 4단계 지도에서는 "새 파드의 선이 가늘다"는 방향까지만 읽었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 스케일아웃 직후의 지도로 새 파드를 판단하지 마세요</div>
+  확장 직후 새 파드의 선이 가늘다고 해서 새 파드가 요청을 못 받는다고 볼 수는 없어요. 이번 실험의 새 파드 둘은 확장 뒤 30초 동안 61건, 58건을 받았는데 지도에서는 가늘게 나왔어요. 지금의 분포를 보고 싶다면 보고 싶은 구간이 시작될 때 페이지를 새로 열어 since 시각을 맞추세요. 반대로 오래 열어 둔 페이지라면 한참 전에 몰렸던 트래픽이 아직 평균에 섞여 있을 수 있어요. 판단이 걸린 숫자는 파드별 요청 수를 로그나 메트릭으로 한 번 더 확인하세요.
+</div>
+
+<h2>6. 서비스맵을 읽을 때 확인할 다섯 가지</h2>
+
+<p>네 단계를 한 표로 모으면 이래요.</p>
+
+<div class="obsv-code">단계         지도 (since 시각부터의 초당 평균)               nginx 로그 (건)
+1 균등       527.07 / 527.07 / 527.07 B/s                  60 / 60 / 60
+2 쏠림       5.20k / 535.87 / 535.87 B/s    (9.7배)         593 / 61 / 61    (9.7배)
+3 Service    1.80k / 1.70k / 1.60k B/s      (35·33·31%)     200 / 199 / 187  (34·33·31%)
+4 확장       n9rd8 1.50k / k2hfq 186.44 B/s (약 12%)        n9rd8 150 / k2hfq 61 (41%)
+# 1~3단계 파드 순서: 4tjzk / 5xtpv / n9rd8. 4단계는 이름이 보인 두 파드만 적었다</div>
+<p>&rarr; 1~3단계는 지도의 비율이 로그의 비율과 맞았고 4단계는 "새 파드가 적게 받았다"는 방향만 맞았다는 뜻이에요.</p>
+
+<p><b>하나, 필터부터 걸어요.</b> 필터 없는 지도에서는 시스템 파드의 선 때문에 내 앱의 흐름을 찾기 어려워요. 받는 쪽을 보려면 <code style="font-family:Menlo,monospace;font-size:14px;">dst.pod.name</code>, 보내는 쪽을 보려면 <code style="font-family:Menlo,monospace;font-size:14px;">src.pod.name</code>으로 거르세요. KFL은 화면만 바꾸고 수집량은 그대로라는 점도 함께 기억해 두세요.</p>
+<p><b>둘, 숫자는 since 시각부터의 평균 바이트예요.</b> 지금의 초당 요청 수가 아니에요. since 시각에서 같은 시간이 지난 화면끼리만 숫자를 비교하고 보고 싶은 구간이 바뀌면 페이지를 새로 여세요. 응답 크기가 요청마다 다르면 바이트의 비율과 요청 수의 비율이 달라져요.</p>
+<p><b>셋, 이번 실험에서 Service는 원으로 나오지 않았어요.</b> ClusterIP로 보낸 요청도 지도에서는 출발지에서 파드로 바로 이어졌어요. Service의 분산은 같은 출발지에서 파드들로 가는 선끼리 비교해서 읽어요. 출발지가 파드가 아니면 이름 대신 주소가 나오고 노드에서 보낸 요청은 tunl0 주소로 보일 수 있어요.</p>
+<p><b>넷, 이름으로 부르면 DNS 선이 같이 생겨요.</b> 파드 안에서 Service 이름으로 부르는 앱의 지도에는 CoreDNS로 가는 선도 함께 그려져요. 이 선의 숫자는 HTTP 선과 같은 기준으로 비교하기 어려웠어요.</p>
+<p><b>다섯, 지도에 없는 것과 읽지 못한 것을 따로 적어 두세요.</b> 수집기가 없는 마스터 안에서 일어난 일(ClusterIP가 파드 IP로 바뀌는 과정)은 지도에 나오지 않아요. 이번 4단계의 5.50kB/s 선은 정체를 확인하지 못했고 새 파드 선의 숫자도 로그와 맞지 않았어요. 이런 것은 해석하지 말고 로그나 메트릭으로 다시 확인할 거리로 남겨 두는 편이 안전해요.</p>
+<p><span class="obsv-mark">지도로는 쏠림이 의심되는 곳을 찾고 몇 건이 어디로 갔는지는 지도와 따로 센 숫자로 확인해요.</span></p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>서비스맵의 숫자는 지금의 분포가 아니라 since 시각부터 쌓인 바이트의 평균이에요. 같은 시간이 지난 화면끼리 비교하면 요청 비율과 맞았어요.</b><br><br>
+  nginx 파드 3개에 네 가지 트래픽을 60초씩 보내고 지도를 접근 로그와 맞춰 봤어요. 균등하게 보낸 1단계는 세 선이 모두 527.07B/s였고 로그도 60건씩이었어요. 쏠리게 보낸 2단계는 지도와 로그가 똑같이 9.7배였어요. ClusterIP로 보낸 3단계에서는 Service가 지도에 나오지 않았어요. 목적지가 마스터 안에서 파드 IP로 바뀌고 수집기는 워커에만 있기 때문이에요. 파드에서 이름으로 부르고 중간에 파드를 늘린 4단계에서는 CoreDNS로 가는 선이 생겼고 새 파드는 로그로는 고르게 받았는데 지도에서는 가늘었어요. 서비스맵은 쏠림이 의심되는 곳을 빠르게 찾는 데 쓰고 몇 건이 어디로 갔는지는 지도와 따로 센 숫자로 확인해야 해요.
+</div>
+
+</div>

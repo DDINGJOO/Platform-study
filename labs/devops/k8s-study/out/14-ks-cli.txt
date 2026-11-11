@@ -1,0 +1,39 @@
+# 2026-11-11 20:4x KST, 마스터. Kubeshark CLI 설치와 ks 별칭 (공식 문서에는 ks 단축어가 없다. kubectl → k 처럼 개인 별칭)
+master$ type ks
+bash: line 1: type: ks: not found
+
+master$ T=v53.6.0; curl -fsSLo kubeshark https://github.com/kubeshark/kubeshark/releases/download/$T/kubeshark_linux_arm64
+master$ curl -fsSLo kubeshark.sha256 https://github.com/kubeshark/kubeshark/releases/download/$T/kubeshark_linux_arm64.sha256
+expected: 5afdd92e413d2a11b4fbdc0d20ded4013cd74770fbb038103be7154f9cc3826e
+actual:   5afdd92e413d2a11b4fbdc0d20ded4013cd74770fbb038103be7154f9cc3826e
+master$ sudo install -m 755 kubeshark /usr/local/bin/kubeshark
+master$ kubeshark version
+v53.6.0
+
+master$ kubeshark --help    # Available Commands 부분
+  clean       Removes all Kubeshark resources
+  completion  Generate the autocompletion script for the specified shell
+  config      Generate Kubeshark config with default values
+  console     Stream the scripting console logs into shell (temporarily non-functional — under refactoring after hub API changes)
+  help        Help about any command
+  license     Print the license loaded string
+  logs        Create a ZIP file with logs for GitHub issues or troubleshooting
+  mcp         Run MCP (Model Context Protocol) server for AI assistant integration
+  pcapdump    Store all captured traffic (including decrypted TLS) in a PCAP file.
+  pprof       Select a Kubeshark container and open the pprof web UI in the browser
+  proxy       Open the web UI (front-end) in the browser via proxy/port-forward
+  scripts     Watch the `scripting.source` and/or `scripting.sources` folders for changes and update the scripts
+  tap         Capture the network traffic in your Kubernetes cluster
+  version     Print version info
+
+master$ sed -n "/>>> kubeshark >>>/,/<<< kubeshark <<</p" ~/.bashrc
+# >>> kubeshark >>>
+source <(kubeshark completion bash)
+alias ks=kubeshark
+complete -o default -F __start_kubeshark ks
+# <<< kubeshark <<<
+
+master$ bash -ic "type ks; ks version; complete -p ks"
+ks is aliased to `kubeshark'
+v53.6.0
+complete -o default -F __start_kubeshark ks

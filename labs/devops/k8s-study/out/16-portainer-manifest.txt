@@ -1,0 +1,33 @@
+# 2026-11-11 21:16~21:25 KST. 슬라이드의 Portainer 매니페스트 주소와 저장소 상태 확인
+mac$ curl -fsSLO https://raw.githubusercontent.com/portainer/k8s/master/deploy/manifests/portainer/portainer.yaml
+curl: (56) The requested URL returned error: 404
+
+mac$ curl -s "https://api.github.com/repos/portainer/k8s/commits?path=deploy/manifests/portainer/portainer.yaml&per_page=3" | jq -r ...
+2026-02-27T04:41:16Z 6ae61f00 cleaning up the helm chart repo (#206)
+2026-02-26T03:56:41Z 026f22a0 Release 2.39.0 (#200)
+2026-02-10T10:14:48Z 7cac8178 Update for 2.33.7 release (#198)
+
+# 공식 문서가 안내하는 지금 주소 (https://docs.portainer.io/start/install-ce/server/kubernetes/baremetal)
+mac$ curl -fsSLO https://downloads.portainer.io/ce-lts/portainer.yaml   → 200, 154줄
+# 들어 있는 리소스와 저장소 요구
+Namespace portainer / ServiceAccount portainer-sa-clusteradmin / PersistentVolumeClaim portainer / ClusterRoleBinding portainer(→ ClusterRole cluster-admin) / Service portainer / Deployment portainer
+      volume.alpha.kubernetes.io/storage-class: "generic"
+    labels:
+      io.portainer.kubernetes.application.stack: portainer
+      app.kubernetes.io/name: portainer
+      app.kubernetes.io/instance: portainer
+      app.kubernetes.io/version: "ce-latest-ee-lts"
+  spec:
+    accessModes:
+      - "ReadWriteOnce"
+    resources:
+      requests:
+        storage: "10Gi"
+  ---
+  # Source: portainer/templates/rbac.yaml
+  (Service) type: NodePort, 9000→30777(http), 9443→30779(https), 30776→30776(edge)
+  (Deployment) image: "portainer/portainer-ce:lts"
+
+mac$ kubectl get storageclass; kubectl get pv
+No resources found
+No resources found

@@ -1,0 +1,25 @@
+# 2026-11-11 21:17~21:19 KST. 동적 프로비저닝(local-path) 설치와, 강의 방식(정적 PV)을 따르려고 기본 지정을 푼 것
+master$ kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.37/deploy/local-path-storage.yaml
+namespace/local-path-storage created
+serviceaccount/local-path-provisioner-service-account created
+role.rbac.authorization.k8s.io/local-path-provisioner-role created
+clusterrole.rbac.authorization.k8s.io/local-path-provisioner-role created
+rolebinding.rbac.authorization.k8s.io/local-path-provisioner-bind created
+clusterrolebinding.rbac.authorization.k8s.io/local-path-provisioner-bind created
+deployment.apps/local-path-provisioner created
+storageclass.storage.k8s.io/local-path created
+configmap/local-path-config created
+Waiting for deployment "local-path-provisioner" rollout to finish: 0 of 1 updated replicas are available...
+deployment "local-path-provisioner" successfully rolled out
+master$ kubectl patch storageclass local-path -p {is-default-class: true}
+storageclass.storage.k8s.io/local-path patched
+NAME                   PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+local-path (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  15s
+NAME READY STATUS NODE
+local-path-provisioner-7c7ff4f446-l6rfj 1/1 Running k8s-worker2
+
+master$ kubectl patch storageclass local-path -p {is-default-class: "false"}
+storageclass.storage.k8s.io/local-path patched
+NAME         PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+local-path   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  36s
+# 기본 StorageClass 가 있으면 storageClassName 이 없는 PVC 에 그 클래스가 붙어, 손으로 만든 PV(클래스 없음)와 짝이 되지 않는다.
