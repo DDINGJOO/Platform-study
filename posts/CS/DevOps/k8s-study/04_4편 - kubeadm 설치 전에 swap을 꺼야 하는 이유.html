@@ -140,7 +140,7 @@ E1104 21:24:02.958659   10600 run.go:72] "command failed" err="failed to run Kub
 <p>두 줄에서 두 가지를 읽을 수 있어요. 첫째, 프로세스 번호가 10576에서 10600으로 바뀌었습니다. 같은 kubelet이 오류를 두 번 낸 것이 아니라 kubelet이 새로 두 번 떴다가 두 번 다 거부한 거예요. 둘째, 두 시각의 차이가 약 10.2초입니다(21:23:52.73 &rarr; 21:24:02.96). 쿠버네티스 패키지의 kubelet.service 템플릿(kubernetes/release 저장소)에는 <code style="font-family:Menlo,monospace;font-size:14px;">Restart=always</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">RestartSec=10</code>이 적혀 있어요. kubelet이 실패로 끝나면 systemd가 10초 기다렸다가 다시 띄우고 다시 뜬 kubelet은 또 swap을 보고 거부합니다. 15초 뒤에 본 <code style="font-family:Menlo,monospace;font-size:14px;">activating</code>은 이 반복 가운데 한 순간이었어요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/04/swap-kubelet.png" alt="worker3에 512M swap을 켜고 kubelet을 재시작한 터미널 화면. 15초 뒤 kubelet은 activating이고 journalctl에 running with swap on is not supported 오류가 21:23:52와 21:24:02에 프로세스 번호 10576, 10600으로 찍혔으며 1분 뒤 kubectl get nodes에서 k8s-worker3만 NotReady였고 swap을 끈 뒤 kubectl wait 결과는 condition met" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/04/swap-kubelet.png" alt="worker3에 512M swap을 켜고 kubelet을 재시작한 터미널 화면. 15초 뒤 kubelet은 activating이고 journalctl에 running with swap on is not supported 오류가 21:23:52와 21:24:02에 프로세스 번호 10576, 10600으로 찍혔으며 1분 뒤 kubectl get nodes에서 k8s-worker3만 NotReady였고 swap을 끈 뒤 kubectl wait 결과는 condition met" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 2. 프로세스 번호가 10576에서 10600으로 바뀌며 같은 오류가 10초 간격으로 찍혔고 1분 뒤 worker3만 NotReady였다</div>
 
