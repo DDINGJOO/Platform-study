@@ -36,7 +36,7 @@
   18편. k9s로 kubectl 명령 없이 클러스터를 둘러보는 법
 </div>
 
-<p>Portainer에 admin으로 처음 로그인하자 대시보드에 숫자 일곱 개가 떴어요. Namespaces 8, Applications 13, Services 9, Ingresses 0, ConfigMaps 18, Secrets 3, Volume 1이었습니다. 16편에서 설치한 Portainer CE 2.45.3 LTS의 첫 화면이에요. 이 화면을 보다가 "결국에 관측성부터 확보하고 개발하자는 거네?"라는 말이 나왔어요. 강의 챕터가 Prometheus와 Grafana(11~12편)에서 시작해 Kubeshark(13~15편)를 거쳐 Portainer로 이어졌으니 그렇게 읽혔어요.</p>
+<p>Portainer에 admin으로 처음 로그인하자 대시보드에 숫자 일곱 개가 떴어요. Namespaces 8, Applications 13, Services 9, Ingresses 0, ConfigMaps 18, Secrets 3, Volume 1이었습니다. 16편에서 설치한 Portainer CE 2.45.3 LTS의 첫 화면이에요. 이 화면을 보다가 "결국에 관측성부터 확보하고 개발하자는 거네?"라는 말이 나왔어요. 강의 챕터가 관측성(8편)과 Headlamp(9~10편), Prometheus·Grafana(11~12편), Kubeshark(13~15편)를 거쳐 Portainer로 이어졌으니 그렇게 읽혔어요.</p>
 <p>그런데 <a href="https://docs.portainer.io/">Portainer 문서</a>의 첫 화면에는 Portainer가 컨테이너 관리의 복잡함을 쓰기 쉬운 UI 뒤로 숨겨 준다고 적혀 있어요. 대시보드의 숫자도 시간에 따라 쌓인 수치가 아니라 지금 클러스터에 있는 오브젝트의 개수였어요. Prometheus는 노드 수치를 시간 순서로 쌓고 Kubeshark는 파드 사이를 오가는 요청을 잡아요. Portainer는 지금 무엇이 어떤 상태로 있는지 보여 주고 그 자리에서 바꾸게 해 주는 관리 도구에 가까워요.</p>
 <p>그래서 이번에는 Portainer를 관리 도구로 써 봤어요. kubectl로 앱을 넣고 빼면서 일부러 고장도 내고 Portainer 화면이 어떻게 바뀌는지 찍었어요. 그다음 Portainer 화면에서 메모리 한도를 건 네임스페이스를 만들고 앱 두 개를 배포했어요. 질문은 <b>"Portainer 화면의 어디를 보면 배포가 멈춘 것과 자원 한도에 막힌 것을 알 수 있을까"</b>예요.</p>
 <p><b>이 글에서 다룰 것</b><br>
@@ -120,7 +120,7 @@ web-858dfd6ff8-m546r   1/1     Running            0          30s</div>
 </div>
 <div class="obsv-figcap">그림 3. 없는 이미지로 바꾼 뒤의 web. 두 숫자가 달라졌고 Events 탭에 경고 6이 붙었다</div>
 
-<p>Portainer 화면에서는 Status가 Replicated 3 / 4로 바뀌고 Events 탭에 ⚠ 6이 붙었어요. 두 숫자가 무엇인지는 Portainer 코드에서 확인했어요. <a href="https://github.com/portainer/portainer/blob/2.45.3/app/react/kubernetes/applications/utils.ts#L36-L41">2.45.3 태그의 utils.ts</a>를 보면 Deployment일 때 앞 숫자는 status.availableReplicas(쓸 수 있는 상태가 된 파드 수)이고 뒤 숫자는 spec.replicas(원하는 파드 수)예요. 그러니 3 / 4는 "4개를 원하는데 쓸 수 있는 파드는 3개"라는 뜻이에요. Events 탭의 경고 6개는 새 파드 2개가 이미지를 받지 못해 남긴 경고로 보여요. 탭 안은 이번에 열어 보지 않았어요.</p>
+<p>Portainer 화면에서는 Status가 Replicated 3 / 4로 바뀌고 Events 탭에 ⚠ 6이 붙었어요. 두 숫자가 무엇인지는 Portainer 코드에서 확인했어요. <a href="https://github.com/portainer/portainer/blob/2.45.3/app/react/kubernetes/applications/utils.ts#L36-L41">2.45.3 태그의 utils.ts</a>를 보면 Deployment일 때 앞 숫자는 status.availableReplicas(쓸 수 있는 상태가 된 파드 수. 이 값이 없으면 전체 파드 수에서 unavailableReplicas를 뺀 값)이고 뒤 숫자는 spec.replicas(원하는 파드 수)예요. 그러니 3 / 4는 "4개를 원하는데 쓸 수 있는 파드는 3개"라는 뜻이에요. Events 탭의 경고 6개는 새 파드 2개가 이미지를 받지 못해 남긴 경고로 보여요. 탭 안은 이번에 열어 보지 않았어요.</p>
 <p>그러면 옛 파드는 왜 3개가 남았을까요. 답은 Deployment의 업데이트 방식에 있어요.</p>
 
 <div class="obsv-term">
@@ -538,7 +538,7 @@ subjects:
 <div class="obsv-summary">
   <div class="obsv-st2">✍️ 오늘의 요약</div>
   <b>Portainer는 지금 클러스터에 무엇이 어떤 상태로 있는지 보여 주고 그 자리에서 바꾸게 해 주는 관리 도구였어요.</b><br><br>
-  대시보드의 숫자는 오브젝트 개수라서 상태는 앱 화면의 Replicated n / m과 Events에서 읽어야 해요. 없는 이미지로 바꾼 web은 maxSurge·maxUnavailable 기본값 25% 때문에 옛 파드 3개와 새 파드 2개에서 멈췄고 화면에는 Replicated 3 / 4로 나왔어요. kubectl이나 Helm으로 만든 앱에는 Portainer의 owner 라벨이 없어서 External이 붙어요. 메모리 512M 쿼터를 건 네임스페이스에서는 자원 값을 적지 않은 no-limit이 0/2, 128Mi를 적은 with-limit이 3/5에서 멈췄어요. 거절된 파드는 존재하지 않아서 파드 목록과 앱 Events 탭에는 흔적이 없고 앱 화면 맨 위 빨간 상자와 ReplicaSet 이벤트에만 남았어요. Portainer 파드는 cluster-admin이 묶인 ServiceAccount로 돌기 때문에 NodePort로 연 화면은 실습이 끝나면 닫아야 해요. 화면에 숫자가 두 개 나오면 둘이 같은지부터 보고 다르면 그 차이가 어디에 기록됐는지 따라가야 해요.
+  대시보드의 숫자는 오브젝트 개수라서 상태는 앱 화면의 Replicated n / m과 Events에서 읽어야 해요. 없는 이미지로 바꾼 web은 maxSurge·maxUnavailable 기본값 25% 때문에 옛 파드 3개와 새 파드 2개에서 멈췄고 화면에는 Replicated 3 / 4로 나왔어요. kubectl이나 Helm으로 만든 앱에는 Portainer의 owner 라벨이 없어서 External이 붙어요. 메모리 512M 쿼터를 건 네임스페이스에서는 자원 값을 적지 않은 no-limit이 0/2, 128Mi를 적은 with-limit이 3/5에서 멈췄어요. 거절된 파드는 존재하지 않아서 파드 목록과 앱 Events 탭에는 흔적이 없고 주로 앱 화면 맨 위 빨간 상자와 ReplicaSet 이벤트에 남았어요. Portainer 파드는 cluster-admin이 묶인 ServiceAccount로 돌기 때문에 NodePort로 연 화면은 실습이 끝나면 닫아야 해요. 화면에 숫자가 두 개 나오면 둘이 같은지부터 보고 다르면 그 차이가 어디에 기록됐는지 따라가야 해요.
 </div>
 
 </div>

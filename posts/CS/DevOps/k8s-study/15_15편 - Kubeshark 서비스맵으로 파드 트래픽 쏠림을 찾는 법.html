@@ -143,7 +143,7 @@ wait
 echo "$(date +%T) 끝: URL ${#}개 x ${rounds}번 = $(( rounds * $# ))건 (${dur}초, URL당 ${rps}/s)"</div>
 <p>&rarr; <code style="font-family:Menlo,monospace;font-size:14px;">traffic.sh 60 10 http://주소/</code>는 60초 동안 그 주소에 초당 10번 요청하라는 뜻이에요. curl 프로세스 하나가 요청 하나를 보내고 요청마다 새 프로세스가 뜨니 TCP 연결도 요청마다 새로 열려요. 이 점은 4장에서 다시 나와요.</p>
 
-<p>단계마다 순서는 같았어요. 대시보드를 새로 열어 KFL 식을 걸고 MAP 탭으로 간 다음 60초 동안 요청을 보냈어요. 화면은 요청을 시작하고 68초 뒤에 찍었어요. 네 단계를 그림으로 정리하면 이래요.</p>
+<p>단계마다 순서는 같았어요. 대시보드를 새로 열어 KFL 식을 걸고 MAP 탭으로 간 다음 60초 동안 요청을 보냈어요. 화면은 요청을 시작하고 68~69초 뒤에 찍었어요. 네 단계를 그림으로 정리하면 이래요.</p>
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 495" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
@@ -290,7 +290,7 @@ ClusterIP 10.105.164.156
 </div>
 <div class="obsv-figcap">그림 6. 3단계. ClusterIP로 보냈는데 Service를 뜻하는 원은 없고 10.244.235.192에서 파드 3개로 선이 바로 이어졌다</div>
 
-<p>지도의 세 선은 4tjzk로 가는 선이 1.80kB/s, 5xtpv로 가는 선이 1.70kB/s, n9rd8로 가는 선이 1.60kB/s였어요. 셋의 합에서 차지하는 몫으로 바꾸면 35%, 33%, 31%예요. 로그는 200건, 199건, 187건으로 34%, 33%, 31%였어요. 몫으로 보면 지도와 로그가 거의 같아요.</p>
+<p>지도의 세 선은 4tjzk로 가는 선이 1.80kB/s, 5xtpv로 가는 선이 1.70kB/s, n9rd8로 가는 선이 1.60kB/s였어요. 셋의 합에서 차지하는 몫으로 바꾸면 35%, 33%, 31%예요. 로그는 200건, 199건, 187건으로 34%, 34%, 32%였어요. 몫으로 보면 지도와 로그가 거의 같아요.</p>
 <p>더 눈에 띄는 것은 지도에 <b>없는</b> 것이에요. 요청은 10.105.164.156으로 보냈는데 Service myweb을 뜻하는 원이 없어요. 10.244.235.192에서 파드 3개로 선이 바로 이어져 있고 범례도 1단계와 같은 default와 internal뿐이에요. 그 이유는 패킷의 목적지가 어디서 바뀌는지 따라가면 보여요.</p>
 
 <div class="obsv-term">
@@ -388,7 +388,7 @@ myweb-859c4764d4-n9rd8 Running 10.244.126.19 k8s-worker2
 myweb-859c4764d4-v87c6 Running 10.244.100.214 k8s-worker3</div>
 <p>&rarr; 30초째인 21:03:48에 확장 명령이 들어갔고 loadgen은 60초 동안 574번 요청했으며 새 파드 k2hfq(worker2)와 v87c6(worker3)이 생겼다는 뜻이에요.</p>
 
-<p>로그로 보면 확장 전 30초에는 4tjzk 96건, 5xtpv 98건, n9rd8 81건으로 세 파드가 29~35%씩 받았어요. 확장 뒤 30초에는 4tjzk 61건, 5xtpv 50건, k2hfq 61건, n9rd8 69건, v87c6 58건으로 다섯 파드가 16~23%씩 받았어요. 새 파드 둘도 확장 뒤 30초 동안 다른 파드와 비슷한 건수를 받은 거예요. 출발지는 모두 loadgen의 파드 IP 10.244.194.89였어요. 클라이언트 IP를 바꾸지 않고 넘긴다는 문서 설명과 맞아요.</p>
+<p>로그로 보면 확장 전 30초에는 4tjzk 96건, 5xtpv 98건, n9rd8 81건으로 세 파드가 29~36%씩 받았어요. 확장 뒤 30초에는 4tjzk 61건, 5xtpv 50건, k2hfq 61건, n9rd8 69건, v87c6 58건으로 다섯 파드가 17~23%씩 받았어요. 새 파드 둘도 확장 뒤 30초 동안 다른 파드와 비슷한 건수를 받은 거예요. 출발지는 모두 loadgen의 파드 IP 10.244.194.89였어요. 클라이언트 IP를 바꾸지 않고 넘긴다는 문서 설명과 맞아요.</p>
 
 <div class="obsv-fig">
 <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/k8s-study/images/15/map-p4-pod-scale.png" alt="4단계 서비스맵을 확대된 상태로 찍어 가장자리가 잘린 화면. 가운데 loadgen에서 n9rd8로 1.50kB/s, k2hfq로 186.44B/s, 이름이 잘린 파드로 155.37B/s와 1.70kB/s 선이 이어지고 반대쪽 끝이 화면 밖인 5.50kB/s 선, 왼쪽 kube-system 파드 둘과 이어진 주황색 UDP-FLOW 선이 있으며 Targeting 22 pods, since 9:03:17 PM, Displayed items 1424인 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
@@ -463,7 +463,7 @@ myweb-859c4764d4-v87c6 Running 10.244.100.214 k8s-worker3</div>
 <div class="obsv-code">단계         지도 (since 시각부터의 초당 평균)               nginx 로그 (건)
 1 균등       527.07 / 527.07 / 527.07 B/s                  60 / 60 / 60
 2 쏠림       5.20k / 535.87 / 535.87 B/s    (9.7배)         593 / 61 / 61    (9.7배)
-3 Service    1.80k / 1.70k / 1.60k B/s      (35·33·31%)     200 / 199 / 187  (34·33·31%)
+3 Service    1.80k / 1.70k / 1.60k B/s      (35·33·31%)     200 / 199 / 187  (34·34·32%)
 4 확장       n9rd8 1.50k / k2hfq 186.44 B/s (약 12%)        n9rd8 150 / k2hfq 61 (41%)
 # 1~3단계 파드 순서: 4tjzk / 5xtpv / n9rd8. 4단계는 이름이 보인 두 파드만 적었다</div>
 <p>&rarr; 1~3단계는 지도의 비율이 로그의 비율과 맞았고 4단계는 "새 파드가 적게 받았다"는 방향만 맞았다는 뜻이에요.</p>

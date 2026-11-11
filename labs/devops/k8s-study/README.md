@@ -63,6 +63,8 @@
 - `05-kubeadm-*.txt` 는 `./lab up` 의 로그 파일에서 발췌했고, 부트스트랩 토큰은 `abcdef.0123456789abcdef`, CA 해시는 `sha256:<CA 공개키 해시>` 로 바꿨다.
 - `03-lab-up-first-run.txt` 는 출력의 색 코드를 지우고 저장소 경로를 `~/k8s-playground` 로 바꿨다.
 - `07-stale-ready-first-seen.txt` · `07-boot-hang.txt` · `09-macos-local-network.txt` · `09-baseurl-attempt.txt` · `11-kps-install.txt`(뒷부분) 는 작업 세션의 명령 기록에서 옮겼다(그 실행의 원본 로그 파일은 없다). 홈 경로의 사용자 이름은 `<사용자>` 로 바꿨다.
+- `14-ks-tap.txt` · `16-portainer-install.txt` 의 홈 경로·파일 소유자 사용자 이름은 `<사용자>` 로 바꿨다. `16-portainer-install.txt` 에는 Portainer 관리자 비밀번호와 setup token 값을 싣지 않았다.
+- `15-nginx-counts.txt` 의 괄호 안 비율은 반올림 값이다.
 - `10-*.txt` 에는 토큰 본문을 싣지 않았다. 토큰은 `iat`·`exp`·`sub` 만 꺼내 찍었고, `10-recheck.txt` 의 클라이언트 인증서 지문은 `<클라이언트 인증서 지문>` 으로 바꿨다.
 
 ## 8~18편 환경 추가

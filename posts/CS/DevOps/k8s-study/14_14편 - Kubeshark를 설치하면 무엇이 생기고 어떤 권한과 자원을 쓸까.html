@@ -42,7 +42,7 @@ INF helm.go:151 &gt; Installing using Helm: kube-version="&gt;= 1.16.0-0" releas
 INF helm.go:62 &gt; creating 21 resource(s)
 INF tapRunner.go:99 &gt; Installed the Helm release: kubeshark</div>
 <p>&rarr; Kubeshark CLI가 GitHub에서 Helm 차트 53.6.0을 내려받아 kubeshark라는 이름으로 설치했고 그 과정에서 리소스 21개를 만들었다는 뜻이에요.</p>
-<p>마스터에 설치한 것은 CLI 바이너리 하나였어요. 그런데 명령 한 줄에 Helm 릴리스가 생겼고 1초 뒤에 Ctrl+C로 명령을 끝냈는데도 리소스는 그대로 남았어요. 2분 13초 뒤에 파드 목록을 다시 보니 워커 3대에 수집기 파드가 하나씩 Running이었어요. 그 수집기는 privileged 컨테이너였고 노드의 루트 디렉터리 <code style="font-family:Menlo,monospace;font-size:14px;">/</code>를 붙이고 있었어요.</p>
+<p>마스터에 설치한 것은 CLI 바이너리 하나였어요. 그런데 명령 한 줄에 Helm 릴리스가 생겼고 1초 뒤에 Ctrl+C로 명령을 끝냈는데도 리소스는 그대로 남았어요. 생성 2분 13초 뒤에 파드 목록을 다시 보니 워커 3대에 수집기 파드가 하나씩 Running이었어요. 그 수집기는 privileged 컨테이너였고 노드의 루트 디렉터리 <code style="font-family:Menlo,monospace;font-size:14px;">/</code>를 붙이고 있었어요.</p>
 <p>13편에서는 eBPF와 kprobe가 사이드카 없이 노드의 연결을 보는 원리를 다뤘어요. 이번에는 그 원리로 만든 도구를 실제로 설치했을 때 클러스터에 무엇이 남는지 따라가요. 운영 클러스터에 Kubeshark를 늘 설치해 둘지 판단하려면 답해야 할 질문이 세 가지였어요. <b>tap 한 번이면 클러스터에 무엇이 생길까요? 수집기는 어떤 권한과 자원을 쓸까요? 그리고 무엇을 보지 못할까요?</b> 실습 클러스터는 Lima VM 4대(마스터 1대, 워커 3대, 각 2 CPU·4GiB)에 쿠버네티스 v1.37.2를 올린 것이고 Kubeshark는 v53.6.0을 썼어요.</p>
 <p><b>이 글에서 다룰 것</b><br>
 &middot; <code style="font-family:Menlo,monospace;font-size:14px;">ks</code>는 공식 단축어일까? CLI를 설치하면 클러스터에 무엇이 생길까?<br>
@@ -120,7 +120,7 @@ kubeshark  default    1         2026-11-11 20:45:31 +0900 KST  deployed  kubesha
   <div class="obsv-tt">📖 용어: sniffer와 tracer</div>
   worker 파드 안의 두 컨테이너예요. sniffer는 AF_PACKET(리눅스에서 네트워크 장치를 지나는 패킷을 받아 보는 소켓)으로 패킷을 잡아요. tracer는 eBPF로 커널 공간과 사용자 공간의 함수를 추적해요(13편). tracer는 선택 사항이라 차트 값 <code style="font-family:Menlo,monospace;font-size:14px;">tap.tls</code>로 켜고 끌 수 있어요.
 </div>
-<p>설치 직후와 2분 13초 뒤의 파드 목록이에요.</p>
+<p>생성 29초 뒤와 2분 13초 뒤의 파드 목록이에요.</p>
 <div class="obsv-code">mac$ kubectl get pods -n default -o wide | grep kubeshark          # 20:46, 설치 직후
 kubeshark-front-7fb9788cdd-w7whb   0/1  ContainerCreating  0  29s  k8s-worker2
 kubeshark-hub-fbd9d8db-zcsjv       0/1  ContainerCreating  0  29s  k8s-worker2
@@ -146,7 +146,7 @@ kubeshark-hub-fbd9d8db-zcsjv       1/1  Running  0  2m13s  k8s-worker2
 kubeshark-worker-daemon-set-kdxl2  2/2  Running  0  2m13s  k8s-worker2
 kubeshark-worker-daemon-set-wq4ps  2/2  Running  0  2m13s  k8s-worker1
 kubeshark-worker-daemon-set-zkf86  2/2  Running  0  2m13s  k8s-worker3</div>
-<p>&rarr; hub와 front는 worker2에 떴고 worker DaemonSet은 DESIRED 3으로 worker1~3에 하나씩 떴다는 뜻이에요. 처음에 Init:0/1이던 worker 파드는 2분 13초 뒤에 보니 컨테이너 두 개가 모두 준비된 2/2였어요.</p>
+<p>&rarr; hub와 front는 worker2에 떴고 worker DaemonSet은 DESIRED 3으로 worker1~3에 하나씩 떴다는 뜻이에요. 처음에 Init:0/1이던 worker 파드는 생성 2분 13초 뒤에 보니 컨테이너 두 개가 모두 준비된 2/2였어요.</p>
 <p>Init:0/1은 init 컨테이너가 아직 끝나지 않았다는 표시예요. 설치에 쓴 kubeshark-53.6.0.tgz를 받아 <a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/helm-chart/templates/09-worker-daemon-set.yaml">worker 템플릿</a>을 열어 보면 mount-bpf라는 init 컨테이너가 있어요. 노드에 BPF 파일시스템이 마운트돼 있지 않으면 <code style="font-family:Menlo,monospace;font-size:14px;">mount -t bpf bpf /sys/fs/bpf</code>로 마운트하는 컨테이너예요. <a href="https://github.com/kubeshark/kubeshark/blob/v53.6.0/helm-chart/README.md">차트 README</a>의 <code style="font-family:Menlo,monospace;font-size:14px;">tap.mountBpf</code> 항목에는 eBPF가 제대로 동작하려면 BPF 파일시스템이 마운트돼 있어야 한다고 적혀 있고 기본값은 true예요. 이 init 컨테이너도 privileged로 떠요.</p>
 <p>이미지는 docker.io/kubeshark의 worker, hub, front였고 태그는 v53.6이었어요. 크기는 worker 약 72MB, hub 약 46MB, front 약 59MB예요. 노드가 모두 arm64였는데 kubelet은 세 이미지를 모두 받아 문제없이 실행했어요. 받는 데 걸린 시간은 대기 시간까지 합쳐 hub가 1분 45초, front가 2분 4.5초였어요. 이 2분이 5절의 connection refused와 이어져요.</p>
 <p>kubeshark-secret에는 LICENSE, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, SCRIPTING_ENV 네 키가 있었어요. 값은 열어 보지 않았어요. 차트 템플릿에서 LICENSE 키에는 Helm 값 <code style="font-family:Menlo,monospace;font-size:14px;">license</code>가 들어가는데 이번에는 그 값을 주지 않았어요. 5절에서 볼 라이선스 표시 NOT DETECTED와 이어지는 부분이에요.</p>
@@ -448,7 +448,7 @@ kubeshark-worker-daemon-set-zkf86  tracer           418 MiB</div>
   <div class="obsv-tt">📖 용어: working set 메모리</div>
   컨테이너가 쓰는 메모리 가운데 커널이 쉽게 비울 수 없는 부분이에요. cAdvisor는 메모리 사용량에서 비활성 파일 캐시를 뺀 값을 <code style="font-family:Menlo,monospace;font-size:14px;">container_memory_working_set_bytes</code>라는 이름으로 내놓아요. 컨테이너가 실제로 차지한 메모리를 볼 때 이 지표를 써요.
 </div>
-<p>노드별로 sniffer와 tracer를 더하면 worker1(wq4ps)이 717MiB, worker2(kdxl2)가 781MiB, worker3(zkf86)이 695MiB예요. VM에 준 메모리 4GiB(4,096MiB)의 17.0~19.1%에 해당해요. worker2에는 hub(75MiB)와 front(3MiB)도 떠 있어서 그 노드에서 Kubeshark가 쓴 메모리는 859MiB, 약 21%였어요. 같은 무렵 node-exporter로 본 워커 노드의 메모리 사용률은 36~47%였어요.</p>
+<p>노드별로 sniffer와 tracer를 더하면 worker1(wq4ps)이 717MiB, worker2(kdxl2)가 781MiB, worker3(zkf86)이 695MiB예요. VM에 준 메모리 4GiB(4,096MiB)의 17.0~19.1%에 해당해요. worker2에는 hub(75MiB)와 front(3MiB)도 떠 있어서 그 노드에서 Kubeshark가 쓴 메모리는 859MiB, 약 21%였어요.</p>
 <p>이 숫자를 차트 기본값과 나란히 놓아 봤어요. v53.6.0 차트의 values와 CLI 기본 설정에서 sniffer와 tracer의 requests는 각각 CPU 50m, 메모리 50Mi이고 limits는 메모리 5Gi예요. CPU limit은 "0"으로 되어 있어서 템플릿이 아예 적지 않아요. 이번 설치에 실제로 들어간 값은 클러스터에서 출력해 보지 않았어요.</p>
 
 <div class="obsv-fig">
@@ -486,13 +486,13 @@ kubeshark-worker-daemon-set-zkf86  tracer           418 MiB</div>
 <text x="272" y="265" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="start">tracer</text>
 <path d="M345.0 253 C 350.2 252, 355.5 254, 360.0 253 C 361.0 257.6, 359.0 262.1, 360.0 266 C 355.5 267, 350.2 265, 345.0 266 C 344.0 262.1, 346.0 257.6, 345.0 253 Z" fill="#8a8272" fill-opacity="0.85" stroke="#3d3a34" stroke-width="1.2" stroke-linejoin="round"/>
 <text x="367" y="265" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="start">hub·front</text>
-<text x="350" y="294" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">limit은 컨테이너마다 5Gi: sniffer와 tracer를 더하면 10Gi로 막대 끝(4GiB)보다 크다</text>
+<text x="350" y="294" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">차트 기본값 limit 5Gi: sniffer와 tracer를 더하면 10Gi로 막대 끝(4GiB)보다 크다</text>
 <text x="350" y="326" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">= 스케줄러가 잡아 둔 100Mi의 7~8배를 실제로 썼다</text>
 </svg>
 </div>
 <div class="obsv-figcap">그림 7. 워커 노드 메모리 4GiB 가운데 수집기가 쓴 양과 스케줄러가 잡아 둔 양(requests)</div>
 
-<p>스케줄러는 requests를 보고 파드를 놓을 노드를 정해요. 그러니 스케줄러가 worker 파드 하나에 잡아 두는 메모리는 50Mi 두 개, 100Mi예요. 실제로는 그 7~8배를 썼어요. <span class="obsv-mark">스케줄러가 계산한 것보다 노드마다 메모리가 0.6~0.7GiB 적게 남아 있었던 셈이에요.</span> limit은 컨테이너마다 5Gi라서 노드 메모리 4GiB보다 커요. 이 노드에서는 컨테이너 단위의 메모리 상한이 사실상 걸려 있지 않아요.</p>
+<p>스케줄러는 requests를 보고 파드를 놓을 노드를 정해요. 그러니 스케줄러가 worker 파드 하나에 잡아 두는 메모리는 50Mi 두 개, 100Mi예요. 실제로는 그 7~8배를 썼어요. <span class="obsv-mark">스케줄러가 계산한 것보다 노드마다 메모리가 0.6~0.7GiB 적게 남아 있었던 셈이에요.</span> 차트 기본값대로라면 limit은 컨테이너마다 5Gi라서 노드 메모리 4GiB보다 커요. 그렇다면 이 노드에서는 컨테이너 단위의 메모리 상한이 사실상 걸려 있지 않은 셈이에요.</p>
 <p>메모리 말고 디스크도 써요. tap 로그의 "Kubeshark will store the traffic up to a limit (per node) … limit=10Gi"는 노드마다 트래픽을 10Gi까지 저장하고 한도에 닿으면 오래된 TCP/UDP 스트림부터 지운다는 뜻이에요. 템플릿에서 이 저장 공간은 sizeLimit이 10Gi인 emptyDir이에요. emptyDir은 노드의 저장 장치에 만들어지니 노드 디스크의 여유도 함께 봐야 해요.</p>
 <p>CPU는 대상을 좁힌 뒤에 2분 평균으로 sniffer 28~41m, tracer 17~30m였어요. 노드별로 더하면 45~62m라서 노드의 CPU 2개(2000m)의 2~3%예요.</p>
 
