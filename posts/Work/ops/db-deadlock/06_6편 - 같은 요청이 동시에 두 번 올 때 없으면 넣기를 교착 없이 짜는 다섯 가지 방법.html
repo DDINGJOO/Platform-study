@@ -99,7 +99,7 @@ READ COMMITTED 에서 달라진 것
 
 <p>"맞은 라운드"는 4건이 모두 예외 없이 끝나고, 판정이 전부 맞으며, 저장된 행이 정확히 한 개인 라운드예요. 실패한 요청이 있는 라운드도 행은 한 개였어요(0행 라운드 0). <span class="obsv-mark">이 실험에서는 행이 중복되거나 사라지는 대신 일부 요청이 교착 오류로 끝났어요.</span> API에서 이 오류를 처리하지 않으면 클라이언트도 실패 응답을 받게 돼요. 지연은 성공한 패턴끼리 큰 차이가 없었어요. 중앙값은 ③이 1.6~2.3ms, ④가 2.9~3.3ms였고, 먼저 조회하는 ④가 더 느렸습니다.</p>
 
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-06/bench-rr.png" alt="upsert.jar bench 를 일곱 패턴에 RR 90라운드씩 돌린 화면. p1 은 fail_1213 180건, p2 는 SAVED 360건에 wrong_verdict 270, p2a·p3·p4 는 correct_rounds 90/90, p4b 는 UNKNOWN 270, p5 는 fail_1213 270건. Innodb_deadlocks 상태 변수는 -1(없음)" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/ops/db-deadlock/images/lab-06/bench-rr.png" alt="upsert.jar bench 를 일곱 패턴에 RR 90라운드씩 돌린 화면. p1 은 fail_1213 180건, p2 는 SAVED 360건에 wrong_verdict 270, p2a·p3·p4 는 correct_rounds 90/90, p4b 는 UNKNOWN 270, p5 는 fail_1213 270건. Innodb_deadlocks 상태 변수는 -1(없음)" style="max-width:100%">
 
 <p>풀을 공유하지 않는 연결 4개를 배리어로 동시에 시작한 이번 구성에서는 ①이 라운드마다 2건, ⑤가 3건씩 실패했어요. 두 패턴의 잠금 대기를 보면 이 결과를 설명할 수 있어요.</p>
 
@@ -137,7 +137,7 @@ B&gt; INSERT INTO visit(...) VALUES ('k150', ...)
 
 <p>이 덤프에서 <code>LOCK_DATA</code>가 <code>'k200', 2</code>이고 잠금 모드가 X,GAP인 것은 k200 바로 앞, 즉 k100과 k200 사이의 갭을 잠갔다는 뜻이에요. 조회한 <code>k150</code> 행은 없지만 그 키가 들어갈 구간에는 잠금이 설정됐어요. 같은 갭에 들어가는 다른 키(예를 들어 <code>k120</code>)의 INSERT도 이 잠금에 대기할 수 있어요.</p>
 
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-06/deadlock-p5.png" alt="upsert.jar deadlock p5 RR 실행 화면. A 와 B 가 없는 k150 에 FOR UPDATE 를 걸어 둘 다 uk_user_key 의 k200 앞 X,GAP 을 받고, A 의 INSERT 는 X,GAP,INSERT_INTENTION WAITING, B 의 INSERT 는 ERROR 1213, 남은 행은 A 가 넣은 하나" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/ops/db-deadlock/images/lab-06/deadlock-p5.png" alt="upsert.jar deadlock p5 RR 실행 화면. A 와 B 가 없는 k150 에 FOR UPDATE 를 걸어 둘 다 uk_user_key 의 k200 앞 X,GAP 을 받고, A 의 INSERT 는 X,GAP,INSERT_INTENTION WAITING, B 의 INSERT 는 ERROR 1213, 남은 행은 A 가 넣은 하나" style="max-width:100%">
 
 <div class="obsv-fig">
 <svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">

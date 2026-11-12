@@ -91,7 +91,7 @@ python3 -m json.tool out/requests.json
 <p><code>status_code</code>는 HTTP 응답 코드가 아니라 <b>스팬에 기록된 OTel 상태</b>를 읽어요. 서비스 코드가 오류 요청에 <code>set_status(Status(StatusCode.ERROR, ...))</code>를 직접 호출합니다. HTTP 500을 반환했다는 사실만으로 이 정책이 작동했다고 판단하지 않았어요.</p>
 <div class="obsv-term"><div class="obsv-tt">📖 용어: 스팬 상태</div>스팬이 성공·오류 등의 결과를 표현하는 값이에요. 이 실습의 오류 정책은 OTel의 ERROR 상태를 검사해요.</div>
 <p>지연 정책은 모은 스팬의 가장 이른 시작부터 가장 늦은 종료까지를 봐요. 부모 320ms와 자식 320ms를 더해서 640ms로 보지는 않습니다. 실제 저장 화면에서 느린 요청 한 건은 약 323ms였어요.</p>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-02/grafana-slow-trace.png" alt="실제 Grafana Tempo 화면: checkout-tail의 checkout과 inventory.lookup 두 스팬, 약 323ms인 느린 요청" style="max-width:100%;height:auto;"></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-02/grafana-slow-trace.png" alt="실제 Grafana Tempo 화면: checkout-tail의 checkout과 inventory.lookup 두 스팬, 약 323ms인 느린 요청" style="max-width:100%;height:auto;"></div>
 <div class="obsv-figcap">화면 1. Collector가 남긴 느린 요청을 실제 Grafana Explore에서 열었어요.</div>
 <p>기본 실행 ID <code>sampling-seed-a</code>로 실행한 결과예요. 표의 숫자는 Tempo에 저장된 트레이스 수를 요청 수로 나눈 값입니다.</p>
 <table style="width:100%;border-collapse:collapse;text-align:center;"><thead><tr><th>경로</th><th>정상</th><th>오류</th><th>느린 요청</th></tr></thead><tbody>
@@ -104,7 +104,7 @@ python3 -m json.tool out/requests.json
 <h2>4. 앞에서 버린 오류는 Tail도 되살리지 못해요</h2>
 <p><code>head-tail</code>의 오류 요청 10건 중 SDK가 기록한 것은 5건이었어요. Collector는 이 5건을 모두 남겼지만, SDK가 기록하지 않은 나머지 5건은 입력 자체가 없었습니다. 느린 요청도 SDK가 선택한 1건만 남았어요. 정상 요청은 SDK가 선택한 13건도 Collector에서 제외됐습니다.</p>
 <p>여기서 Head 단독의 오류 3건과 Head→Tail의 5건을 비교해 "Tail이 2건을 추가로 살렸다"고 읽으면 안 돼요. <b>모드 사이에 트레이스가 합쳐지지 않도록 서로 다른 ID를 사용했어요.</b> 각 경로의 확률 선택 결과는 달라요. 복구할 수 없다는 근거는 한 경로 안에서 SDK가 기록하지 않은 ID가 Collector와 Tempo에도 없다는 대조입니다.</p>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-02/results.png" alt="실제 실행 출력: Head와 Tail별 요청 수 및 저장 수, Collector와 Tempo의 고유 트레이스 41개 및 스팬 82개 일치, 검증 통과" style="max-width:100%;height:auto;"></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-02/results.png" alt="실제 실행 출력: Head와 Tail별 요청 수 및 저장 수, Collector와 Tempo의 고유 트레이스 41개 및 스팬 82개 일치, 검증 통과" style="max-width:100%;height:auto;"></div>
 <div class="obsv-figcap">화면 2. 서비스 응답·Collector 파일·Tempo 조회를 대조한 실제 출력이에요.</div>
 <p>전체 저장 결과는 고유 트레이스 41개, 스팬 82개였고 Collector 출력과 Tempo가 일치했어요. 요청 로그에는 선택 여부와 무관하게 응답이 남습니다. 오류율을 계산하려면 이 표의 저장된 기록만 분모로 쓰면 안 돼요. 특히 이번 Tail 정책은 정상 요청을 모두 제외하므로, 수집된 트레이스의 오류 비율을 서비스 오류율로 해석할 수 없습니다.</p>
 <div class="obsv-callout"><div class="obsv-ct">💡 실무에서는</div>선택된 트레이스는 오류 원인과 호출 경로를 살펴보는 데 쓰고, 전체 요청 수·오류 수·지연 지표는 별도로 수집해요. 이 실습은 전체 요청 응답과 로그를 보존했지만, 요청 지표를 위한 Prometheus까지 추가하지는 않았어요.</div>

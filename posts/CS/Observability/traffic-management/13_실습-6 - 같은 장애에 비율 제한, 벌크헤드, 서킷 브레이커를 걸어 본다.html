@@ -164,7 +164,7 @@ case "cb-over-bulkhead" -&gt; CircuitBreaker.decorateSupplier(circuitBreaker,
 <p>정상 구간의 비율 제한은 설정대로 움직였어요. 초당 40건 중 30건을 통과시키고 10건을 429로 돌려보냈습니다. 그런데 하위가 느려지자 <b>429가 0건</b>이 됐어요. 6편은 "비율 제한은 하나도 거부하지 않고 스레드가 묶인다"고 예상했는데, 실제로는 평소에 하던 거절까지 멈췄습니다.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-06/rl-slow.png" alt="비율 제한 호출자의 응답 상태별 초당 건수와 사용 중 스레드 수. 느려짐 구간에 429가 0으로 떨어지고 스레드가 25개로 꽉 찬다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-06/rl-slow.png" alt="비율 제한 호출자의 응답 상태별 초당 건수와 사용 중 스레드 수. 느려짐 구간에 429가 0으로 떨어지고 스레드가 25개로 꽉 찬다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 2. 하위가 느려지자 거절(노랑)은 사라지고 스레드가 25개로 찼다</div>
 
@@ -175,7 +175,7 @@ case "cb-over-bulkhead" -&gt; CircuitBreaker.decorateSupplier(circuitBreaker,
 <p>벌크헤드만 다르게 움직였어요. 동시 10개 상한에 걸려 초당 9.8건만 하위로 보내고 30.2건을 바로 429로 돌려보냈습니다. 스레드는 10개 이상 쓰지 않았어요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-06/bh-slow.png" alt="벌크헤드 호출자의 응답 상태별 초당 건수와 사용 중 스레드 수. 느려짐 구간에 200은 10건, 429는 30건이고 스레드는 10개에 머문다. 빨리 실패 구간에는 502가 초당 40건" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-06/bh-slow.png" alt="벌크헤드 호출자의 응답 상태별 초당 건수와 사용 중 스레드 수. 느려짐 구간에 200은 10건, 429는 30건이고 스레드는 10개에 머문다. 빨리 실패 구간에는 502가 초당 40건" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 3. 벌크헤드는 스레드를 10개까지만 내주고 나머지는 바로 거절했다</div>
 
@@ -184,7 +184,7 @@ case "cb-over-bulkhead" -&gt; CircuitBreaker.decorateSupplier(circuitBreaker,
 <p>스레드가 다 찼다면 결제 호출(<code>/pay</code>)은 어땠을까요? 서버 쪽 지표부터 봤습니다. 스프링이 내보내는 <code>http_server_requests</code>로 계산한 <code>/pay</code> p99예요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-06/pay-p99.png" alt="네 호출자의 /pay p99 그래프. 11분 내내 10ms 안팎에 머물고 느려짐 구간에도 크게 오르지 않는다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-06/pay-p99.png" alt="네 호출자의 /pay p99 그래프. 11분 내내 10ms 안팎에 머물고 느려짐 구간에도 크게 오르지 않는다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 4. 서버가 잰 결제 호출 p99는 몇 번 튄 것 말고는 11분 내내 10ms 안팎이었다</div>
 
@@ -231,7 +231,7 @@ order-cbbh        0         0</div>
 <p>서킷 브레이커만 하위로 가는 호출을 끊었어요. 실패율이 50%에 닿자 OPEN이 됐고, 그 뒤로는 초당 39.5건을 하위에 보내지 않고 503으로 돌려보냈습니다. 남은 0.5건은 HALF_OPEN의 시험 호출이에요. 10초마다 5건을 보내 보고, 전부 실패하니 다시 OPEN으로 돌아갔습니다. 3분 동안 이 왕복이 17번 있었어요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-06/cb-state.png" alt="두 서킷 브레이커의 실패율과 OPEN, HALF_OPEN 상태 그래프. 2분에서 5분 사이 order-cbbh만 OPEN을 반복하고, 6분 이후에는 두 서킷 모두 OPEN에 머문다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-06/cb-state.png" alt="두 서킷 브레이커의 실패율과 OPEN, HALF_OPEN 상태 그래프. 2분에서 5분 사이 order-cbbh만 OPEN을 반복하고, 6분 이후에는 두 서킷 모두 OPEN에 머문다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 5. 빨리 실패하는 구간(13:49 이후)에는 두 서킷이 함께 열렸다. 그 앞의 주황 구간은 5절의 이야기다</div>
 
@@ -251,7 +251,7 @@ order-cbbh        0         0</div>
   order-cbbh               1.3    0.9   37.8     11</div>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-06/cbbh-slow.png" alt="서킷 브레이커가 벌크헤드를 감싼 호출자의 응답 상태별 초당 건수. 느려짐 구간에 503이 초당 40건 가까이, 200은 1~2건이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-06/cbbh-slow.png" alt="서킷 브레이커가 벌크헤드를 감싼 호출자의 응답 상태별 초당 건수. 느려짐 구간에 503이 초당 40건 가까이, 200은 1~2건이다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 6. 하위는 한 건도 실패하지 않았는데 응답 대부분이 503(서킷 OPEN)이었다</div>
 

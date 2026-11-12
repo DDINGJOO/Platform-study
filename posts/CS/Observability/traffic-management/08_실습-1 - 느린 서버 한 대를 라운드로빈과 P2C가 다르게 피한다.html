@@ -184,7 +184,7 @@ k6: p90=5.12s  p99=7.95s  dropped_iterations=753</div>
 <p>실측은 1초에 87ms씩 늘었어요. 계산과 거의 맞습니다. <span class="obsv-mark">라운드로빈은 한계를 조금만 넘는 서버에도 몫을 줄이지 않아서, 대기 시간이 끝없이 쌓입니다.</span> 나머지 세 대는 p99 21ms로 멀쩡한데 전체 p99는 7.7초예요. 요청의 4분의 1이 느린 서버로 가니 p90도 5초를 넘습니다. k6는 응답을 기다리는 요청마다 가상 사용자 하나를 붙잡아 두는데, 미리 만들어 둔 200개로는 모자라 새로 만드는 사이(최대 936개까지 늘었어요) 753건을 보내지 못했어요(<code>dropped_iterations</code>).</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-01/rps-by-instance.png" alt="인스턴스별 초당 요청 수 그래프. 라운드로빈 구간에서는 네 대가 같은 선이다가 app-4 선이 중간에 끊기고, P2C 구간에서는 app-4가 약 57건, FULL_SCAN 구간에서는 약 40건으로 내려간다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-01/rps-by-instance.png" alt="인스턴스별 초당 요청 수 그래프. 라운드로빈 구간에서는 네 대가 같은 선이다가 app-4 선이 중간에 끊기고, P2C 구간에서는 app-4가 약 57건, FULL_SCAN 구간에서는 약 40건으로 내려간다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 2. 왼쪽부터 라운드로빈, P2C, FULL_SCAN. 라운드로빈 구간의 app-4 선은 중간에 끊겼다</div>
 
@@ -195,7 +195,7 @@ k6: p90=5.12s  p99=7.95s  dropped_iterations=753</div>
 <p>원인은 같은 줄이었습니다. 지표 엔드포인트도 톰캣 작업 스레드가 있어야 응답하는데, 스레드가 줄 선 요청으로 다 차 있었어요. 스프링 부트 문서에 따르면 톰캣 작업 스레드 기본값(<code>server.tomcat.threads.max</code>)은 200개입니다. 그리고 이 실습은 수집 간격이 2초라, Prometheus 문서대로 수집 타임아웃도 간격을 넘을 수 없어요. 수집 요청이 톰캣 스레드를 얻기까지 2초 넘게 기다리게 되면 실패합니다. 그 시점이 언제였는지는 아래 그림 3 다음에 계산해 볼게요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-01/app-p99-by-instance.png" alt="앱이 잰 인스턴스별 p99 그래프. 라운드로빈 구간에서 app-4의 p99가 2초 근처에서 평평해진 뒤 끊기고, 나머지 구간은 100ms 아래다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-01/app-p99-by-instance.png" alt="앱이 잰 인스턴스별 p99 그래프. 라운드로빈 구간에서 app-4의 p99가 2초 근처에서 평평해진 뒤 끊기고, 나머지 구간은 100ms 아래다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 3. 앱이 잰 app-4의 p99는 2초에서 멈췄다. Envoy가 잰 값은 7.9초였다</div>
 

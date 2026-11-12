@@ -74,7 +74,7 @@ derived.makeCurrent()
   같은 변수에 접근해도 스레드마다 별도 값을 읽고 쓰게 하는 Java 기능이에요. 한 스레드에서 설정한 값이 다른 스레드의 현재 값으로 자동 복사되지는 않아요.
 </div>
 <div class="obsv-fig">
-  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/02/threadlocal-scope.png" alt="ThreadLocalContextStorage.java 17~35행. 이전 Context를 읽고 새 값을 설정한 다음 이전 값과 새 값을 가진 ScopeImpl을 반환한다." style="width:100%;height:auto;border-radius:10px;">
+  <img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/02/threadlocal-scope.png" alt="ThreadLocalContextStorage.java 17~35행. 이전 Context를 읽고 새 값을 설정한 다음 이전 값과 새 값을 가진 ScopeImpl을 반환한다." style="width:100%;height:auto;border-radius:10px;">
 </div>
 <div class="obsv-figcap">코드 캡처 1. 부착할 때 이전 문맥도 함께 보관해요</div>
 <p><a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/ThreadLocalContextStorage.java#L17-L35">ThreadLocalContextStorage.java 17~35행</a>을 보면 27행에서 이전 값을 읽고, 32행에서 새 값을 설정하고, 34행에서 둘을 기억하는 Scope를 반환해요. 같은 Context를 다시 부착하면 값을 바꾸지 않는 분기도 있어요.</p>
@@ -131,7 +131,7 @@ Runnable task = () -&gt; process();
 executor.execute(submittingContext.wrap(task));</div>
 <p>처리 함수인 <code>process()</code>를 실행할 때 제출 스레드에서 확보한 문맥을 사용하게 감싸요. Executor는 이미 준비한 실행기라고 가정한 설명용 코드입니다. <code>Context.current()</code>를 작업 안에서 처음 읽으면 제출 시점의 문맥을 확보하는 것과 같지 않아요.</p>
 <div class="obsv-fig">
-  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/02/context-wrap.png" alt="Context.java 230~245행. makeCurrent는 저장소에 Context를 부착하며 wrap은 Runnable 실행 전 Scope를 만들고 try-with-resources로 닫는다." style="width:100%;height:auto;border-radius:10px;">
+  <img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/02/context-wrap.png" alt="Context.java 230~245행. makeCurrent는 저장소에 Context를 부착하며 wrap은 Runnable 실행 전 Scope를 만들고 try-with-resources로 닫는다." style="width:100%;height:auto;border-radius:10px;">
 </div>
 <div class="obsv-figcap">코드 캡처 2. 감싼 작업을 실행하는 스레드에서 부착과 복원을 해요</div>
 <p><a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/context/src/main/java/io/opentelemetry/context/Context.java#L230-L245">Context.java 230~245행</a>을 보면 <code>wrap</code>을 호출하는 즉시 부착하지 않습니다. 반환된 Runnable을 실행할 때 <code>makeCurrent()</code>를 호출해요. 작업이 끝나거나 예외를 던지면 try-with-resources가 Scope를 닫아 실행 스레드의 이전 문맥을 복원합니다.</p>

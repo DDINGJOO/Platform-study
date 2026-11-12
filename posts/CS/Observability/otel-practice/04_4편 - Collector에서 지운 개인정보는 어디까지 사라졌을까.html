@@ -80,7 +80,7 @@
 <p>이 설정은 알려진 표식과 이 실습의 필드만 처리해요. 문자열이 아닌 구조화된 로그 본문에는 위 <code>IsString</code> 조건이 적용되지 않아요. 실제 서비스의 다른 속성·이벤트·URL·DB 문장도 각각 점검해야 합니다. 문맥과 오류 처리 방식은 <a href="https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.162.0/processor/transformprocessor/README.md">Transform processor 0.162.0 문서</a>에서 확인했어요.</p>
 <p>처리 후에는 해당 모드의 Tempo 트레이스와 Loki 로그에서 표식이 0건이었어요. 예외 종류와 치환한 메시지는 남지만 스택 추적은 사라져요. 디버깅 정보가 줄어드는 비용도 함께 생겼습니다.</p>
 <div class="obsv-callout"><div class="obsv-ct">💡 실무에서는: 변환 실패 정책도 같이 정해요</div><code>error_mode: propagate</code>는 변환 오류를 상위 처리에 전달해요. 오류가 발생한 데이터를 그대로 보내는 일을 피하려고 선택했지만, 해당 데이터 전송이 실패할 수 있어요. 재시도·유실·경보를 함께 검토해야 하고, 이번에는 변환 오류 자체를 주입하지 않았어요.</div>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-04/grafana-privacy.png" alt="실제 Grafana의 Loki 로그 네 패널. raw와 narrow에는 가상 표식이 남고 scrubbed는 redacted, minimized는 omitted로 표시돼요" style="max-width:100%;border:2px solid #d8cfba;border-radius:10px;"></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-04/grafana-privacy.png" alt="실제 Grafana의 Loki 로그 네 패널. raw와 narrow에는 가상 표식이 남고 scrubbed는 redacted, minimized는 omitted로 표시돼요" style="max-width:100%;border:2px solid #d8cfba;border-radius:10px;"></div>
 <div class="obsv-figcap">그림 2. 같은 실행의 실제 Loki 로그 24개를 모드별로 조회했어요</div>
 <h2>4. 하위 서비스 헤더와 원본 콘솔은 그대로였어요</h2>
 <p>scrubbed의 저장 결과만 보면 정리가 끝난 것 같지만, downstream 응답은 다른 결과를 보여줬어요. 세 요청 모두 <code style="overflow-wrap:anywhere;">private.customer=PRIVATE_CUSTOMER_ALPHA</code>를 받았어요. 원본 콘솔 로그 여섯 개에도 표식이 남았습니다.</p>
@@ -127,7 +127,7 @@ open http://localhost:27400/d/privacy-boundaries
 # 실습 종료
 # docker compose -f labs/observability/otel-practice/sensitive-data/compose.yaml down</div>
 <p>서비스와 저장소가 준비될 때까지 확인한 뒤 요청을 보내고, file exporter 결과와 Tempo·Loki API가 기대 레코드 수를 반환할 때까지 조회해요. 각 로그의 trace ID가 요청의 trace 집합에 속하는지, Tempo의 각 트레이스에 스팬이 세 개 있는지도 assert합니다. <code>timeout: Loki raw</code> 같은 오류가 나오면 로그가 기대한 수만큼 조회되지 않았다는 뜻이에요. 성공으로 처리하지 않고 해당 컨테이너 로그와 out 원자료를 확인하면 돼요.</p>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-04/results.png" alt="실제 검증 스크립트 실행 결과. 모드별 속성·예외·상태·로그·baggage·원본 콘솔 표식 수와 모든 assert 통과를 표시해요" style="max-width:100%;"></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/d5884f3ba8142a70a9ac08bb4303b8277a7b919a/posts/CS/Observability/otel-practice/images/lab-04/results.png" alt="실제 검증 스크립트 실행 결과. 모드별 속성·예외·상태·로그·baggage·원본 콘솔 표식 수와 모든 assert 통과를 표시해요" style="max-width:100%;"></div>
 <div class="obsv-figcap">그림 4. 처리한 저장 자료와 우회 경로를 함께 세었을 때 차이가 보여요</div>
 <div class="obsv-callout"><div class="obsv-ct">⚠️ 주의: 이번 실험에서 증명한 범위</div>정해 둔 가상 문자열과 필드만 검사했어요. resource·scope 속성, span link, 구조화된 로그 본문, URL, DB 문장, 메트릭 레이블과 다른 전송 경로는 별도 검사가 필요해요. 여기의 정규식을 실제 개인정보 탐지기로 사용할 수는 없어요. 성능이나 과거 데이터 삭제도 검증하지 않았습니다.</div>
 <div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div>

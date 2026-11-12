@@ -55,7 +55,7 @@
 <div class="obsv-figcap">그림 1. 계측 라이브러리가 SDK의 전송 정책까지 소유하지 않아요</div>
 
 <h2>2. API가 있으면 반드시 기록하는 것은 아니에요</h2>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/01/api-noop.png" alt="OpenTelemetry.java 30~47줄. 인터페이스에 noop과 propagating 팩터리, getTracerProvider 선언이 있다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/01/api-noop.png" alt="OpenTelemetry.java 30~47줄. 인터페이스에 noop과 propagating 팩터리, getTracerProvider 선언이 있다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
 <div class="obsv-figcap">코드 캡처 1. API가 구현 선택을 드러내요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/api/all/src/main/java/io/opentelemetry/api/OpenTelemetry.java#L30-L47">원문 30~47줄</a></div>
 <p>32~34줄의 <code>noop()</code>은 <code>DefaultOpenTelemetry.getNoop()</code>을 반환해요. 반면 47줄의 <code>getTracerProvider()</code>는 인터페이스 선언입니다. API를 호출하는 쪽은 구체적인 SDK 클래스나 전송 주소를 여기서 알 필요가 없어요.</p>
 <div class="obsv-term"><div class="obsv-tt">📖 용어: no-op과 비기록 스팬</div>새 관측 데이터를 기록하지 않는 구현을 no-op이라고 불러요. 비기록 스팬은 기록 대상 데이터는 쌓지 않지만 추적 문맥을 나타낼 수 있는 스팬입니다.</div>
@@ -64,11 +64,11 @@
 <p>반대 방향의 오해도 있어요. no-op을 허용한다는 것이 계측 코드 전체의 비용을 없애 주지는 않습니다. 예를 들어 <code>span.setAttribute("detail", buildLargeString())</code>에서 <code>buildLargeString()</code>은 메서드에 인자를 넘기기 전에 실행돼요. 비싼 부가 정보를 오직 기록을 위해 계산한다면 <code>span.isRecording()</code>을 확인한 뒤 계산할 수 있습니다. 다만 이미 필요한 업무 계산을 생략하거나, 샘플러가 시작 시점에 필요로 하는 속성까지 무조건 나중으로 미루라는 뜻은 아니에요. 데이터 생성 비용과 API 내부 기록 비용을 구분해야 합니다.</p>
 
 <h2>3. SDK는 기본 구현을 만들지만 전송까지 보장하지 않아요</h2>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/01/sdk-build.png" alt="OpenTelemetrySdkBuilder.build에서 지정하지 않은 tracer, meter, logger provider를 생성하고 조합하는 Java 원문" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/01/sdk-build.png" alt="OpenTelemetrySdkBuilder.build에서 지정하지 않은 tracer, meter, logger provider를 생성하고 조합하는 Java 원문" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
 <div class="obsv-figcap">코드 캡처 2. build는 Provider들을 조합해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/all/src/main/java/io/opentelemetry/sdk/OpenTelemetrySdkBuilder.java#L127-L148">원문 127~148줄</a></div>
 <p>127줄부터는 역할이 달라져요. Provider가 없으면 각 기본 SDK Provider를 만들고, 이들과 전파기를 묶어 SDK 객체를 반환합니다. <code>OpenTelemetry.noop()</code>과 <code>OpenTelemetrySdk.builder().build()</code>는 같은 것이 아니에요. 후자는 SDK의 기본 정책을 가진 구현을 구성해요.</p>
 <div class="obsv-term"><div class="obsv-tt">📖 용어: Provider</div>스팬을 만드는 Tracer나 메트릭 계측 도구를 만드는 Meter 같은 객체를 제공하는 구성요소예요. Java SDK에서는 샘플러와 처리기를 TracerProvider에 설정해 해당 Provider가 만든 Tracer에 적용합니다.</div>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/01/sdk-trace-policy.png" alt="SdkTracerProviderBuilder의 setSampler와 addSpanProcessor. 샘플러와 스팬 처리기를 별도 메서드로 설정한다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/01/sdk-trace-policy.png" alt="SdkTracerProviderBuilder의 setSampler와 addSpanProcessor. 샘플러와 스팬 처리기를 별도 메서드로 설정한다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
 <div class="obsv-figcap">코드 캡처 3. 기록 결정과 후속 처리를 나눠 설정해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SdkTracerProviderBuilder.java#L132-L162">원문 132~162줄</a></div>
 <p><code>setSampler()</code>는 샘플러를 바꾸고, <code>addSpanProcessor()</code>는 처리기 목록에 항목을 더합니다. 전송 구현인 Exporter를 처리기에 연결하는 것은 또 다른 구성 단계예요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/export/SimpleSpanProcessor.java#L64-L83">SimpleSpanProcessor의 생성 코드</a>에서도 Exporter를 별도 객체로 받는 것을 확인할 수 있어요. 이 예시는 구조 확인용이지 운영에서 단순 처리기를 권장한다는 뜻은 아닙니다.</p>
 <div class="obsv-callout"><div class="obsv-ct">⚠️ SDK 생성과 전역 등록도 달라요</div><code>build()</code>는 생성한 SDK를 전역으로 등록하지 않아요. <code>buildAndRegisterGlobal()</code>은 별도로 등록합니다. SDK를 만들었다는 사실만으로 기존 전역 API 호출이 그 객체를 사용하거나 데이터가 외부로 전송된다고 판단할 수 없습니다.</div>
@@ -92,7 +92,7 @@
 <p>즉 <code>span.end()</code>를 호출했다는 사실은 SDK가 작업 종료를 전달받았다는 뜻이지, 백엔드가 이미 저장했다는 확인이 아니에요. 처리기에 따라 대기열에 들어갈 수도 있고, 내보내기를 시작했더라도 비동기 결과를 기다리지 않을 수도 있습니다. API → 기록 결정 → 완료 처리 → 전송 → 저장을 나눠 읽어야 각 단계의 성공을 과장하지 않을 수 있어요.</p>
 
 <h3>SDK 객체를 만들었는데도 no-op이 나오는 반례</h3>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/01/sdk-no-processor.png" alt="SdkTracerProvider.tracerBuilder 98~107줄. SpanProcessor가 없으면 noop TracerProvider로 위임한다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/01/sdk-no-processor.png" alt="SdkTracerProvider.tracerBuilder 98~107줄. SpanProcessor가 없으면 noop TracerProvider로 위임한다" style="width:100%;max-width:700px;height:auto;border-radius:10px;" /></div>
 <div class="obsv-figcap">코드 캡처 4. 처리기가 없을 때는 SDK Provider도 no-op Tracer를 돌려줘요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/trace/src/main/java/io/opentelemetry/sdk/trace/SdkTracerProvider.java#L98-L107">원문 98~107줄</a></div>
 <p>이번 버전의 <code>SdkTracerProvider.tracerBuilder()</code>는 <code>hasNoSpanProcessor()</code>이면 <code>TracerProvider.noop()</code>에 위임해요. 따라서 “API는 no-op, SDK를 만들면 무조건 기록”이라는 구분도 정확하지 않습니다. 객체의 클래스 이름만 보지 말고 구성과 실행 결과를 확인해야 해요. 이는 Java 1.67.0에서 확인한 구현 동작이며, 모든 언어 SDK가 반드시 같은 내부 최적화를 가져야 한다는 뜻은 아닙니다.</p>
 

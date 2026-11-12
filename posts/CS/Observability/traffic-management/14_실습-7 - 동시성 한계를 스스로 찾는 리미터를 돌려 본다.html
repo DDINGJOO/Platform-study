@@ -162,7 +162,7 @@ gradient2-windowed     56.5   143.3    514ms   866ms     32 (20~55)          31.
 vegas                  63.6   136.5    593ms  1297ms     46 (9~111)          43.5     11.8</div>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-07/limit.png" alt="세 앱의 동시성 한계 그래프. fixed는 100으로 평평하고, gradient2-windowed는 과부하 시작 후 20에 머물다 14시 55분부터 55까지 오르고, vegas는 10에서 110 사이를 계속 오간다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-07/limit.png" alt="세 앱의 동시성 한계 그래프. fixed는 100으로 평평하고, gradient2-windowed는 과부하 시작 후 20에 머물다 14시 55분부터 55까지 오르고, vegas는 10에서 110 사이를 계속 오간다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 2. 같은 과부하에 Gradient2(노랑)는 20에 붙었다 천천히 오르고, Vegas(파랑)는 쉬지 않고 오갔다</div>
 
@@ -171,14 +171,14 @@ vegas                  63.6   136.5    593ms  1297ms     46 (9~111)          43.
 <p><b>1초 창 Gradient2</b>는 반대쪽으로 틀렸습니다. 과부하가 시작되자 한계를 20까지 내렸고, 3분 20초(14:51:20~14:54:40) 동안 거기서 움직이지 않았어요. 자원 40칸 중 20칸만 쓰니 성공은 초당 40건, 처리할 수 있는 양의 절반이었습니다. 대신 줄이 없어서 p50은 하위 지연과 거의 같은 514ms였어요. 20이라는 숫자는 알고리즘이 찾은 값이 아니라 <code>Gradient2Limit</code>의 기본 <code>minLimit</code>입니다. 한계를 더 내리고 싶었는데 바닥에 막힌 거예요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-07/success.png" alt="세 앱의 초당 성공 건수 그래프. 과부하 구간에 fixed는 80, vegas는 60대, gradient2-windowed는 40에 머물다 14시 56분쯤 80으로 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-07/success.png" alt="세 앱의 초당 성공 건수 그래프. 과부하 구간에 fixed는 80, vegas는 60대, gradient2-windowed는 40에 머물다 14시 56분쯤 80으로 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 3. 1초 창 Gradient2는 과부하 5분쯤 뒤에야 처리 상한을 채웠다</div>
 
 <p><b>Vegas</b>는 한계가 9에서 111 사이를 계속 오갔어요. 평균 인플라이트는 43.5로 이상값 40에 가장 가까웠지만, 한계가 자원 칸 수 아래로 떨어지는 순간마다 처리량을 잃어서 성공은 초당 63.6건이었습니다. 위로 튈 때는 줄이 생겨 구간 p99가 1.3초였어요. 소스를 보면 Vegas는 표본이 일정 수(한계 × 30 × 0.5~1 사이 무작위) 쌓일 때마다 지금 RTT를 새 최소 RTT로 다시 잡습니다. 그 순간마다 줄의 추정이 바뀌어서 한계가 크게 움직여요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-07/p99.png" alt="세 앱의 성공 응답 p99 그래프. 과부하 구간에 fixed는 1.4초, vegas는 1~1.4초를 오가고, gradient2-windowed는 0.54초에서 시작해 0.87초까지 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-07/p99.png" alt="세 앱의 성공 응답 p99 그래프. 과부하 구간에 fixed는 1.4초, vegas는 1~1.4초를 오가고, gradient2-windowed는 0.54초에서 시작해 0.87초까지 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 4. 지연은 1초 창 Gradient2가 가장 낮았지만, 한계가 오르면서 같이 올라갔다</div>
 
@@ -189,7 +189,7 @@ vegas                  63.6   136.5    593ms  1297ms     46 (9~111)          43.
 <p>1초 창 Gradient2의 한계는 왜 3분 넘게 20에 붙어 있다가 올랐을까요? 리미터가 기준으로 쓰는 RTT를 같이 그려 봤습니다.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-07/rtt.png" alt="리미터 기준 RTT 그래프. gradient2-windowed의 최근 표본은 과부하 시작과 함께 500ms로 뛰고, 긴 창 평균은 51ms에서 7분 동안 천천히 420ms까지 오른다. vegas의 최소 RTT는 500ms 근처에서 가끔 위로 튄다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-07/rtt.png" alt="리미터 기준 RTT 그래프. gradient2-windowed의 최근 표본은 과부하 시작과 함께 500ms로 뛰고, 긴 창 평균은 51ms에서 7분 동안 천천히 420ms까지 오른다. vegas의 최소 RTT는 500ms 근처에서 가끔 위로 튄다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 5. 최근 표본(노랑)은 바로 500ms가 됐지만 긴 창 평균(초록)은 7분 동안 따라 올라갔다</div>
 

@@ -58,7 +58,7 @@
 <p>매뉴얼의 교착 예제도 이 행으로 교착 수를 보여 줍니다(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-example.html">An InnoDB Deadlock Example</a>). 카운터 목록 문서에는 <code>lock_deadlocks</code> 가 <code>enabled</code> 상태로 나오고(<a href="https://dev.mysql.com/doc/refman/8.4/en/innodb-information-schema-metrics-table.html">InnoDB INFORMATION_SCHEMA Metrics Table</a>), 실습에서도 따로 켜지 않았는데 <code>STATUS = enabled</code> 였어요. 새 컨테이너에서 교착을 한 번 내고 찍은 화면이에요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-04/probe.png" alt="새 컨테이너에서 deadlock_once.sh 로 교착 1건을 낸 뒤 probe.sh 를 실행한 화면. MySQL 8.4.11, lock_deadlocks 는 counter, enabled, COUNT 1. SHOW GLOBAL STATUS LIKE '%dead%' 는 빈 결과, performance_schema.global_status 의 dead 변수 0개, Innodb_row_lock_waits 2, innodb_print_all_deadlocks 기본값 0, log_error 는 stderr" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/ops/db-deadlock/images/lab-04/probe.png" alt="새 컨테이너에서 deadlock_once.sh 로 교착 1건을 낸 뒤 probe.sh 를 실행한 화면. MySQL 8.4.11, lock_deadlocks 는 counter, enabled, COUNT 1. SHOW GLOBAL STATUS LIKE '%dead%' 는 빈 결과, performance_schema.global_status 의 dead 변수 0개, Innodb_row_lock_waits 2, innodb_print_all_deadlocks 기본값 0, log_error 는 stderr" style="max-width:100%">
 </div>
 <div class="obsv-figcap">그림 1. 실습에서는 INNODB_METRICS에 교착 수가 있었고, 이름에 dead가 들어간 상태 변수는 없었어요</div>
 
@@ -209,7 +209,7 @@ innodb_deadlock_detect=OFF, lock_wait_timeout=3  4 → 4             0 → 2    
 <p>기존 실습에서는 MySQL에서 수집한 카운터에도 같은 규칙을 적용했어요. 13분 동안 1초마다 <code>lock_deadlocks</code> 를 읽으면서, 시간 축을 1초 = 1분으로 줄였습니다(13분 실행이 13시간 분량). 앞 180초('3시간')는 시간당 8건 꼴로 도착 간격을 무작위로(seed 고정), 뒤 600초('10시간')는 200초마다 1건씩 교착을 냈어요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-04/timeline-rules.png" alt="scripts/eval_timeline.py 실행 화면. 781개 표본, lock_deadlocks 증가 27(구간 A 24, 구간 B 3), 앱 1213 예외 27. R1 은 A 에서 1번, B 에서 0번이고 B 평가 120번 중 0번 켜짐. R2 는 A 2번, B 0번. R3 는 A 1번, B 0번, B 평가 120번 중 62번 켜짐. R4 는 A 1번, B 평가 10번 모두 켜짐" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/ops/db-deadlock/images/lab-04/timeline-rules.png" alt="scripts/eval_timeline.py 실행 화면. 781개 표본, lock_deadlocks 증가 27(구간 A 24, 구간 B 3), 앱 1213 예외 27. R1 은 A 에서 1번, B 에서 0번이고 B 평가 120번 중 0번 켜짐. R2 는 A 2번, B 0번. R3 는 A 1번, B 0번, B 평가 120번 중 62번 켜짐. R4 는 A 1번, B 평가 10번 모두 켜짐" style="max-width:100%">
 </div>
 <div class="obsv-figcap">그림 4. 같은 연속 규칙을 적용해도 앞 구간에만 알람이 켜지고 뒤 구간의 교착 3건에는 켜지지 않았어요</div>
 

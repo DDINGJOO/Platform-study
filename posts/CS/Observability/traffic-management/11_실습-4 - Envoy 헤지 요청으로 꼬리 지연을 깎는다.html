@@ -152,7 +152,7 @@ docker compose up -d --build
 <p>헤지를 켜자 중앙값은 그대로인데 P99가 308ms에서 47ms로, P99.9가 310ms에서 59ms로 내려왔어요. 늦은 요청은 25ms를 기다린 뒤 다른 시도의 응답을 받았습니다. 사본이 끝나는 데 걸리는 시간은 25ms(시도별 타임아웃) + 백오프 + 사본 처리 5~10ms라서 꼬리가 50ms 근처에 모입니다.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-04/hedge-latency.png" alt="Envoy 리스너 기준 지연 그래프. /plain 구간에서 p99와 p99.9가 280~340ms였다가 /hedge 구간이 시작되는 04:47에 50ms 안팎으로 떨어지고 /retry 구간까지 그대로 유지된다. p50은 내내 10ms 아래다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-04/hedge-latency.png" alt="Envoy 리스너 기준 지연 그래프. /plain 구간에서 p99와 p99.9가 280~340ms였다가 /hedge 구간이 시작되는 04:47에 50ms 안팎으로 떨어지고 /retry 구간까지 그대로 유지된다. p50은 내내 10ms 아래다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 2. 04:47에 /hedge로 바꾸자 꼬리만 떨어졌다. 중앙값은 움직이지 않았다</div>
 
@@ -194,7 +194,7 @@ docker compose logs --since 2m backend-1 backend-2 backend-3 | python3 gap.py</d
 <h3>진 쪽은 끊기지만, 서버는 끝까지 일한다</h3>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-04/hedge-extra-and-reset.png" alt="초당 사본·재시도 수와 응답 전에 끊은 백엔드 연결 수 그래프. /hedge 구간과 /retry 구간 모두 두 선이 초당 3~4.5건으로 거의 겹친다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-04/hedge-extra-and-reset.png" alt="초당 사본·재시도 수와 응답 전에 끊은 백엔드 연결 수 그래프. /hedge 구간과 /retry 구간 모두 두 선이 초당 3~4.5건으로 거의 겹친다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 3. 사본 하나가 나갈 때마다 백엔드 연결이 하나씩 끊겼다</div>
 
@@ -235,14 +235,14 @@ done</div>
 <p>이 상한을 10,000으로 푼 <code>/hedge-nocb</code>에서 무슨 일이 생기는지가 세 번째 줄이에요. 사본이 요청의 96%(25,085개)까지 나갔고, 중앙값이 876ms가 됐습니다. 사본이 큐를 늘리고, 늘어난 큐가 25ms를 넘기는 요청을 늘리고, 그게 다시 사본을 늘렸어요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-04/overload-requests.png" alt="초당 요청 그래프. /plain 구간에서는 사용자 요청과 백엔드가 받은 요청이 600으로 겹치고, /hedge 구간에서는 백엔드가 660 정도로 조금 높으며, /hedge-nocb 구간에서는 사용자 요청이 430 근처로 떨어지는데 백엔드가 받은 요청은 850 근처까지 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-04/overload-requests.png" alt="초당 요청 그래프. /plain 구간에서는 사용자 요청과 백엔드가 받은 요청이 600으로 겹치고, /hedge 구간에서는 백엔드가 660 정도로 조금 높으며, /hedge-nocb 구간에서는 사용자 요청이 430 근처로 떨어지는데 백엔드가 받은 요청은 850 근처까지 오른다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 4. 상한을 풀자 사용자 요청은 줄었는데 백엔드가 받는 요청은 두 배가 됐다</div>
 
 <p>그림 4의 마지막 구간에서 사용자 요청 선이 600이 아니라 430 근처인 건 k6 때문이에요. 이 실행은 초당 600건을 일정하게 보내는 방식(constant-arrival-rate)인데, 응답이 늦어지자 동시에 띄울 수 있는 가상 사용자 400명이 모두 응답을 기다리는 상태가 돼서 9,778건을 아예 못 보냈습니다. 실제 서비스라면 그만큼이 클라이언트 쪽 타임아웃이나 대기열로 나타났을 거예요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/traffic-management/images/lab-04/overload-latency.png" alt="같은 세 구간의 지연 그래프. /plain은 p99 300ms 안팎, /hedge는 p99 400ms·p99.9 860ms까지 오르고, /hedge-nocb 구간에서는 p50이 800ms를 넘고 p99와 p99.9가 2초에 붙는다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/traffic-management/images/lab-04/overload-latency.png" alt="같은 세 구간의 지연 그래프. /plain은 p99 300ms 안팎, /hedge는 p99 400ms·p99.9 860ms까지 오르고, /hedge-nocb 구간에서는 p50이 800ms를 넘고 p99와 p99.9가 2초에 붙는다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 5. 여유 있을 때 꼬리를 깎던 헤지가 바쁠 때는 꼬리를 늘렸고, 상한까지 풀자 중앙값이 876ms가 됐다</div>
 

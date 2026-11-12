@@ -92,7 +92,7 @@ ab_users{stage="conversion"}
   / ignoring(stage)
 ab_users{stage="exposure"}</div>
 <p>실측 결과는 A의 노출 160명 중 전환 46명, B의 노출 160명 중 전환 37명이에요. 각각 28.75%, 23.125%예요. Grafana는 B를 23.13%로 표시하고 Python 텍스트의 소수 둘째 자리 형식은 23.12%로 표시해요. 두 출력의 반올림 방식 차이이며 분자와 분모는 같아요. 노출 수가 양쪽 모두 160명이 된 것은 이번 입력과 할당에서 나온 결과예요. 그룹별 노출 수를 맞추는 코드는 없어요.</p>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-02/grafana-users.png" alt="실제 Grafana 수집 화면. A할당202 노출160 전환46, B할당198 노출160 전환37, 수락 요청은 진입1600 노출640 전환166" style="max-width:100%;height:auto;"></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-02/grafana-users.png" alt="실제 Grafana 수집 화면. A할당202 노출160 전환46, B할당198 노출160 전환37, 수락 요청은 진입1600 노출640 전환166" style="max-width:100%;height:auto;"></div>
 <div class="obsv-figcap">그림 3. 실제 Prometheus 수집값을 사용한 Grafana 대시보드예요.</div>
 <p>진입 요청은 1,600번이지만 진입 사용자는 400명이에요. 노출 요청은 640번이지만 노출 사용자는 320명이에요. 전환 요청 166번은 전환 사용자 83명이에요. 요청 수로 사용자 분모를 대신하면 재시도가 많은 그룹의 비율이 달라져요. <span class="obsv-mark">화면에 비율을 그리기 전에 어떤 집합의 크기인지 확인해야 해요.</span></p>
 <div class="obsv-callout"><div class="obsv-ct">💡 이 숫자로 승자를 고르지 않아요</div>전환은 가상 사용자 번호에 적용한 조건으로 만들었어요. 제품을 사용한 사람의 반응을 관측한 결과가 아니에요. 표본 계획, 할당 비율 이상, 오류와 지연 같은 보호 지표도 여기서는 판정하지 않아요. 이 화면은 이벤트 집계와 연결이 맞는지 확인하는 자료예요.</div>
@@ -109,7 +109,7 @@ python3 run.py
 cat out/results.txt
 cat out/summary.json</div>
 <p>실행기는 400명의 진입·노출·전환 요청을 보내고 HTTP 응답을 검사해요. 이후 앱을 실제로 재시작해 전체 export를 대조하고, Prometheus의 노출 사용자 수가 DB 집계와 같은지도 확인해요. salt를 바꾼 별도 기동은 실패해야 통과해요. 실패 로그는 <code style="overflow-wrap:anywhere;">out/salt-rejection.txt</code>에 남아요.</p>
-<div class="obsv-fig"><img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-02/http-sqlite-checks.png" alt="실제 HTTP통합 검증 저장 출력. 400명 할당 유지와 DB재기동 동일성, 잘못된 이벤트400·409, 변경salt182명 재할당 위험과 기동거부, Prometheus일치 모두통과" style="max-width:100%;height:auto;"></div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/bdeedc1d4123d50549bc4519e7ebcc3a7a4e473c/posts/CS/DevOps/deployment-experiments/images/lab-02/http-sqlite-checks.png" alt="실제 HTTP통합 검증 저장 출력. 400명 할당 유지와 DB재기동 동일성, 잘못된 이벤트400·409, 변경salt182명 재할당 위험과 기동거부, Prometheus일치 모두통과" style="max-width:100%;height:auto;"></div>
 <div class="obsv-figcap">그림 4. 실제 실행 후 저장한 results.txt를 터미널 형식으로 렌더링한 이미지예요.</div>
 <p>새 실행은 이전 <code>out/</code>을 <code>history/</code> 아래로 옮기고 새로운 실험 식별자를 사용해요. 같은 실행 안에서는 salt와 식별자가 유지되지만 다른 실행의 그룹별 수치는 달라질 수 있어요. 기존 증거를 열 때는 저장된 실험 식별자로 다시 띄워야 해요. README에 재기동 명령과 Playwright 캡처 명령을 함께 적었어요.</p>
 <p>400 오류는 식별자와 JSON 입력, 클라이언트가 보낸 그룹 필드를 먼저 확인해요. 409 오류는 진입→노출→전환 순서를 확인해요. 화면에 데이터가 없다면 앱의 <code>/metrics</code>, Prometheus의 수집 대상 상태, Grafana 데이터 소스 순서로 점검해요. 메모리 상한은 앱 128MiB, Prometheus 256MiB, Grafana 1GiB예요. 캡처를 마친 뒤에는 이 프로젝트만 <code>docker compose down</code>으로 종료하고 SQLite 볼륨은 유지했어요.</p>

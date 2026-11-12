@@ -341,7 +341,10 @@ $V $A --from labs/<실습>/out/e2.txt --cmd "scripts/run_all.sh e2" \
 - 바닥글에 찍은 시각과 실습 디렉터리(또는 `--source` 원자료 경로)가 들어간다. 감사자가 대조하는 단서다.
 - `--run` 은 그 자리에서 다시 돌리므로, **Docker 스택이 필요한 명령은 실행 중에(잠금을 잡은 동안) 찍는다.**
   나중에 찍으려면 실행 때 출력을 `out/` 에 저장해 두고 `--from` 으로 찍는다.
-- 글에는 jsDelivr 주소로 건다: `<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/<시리즈>/images/lab-NN/<파일>.png" alt="…" style="max-width:100%">`.
+- 글에는 GitHub 원본(raw) 주소로 건다: `<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/<시리즈>/images/lab-NN/<파일>.png" alt="…" style="max-width:100%">`.
+  jsDelivr(`cdn.jsdelivr.net/gh/…`)는 쓰지 않는다. 저장소의 파일 합계가 50MB 를 넘은 뒤로 jsDelivr 가
+  캐시하지 않은 파일마다 "Package size exceeded the configured limit of 50 MB" 403 을 내서 글에 "이미지를 불러올 수 없습니다"가
+  떴다(2026-11-11, 저장소 약 79MB). 기존 글 60편의 주소도 이때 raw 로 바꿨다.
   alt 에 무엇을 실행한 화면인지와 핵심 숫자를 쓴다. 이미지는 main 에 먼저 푸시되어야 글이 깨지지 않는다.
 - 캡처는 본문을 대신하지 않는다. 글이 인용하는 숫자는 본문에도 텍스트로 쓴다(검색·감사·접근성).
 - **감사 항목에 추가**: 캡처 속 숫자가 본문·원자료와 같은지, 캡처가 버린 실행의 화면이 아닌지.

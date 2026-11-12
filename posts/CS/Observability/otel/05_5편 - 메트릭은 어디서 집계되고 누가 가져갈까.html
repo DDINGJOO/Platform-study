@@ -90,7 +90,7 @@ Counter.add()
   SDK에서 메트릭을 수집하고 수집 생명주기를 다루는 구성 요소예요. Java에서는 도구 종류별 temporality(측정값을 어느 시간 구간으로 집계할지 정하는 방식)와 기본 aggregation의 선택에도 관여합니다.
 </div>
 <div class="obsv-fig">
-  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/05/metric-reader.png" alt="MetricReader.java 24행부터 42행. temporality 및 기본 aggregation selector 상속, collection 등록 메서드가 보인다." style="width:100%;height:auto;border-radius:8px;">
+  <img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/05/metric-reader.png" alt="MetricReader.java 24행부터 42행. temporality 및 기본 aggregation selector 상속, collection 등록 메서드가 보인다." style="width:100%;height:auto;border-radius:8px;">
 </div>
 <div class="obsv-figcap">코드 1. MetricReader가 수집과 집계 선택의 계약을 정의해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/export/MetricReader.java#L24-L42">원문 24~42행</a></div>
 <p>캡처에서 Reader는 <code>AggregationTemporalitySelector</code>와 <code>DefaultAggregationSelector</code>를 상속해요. Provider가 전달한 <code>CollectionRegistration</code>을 등록하고, 구현이 그 객체의 <code>collectAllMetrics()</code>를 호출합니다. 그래서 도구 이름과 측정 호출이 같아도 어떤 Reader에 연결했느냐에 따라 출력되는 시간 의미와 기본 집계가 달라질 수 있어요.</p>
@@ -143,7 +143,7 @@ Counter.add()
 <p>PeriodicMetricReader는 등록되면 주기 실행을 시작합니다. 고정 소스의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/export/PeriodicMetricReader.java#L161-L197">register()와 start()</a>를 보면 수집 등록 객체를 보관하고, scheduler에 정해진 간격의 실행을 등록해요. 앱의 Counter가 매번 네트워크를 호출하는 대신 기록과 주기 전송이 분리되어 있는 거예요.</p>
 <p>하지만 Reader와 Exporter가 완전히 무관하지는 않습니다. 이 Reader는 도구 종류별 temporality와 기본 aggregation의 선택을 연결된 Exporter에 위임해요. 백엔드가 기대하는 데이터 형식이 SDK의 수집 구성에 영향을 주는 경로입니다.</p>
 <div class="obsv-fig">
-  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/05/periodic-reader.png" alt="PeriodicMetricReader.java 86행부터 94행. temporality와 기본 aggregation 선택을 exporter의 메서드에 위임한다." style="width:100%;height:auto;border-radius:8px;">
+  <img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/05/periodic-reader.png" alt="PeriodicMetricReader.java 86행부터 94행. temporality와 기본 aggregation 선택을 exporter의 메서드에 위임한다." style="width:100%;height:auto;border-radius:8px;">
 </div>
 <div class="obsv-figcap">코드 2. PeriodicMetricReader는 집계 구간 선택을 Exporter에 위임해요. <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/export/PeriodicMetricReader.java#L86-L94">원문 86~94행</a></div>
 <p>주기 실행의 <a href="https://github.com/open-telemetry/opentelemetry-java/blob/b4b3a1b354425c3f1411173c0e48cb24a1cba224/sdk/metrics/src/main/java/io/opentelemetry/sdk/metrics/export/PeriodicMetricReader.java#L267-L309">doRun()</a>도 읽어 봤어요. 먼저 원자적 상태로 다른 export가 진행 중인지 확인하고, 가능할 때 <code>collectAllMetrics()</code>를 호출합니다. 결과가 비어 있지 않으면 export로 넘기고, 완료 콜백에서 다음 실행을 허용해요. 이미 전송 중이면 이 회차를 겹쳐 실행하지 않습니다.</p>

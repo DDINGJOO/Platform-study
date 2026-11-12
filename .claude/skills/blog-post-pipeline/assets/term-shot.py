@@ -14,8 +14,9 @@
 글자를 읽지 못한다. 걸리면 찍지 않고 멈춘다(--extra 목록은 mask-check 와 같은 파일).
 .mask-allow 의 오탐 허용은 그대로 적용된다.
 
-글에는 jsDelivr 주소로 건다(업로더에 이미지 업로드가 없다). 이미지를 main 에 먼저 푸시해야 한다.
-    <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/<시리즈>/images/lab-NN/<파일>.png"
+글에는 GitHub 원본(raw) 주소로 건다(업로더에 이미지 업로드가 없다). 이미지를 main 에 먼저 푸시해야 한다.
+jsDelivr 는 쓰지 않는다: 저장소가 50MB 를 넘어 "Package size exceeded" 403 을 낸다(2026-11-11).
+    <img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/<시리즈>/images/lab-NN/<파일>.png"
          alt="(무엇을 실행한 화면인지, 핵심 숫자)" style="max-width:100%">
 """
 import argparse

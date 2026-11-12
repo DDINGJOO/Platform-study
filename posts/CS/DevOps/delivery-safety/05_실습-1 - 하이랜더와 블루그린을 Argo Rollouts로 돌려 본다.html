@@ -126,7 +126,7 @@ NOREUSE=1 TAG=noreuse scripts/run.sh bluegreen   # k6 가 요청마다 새 연�
 <div class="obsv-code">scripts/run.sh recreate      # 안에서 하는 일: kubectl set env deploy/web VERSION=v2</div>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/delivery-safety/images/lab-01/deploy-timeline.png" alt="네 전략의 초별 응답 막대. Recreate는 10초부터 22초까지 빨간 실패만 있고, 롤링은 두 버전이 섞이며 실패가 몇 번 튀고, preStop을 넣은 롤링은 실패가 없고, 하이랜더는 전환 순간에 실패가 몰린다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/delivery-safety/images/lab-01/deploy-timeline.png" alt="네 전략의 초별 응답 막대. Recreate는 10초부터 22초까지 빨간 실패만 있고, 롤링은 두 버전이 섞이며 실패가 몇 번 튀고, preStop을 넣은 롤링은 실패가 없고, 하이랜더는 전환 순간에 실패가 몰린다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 2. 같은 앱, 같은 부하, 네 가지 배포(위 세 줄은 2회 실행). 막대는 그 초에 끝난 응답 수다</div>
 
@@ -230,7 +230,7 @@ $ kubectl argo rollouts -n lab promote web           # 승격. 4초 뒤
 <p>k6를 요청마다 새 연결을 열게(<code>NOREUSE=1</code>) 하고 돌린 결과가 그림 3의 위쪽이에요. 26.4초에 승격하자 26.5초부터 v2 응답이 나왔고, 47.6초에 되돌리자(<code>kubectl argo rollouts undo</code>) 48.8초에 마지막 v2 응답이 나오고 바로 v1이 이어졌습니다. 실패는 5,000건 중 0건이었어요. 2편이 말한 "롤백은 트래픽 전환이라 몇 초"가 그대로 나왔습니다.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/delivery-safety/images/lab-01/bluegreen-connections.png" alt="블루그린 두 실행의 초별 응답. 새 연결을 여는 실행은 승격 직후 v2로, 되돌리기 직후 v1로 바뀐다. 연결을 재사용하는 실행은 승격 뒤 60초 동안 계속 v1이다가 81초에 v2로 바뀐다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/delivery-safety/images/lab-01/bluegreen-connections.png" alt="블루그린 두 실행의 초별 응답. 새 연결을 여는 실행은 승격 직후 v2로, 되돌리기 직후 v1로 바뀐다. 연결을 재사용하는 실행은 승격 뒤 60초 동안 계속 v1이다가 81초에 v2로 바뀐다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 3. 같은 승격인데, 연결을 재사용한 쪽은 60초 늦게 넘어갔다</div>
 
@@ -250,7 +250,7 @@ $ kubectl argo rollouts -n lab promote web           # 승격. 4초 뒤
 <p>마지막으로 되돌리는 데 걸리는 시간을 나란히 놨어요. 처음에는 롤링 업데이트 쪽만 연결 재사용, preStop 5초 조건으로 재서 블루그린 값과 직접 비교할 수 없었어요. 그래서 롤링 업데이트의 되돌리기도 요청마다 새 연결을 여는 조건으로 다시 재고, preStop이 있을 때와 없을 때를 나눴습니다. 블루그린 Rollout에는 preStop이 없어요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/DevOps/delivery-safety/images/lab-01/rollback.png" alt="요청마다 새 연결을 연 세 가지 되돌리기의 초별 응답. 옛 ReplicaSet이 떠 있는 블루그린은 1초 남짓에 v1로 돌아가고, 0이 된 뒤의 블루그린은 12초 남짓 멈췄다가 승격 후 v1로, preStop 5초 롤링 업데이트는 11초 뒤부터 약 12초 동안 섞이며 v1로 돌아간다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/delivery-safety/images/lab-01/rollback.png" alt="요청마다 새 연결을 연 세 가지 되돌리기의 초별 응답. 옛 ReplicaSet이 떠 있는 블루그린은 1초 남짓에 v1로 돌아가고, 0이 된 뒤의 블루그린은 12초 남짓 멈췄다가 승격 후 v1로, preStop 5초 롤링 업데이트는 11초 뒤부터 약 12초 동안 섞이며 v1로 돌아간다" style="width:100%;max-width:700px;border:2px solid #d8cfba;border-radius:10px;">
 </div>
 <div class="obsv-figcap">그림 4. 세 줄 모두 요청마다 새 연결. 롤백 시간을 정한 건 옛 파드가 떠 있었느냐였다</div>
 

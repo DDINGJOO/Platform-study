@@ -201,7 +201,7 @@ INFO  DockerClientProviderStrategy - Found Docker environment with local Unix so
 <p>29.3.0에서 최소 API 버전이 1.40으로 낮아졌지만, 실습에서는 구버전 Testcontainers가 여전히 연결하지 못했어요. 이 글의 실습 머신은 Docker Desktop 4.78.0, 엔진 29.5.3 이고 최소 API가 1.40 입니다. 같은 <code>SkippingMysqlTest</code>를 Testcontainers 버전만 바꿔 돌렸어요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-07/skipped-green.png" alt="Testcontainers 1.19.8 로 SkippingMysqlTest 를 실행한 화면. UnixSocket 과 DockerDesktop 전략이 모두 Status 400 으로 실패해 Could not find a valid Docker environment, 테스트는 SKIPPED, 빌드는 BUILD SUCCESSFUL" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/ops/db-deadlock/images/lab-07/skipped-green.png" alt="Testcontainers 1.19.8 로 SkippingMysqlTest 를 실행한 화면. UnixSocket 과 DockerDesktop 전략이 모두 Status 400 으로 실패해 Could not find a valid Docker environment, 테스트는 SKIPPED, 빌드는 BUILD SUCCESSFUL" style="max-width:100%">
 </div>
 <div class="obsv-figcap">그림 3. Docker는 떠 있는데 400, 그리고 SKIPPED와 BUILD SUCCESSFUL (실습은 testLogging에 skipped를 켜 둠)</div>
 
@@ -303,7 +303,7 @@ if (hasProperty('noSkip')) {                       // CI 에서만: ./gradlew te
 <p>세 군데를 일부러 이렇게 했어요. <code>finalizedBy</code> 로 붙여서 테스트가 실패해도 검사가 돌아요. <code>tests == 0</code> 과 결과 디렉터리가 없는 경우도 실패로 봐서, 필터가 잘못돼 아무것도 안 돈 빌드를 잡습니다. 그래서 멀티 모듈이라면 통합 테스트가 있는 모듈의 <code>test</code> 태스크에만 붙여야 해요. 테스트가 없는 모듈에 붙이면 결과 디렉터리가 없어 거짓 실패가 납니다. 그리고 <code>-PnoSkip</code> 일 때만 켜서 Docker 없는 노트북의 로컬 빌드는 그대로 두고 CI만 엄격하게 해요. 같은 1.19.8 조합을 CI 모드로 돌린 화면입니다.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-07/noskip-blocks.png" alt="Testcontainers 1.19.8 로 -PnoSkip 을 주고 실행한 화면. 테스트는 SKIPPED 지만 checkNoSkipped 가 tests=1 skipped=1 을 세어 skip 된 테스트가 1개 있다며 BUILD FAILED" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/ops/db-deadlock/images/lab-07/noskip-blocks.png" alt="Testcontainers 1.19.8 로 -PnoSkip 을 주고 실행한 화면. 테스트는 SKIPPED 지만 checkNoSkipped 가 tests=1 skipped=1 을 세어 skip 된 테스트가 1개 있다며 BUILD FAILED" style="max-width:100%">
 </div>
 <div class="obsv-figcap">그림 5. 같은 SKIPPED가 이번에는 빌드를 막는다</div>
 
@@ -362,7 +362,7 @@ assertEquals(0, keysWhereCntIsNot(THREADS));           // 최종 상태까지 �
 <p>수정 전 코드에서도 같은 테스트를 실행했어요. <b>기존 교착을 재현해 실패하는지 먼저 확인해야 수정 후 통과 결과를 비교할 수 있어요.</b> 수정 전에도 통과한다면 실행 여부, 요청이 겹치는 시점, DB 엔진이 맞는지부터 확인해야 해요. 이 실습은 고치기 전(<code>-Pimpl=buggy</code>)과 고친 뒤(<code>-Pimpl=fixed</code>)를 실제 MySQL 8.4에서 세 바퀴씩 돌렸습니다.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/ops/db-deadlock/images/lab-07/mysql-red-green.png" alt="Testcontainers 2.0.5 와 MySQL 8.4 로 같은 테스트를 두 번 실행한 화면. 고치기 전 impl=buggy 는 ok=60 failed=30 errors 40001/1213=30 으로 FAILED, 고친 뒤 impl=fixed 는 ok=90 failed=0 으로 PASSED. 두 번 모두 checkNoSkipped tests=1 skipped=0" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/ops/db-deadlock/images/lab-07/mysql-red-green.png" alt="Testcontainers 2.0.5 와 MySQL 8.4 로 같은 테스트를 두 번 실행한 화면. 고치기 전 impl=buggy 는 ok=60 failed=30 errors 40001/1213=30 으로 FAILED, 고친 뒤 impl=fixed 는 ok=90 failed=0 으로 PASSED. 두 번 모두 checkNoSkipped tests=1 skipped=0" style="max-width:100%">
 </div>
 <div class="obsv-figcap">그림 6. 같은 테스트가 수정 전에는 실패, 수정 후에는 통과했고 skip은 모두 0이에요</div>
 

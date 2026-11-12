@@ -88,7 +88,7 @@ service:
 </div>
 
 <div class="obsv-fig">
-  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/06/pipeline-config.png" alt="Collector v0.163.0 service/pipelines/config.go 50~66행. PipelineConfig의 세 참조 목록과 receiver·exporter 필수 검사를 표시한 원문 코드" style="width:100%;height:auto;">
+  <img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/06/pipeline-config.png" alt="Collector v0.163.0 service/pipelines/config.go 50~66행. PipelineConfig의 세 참조 목록과 receiver·exporter 필수 검사를 표시한 원문 코드" style="width:100%;height:auto;">
 </div>
 <div class="obsv-figcap">소스 캡처 1. receiver·processor·exporter의 참조 목록을 검사해요. <a href="https://github.com/open-telemetry/opentelemetry-collector/blob/5177a6a85ca3783068077e25aec6cebbe1d50d1f/service/pipelines/config.go#L50-L66">원문 50~66행</a></div>
 <p><a href="https://github.com/open-telemetry/opentelemetry-collector/blob/5177a6a85ca3783068077e25aec6cebbe1d50d1f/service/pipelines/config.go#L50-L79" target="_blank" rel="noopener">PipelineConfig 원문</a>에는 세 종류의 참조 목록이 있어요. 이어지는 검사는 receiver와 exporter가 각각 비었는지 확인해요. 이 부분에서 processor는 필수가 아니며, 아래쪽에는 같은 파이프라인에서 processor를 중복 참조하는지도 확인해요. 이 검사가 통과했다고 endpoint 연결이나 처리 결과까지 검증된 것은 아니에요. 설정의 구조와 실제 환경의 동작은 따로 확인해야 해요.</p>
@@ -97,7 +97,7 @@ service:
 <p>이제 설정이 동작으로 바뀌는 곳을 봐요. <a href="https://github.com/open-telemetry/opentelemetry-collector/blob/5177a6a85ca3783068077e25aec6cebbe1d50d1f/service/internal/graph/graph.go#L76-L141" target="_blank" rel="noopener">graph.Build()</a>는 컴포넌트 노드를 만들고, 그 사이의 연결을 만든 뒤, 실제 컴포넌트를 구성해요. processor 노드는 설정 목록을 순회하며 slice에 추가해요. 따라서 처음 설정에 적은 순서가 다음 연결 단계에서도 유지돼요.</p>
 
 <div class="obsv-fig">
-  <img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/CS/Observability/otel/images/06/pipeline-graph.png" alt="Collector v0.163.0 service/internal/graph/graph.go 267~290행. receiver에서 processor 순서대로 연결하고 fanout을 거쳐 exporter로 연결하는 코드" style="width:100%;height:auto;">
+  <img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/Observability/otel/images/06/pipeline-graph.png" alt="Collector v0.163.0 service/internal/graph/graph.go 267~290행. receiver에서 processor 순서대로 연결하고 fanout을 거쳐 exporter로 연결하는 코드" style="width:100%;height:auto;">
 </div>
 <div class="obsv-figcap">소스 캡처 2. 설정 순서대로 처리 경로를 연결해요. <a href="https://github.com/open-telemetry/opentelemetry-collector/blob/5177a6a85ca3783068077e25aec6cebbe1d50d1f/service/internal/graph/graph.go#L267-L290">원문 267~290행</a></div>
 <p><a href="https://github.com/open-telemetry/opentelemetry-collector/blob/5177a6a85ca3783068077e25aec6cebbe1d50d1f/service/internal/graph/graph.go#L267-L292" target="_blank" rel="noopener">createEdges()</a>는 receiver를 capabilities 노드에 연결하고, processor를 하나씩 이어 붙인 다음, fanout과 exporter를 연결해요. capabilities 노드는 데이터 변경 가능성 같은 consumer의 성질을 전달하는 내부 구성이고, 사용자가 YAML에 적는 처리 정책 하나가 추가된다는 뜻은 아니에요. exporter가 하나여도 fanout 노드는 만들어지며, 그 경우 통과 역할을 한다는 주석도 있어요.</p>

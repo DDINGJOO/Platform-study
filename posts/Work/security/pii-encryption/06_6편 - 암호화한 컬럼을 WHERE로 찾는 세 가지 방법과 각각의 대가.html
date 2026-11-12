@@ -56,7 +56,7 @@
 <p>Jakarta Persistence 명세는 이 동작을 정해 두었어요. 3.2 판 3.9절(Type Conversion of Basic Attributes)은 변환이 걸린 속성을 질의에서 리터럴이나 파라미터와 비교하면, 비교 대상인 그 리터럴이나 파라미터 값도 변환해야 한다고 설명해요(<a href="https://jakarta.ee/specifications/persistence/3.2/jakarta-persistence-spec-3.2.html">Jakarta Persistence 3.2</a>). Spring Data 의 <code>findBySsn</code> 은 결국 JPQL 비교라서, Hibernate 가 인자를 컨버터에 넣고 나온 값을 바인딩해요. 실습에서 Hibernate 의 바인딩 로그를 켜고 돌린 화면이에요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/security/pii-encryption/images/lab-06/findby-bind.png" alt="java -jar lookup.jar demo 를 Hibernate SQL·바인딩 로그와 함께 실행한 화면. 5만 행에서 findBySsnDet 5행, findBySsnGcm 0행, findAll 후 앱 필터 5행(310ms), findBySsnBidx 5행, findBySsnDetStartingWith 0행(평문 기준 707행)" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/security/pii-encryption/images/lab-06/findby-bind.png" alt="java -jar lookup.jar demo 를 Hibernate SQL·바인딩 로그와 함께 실행한 화면. 5만 행에서 findBySsnDet 5행, findBySsnGcm 0행, findAll 후 앱 필터 5행(310ms), findBySsnBidx 5행, findBySsnDetStartingWith 0행(평문 기준 707행)" style="max-width:100%">
 </div>
 <div class="obsv-figcap">그림 1. 실습의 GCM 조회 인자는 새 IV로 암호화돼 저장된 값과 일치하지 않았어요</div>
 
@@ -240,7 +240,7 @@ repo.findBySsnBidx(Crypto.bidx(ssn));</div>
 <p><code>findBySsnBidx</code>는 5행을 찾았고 EXPLAIN은 <code>type=ref key=idx_bidx</code>였어요. p50은 측정한 행 수 범위에서 0.44~0.75ms로 결정적 방식과 비슷했어요. 빈도 분포도 결정적 방식과 같았어요.</p>
 
 <div class="obsv-fig">
-<img src="https://cdn.jsdelivr.net/gh/DDINGJOO/Platform-study@main/posts/Work/security/pii-encryption/images/lab-06/explain-freq.png" alt="java -jar lookup.jar bench 200 과 freq 를 5만 행에서 실행한 화면. EXPLAIN 은 det·bidx 가 ref, gcm 등치는 ref 인데 0행, 전 행은 ALL. p50 은 findBySsnDet 0.77ms, findAll+filter 129.02ms, findBySsnBidx 0.45ms. 빈도는 ssn_det 와 ssn_bidx 의 top5 가 평문과 같은 719 297 214 183 150" style="max-width:100%">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/Work/security/pii-encryption/images/lab-06/explain-freq.png" alt="java -jar lookup.jar bench 200 과 freq 를 5만 행에서 실행한 화면. EXPLAIN 은 det·bidx 가 ref, gcm 등치는 ref 인데 0행, 전 행은 ALL. p50 은 findBySsnDet 0.77ms, findAll+filter 129.02ms, findBySsnBidx 0.45ms. 빈도는 ssn_det 와 ssn_bidx 의 top5 가 평문과 같은 719 297 214 183 150" style="max-width:100%">
 </div>
 <div class="obsv-figcap">그림 4. 실습의 블라인드 인덱스와 결정적 암호문은 같은 빈도 분포를 보였어요</div>
 
