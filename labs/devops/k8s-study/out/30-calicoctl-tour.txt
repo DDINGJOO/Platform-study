@@ -1,0 +1,134 @@
+# E10 calicoctl 둘러보기 (2026-11-14 15:28:20 KST)
+
+master$ calicoctl version
+Client Version:    v3.33.0
+Git commit:        d2060a8417a60c37946901f1beb951011ea24557
+Cluster Version:   v3.33.0
+Cluster Type:      k8s,bgp,kubeadm,kdd
+
+master$ sudo calicoctl node status   (이 노드의 BIRD 에 직접 물어봄)
+Calico process is not running.
+
+master$ calicoctl get nodes -o wide
+NAME          ASN       IPV4               IPV6   
+k8s-master    (64512)   192.168.104.1/24          
+k8s-worker1   (64512)   192.168.104.3/24          
+k8s-worker2   (64512)   192.168.104.4/24          
+k8s-worker3   (64512)   192.168.104.5/24          
+
+
+master$ calicoctl get ippool -o wide
+NAME                  CIDR            NAT    IPIPMODE   VXLANMODE   DISABLED   DISABLEBGPEXPORT   SELECTOR   ASSIGNMENTMODE   
+default-ipv4-ippool   10.244.0.0/16   true   Always     Never       false      false              all()      Automatic        
+
+
+master$ calicoctl get bgpconfig
+NAME      LOGSEVERITY   MESHENABLED   ASNUMBER   
+default   Info          -             -          
+
+
+master$ calicoctl get bgppeer
+NAME   PEERIP   NODE   ASN   
+
+
+master$ calicoctl ipam show
++----------+---------------+-----------+------------+--------------+--------------+
+| GROUPING | CIDR          | IPS TOTAL | IPS IN USE | IPS RESERVED | IPS FREE     |
++----------+---------------+-----------+------------+--------------+--------------+
+| IP Pool  | 10.244.0.0/16 |     65536 |    23 (0%) |       0 (0%) | 65513 (100%) |
++----------+---------------+-----------+------------+--------------+--------------+
+
+master$ calicoctl ipam show --show-blocks
++----------+-------------------+-----------+------------+--------------+--------------+
+| GROUPING | CIDR              | IPS TOTAL | IPS IN USE | IPS RESERVED | IPS FREE     |
++----------+-------------------+-----------+------------+--------------+--------------+
+| IP Pool  | 10.244.0.0/16     |     65536 |    23 (0%) |       0 (0%) | 65513 (100%) |
+| Block    | 10.244.100.192/26 |        64 |    7 (11%) |       0 (0%) |     57 (89%) |
+| Block    | 10.244.126.0/26   |        64 |     6 (9%) |       0 (0%) |     58 (91%) |
+| Block    | 10.244.194.64/26  |        64 |    8 (12%) |       0 (0%) |     56 (88%) |
+| Block    | 10.244.235.192/26 |        64 |     2 (3%) |       0 (0%) |     62 (97%) |
++----------+-------------------+-----------+------------+--------------+--------------+
+
+master$ calicoctl ipam check
+Checking IPAM for inconsistencies...
+
+Loading all IPAM blocks...
+Found 4 IPAM blocks.
+ IPAM block 10.244.100.192/26 affinity=host:k8s-worker3:
+ IPAM block 10.244.126.0/26 affinity=host:k8s-worker2:
+ IPAM block 10.244.194.64/26 affinity=host:k8s-worker1:
+ IPAM block 10.244.235.192/26 affinity=host:k8s-master:
+IPAM blocks record 23 allocations.
+
+Loading all IPAM pools...
+  10.244.0.0/16
+Found 1 active IP pools.
+
+Loading all nodes.
+Found 4 node tunnel IPs.
+
+Loading all service load balancer IPs.
+Found 0 service load balancer(s).
+
+Loading all workload endpoints.
+Found 19 workload IPs.
+Workloads and nodes are using 23 IPs.
+
+Loading all handles
+Looking for top (up to 20) nodes by allocations...
+  k8s-worker1 has 8 allocations
+  k8s-worker3 has 7 allocations
+  k8s-worker2 has 6 allocations
+  k8s-master has 2 allocations
+Node with most allocations has 8; median is 6
+
+Scanning for IPs that are allocated but not actually in use...
+Found 0 IPs that are allocated in IPAM but not actually in use.
+Scanning for IPs that are in use by a workload or node but not allocated in IPAM...
+Found 0 in-use IPs that are not in active IP pools.
+Found 0 in-use IPs that are in active IP pools but have no corresponding IPAM allocation.
+
+Scanning for IPAM handles with no matching IPs...
+Found 0 handles with no matching IPs (and 23 handles with matches).
+Scanning for IPs with missing handle...
+Found 0 handles mentioned in blocks with no matching handle resource.
+Validating IPAMBlock structures...
+Found 0 invalid IPAMBlocks.
+Check complete; found 0 problems.
+
+master$ calicoctl get workloadendpoints -n default -o wide
+NAMESPACE   NAME                                             WORKLOAD                 NODE          NETWORKS            INTERFACE         PROFILES                          NATS   
+default     k8s--worker2-k8s-hello--9w94f-eth0               hello-9w94f              k8s-worker2                       calie39086c5a4f   kns.default,ksa.default.default          
+default     k8s--worker1-k8s-loadgen-eth0                    loadgen                  k8s-worker1   10.244.194.99/32    calie620301c135   kns.default,ksa.default.default          
+default     k8s--worker3-k8s-myweb--859c4764d4--5xtpv-eth0   myweb-859c4764d4-5xtpv   k8s-worker3   10.244.100.222/32   calidab1c79df3b   kns.default,ksa.default.default          
+default     k8s--worker1-k8s-myweb--859c4764d4--9jb4l-eth0   myweb-859c4764d4-9jb4l   k8s-worker1   10.244.194.101/32   caliac2026cfde8   kns.default,ksa.default.default          
+default     k8s--worker2-k8s-myweb--859c4764d4--n9rd8-eth0   myweb-859c4764d4-n9rd8   k8s-worker2   10.244.126.31/32    cali2f8702bcf27   kns.default,ksa.default.default          
+default     k8s--worker1-k8s-myweb--859c4764d4--scshl-eth0   myweb-859c4764d4-scshl   k8s-worker1   10.244.194.100/32   calicd0b7984a6e   kns.default,ksa.default.default          
+default     k8s--worker3-k8s-myweb--859c4764d4--v87c6-eth0   myweb-859c4764d4-v87c6   k8s-worker3   10.244.100.225/32   cali2b4578a6227   kns.default,ksa.default.default          
+
+
+master$ calicoctl get felixconfiguration default -o yaml | grep -A12 '^spec:'
+spec:
+  bpfConnectTimeLoadBalancing: TCP
+  bpfHostNetworkedNATWithoutCTLB: Enabled
+  floatingIPs: Disabled
+  logSeverityScreen: Info
+  nftablesFlowTableOffload: Disabled
+  nftablesMode: Auto
+  programClusterRoutes: EnabledIPIPOnly
+  reportingInterval: 0s
+
+## 같은 IPPool 을 kubectl 과 calicoctl 로 볼 때 apiVersion
+kubectl   : crd.projectcalico.org/v1
+calicoctl : projectcalico.org/v3
+projectcalico.org/v3 API 가 쿠버네티스에 등록돼 있나: 0개
+
+## node status 가 'not running' 인데 마스터의 Calico 프로세스는 떠 있음 (15:28:45)
+   2684 runsv           runsv bird
+   2685 runsv           runsv bird6
+   2688 calico          calico component confd
+   2689 calico          calico component node node-services
+   2692 calico          calico component felix
+   2864 bird6           bird6 -R -s /var/run/calico/bird6.ctl -d -c /etc/calico/confd/config/bird6.c
+   2865 bird            bird -R -s /var/run/calico/bird.ctl -d -c /etc/calico/confd/config/bird.cfg
+(같은 정보는 calico-node 안의 birdcl show protocols 로 확인: e8-calico-bird.txt 4번)

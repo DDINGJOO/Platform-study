@@ -1,0 +1,24 @@
+# 2026-11-14 14:49:25 KST 아키텍처 그림의 요소를 우리 클러스터에서 확인
+master$ sudo grep -E "authorization-mode|enable-admission-plugins|etcd-servers|client-ca-file|secure-port" /etc/kubernetes/manifests/kube-apiserver.yaml
+    - --authorization-mode=Node,RBAC
+    - --client-ca-file=/etc/kubernetes/pki/ca.crt
+    - --enable-admission-plugins=NodeRestriction
+    - --etcd-servers=https://127.0.0.1:2379
+    - --secure-port=6443
+
+mac$ kubectl -n kube-system get cm calico-config -o jsonpath={.data.calico_backend}
+bird
+
+mac$ kubectl -n kube-system exec calico-node-lj6rx -c calico-node -- birdcl -s /var/run/calico/bird.ctl show protocols
+BIRD v0.3.3+birdv1.6.8 ready.
+name     proto    table    state  since       info
+static1  Static   master   up     05:41:59    
+kernel1  Kernel   master   up     05:41:59    
+device1  Device   master   up     05:41:59    
+direct1  Direct   master   up     05:41:59    
+Mesh_192_168_104_1 BGP      master   up     05:42:01    Established   
+Mesh_192_168_104_4 BGP      master   up     05:42:01    Established   
+Mesh_192_168_104_5 BGP      master   up     05:42:01    Established   
+
+mac$ kubectl -n kube-system get pods | grep -ci cloud-controller
+0

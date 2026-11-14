@@ -1,0 +1,49 @@
+# E17 CRI ImageService 와 이미지 저장소 (2026-11-14 15:54:11 KST)
+
+## 1. 엔드포인트가 두 개로 나뉘어 있다 (지금은 같은 소켓)
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint: unix:///run/containerd/containerd.sock
+kubelet 설정: containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+kubelet --help: --image-service-endpoint string                            The endpoint of container image service. If not specified, it will be the same with --container-runtime-endpoint by default. Unix Domain Sock
+
+## 2. 이미지 목록과 이미지 저장 공간 (ImageService: ListImages, ImageFsInfo)
+IMAGE:TAG                                                      SIZE
+docker.io/curlimages/curl:8.11.1                               9.85MB
+docker.io/grafana/grafana:13.3.0-distroless                    454MB
+docker.io/kubeshark/worker:v53.6                               72.4MB
+docker.io/library/busybox:1.36.1                               1.91MB
+docker.io/library/busybox:1.37                                 1.91MB
+docker.io/library/nginx:1.25.1-alpine                          16.4MB
+docker.io/library/nginx:1.29                                   61.3MB
+docker.io/portainer/portainer-ce:lts                           41.4MB
+docker.io/prom/node-exporter:latest                            12.5MB
+ghcr.io/headlamp-k8s/headlamp:v0.46.0                          102MB
+quay.io/calico/calico:v3.33.0                                  86.8MB
+quay.io/calico/node:v3.33.0                                    134MB
+quay.io/calico/third-party-cni-plugins:v3.33.0                 16.4MB
+quay.io/kiwigrid/k8s-sidecar:2.14.3                            27.2MB
+quay.io/prometheus/node-exporter:v1.12.1-distroless            12.1MB
+registry.k8s.io/coredns/coredns:v1.14.6                        21.2MB
+registry.k8s.io/kube-proxy:v1.37.2                             26.5MB
+registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0  17.3MB
+registry.k8s.io/pause:3.10.2                                   268kB
+imageFilesystems /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs used 3274 MiB
+
+## 3. 이미지 → 컨테이너: overlayfs 스냅숏 (myweb 컨테이너 루트 파일시스템)
+mount: overlay /run/containerd/io.containerd.runtime.v2.task/k8s.io/592a27c943d769ebc646f19442673c8350056aa6f6bf3b5a63df6743db302038/rootfs overlay
+  읽기 전용 레이어(lowerdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/236/fs
+  읽기 전용 레이어(lowerdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/235/fs
+  읽기 전용 레이어(lowerdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/234/fs
+  읽기 전용 레이어(lowerdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/233/fs
+  읽기 전용 레이어(lowerdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/232/fs
+  읽기 전용 레이어(lowerdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/231/fs
+  읽기 전용 레이어(lowerdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/230/fs
+  읽기 전용 레이어(lowerdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/229/fs
+  쓰기 레이어(upperdir): /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/281/fs
+
+## 4. 이미지 정리 기준 (kubelet 이미지 GC, /configz)
+  imageGCHighThresholdPercent = 85
+  imageGCLowThresholdPercent = 80
+  imageMinimumGCAge = 2m0s
+  imageMaximumGCAge = 0s
+  serializeImagePulls = True

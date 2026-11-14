@@ -1,0 +1,250 @@
+<!-- ============================================================
+  k8s 스터디 24편: 온프레미스 클러스터에서 LoadBalancer 서비스가 pending에 멈추는 이유
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: kubeadm 클러스터에서 LoadBalancer 서비스의 EXTERNAL-IP가 pending에서 움직이지 않았어요. cloud-controller-manager가 맡는 일과 Calico LoadBalancer IPAM으로 IP를 받아 본 실험을 정리했어요. -->
+<!-- tags: LoadBalancer pending, EXTERNAL-IP pending, cloud-controller-manager, kube-controller-manager, Calico LoadBalancer IPAM, MetalLB, 온프레미스 쿠버네티스 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 24편</div>
+  22편. etcd를 직접 열어 보면 쿠버네티스 객체와 Secret은 어떻게 저장돼 있을까<br>
+  23편. 스케줄러는 필터와 스코어로 노드를 어떻게 고를까<br>
+  <b>24편. 온프레미스 클러스터에서 LoadBalancer 서비스가 pending에 멈추는 이유</b> &larr; 지금 이 글<br>
+  25편. 노드가 죽으면 쿠버네티스는 몇 초 만에 알아채고 파드를 옮길까<br>
+  26편. kubelet과 containerd를 재시작해도 컨테이너가 죽지 않는 이유
+</div>
+
+<p>15시 19분에 type: LoadBalancer 서비스(ccm-demo)를 하나 만들고 10초마다 세 번 들여다봤어요. EXTERNAL-IP는 세 번 모두 &lt;pending&gt;이었어요. 오류인가 싶어 이벤트를 찾아봤는데 한 줄도 없었어요. 그런데 같은 서비스에 함께 생긴 NodePort 32019로 worker1에 요청하니 200이 돌아왔어요. 서비스는 동작하는데 외부 IP만 비어 있는 상태였어요.</p>
+<p>이 실험을 하게 된 계기는 쿠버네티스 구성도를 보다가 생긴 질문이었어요. 그림에 Controller Manager와 Cloud Controller Manager가 따로 그려져 있어서 저는 "CCM인가, 컨트롤러 매니저?"라고 물었어요. 둘이 같은 것인지 다른 것인지, 다르다면 우리 클러스터에는 무엇이 있는지 확인하다가 pending의 이유를 찾았어요.</p>
+<p>이번 글에서는 컨트롤러 매니저(KCM)와 클라우드 컨트롤러 매니저(CCM)가 각각 무엇을 맡는지 보고 CCM이 없는 온프레미스 클러스터에서 LoadBalancer 서비스가 왜 멈추는지, 그 자리를 무엇으로 채울 수 있는지 실험으로 확인해요. 클러스터는 지금까지 써 온 실습 환경(Lima VM 4대, kubeadm v1.37.2, Calico v3.33.0)이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 컨트롤러 매니저 안에는 무엇이 들어 있을까?<br>
+&middot; 클라우드 컨트롤러 매니저(CCM)는 왜 따로 있을까?<br>
+&middot; CCM이 없으면 LoadBalancer 서비스에는 무슨 일이 일어날까?<br>
+&middot; CCM 없이 EXTERNAL-IP를 받으려면 무엇이 필요할까?<br>
+&middot; IP를 받으면 클러스터 밖에서 바로 닿을까?</p>
+
+<h2>1. 컨트롤러 매니저는 컨트롤러 49개를 묶은 프로그램 하나다</h2>
+
+<p>먼저 우리 클러스터의 kube-controller-manager(KCM)부터 봤어요. 5편에서 본 대로 KCM은 마스터의 정적 파드로 떠 있고 실행 플래그는 파드 정의에 그대로 적혀 있어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/24/02-kcm-controllers.png" alt="kube-controller-manager의 실행 플래그 --allocate-node-cidrs=true, --cluster-cidr=10.244.0.0/16, --controllers=*,bootstrapsigner,tokencleaner, --leader-elect=true와 --help에 나온 컨트롤러 이름 49개, 기본으로 꺼진 bootstrap-signer-controller, selinux-warning-controller, token-cleaner-controller, 그리고 kube-controller-manager와 kube-scheduler Lease의 holder가 둘 다 lima-k8s-master로 시작하는 화면" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. KCM 바이너리 하나에 이름이 붙은 컨트롤러가 49개 들어 있다</div>
+
+<p><code style="font-family:Menlo,monospace;font-size:14px;">kube-controller-manager --help</code>의 <code style="font-family:Menlo,monospace;font-size:14px;">--controllers</code> 설명에 나온 이름을 세면 49개예요. deployment-controller나 replicaset-controller는 이름만 봐도 무엇을 맡는지 알 수 있어요. <span class="obsv-mark">20편에서 KCM을 멈췄을 때 Deployment의 replicas를 7로 늘려도 ReplicaSet과 파드가 따라오지 않았던 것은 이 둘이 모두 KCM 안에 있기 때문이에요.</span> 25편에서 볼 node-lifecycle-controller와 taint-eviction-controller, 31편에서 볼 node-ipam-controller도 이 목록에 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 컨트롤러와 kube-controller-manager(KCM)</div>
+  컨트롤러는 API 서버에 적힌 원하는 상태와 실제 상태를 계속 비교해 차이를 줄이는 루프예요. 쿠버네티스에 기본으로 들어 있는 컨트롤러들은 각각 따로 띄우지 않고 kube-controller-manager라는 프로그램 하나 안에서 함께 돌아요. 앞으로는 줄여서 KCM이라고 불러요.
+</div>
+<p>플래그 <code style="font-family:Menlo,monospace;font-size:14px;">--controllers=*,bootstrapsigner,tokencleaner</code>는 <a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/">kube-controller-manager 문서</a>의 설명대로 읽으면 돼요. <code style="font-family:Menlo,monospace;font-size:14px;">*</code>는 "기본으로 켜지는 컨트롤러 전부"이고 이름을 적으면 그 컨트롤러를 켜요. 기본으로 꺼진 셋은 bootstrap-signer-controller, selinux-warning-controller, token-cleaner-controller이고 kubeadm은 그중 첫째와 셋째를 켜요. 플래그에 적힌 bootstrapsigner와 tokencleaner는 v1.37.2 소스(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/cmd/kube-controller-manager/app/bootstrap.go">bootstrap.go</a>)에 별칭(aliases)으로 남아 있는 옛 이름이에요. 둘 다 5편에서 본 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm join</code>의 부트스트랩 토큰을 다루는 컨트롤러예요.</p>
+
+<h3>리더 선출: 여러 대 띄워도 일하는 것은 하나</h3>
+<p><code style="font-family:Menlo,monospace;font-size:14px;">--leader-elect=true</code>는 문서에 기본값 true로 적힌 플래그이고 설명은 "Start a leader election client and gain leadership before executing the main loop. Enable this when running replicated components for high availability."예요. 컨트롤 플레인을 여러 대 두면 KCM도 여러 개 뜨는데 같은 컨트롤러가 동시에 두 곳에서 돌면 파드를 두 번 만드는 식으로 서로 부딪쳐요. 그래서 리더 하나만 일하고 나머지는 기다려요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Lease를 이용한 리더 선출</div>
+  <a href="https://kubernetes.io/docs/concepts/architecture/leases/">Leases 문서</a>에 따르면 Lease는 coordination.k8s.io API 그룹의 객체이고 노드 하트비트와 구성 요소의 리더 선출에 쓰여요. KCM과 스케줄러는 kube-system 네임스페이스에서 각자 구성 요소 이름과 같은 Lease에 자기 인스턴스 이름(holder)을 적고 주기적으로 갱신해요. 갱신이 끊기면 기다리던 다른 인스턴스가 그 자리를 가져가요.
+</div>
+<p>우리 클러스터의 두 Lease는 holder가 모두 <code style="font-family:Menlo,monospace;font-size:14px;">lima-k8s-master_</code>로 시작했어요. 마스터가 한 대라 경쟁자가 없으니 늘 그 하나가 리더예요. 21편에서 본 컨트롤 플레인 여러 대 구성이라면 이 holder 값이 바뀌는 것을 보고 어느 마스터의 KCM이 일하고 있는지 알 수 있어요.</p>
+
+<h2>2. CCM은 클라우드 API에 기대는 컨트롤러만 따로 뺀 것이다</h2>
+
+<p>제 질문 "CCM인가, 컨트롤러 매니저?"의 답부터 적을게요. 둘 다 컨트롤러를 여러 개 묶은 프로그램이라는 점은 같지만 담당이 달라요. <a href="https://kubernetes.io/docs/concepts/architecture/cloud-controller/">Cloud Controller Manager 문서</a>는 CCM을 "A Kubernetes control plane component that embeds cloud-specific control logic."이라고 정의해요. 클라우드별 제어 로직을 담은 컨트롤 플레인 구성 요소라는 뜻이에요. 문서는 이렇게 덧붙여요. "separates out the components that interact with that cloud platform from components that only interact with your cluster." 클라우드 플랫폼과 통신하는 부분을 클러스터 안에서만 일하는 부분에서 떼어 낸다는 뜻이에요. 같은 문서는 CCM도 "multiple controllers in a single process"로 돌아간다고 적었어요.</p>
+<p>문서가 꼽은 CCM 안의 컨트롤러는 셋이에요.</p>
+<div class="obsv-code">컨트롤러             하는 일 (Cloud Controller Manager 문서)
+Node controller      클라우드에 새 서버가 생기면 Node 객체에 클라우드의 고유 ID·지역·주소를 채우고
+                     응답이 없는 노드는 클라우드 API로 서버가 지워졌는지 확인해 Node 객체를 지운다
+Route controller     다른 노드의 컨테이너끼리 통신하도록 클라우드 네트워크에 경로를 설정한다
+Service controller   LoadBalancer 등 클라우드 자원이 필요한 Service를 선언하면
+                     클라우드 API로 로드밸런서와 IP를 만든다</div>
+<p>&rarr; 세 컨트롤러 모두 클라우드 API를 불러야 일할 수 있어요. 이 글에서 다루는 LoadBalancer 서비스는 Service controller가 맡아요.</p>
+
+<h3>예전에는 KCM 안에 있었다</h3>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: in-tree와 out-of-tree</div>
+  in-tree는 코드가 쿠버네티스 본 저장소(kubernetes/kubernetes) 안에 들어 있다는 뜻이고 out-of-tree는 별도 저장소에서 따로 만들고 배포한다는 뜻이에요. 클라우드 연동 코드는 원래 in-tree였고 지금은 모두 out-of-tree예요.
+</div>
+<p>클라우드 연동 코드는 처음부터 따로 있지 않았어요. 2024년 5월 공식 블로그 글 <a href="https://kubernetes.io/blog/2024/05/20/completing-cloud-provider-migration/">Completing the largest migration in Kubernetes history</a>는 CCM이 "replacing functionality within the kube-controller-manager and kubelet that directly interacted with cloud APIs", 즉 KCM과 kubelet 안에서 클라우드 API를 직접 부르던 기능을 대신하려고 만든 첫 외부 구성 요소라고 설명해요. 같은 글은 CCM이 "the service controller, which is responsible for provisioning cloud load balancers for Services of type LoadBalancer"를 돌린다고 적었어요. 그 블로그 글에 따르면 내장 클라우드 연동을 없애겠다는 목표는 v1.7 무렵부터 있었어요. <a href="https://kubernetes.io/blog/2024/08/13/kubernetes-v1-31-release/">v1.31 릴리스 글</a>에는 "the last remaining in-tree support for cloud provider integration has been removed as part of the v1.31 release"라는 문장이 있고 클라우드 연동을 밖으로 빼는 과정이 v1.26에서 시작됐다고 적혀 있어요. 예전 버전에는 KCM 안에 클라우드 연동 코드가 있었고 v1.31에서 마지막 남은 코드까지 빠진 셈이에요.</p>
+<p>KCM 목록에서도 흔적을 볼 수 있어요. v1.30 문서의 <code style="font-family:Menlo,monospace;font-size:14px;">--controllers</code> 목록에는 service-lb-controller, node-route-controller, cloud-node-lifecycle-controller가 있었어요. 이 세 이름은 클라우드 연동 코드가 빠진 v1.31 뒤에도 KCM에 등록된 채 남아 있다가(v1.36.0 소스의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.36.0/cmd/kube-controller-manager/app/controller_descriptor.go">controller_descriptor.go</a>) v1.37.0에서 빠졌어요. 우리 v1.37.2의 <code style="font-family:Menlo,monospace;font-size:14px;">--help</code> 목록 49개에는 이 이름들이 없어요(그림 1). 이제 로드밸런서·라우트·클라우드 노드를 맡는 컨트롤러는 CCM에만 있어요.</p>
+
+<h3>우리 클러스터에는 CCM이 없다</h3>
+<p>CCM은 클라우드마다 그 클라우드 회사나 커뮤니티가 만든 것을 따로 설치해요. kubeadm이 애드온으로 설치하는 것은 CoreDNS와 kube-proxy뿐이니(29편의 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm init phase addon</code> 목록) 우리 클러스터에는 CCM이 없을 거라 예상하고 확인했어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/24/01-lb-pending.png" alt="cloud-controller-manager 파드가 0개이고 네 노드의 PROVIDER_ID가 모두 none이며 taint는 k8s-master의 node-role.kubernetes.io/control-plane뿐이다. ccm-demo LoadBalancer 서비스는 15:19:06, 15:19:16, 15:19:26 세 번 모두 EXTERNAL-IP가 pending이고 포트는 80:32019/TCP이며 이벤트는 비어 있다. NodePort로 worker1(192.168.104.3):32019에 요청하면 200이 돌아온다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. CCM 파드 0개, providerID 빈칸, 그리고 약 30초 동안 pending인 EXTERNAL-IP</div>
+
+<p>cloud-controller-manager 파드는 0개였고 네 노드의 PROVIDER_ID는 모두 &lt;none&gt;이었어요. providerID는 Node 객체의 <code style="font-family:Menlo,monospace;font-size:14px;">spec.providerID</code> 필드예요. 문서가 Node controller의 첫 번째 일로 꼽은 "Update a Node object with the corresponding server's unique identifier obtained from the cloud provider API"가 바로 이 값을 채워요. 클라우드에서 CCM이 돌고 있다면 이 칸에 그 클라우드가 정한 서버 ID가 들어가요. 이 칸이 비어 있는 것도 CCM이 없다는 증거예요.</p>
+<p><span class="obsv-mark">KCM과 CCM은 둘 다 컨트롤러 묶음이고 CCM은 클라우드 API를 불러야 하는 컨트롤러만 떼어 낸 것이에요.</span> 클라우드가 아닌 곳에 kubeadm으로 만든 클러스터에는 CCM을 따로 설치하지 않는 한 KCM만 있어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k24arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k24arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">컨트롤러 묶음 둘: 클러스터 안만 보는 쪽과 클라우드를 부르는 쪽</text>
+<path d="M270 52 C 330 50, 380 53, 430 51 C 432 72, 429 92, 431 112 C 380 114, 330 111, 269 113 C 268 92, 271 72, 270 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="80" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#4a7fb5" text-anchor="middle">API 서버</text>
+<text x="350" y="102" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">:6443</text>
+<path d="M20 150 C 120 148, 220 151, 320 149 C 322 210, 319 280, 321 340 C 220 342, 120 339, 19 341 C 18 280, 21 210, 20 150 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="170" y="178" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">kube-controller-manager</text>
+<text x="170" y="200" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">✅ 우리 클러스터에 있음 · 컨트롤러 49개</text>
+<text x="40" y="228" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">deployment · replicaset</text>
+<text x="40" y="250" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">node-lifecycle · taint-eviction</text>
+<text x="40" y="272" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">endpointslice · node-ipam</text>
+<text x="40" y="294" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">garbage-collector · job ...</text>
+<text x="170" y="326" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">클러스터 안의 객체만 고친다</text>
+<path d="M380 150 C 450 148, 520 151, 580 149 C 582 210, 579 280, 581 340 C 520 342, 450 339, 379 341 C 378 280, 381 210, 380 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-dasharray="9 6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="480" y="178" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">cloud-controller-manager</text>
+<text x="480" y="200" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">❌ 우리 클러스터에 없음 (파드 0개)</text>
+<text x="400" y="232" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">Node controller</text>
+<text x="400" y="256" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">Route controller</text>
+<text x="400" y="280" font-family="Menlo, monospace" font-size="12" fill="#b3502f">Service controller</text>
+<text x="545" y="280" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f">← LB</text>
+<text x="480" y="326" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">클라우드 API를 불러 밖의 자원을 만든다</text>
+<path d="M600 245 C 615 244, 625 246, 640 245" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" marker-end="url(#k24arr2)"/>
+<text x="666" y="238" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">클라우드</text>
+<text x="666" y="258" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">API</text>
+<path d="M170 146 C 200 125, 240 110, 264 98" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-start="url(#k24arr1)" marker-end="url(#k24arr1)"/>
+<path d="M480 146 C 460 125, 450 110, 436 98" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" marker-start="url(#k24arr2)" marker-end="url(#k24arr2)"/>
+<text x="350" y="378" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">v1.31에 in-tree 클라우드 연동 코드가 모두 빠졌다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 두 묶음 모두 API 서버를 지켜보지만 CCM만 클라우드 API를 부른다</div>
+
+<h2>3. CCM이 없으면 LoadBalancer 서비스는 아무도 처리하지 않는다</h2>
+
+<p>그림 2의 ccm-demo로 돌아가 볼게요. <a href="https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer">Service 문서</a>의 LoadBalancer 설명에는 이런 문장이 있어요. "To implement a Service of type: LoadBalancer, Kubernetes typically starts off by making the changes that are equivalent to you requesting a Service of type: NodePort. The cloud-controller-manager component then configures the external load balancer to forward traffic to that assigned node port." LoadBalancer 서비스를 만들면 쿠버네티스는 먼저 NodePort 서비스와 같은 일을 하고 그다음 CCM이 외부 로드밸런서를 그 노드 포트로 이어 준다는 뜻이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: NodePort</div>
+  모든 노드의 같은 포트(기본 30000~32767 범위)로 들어온 요청을 Service의 파드로 보내 주는 방식이에요. LoadBalancer 서비스는 기본으로 NodePort도 함께 받고 클라우드 로드밸런서는 보통 이 노드 포트로 트래픽을 넘겨요. 이 실습에서 ccm-demo는 32019를 받았어요.
+</div>
+<p>우리 실험에서는 이 두 단계가 정확히 갈라졌어요. 앞 단계는 API 서버와 kube-proxy가 하는 일이라 그대로 됐어요. ClusterIP와 NodePort 32019가 생겼고 worker1:32019로 보낸 요청은 myweb 파드에 닿아 200을 받았어요. 뒤 단계를 맡을 CCM의 Service controller는 없었어요. 그래서 <code style="font-family:Menlo,monospace;font-size:14px;">status.loadBalancer</code>를 채우는 쪽이 없었고 Service의 이벤트도 남지 않았어요. 다만 이 서비스를 들여다본 컨트롤러는 있었어요. 4절에서 볼 Calico kube-controllers의 로그에는 서비스를 만든 직후(15:18:57) "No ippools with allowedUse LoadBalancer found. Skipping IP assignment for Service default/ccm-demo"라는 경고가 있었어요. 나눠 줄 주소 풀이 없어서 건너뛰었다는 뜻이에요. 이 기록은 그 파드의 로그에만 있고 Service의 이벤트로는 남지 않았어요.</p>
+<p>EXTERNAL-IP 칸의 &lt;pending&gt;은 Service 객체에 저장된 값이 아니에요. v1.37.2 소스의 표 출력 함수(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/printers/internalversion/printers.go">printers.go</a>의 <code style="font-family:Menlo,monospace;font-size:14px;">getServiceExternalIP</code>)는 type이 LoadBalancer인데 <code style="font-family:Menlo,monospace;font-size:14px;">status.loadBalancer</code>에 IP가 없으면 문자열 "&lt;pending&gt;"을 찍어요. kubectl get이 받는 표는 API 서버가 이 함수로 만들어 보내요(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/registry/core/service/storage/storage.go">storage.go</a>의 <code style="font-family:Menlo,monospace;font-size:14px;">TableConvertor</code>). <span class="obsv-mark">pending은 실패가 아니라 "아직 아무도 이 칸을 채우지 않았다"는 표시예요.</span> 채울 쪽이 없으면 영원히 그대로예요. <a href="https://metallb.io/">MetalLB 홈페이지</a>에도 같은 상황이 이렇게 적혀 있어요. "If you're not running on a supported IaaS platform (GCP, AWS, Azure...), LoadBalancers will remain in the "pending" state indefinitely when created."</p>
+<p>Service 문서의 표에도 같은 말이 있어요. LoadBalancer 항목의 설명은 "Kubernetes does not directly offer a load balancing component; you must provide one, or you can integrate your Kubernetes cluster with a cloud provider."예요. 쿠버네티스 자체에는 로드밸런서 구현이 없으니 직접 마련하거나 클라우드와 연동하라는 뜻이에요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: pending인데 이벤트가 없다면</div>
+  &bull; 이벤트가 0건이면 그 서비스를 처리하는 컨트롤러가 아예 없거나 자기 로그에만 경고를 남기고 건너뛴 것일 수 있어요(우리 클러스터의 Calico가 그랬어요)<br>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pod -A | grep -i -E 'cloud-controller|metallb|calico-kube-controllers'</code>로 LoadBalancer를 처리할 만한 것이 떠 있는지 먼저 봐요<br>
+  &bull; 서비스에 <code style="font-family:Menlo,monospace;font-size:14px;">spec.loadBalancerClass</code>가 적혀 있으면 그 클래스를 맡은 구현만 처리해요. Service 문서에 따르면 기본 구현은 이 필드가 있는 서비스를 무시해요
+</div>
+
+<h2>4. CCM 없이도 Calico kube-controllers가 IP를 채울 수 있다</h2>
+
+<p>그렇다면 CCM이 없는 클러스터에서는 LoadBalancer를 아예 못 쓸까요? 그 자리를 채우는 방법이 있어요. 우리 클러스터에서 먼저 눈에 띈 것은 Calico였어요. calico-kube-controllers 파드의 환경 변수 <code style="font-family:Menlo,monospace;font-size:14px;">ENABLED_CONTROLLERS</code>가 <code style="font-family:Menlo,monospace;font-size:14px;">node,loadbalancer</code>였고 Calico의 KubeControllersConfiguration에는 <code style="font-family:Menlo,monospace;font-size:14px;">loadBalancer: {"assignIPs":"AllServices"}</code>가 들어 있었어요. 6편에서 Calico를 설치할 때 따로 켠 적은 없어요. v3.33.0 매니페스트(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/manifests/calico.yaml">calico.yaml</a>)에 <code style="font-family:Menlo,monospace;font-size:14px;">ENABLED_CONTROLLERS=node,loadbalancer</code>가 들어 있고 assignIPs의 기본값도 AllServices예요(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/api/pkg/apis/projectcalico/v3/kubecontrollersconfig.go">kubecontrollersconfig.go</a>).</p>
+<p><a href="https://docs.tigera.io/calico/3.33/networking/ipam/service-loadbalancer">Calico 3.33의 LoadBalancer IP address management 문서</a>는 이 기능을 이렇게 설명해요. "By default, LoadBalancer controller is enabled in Calico kube-controllers configuration." 다만 이어서 "Calico does not automatically provide default IP Pool for LoadBalancer IP address management. You will need to create an IP Pool with allowedUses LoadBalancer for Calico to start assigning Service IPs."라고 적었어요. <span class="obsv-mark">컨트롤러가 켜져 있어도 나눠 줄 주소 풀이 없으면 할 일이 없다는 뜻이에요.</span> assignIPs가 AllServices이면 클러스터의 모든 LoadBalancer 서비스에 IP를 주고 RequestedServicesOnly이면 Calico 어노테이션이 있거나 <code style="font-family:Menlo,monospace;font-size:14px;">loadBalancerClass: calico</code>인 서비스에만 줘요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Calico IPPool과 allowedUses</div>
+  IPPool은 Calico가 나눠 줄 IP 대역을 정의한 리소스예요. 6편의 파드 대역 10.244.0.0/16도 default-ipv4-ippool이라는 IPPool이에요. allowedUses는 그 풀의 주소를 어디에 쓸지 정하는 필드이고 LoadBalancer라고 적으면 파드가 아니라 LoadBalancer 서비스의 외부 IP로만 나눠 줘요.
+</div>
+<p>그래서 실험(16:08)은 두 단계로 했어요. 먼저 LoadBalancer 서비스 lb-demo를 만들어 풀이 없을 때 어떻게 되는지 보고 그다음 calicoctl로 LoadBalancer 전용 IPPool(172.30.0.0/29, blockSize 29, allowedUses [LoadBalancer], natOutgoing false)을 만들었어요. /29라서 주소가 8개뿐인 작은 풀이에요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/24/03-calico-lb-ipam.png" alt="calico-kube-controllers의 ENABLED_CONTROLLERS가 node,loadbalancer이고 KubeControllersConfiguration의 loadBalancer가 assignIPs AllServices이다. 16:08:35에는 lb-demo의 EXTERNAL-IP가 pending이고 lb-demo-pool 172.30.0.0/29(NAT false, IPIP Never)를 만든 뒤 16:08:38에는 EXTERNAL-IP가 172.30.0.0이다. 마스터와 worker1에서 172.30.0.0:80으로 curl하면 200, Mac에서는 000이고 worker1 iptables에 172.30.0.0 규칙이 1줄 있다. 끝에 풀을 지우고 default-ipv4-ippool만 남았다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. LoadBalancer용 풀을 만들자 첫 확인에서 이미 172.30.0.0을 받았다</div>
+
+<p>풀이 없을 때(16:08:35)는 ccm-demo와 똑같이 &lt;pending&gt;이었어요. 풀을 만들고 3초 간격으로 확인하기 시작했는데 첫 확인(16:08:38)에서 이미 EXTERNAL-IP가 172.30.0.0이었어요. 문서에 적힌 "When you create Service of type LoadBalancer Calico kube-controller will automatically detect the new Service and assign an IP address from available IP Pool." 그대로예요. 이미 만들어져 있던 서비스도 풀이 생기자 바로 IP를 받았어요. 같은 문서에 "If no address is available, the Service will remain in pending state until an address is available."라는 문장도 있으니 풀이 비어 있는 동안의 pending도 정상 동작이에요.</p>
+<p>Calico의 kube-controllers는 여기서 CCM의 Service controller가 하던 일 가운데 "IP를 정해 <code style="font-family:Menlo,monospace;font-size:14px;">status.loadBalancer</code>에 적는 일"을 대신했어요. 실험이 끝난 뒤 서비스와 풀은 지웠고 IPPool 목록에는 원래의 default-ipv4-ippool만 남았어요.</p>
+
+<h2>5. IP를 받아도 클러스터 밖에서 닿는 것은 별개다</h2>
+
+<p>EXTERNAL-IP를 받았으니 이제 밖에서 들어올 수 있을까요? 같은 실험 중에 세 곳에서 172.30.0.0:80으로 요청해 봤어요.</p>
+<div class="obsv-code">마스터 → 172.30.0.0:80 curl: 200
+worker1 → 172.30.0.0:80 curl: 200
+Mac → 172.30.0.0:80 curl: 000
+worker1 iptables 에 172.30.0.0 규칙: 1줄</div>
+<p>&rarr; 노드 두 곳에서는 200이었고 클러스터 밖인 Mac에서는 000(연결 자체가 안 됨)이었어요. worker1의 nat 표에는 172.30.0.0을 잡는 규칙이 1줄 생겨 있었어요.</p>
+<p>노드에서 된 것은 kube-proxy 덕분이에요. kube-proxy는 Service의 <code style="font-family:Menlo,monospace;font-size:14px;">status.loadBalancer</code>에 적힌 IP도 지켜보다가 그 IP로 가는 패킷을 Service의 파드로 보내는 iptables 규칙을 노드마다 깔아요(28편에서 ClusterIP 규칙을 자세히 봐요). 노드에서 나가는 패킷은 이 규칙에 먼저 걸리니 172.30.0.0이 실제로 어디에도 없는 주소여도 200이 돌아와요.</p>
+<p>Mac에서 안 된 이유는 172.30.0.0이 어느 노드로 가야 하는지 클러스터 밖에 알려 준 쪽이 없기 때문이라고 봐요. 이번 실험에서 Mac의 라우팅 표까지 찍지는 않았어요. 다만 Calico 문서에 이 점이 분명히 적혀 있어요. "Calico kube-controllers provides only the IP address management, to advertise LoadBalancer IPs you will have to update your BGP configuration." kube-controllers는 IP 관리만 하고 그 IP를 알리려면 BGP 설정을 따로 고쳐야 한다는 뜻이에요. 30편의 calicoctl 기록을 보면 우리 클러스터에는 BGPPeer가 하나도 없어요. 노드끼리만 BGP로 경로를 주고받고 클러스터 밖 라우터와는 세션이 없어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 광고(advertisement)와 BGP·ARP</div>
+  "이 IP로 오려면 이 장비로 보내라"를 네트워크에 알리는 일을 광고라고 불러요. BGP는 라우터끼리 경로를 주고받는 프로토콜이에요. BGP 방식에서는 클러스터 노드가 바깥 라우터와 BGP 세션을 맺고 경로를 알려요. ARP(IPv6는 NDP)는 같은 L2 네트워크에서 "이 IP의 MAC 주소는 무엇인가"라는 물음에 답하는 방식이에요. 이 방식에서는 노드 하나가 "그 IP의 MAC은 내 MAC"이라고 답해요.
+</div>
+<p>이 구분은 MetalLB 문서의 <a href="https://metallb.io/concepts/">Concepts</a>에 가장 짧게 적혀 있어요. MetalLB에는 "two features that work together to provide this service: address allocation, and external announcement"가 있다고 해요. 주소를 나눠 주는 일과 밖에 알리는 일이 따로 있고 문서는 알리는 방법으로 Layer 2(ARP/NDP) 모드와 BGP 모드를 들어요. 우리 실험은 그중 첫째만 한 상태였어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k24arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">LoadBalancer IP가 밖에서 닿기까지 필요한 세 가지</text>
+<path d="M20 52 C 140 50, 260 53, 380 51 C 382 75, 379 100, 381 124 C 260 126, 140 123, 19 125 C 18 100, 21 75, 20 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="36" y="80" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">① IP를 정해 status에 적는다</text>
+<text x="36" y="108" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">CCM · Calico LB IPAM · MetalLB</text>
+<text x="420" y="82" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">✅ 172.30.0.0을 받음</text>
+<text x="420" y="106" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">IPPool을 만들자 바로</text>
+<path d="M200 128 C 201 138, 199 146, 200 154" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k24arr3)"/>
+<path d="M20 160 C 140 158, 260 161, 380 159 C 382 183, 379 208, 381 232 C 260 234, 140 231, 19 233 C 18 208, 21 183, 20 160 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="36" y="188" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">② 노드에 온 패킷을 파드로 보낸다</text>
+<text x="36" y="216" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">kube-proxy 규칙 (iptables 1줄)</text>
+<text x="420" y="190" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">✅ 마스터·worker1 curl 200</text>
+<text x="420" y="214" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">노드 안에서는 이미 된다</text>
+<path d="M200 236 C 201 246, 199 254, 200 262" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k24arr3)"/>
+<path d="M20 268 C 140 266, 260 269, 380 267 C 382 291, 379 316, 381 340 C 260 342, 140 339, 19 341 C 18 316, 21 291, 20 268 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-dasharray="9 6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="36" y="296" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">③ 밖에 "이 IP는 이 노드로"를 알린다</text>
+<text x="36" y="324" font-family="Menlo, monospace" font-size="12" fill="#3d3a34">BGP 광고 · L2(ARP/NDP) 응답</text>
+<text x="420" y="298" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">❌ Mac curl 000</text>
+<text x="420" y="322" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">BGPPeer 없음 · 알리는 쪽 없음</text>
+<text x="350" y="384" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">클라우드에서는 대개 ①과 ③을 CCM과 클라우드 로드밸런서가 맡는다</text>
+<text x="350" y="410" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">IP를 받는 것과 밖에서 닿게 하는 것은 따로 준비한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 우리 실험에서는 ①과 ②까지 됐고 ③은 비어 있었으며 Mac에서는 닿지 않았다</div>
+
+<p><span class="obsv-mark">CCM이 없으면 기본으로는 아무도 IP를 주지 않아요. Calico LB IPAM, MetalLB 같은 도구가 그 자리를 채울 수 있고 밖에서 닿게 하려면 광고가 따로 필요해요.</span> 클라우드에서 CCM을 쓰면 이 차이가 잘 보이지 않아요. Service 문서의 설명대로 CCM이 클라우드 로드밸런서를 만들어 그 노드 포트로 이어 주니 대개 ①과 ③이 한 번에 해결되기 때문이에요.</p>
+
+<h2>6. 온프레미스에서 LoadBalancer를 쓰려면 준비할 것</h2>
+
+<p>여기까지 본 것을 정리하면 온프레미스 클러스터에서 LoadBalancer 서비스를 쓰려면 두 가지를 정해야 해요. 누가 IP를 나눠 줄지와 그 IP를 밖에 어떻게 알릴지예요.</p>
+<div class="obsv-code">정할 것              선택지                                   이 글에서 확인한 것
+누가 IP를 주나       Calico LB IPAM (Calico를 쓰는 경우)      v3.33.0에 컨트롤러가 기본으로 켜져 있음
+                     MetalLB (CNI와 따로 동작)                 개념만 확인, 설치하지 않음
+                     인프라용 CCM (OpenStack·vSphere 등)       확인하지 않음
+어느 대역을 쓰나     네트워크 담당과 정한, 겹치지 않는 대역    실험은 172.30.0.0/29
+어떻게 알리나        BGP: 바깥 라우터와 BGP 세션              우리 클러스터에는 BGPPeer 없음
+                     L2: 같은 네트워크에서 ARP/NDP 응답       확인하지 않음</div>
+<p>&rarr; "누가 IP를 주나"의 세 가지는 IP 할당 쪽이고 "어떻게 알리나"의 두 가지는 광고 쪽이에요. <span class="obsv-mark">하나씩 골라 짝을 맞춰야 밖에서 닿아요.</span></p>
+<p>Calico를 쓰고 있다면 Calico 안에서 둘 다 해결할 수 있어요. IP는 4절의 방식대로 allowedUses LoadBalancer IPPool로 주고 광고는 <a href="https://docs.tigera.io/calico/3.33/networking/configuring/advertise-service-ips">Advertise Kubernetes service IP addresses 문서</a>대로 BGPConfiguration의 <code style="font-family:Menlo,monospace;font-size:14px;">serviceLoadBalancerIPs</code>에 그 대역을 적어요. 이 방식은 노드들이 바깥 라우터와 BGP 세션을 맺고 있어야 의미가 있어요. BGP를 쓸 수 없는 평평한 L2 네트워크라면 Calico 3.33 문서에 <a href="https://docs.tigera.io/calico/3.33/networking/configuring/local-subnet-l2-reachability">L2 reachability</a> 기능이 소개돼 있어요. Felix가 ARP/NDP에 대신 답하는 방식인데 문서에 따르면 IP가 노드와 같은 서브넷에 있어야 하고 캡슐화가 없는 풀(ipipMode·vxlanMode 모두 Never)만 해당돼요. 이 필드(<code style="font-family:Menlo,monospace;font-size:14px;">localSubnetL2Reachability</code>)가 v3.33.0 태그의 FelixConfiguration API에 있는 것까지만 확인했고 직접 켜 보지는 않았어요.</p>
+<p>Calico가 아닌 CNI를 쓰거나 L2 방식이 편하다면 MetalLB를 쓸 수 있어요. MetalLB는 CNI와 따로 동작하는 도구예요. 다만 Calico BGP와 함께 쓸 때는 MetalLB 문서의 주의 사항을 확인해야 해요. MetalLB의 L2 모드에서는 클러스터의 노드 하나가 그 IP를 맡아 ARP에 답하고 BGP 모드에서는 근처 라우터와 세션을 맺어요. 이번에는 MetalLB를 설치하지 않아서 두 모드 모두 확인하지 않았어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: LoadBalancer 구현이 둘 이상이면</div>
+  &bull; Calico LB IPAM과 MetalLB를 함께 두면 둘 다 같은 서비스에 IP를 주려고 할 수 있어요. Calico 문서는 이런 경우를 위해 assignIPs를 RequestedServicesOnly로 바꾸는 방법을 안내해요<br>
+  &bull; 서비스마다 <code style="font-family:Menlo,monospace;font-size:14px;">spec.loadBalancerClass</code>로 처리할 구현을 정할 수 있어요. Calico 문서에 따르면 Calico 컨트롤러는 이 값이 calico가 아닌 서비스를 assignIPs 설정과 상관없이 건너뛰어요<br>
+  &bull; LB 대역은 노드·파드·서비스 대역과 겹치지 않게 네트워크 담당과 먼저 정해요. 이번 실험에서 쓴 임의의 사설 대역을 그대로 쓰면 밖에서 닿게 할 때 다시 바꿔야 해요
+</div>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 노드에서 curl이 된다고 끝난 것이 아니다</div>
+  &bull; kube-proxy 규칙 때문에 LoadBalancer IP는 노드 안에서는 광고 없이도 응답해요<br>
+  &bull; 확인은 반드시 클러스터 밖, 실제 클라이언트가 있는 네트워크에서 해요. 우리 실험에서도 노드 200, Mac 000으로 결과가 갈렸어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>LoadBalancer 서비스의 EXTERNAL-IP는 누군가 status.loadBalancer를 채워 줘야 생기고 클라우드에서는 그 일을 CCM의 Service controller가 해요.</b><br><br>
+  KCM은 deployment·replicaset·node-lifecycle 같은 컨트롤러 49개를 묶은 프로그램이고 CCM은 클라우드 API를 불러야 하는 Node·Route·Service 컨트롤러만 따로 뺀 것이에요. v1.31에서 마지막 in-tree 클라우드 연동 코드까지 빠지면서 이 분리가 끝났어요. 우리 kubeadm 클러스터에는 CCM이 없어서 LoadBalancer 서비스는 NodePort까지만 만들어지고 EXTERNAL-IP는 이벤트 한 줄 없이 pending으로 남았어요. Calico kube-controllers는 allowedUses LoadBalancer 풀을 만들자 3초 안에 172.30.0.0을 줬지만 그 IP는 Mac에서 닿지 않았어요. CCM이 없으면 기본으로는 아무도 IP를 주지 않아요. Calico LB IPAM, MetalLB 같은 도구가 그 자리를 채울 수 있고 밖에서 닿게 하려면 광고가 따로 필요해요.
+</div>
+
+</div>

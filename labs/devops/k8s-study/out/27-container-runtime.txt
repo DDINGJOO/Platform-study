@@ -1,0 +1,49 @@
+# E16 컨테이너 런타임과 CRI (2026-11-14 15:53:01 KST)
+
+## 1. kubelet 이 런타임을 찾는 곳 (CRI 엔드포인트) 과 CRI 버전
+containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+Version:  0.1.0
+RuntimeName:  containerd
+RuntimeVersion:  v2.4.1
+RuntimeApiVersion:  v1
+
+## 2. 시작 전 worker1 에 busybox:1.36.1 이미지: 0개
+15:53:01 kubectl apply cri-demo (busybox, cpu 200m / memory 64Mi, requests = limits)
+15:53:05 Ready, qosClass=Guaranteed
+
+## 3. containerd 로그에 찍힌 CRI 호출 (생성)
+15:53:01.540 "RunPodSandbox for name:\"cri-demo\"  uid:\"78d32b4d-5025-4f1a-afeb-53d9d892c80c\"  namespace:\"default\""
+15:53:01.670 "RunPodSandbox for name:\"cri-demo\"  uid:\"78d32b4d-5025-4f1a-afeb-53d9d892c80c\"  namespace:\"default\" returns sandbox id \"4a7f58eda84c655e70e1a1f0ac9270
+15:53:01.671 "PullImage \"docker.io/library/busybox:1.36.1\""
+15:53:05.673 "ImageCreate event name:\"docker.io/library/busybox:1.36.1\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+15:53:05.674 "ImageCreate event name:\"sha256:b7c873bd97bdc9046fc894e0b216c8aef31e0db4c5b761fb53022e40577ab6c0\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed
+15:53:05.676 "ImageCreate event name:\"docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662\"  labels:{key:\"io.cri-container
+15:53:05.676 "PullImage \"docker.io/library/busybox:1.36.1\" returns image reference \"sha256:b7c873bd97bdc9046fc894e0b216c8aef31e0db4c5b761fb53022e40577ab6c0\""
+15:53:05.678 "CreateContainer within sandbox \"4a7f58eda84c655e70e1a1f0ac927019f74baec7eb3084d5d70480ffb56833f3\" for container name:\"box\""
+15:53:05.695 "CreateContainer within sandbox \"4a7f58eda84c655e70e1a1f0ac927019f74baec7eb3084d5d70480ffb56833f3\" for name:\"box\" returns container id \"168f31416bb113f8
+15:53:05.695 "StartContainer for \"168f31416bb113f81c0f4f81d8d2fae71b31455cb97bdd14d828aaa79c2af1eb\""
+15:53:05.715 "StartContainer for \"168f31416bb113f81c0f4f81d8d2fae71b31455cb97bdd14d828aaa79c2af1eb\" returns successfully"
+
+## 4. 자원 할당·격리: 노드의 cgroup 파일
+컨테이너 pid=35685
+cgroup 경로: /kubepods.slice/kubepods-pod78d32b4d_5025_4f1a_afeb_53d9d892c80c.slice/cri-containerd-168f31416bb113f81c0f4f81d8d2fae71b31455cb97bdd14d828aaa79c2af1eb.scope
+cpu.max    = 20000 100000     (100ms 마다 20ms = 0.2 CPU)
+memory.max = 67108864  (64Mi = 67108864)
+컨테이너 안에서 본 프로세스: PID COMMAND| 1 sh| 7 ps
+컨테이너 hostname(uts) = cri-demo, 노드 hostname = lima-k8s-worker1
+
+## 5. 메모리 한도를 넘기면 커널이 죽인다 (OOMKilled)
+command terminated with exit code 143
+15:53:10 restarts=1 lastState=OOMKilled exitCode=137
+worker1 dmesg: [ 4292.782800] Memory cgroup out of memory: Killed process 35746 (tail) total-vm:68124kB, anon-rss:64128kB, file-rss:1280kB, shmem-rss:0kB, UID:0 pgtables:180kB
+
+## 6. 삭제할 때의 CRI 호출
+15:53:10 kubectl delete pod cri-demo (terminationGracePeriodSeconds 5)
+15:53:15 삭제 끝
+15:53:10.361 "StopContainer for \"db22cd06d0717e35dbdf2cc4723acc1824b0ff1cc7487dc5d13461eb8902e2c2\" with timeout 5 (s)"
+15:53:15.392 "StopPodSandbox for \"4a7f58eda84c655e70e1a1f0ac927019f74baec7eb3084d5d70480ffb56833f3\""
+15:53:15.485 "TearDown network for sandbox \"4a7f58eda84c655e70e1a1f0ac927019f74baec7eb3084d5d70480ffb56833f3\" successfully"
+15:53:15.775 "RemoveContainer for \"db22cd06d0717e35dbdf2cc4723acc1824b0ff1cc7487dc5d13461eb8902e2c2\""
+15:53:15.781 "RemoveContainer for \"168f31416bb113f81c0f4f81d8d2fae71b31455cb97bdd14d828aaa79c2af1eb\""
+이미지는 남아 있음: docker.io/library/busybox:1.36.1 1.91MB
+docker.io/library/busybox:1.37 1.91MB

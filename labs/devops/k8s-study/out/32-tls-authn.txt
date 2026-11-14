@@ -1,0 +1,84 @@
+# 32편: TLS 와 인증 (2026-11-14 16:55:33 KST, Mac 에서 실습 저장소 루트로 bash 32-tls-authn.sh 실행, 조회만)
+
+## 1. 관문 0 TLS: 클라이언트가 먼저 API 서버 인증서를 확인한다 (worker1 에서)
+worker1$ curl -sS https://192.168.104.1:6443/version                      # CA 를 주지 않으면
+curl: (60) SSL certificate problem: unable to get local issuer certificate
+worker1$ curl -sS http://192.168.104.1:6443/version    # TLS 없이 평문으로 보내면
+Client sent an HTTP request to an HTTPS server.
+
+worker1$ curl -sS --cacert /etc/kubernetes/pki/ca.crt https://192.168.104.1:6443/version | grep gitVersion
+  "gitVersion": "v1.37.2",
+worker1$ openssl s_client -connect 192.168.104.1:6443 | openssl x509 -noout -subject -issuer   # API 서버가 내민 인증서
+subject=CN = kube-apiserver
+issuer=CN = kubernetes
+
+## 2. 관문 1 인증: 클라이언트 인증서의 CN 은 사용자 이름, O 는 그룹
+master$ (admin.conf 의 client-certificate-data 를 풀어) openssl x509 -noout -subject -issuer -enddate -ext extendedKeyUsage
+subject=O = kubeadm:cluster-admins, CN = kubernetes-admin
+issuer=CN = kubernetes
+notAfter=Nov  4 12:18:47 2027 GMT
+X509v3 Extended Key Usage: 
+    TLS Web Client Authentication
+mac$ kubectl auth whoami   (같은 인증서가 든 kubeconfig)
+Username kubernetes-admin
+Groups   ["kubeadm:cluster-admins","system:authenticated"]
+mac$ kubectl get clusterrolebinding kubeadm:cluster-admins -o jsonpath='{.roleRef.kind}/{.roleRef.name} ← {.subjects}'
+ClusterRole/cluster-admin ← [{"apiGroup":"rbac.authorization.k8s.io","kind":"Group","name":"kubeadm:cluster-admins"}]
+
+worker1$ sudo openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -subject -issuer   (kubelet 이 쓰는 인증서)
+subject=O = system:nodes, CN = system:node:k8s-worker1
+issuer=CN = kubernetes
+worker1$ sudo kubectl --kubeconfig /etc/kubernetes/kubelet.conf auth whoami
+Username system:node:k8s-worker1
+Groups   ["system:nodes","system:authenticated"]
+
+## 3. 같은 경로에 자격을 바꿔 보낸다 (worker1 에서 curl, CA 확인은 함)
+  /version                         자격 없음 → 200   가짜 토큰 → 401
+  /livez                           자격 없음 → 200   가짜 토큰 → 401
+  /readyz                          자격 없음 → 200   가짜 토큰 → 401
+  /healthz                         자격 없음 → 200   가짜 토큰 → 401
+  /api                             자격 없음 → 403   가짜 토큰 → 401
+  /api/v1/namespaces/default/pods  자격 없음 → 403   가짜 토큰 → 401
+자격 없음 /api/v1/namespaces/default/pods 응답:
+   403 Forbidden | pods is forbidden: User "system:anonymous" cannot list resource "pods" in API group "" in the namespace "default"
+가짜 토큰 /version 응답:
+   401 Unauthorized | Unauthorized
+
+## 4. 익명 사용자가 열어 볼 수 있는 경로를 정한 기본 바인딩
+mac$ kubectl get clusterrolebinding system:public-info-viewer -o jsonpath='{.subjects[*].name}'
+  system:authenticated system:unauthenticated
+mac$ kubectl get clusterrolebinding system:discovery -o jsonpath='{.subjects[*].name}'
+  system:authenticated
+mac$ kubectl get clusterrolebinding system:basic-user -o jsonpath='{.subjects[*].name}'
+  system:authenticated
+mac$ kubectl get clusterrole system:public-info-viewer -o jsonpath='{.rules}'
+[{"nonResourceURLs":["/healthz","/livez","/readyz","/version","/version/"],"verbs":["get"]}]
+mac$ kubectl auth can-i --list --as=system:anonymous --as-group=system:unauthenticated   (익명 사용자에게 자기 권한 목록을 묻게 하면)
+Error from server (Forbidden): selfsubjectrulesreviews.authorization.k8s.io is forbidden: User "system:anonymous" cannot create resource "selfsubjectrulesreviews" in API group "authorization.k8s.io" at the cluster scope
+
+## 5. 익명 요청이 켜져 있는 설정과 그것을 쓰는 곳
+  API 서버 실행 플래그 중 --anonymous-auth: 0개
+  --help: --anonymous-auth                                    Enables anonymous requests to the secure port of the API server. Requests that are not rejected by another authentication method are treated as anonymous requests. Anonymous requests have a username of system:anonymous, and a group name of system:unauthenticated. (default true)
+  --help: --authentication-config string                      File with Authentication Configuration to configure the JWT Token authenticator or the anonymous authenticator. This flag is mutually exclusive with the --oidc-* flags if the file configures the JWT Token authenticator. This flag is mutually exclusive with --anonymous-auth if the file configures the Anonymous authenticator.
+master$ sudo grep -A6 -E 'livenessProbe|readinessProbe|startupProbe' /etc/kubernetes/manifests/kube-apiserver.yaml   (kubelet 이 API 서버 정적 파드를 검사하는 요청)
+    livenessProbe:
+        host: 192.168.104.1
+        path: /livez
+        port: probe-port
+        scheme: HTTPS
+    readinessProbe:
+        host: 192.168.104.1
+        path: /readyz
+        port: probe-port
+        scheme: HTTPS
+    startupProbe:
+        host: 192.168.104.1
+        path: /livez
+        port: probe-port
+        scheme: HTTPS
+master$ sudo grep -B1 -A2 'name: probe-port' /etc/kubernetes/manifests/kube-apiserver.yaml
+    - containerPort: 6443
+      name: probe-port
+      protocol: TCP
+    readinessProbe:
+  프로브 정의 안의 httpHeaders 줄 수: 0

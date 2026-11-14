@@ -1,0 +1,63 @@
+# E18 Add-on 구성 요소 (2026-11-14 15:55:32 KST)
+
+## 0. kubeadm 이 'addon' 으로 설치하는 것
+Available Commands:
+  all         Install all the addons
+  coredns     Install the CoreDNS addon to a Kubernetes cluster
+  kube-proxy  Install the kube-proxy addon to a Kubernetes cluster
+
+
+## 1. CNI plugin: Calico (DaemonSet + 컨트롤러)
+daemonset.apps/calico-node 4 4 4
+deployment.apps/calico-kube-controllers 1/1 1 1
+
+## 2. CoreDNS (DNS 기반 서비스 디스커버리)
+deploy/coredns READY 2/2
+svc/kube-dns 10.96.0.10 53/UDP,53/TCP,9153/TCP
+Corefile:
+  .:53 {
+      errors
+      health {
+         lameduck 5s
+      }
+      ready
+      kubernetes cluster.local in-addr.arpa ip6.arpa {
+         pods insecure
+         fallthrough in-addr.arpa ip6.arpa
+         ttl 30
+      }
+      prometheus :9153
+      forward . /etc/resolv.conf {
+         max_concurrent 1000
+      }
+      cache 30 {
+         disable success cluster.local
+         disable denial cluster.local
+      }
+      loop
+      reload
+      loadbalance
+  }
+파드의 /etc/resolv.conf (myweb):
+  search default.svc.cluster.local svc.cluster.local cluster.local <router-domain>
+  nameserver 10.96.0.10
+  options ndots:5
+myweb 파드에서 nslookup myweb.default.svc.cluster.local → 10.105.164.156 (Service myweb ClusterIP 10.105.164.156)
+
+## 3. Metrics Server
+APIService v1beta1.metrics.k8s.io: Error from server (NotFound): apiservices.apiregistration.k8s.io "v1beta1.metrics.k8s.io" 
+kubectl top node: error: Metrics API not available
+HPA 목록: No resources found
+
+## 4. Web UI
+kubernetes-dashboard 네임스페이스: Error from server (NotFound): namespaces "kubernetes-dashboa
+Headlamp: headlamp/headlamp READY 1/1
+Portainer: portainer/portainer READY 1/1
+
+## 5. 그 밖에 우리가 올린 Add-on 성격의 것
+headlamp            deployment.apps/headlamp
+local-path-storage  deployment.apps/local-path-provisioner
+monitoring          deployment.apps/grafana
+monitoring          deployment.apps/prometheus-deployment
+portainer           deployment.apps/portainer
+monitoring          daemonset.apps/node-exporter

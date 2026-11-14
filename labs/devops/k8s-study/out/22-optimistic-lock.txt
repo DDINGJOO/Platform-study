@@ -1,0 +1,20 @@
+# 22편 보충: resourceVersion 과 409 Conflict (2026-11-14 16:54:16 KST)
+16:54:16 mac$ kubectl -n w22 create configmap occ-demo --from-literal=v=1
+configmap/occ-demo created
+16:54:16 kubectl resourceVersion=117049 | etcd create_revision=117049 mod_revision=117049 version=1
+
+16:54:17 사용자 A 와 B 가 같은 버전을 읽어 둔다: kubectl get cm occ-demo -o json > a.json, b.json
+  a.json·b.json 의 resourceVersion: 117049
+
+16:54:17 A: v=2 로 고쳐 kubectl replace -f a.json
+  configmap/occ-demo replaced
+16:54:17 kubectl resourceVersion=117050 | etcd create_revision=117049 mod_revision=117050 version=2
+
+16:54:17 B: 예전 버전을 들고 v=3 으로 고쳐 kubectl replace -f b.json
+  Error from server (Conflict): error when replacing "<임시 폴더>/b.json": Operation cannot be fulfilled on configmaps "occ-demo": the object has been modified; please apply your changes to the latest version and try again
+16:54:17 지금 값: v=2 | kubectl resourceVersion=117050 | etcd create_revision=117049 mod_revision=117050 version=2
+
+16:54:17 같은 요청을 resourceVersion 없이 보내면 (B 가 버전을 지우고 다시 보낸 경우)
+  configmap/occ-demo replaced
+16:54:17 지금 값: v=3 | etcd create_revision=117049 mod_revision=117051 version=3
+16:54:22 네임스페이스 w22 삭제

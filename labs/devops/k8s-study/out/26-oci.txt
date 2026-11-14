@@ -1,0 +1,52 @@
+# OCI 는 어디에 있나 (2026-11-14 15:13:41 KST), 대상: k8s-worker1 의 myweb-859c4764d4-9jb4l (이미지 nginx:1.25.1-alpine)
+
+## 0. API 서버가 아는 런타임
+containerd://2.4.1
+
+## 1. 노드의 containerd 와 runc 버전 (runc 의 spec = 따르는 OCI runtime-spec 버전)
+containerd github.com/containerd/containerd/v2 v2.4.1 f2551031d7276a770f65f98c9b52e57e7dad07e8
+runc version 1.5.2
+commit: v1.5.2-0-g29dd3dc
+spec: 1.3.0
+go: go1.26.8
+libseccomp: 2.6.0
+
+## 2. containerd 가 컨테이너를 만들 때 부르는 런타임 (containerd config dump)
+time="2026-11-14T15:13:41+09:00" level=warning msg="Configuration migrated from version 2, use `containerd config migrate` to avoid migration" t="5.041µs"
+time="2026-11-14T15:13:41+09:00" level=warning msg="Configuration migrated from version 2, use `containerd config migrate` to avoid migration" t="2.25µs"
+59:      default_runtime_name = 'runc'
+65:          runtime_type = 'io.containerd.runc.v2'
+81:            BinaryName = ''
+89:            SystemdCgroup = true
+
+## 3. 파드마다 shim 프로세스 (containerd-shim-runc-v2)
+shim 수: 9
+   1838 /usr/local/bin/containerd-shim-runc-v2 -namespace k8s.io -id 8e709ae26e409e929e6d367a707e0b14cf758a77d
+   1873 /usr/local/bin/containerd-shim-runc-v2 -namespace k8s.io -id 1b4a3991e6135e74bc87e998dcf2a54bc5a0c6ae4
+
+## 4. 이미지 형식: 매니페스트 mediaType (OCI image-spec 인지 Docker v2 인지)
+REF TYPE
+docker.io/library/nginx:1.25.1-alpine application/vnd.docker.distribution.manifest.list.v2+json
+docker.io/library/nginx:1.29 application/vnd.oci.image.index.v1+json
+quay.io/calico/node:v3.33.0 application/vnd.docker.distribution.manifest.list.v2+json
+registry.k8s.io/kube-proxy:v1.37.2 application/vnd.docker.distribution.manifest.list.v2+json
+registry.k8s.io/pause:3.10.2 application/vnd.docker.distribution.manifest.list.v2+json
+
+## 5. runc 가 읽는 OCI 번들 (runtime-spec 의 config.json + rootfs)
+$ ls /run/containerd/io.containerd.runtime.v2.task/k8s.io/c21c1ef20928e786b50a020448dfa951bd1f94940c2c74e39d26accbde26f22a
+bootstrap.json
+config.json
+init.pid
+log
+log.json
+options.json
+rootfs
+runtime
+sandbox
+work
+ociVersion   = 1.3.0
+process.args = ['/docker-entrypoint.sh', 'nginx', '-g', 'daemon off;']
+root.path    = rootfs
+namespaces   = ['pid', 'ipc', 'uts', 'mount', 'network', 'cgroup']
+cgroupsPath  = kubepods-besteffort-pod265764f4_3810_4428_8dc1_81c00418d7a3.slice:cri-containerd:c21c1ef20928e786b50a020448dfa951bd1f94940c2c74e39d26accbde26f22a
+resources    = {'cpu': {'shares': 2, 'period': 100000}, 'memory': {}}

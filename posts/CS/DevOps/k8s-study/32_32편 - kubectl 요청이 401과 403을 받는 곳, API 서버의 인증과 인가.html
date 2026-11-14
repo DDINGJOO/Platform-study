@@ -1,0 +1,435 @@
+<!-- ============================================================
+  k8s 스터디 32편: kubectl 요청이 401과 403을 받는 곳, API 서버의 인증과 인가
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 자격 없이 보낸 요청은 403을 받았는데 가짜 토큰을 붙이자 누구나 열 수 있는 /version까지 401로 막혔어요. kubectl 요청이 API 서버의 TLS·인증·인가를 지나며 어디서 401과 403을 받는지 실습 클러스터로 확인했어요. -->
+<!-- tags: 쿠버네티스 401 Unauthorized, 403 Forbidden, RBAC 권한, kubectl auth can-i, Node 인가자, NodeRestriction, system:anonymous -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 32편</div>
+  30편. Calico에서 BIRD를 멈춰도 파드 통신이 끊기지 않는 이유<br>
+  31편. 노드의 podCIDR과 실제 파드 IP 대역이 다른 이유와 Calico IPAM<br>
+  <b>32편. kubectl 요청이 401과 403을 받는 곳, API 서버의 인증과 인가</b> &larr; 지금 이 글<br>
+  33편. API 서버의 어드미션은 요청을 어떻게 고치고 거절할까<br>
+  34편. 파드 IP는 언제 반납되고 노드가 죽으면 왜 남을까
+</div>
+
+<p>worker1에서 API 서버(192.168.104.1:6443)의 <code style="font-family:Menlo,monospace;font-size:14px;">/version</code> 경로로 curl 요청을 두 번 보냈어요. 아무 자격 없이 보낸 첫 요청에는 200과 함께 버전 v1.37.2가 돌아왔어요. 두 번째 요청에는 Authorization 헤더에 <code style="font-family:Menlo,monospace;font-size:14px;">not-a-real-token</code>이라는 가짜 토큰을 붙였는데 이번에는 401 Unauthorized가 돌아왔어요. 자격을 하나 더 실었을 뿐인데 오히려 막힌 거예요. 이번에는 자격 없는 요청을 파드 목록 경로(<code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/namespaces/default/pods</code>)로 보내자 401이 아니라 403 Forbidden이 나왔고 메시지에는 <code style="font-family:Menlo,monospace;font-size:14px;">User "system:anonymous"</code>라는 이름이 들어 있었어요.</p>
+<p>이 실험은 아키텍처 그림 한 장에서 시작했어요. 그림 왼쪽에는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply -f pod.yaml</code>을 치는 개발자가 있었고 그 요청이 0) TLS 암호화로 전달되고 API 서버에 닿으면 1) Authentication check, 2) Authorization check, 3) Admission controller를 차례로 거친다고 적혀 있었어요. 그림을 보고 제가 남긴 말은 "해석 좀" 한마디였어요. 19편에서는 그림 전체를 읽으면서 이 네 칸을 한 절에서 다루고 지나갔어요. 이번 편과 33편에서는 네 칸을 하나씩 떼어 내 관문마다 우리 클러스터의 어떤 설정이 작동하는지, 무엇을 다음 관문에 넘기고 무엇을 거절하는지 실험으로 확인해요. 이번 편은 TLS, 인증, 인가 세 칸을 다루고 마지막 칸인 어드미션은 33편에서 따로 봐요.</p>
+<p>클러스터는 1~7편에서 만든 실습 환경(Lima VM 4대, kubeadm으로 설치한 쿠버네티스 v1.37.2)이에요. 실험용 객체는 전용 네임스페이스 w32 안에만 만들었고 실험 하나가 끝날 때마다 네임스페이스째 지웠어요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; kubectl 요청 하나는 API 서버 안에서 어떤 순서로 걸러지고 각 관문은 어떤 설정으로 돌까?<br>
+&middot; 쿠버네티스에는 사용자 객체가 없는데 API 서버는 요청을 보낸 쪽이 누구인지 어떻게 알까?<br>
+&middot; 자격이 없는 요청은 왜 401이 아니라 403을 받을까? 익명 요청은 왜 켜져 있을까?<br>
+&middot; 권한은 어디서 오고 kubelet은 왜 자기 노드의 객체만 만질 수 있을까?<br>
+&middot; 401이나 403을 만나면 메시지로 어느 관문에서 막혔는지 어떻게 가릴까?</p>
+
+<h2>1. kubectl 요청은 TLS, 인증, 인가, 어드미션을 차례로 지나야 저장된다</h2>
+
+<p>kubectl이 권한 문제로 실패하면 화면에 뜨는 낱말은 대개 Unauthorized 아니면 Forbidden이에요. 둘은 고칠 곳이 달라요. Unauthorized면 kubeconfig의 인증서나 토큰을, Forbidden이면 권한 규칙이나 네임스페이스의 정책을 봐야 해요. 어느 쪽인지 가르려면 요청이 API 서버 안에서 어떤 순서로 걸러지는지부터 알아야 해요.</p>
+<p>공식 문서 <a href="https://kubernetes.io/docs/concepts/security/controlling-access/">Controlling Access to the Kubernetes API</a>는 이 순서를 그림의 번호 그대로 설명해요. API 서버는 기본으로 6443 포트에서 TLS로 보호된 연결을 받고 클라이언트는 이 단계에서 TLS 클라이언트 인증서를 낼 수 있어요. 연결이 맺어지면 요청은 인증 단계로 가요. API 서버는 설정된 인증 모듈을 차례로 시도해서 하나가 성공하면 그 사용자 이름을 다음 단계로 넘기고 인증할 수 없는 요청은 HTTP 401로 거절해요. 인가 단계에서는 사용자 이름, 요청한 동작, 대상 객체를 보고 허락할지 정하고 거절하면 403이에요. 어드미션 단계의 모듈은 요청을 고치거나 거절할 수 있고 인가 모듈과 달리 만들거나 고치려는 객체의 내용까지 볼 수 있어요. 어드미션 모듈을 모두 통과한 요청은 객체 종류별 검증을 거쳐 저장소에 기록돼요. 이번 편은 그중 어드미션 앞의 세 관문까지 따라가고 어드미션은 33편에서 따로 봐요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 인증과 인가 (authentication, authorization)</div>
+  인증은 "요청을 보낸 쪽이 누구인가"를 정하는 단계이고 인가는 "그 사용자가 이 동작을 해도 되는가"를 정하는 단계예요. 인증이 끝나면 요청에는 사용자 이름과 그 사용자가 속한 그룹 목록이 붙어요. 그룹은 여러 사용자에게 같은 권한을 한꺼번에 주려고 쓰는 이름이에요. 인가는 이 사용자 이름과 그룹으로 규칙을 찾아요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 424" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k32a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">kubectl 요청 하나가 저장되기까지 지나는 관문</text>
+<path d="M20 46 C 60 44.5, 100 47, 138 45.5 C 139.5 66, 137 90, 138.5 112 C 100 113.5, 60 111, 20 112.5 C 18.5 90, 21 66, 20 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M154 46 C 194 44.5, 234 47, 272 45.5 C 273.5 66, 271 90, 272.5 112 C 234 113.5, 194 111, 154 112.5 C 152.5 90, 155 66, 154 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M288 46 C 328 44.5, 368 47, 406 45.5 C 407.5 66, 405 90, 406.5 112 C 368 113.5, 328 111, 288 112.5 C 286.5 90, 289 66, 288 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M422 46 C 462 44.5, 502 47, 540 45.5 C 541.5 66, 539 90, 540.5 112 C 502 113.5, 462 111, 422 112.5 C 420.5 90, 423 66, 422 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M556 46 C 596 44.5, 636 47, 674 45.5 C 675.5 66, 673 90, 674.5 112 C 636 113.5, 596 111, 556 112.5 C 554.5 90, 557 66, 556 46 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="79" y="76" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">0 · TLS</text>
+<text x="213" y="76" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">1 · 인증</text>
+<text x="347" y="76" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">2 · 인가</text>
+<text x="481" y="76" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">3 · 어드미션</text>
+<text x="615" y="76" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41" text-anchor="middle">4 · 저장</text>
+<text x="79" y="100" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">진짜 서버인가</text>
+<text x="213" y="100" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">누가 보냈나</text>
+<text x="347" y="100" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">해도 되나</text>
+<text x="481" y="100" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">고치고 검사한다</text>
+<text x="615" y="100" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">etcd에 기록</text>
+<path d="M140 79 C 143 78, 147 80, 151 79" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k32a1)"/>
+<path d="M274 79 C 277 78, 281 80, 285 79" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k32a1)"/>
+<path d="M408 79 C 411 78, 415 80, 419 79" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k32a1)"/>
+<path d="M542 79 C 545 78, 549 80, 553 79" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k32a1)"/>
+<path d="M20 126 C 200 124, 450 128, 680 126" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="350" y="146" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">다음 관문으로 넘기는 것</text>
+<text x="79" y="172" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">암호화된 연결</text>
+<text x="79" y="192" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">+ 클라이언트 인증서</text>
+<text x="213" y="172" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">사용자 이름</text>
+<text x="213" y="192" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">+ 그룹 목록</text>
+<text x="347" y="172" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">허락(allow)</text>
+<text x="481" y="172" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">고쳐지고 검사를</text>
+<text x="481" y="192" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">통과한 객체</text>
+<text x="615" y="172" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">etcd 키 하나</text>
+<text x="615" y="192" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">resourceVersion</text>
+<path d="M20 210 C 200 208, 450 212, 680 210" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="350" y="230" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">우리 API 서버의 설정</text>
+<text x="79" y="254" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">secure-port</text>
+<text x="79" y="269" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">=6443</text>
+<text x="213" y="254" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">client-ca-file</text>
+<text x="213" y="269" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">service-account-</text>
+<text x="213" y="284" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">key-file</text>
+<text x="213" y="301" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18" text-anchor="middle">익명 요청 기본 허용</text>
+<text x="347" y="254" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">authorization-mode</text>
+<text x="347" y="269" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">=Node,RBAC</text>
+<text x="481" y="254" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">기본 플러그인 25개</text>
+<text x="481" y="270" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">+ NodeRestriction</text>
+<text x="481" y="287" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">웹훅 0개</text>
+<text x="615" y="254" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">etcd-servers=</text>
+<text x="615" y="269" font-family="Menlo, monospace" font-size="10" fill="#4a7fb5" text-anchor="middle">127.0.0.1:2379</text>
+<path d="M20 314 C 200 312, 450 316, 680 314" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="350" y="334" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">여기서 막히면</text>
+<text x="79" y="358" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">연결 오류</text>
+<text x="79" y="377" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">평문 http면 400</text>
+<text x="213" y="358" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">401</text>
+<text x="213" y="377" font-family="Menlo, monospace" font-size="10" fill="#b3502f" text-anchor="middle">Unauthorized</text>
+<text x="347" y="358" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">403</text>
+<text x="347" y="377" font-family="Menlo, monospace" font-size="10" fill="#b3502f" text-anchor="middle">Forbidden</text>
+<text x="481" y="358" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">403 · 404</text>
+<text x="481" y="377" font-family="Menlo, monospace" font-size="9.5" fill="#b3502f" text-anchor="middle">Forbidden · NotFound</text>
+<text x="615" y="358" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">(22편)</text>
+<text x="350" y="414" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">401은 인증에서만 나오고 403은 인가와 어드미션 두 곳에서 나온다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 관문마다 넘기는 것과 막혔을 때 돌아오는 응답이 다르다. 403 하나만 보고는 인가인지 어드미션인지 알 수 없다</div>
+
+<p>그림 1의 "우리 API 서버의 설정" 줄은 실행 플래그와 <code style="font-family:Menlo,monospace;font-size:14px;">kube-apiserver --help</code>, 웹훅 목록에서 확인한 값이에요(19편 원자료와 이번 원자료, 어드미션 칸은 33편 원자료). 관문별로 정리하면 이래요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:640px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">관문</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">묻는 것</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">우리 클러스터에서 작동하는 설정</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">막히면</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0. TLS</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">이 서버가 진짜 API 서버인가, 연결이 암호화됐나</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">--secure-port=6443</code>, 서버 인증서(CN=kube-apiserver, 발급자 CN=kubernetes)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">연결 오류. 평문 http로 보내면 400</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1. 인증</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">요청을 보낸 쪽은 누구인가</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">--client-ca-file</code>(클라이언트 인증서), <code style="font-family:Menlo,monospace;font-size:14px;">--service-account-key-file</code>(ServiceAccount 토큰), 익명 요청 기본 허용</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">401 Unauthorized</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2. 인가</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">그 사용자가 이 동작을 해도 되나</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">--authorization-mode=Node,RBAC</code></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">403 Forbidden</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">3. 어드미션</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">이 객체를 이대로 저장해도 되나, 채울 칸은 없나</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">바이너리 기본 플러그인 25개 + <code style="font-family:Menlo,monospace;font-size:14px;">--enable-admission-plugins=NodeRestriction</code>, 웹훅·정책 0개</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">대개 403 Forbidden, 없는 네임스페이스면 404 NotFound(33편)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">4. 저장</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">(객체 종류별 검증 뒤 기록)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">--etcd-servers=https://127.0.0.1:2379</code></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">22편</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>관문 0은 다른 관문과 성격이 달라요. 인증보다 먼저 <b>클라이언트가 서버를 확인하는</b> 단계예요. worker1에서 CA 인증서를 주지 않고 curl로 요청을 보내 보면 차이가 보여요.</p>
+
+<div class="obsv-code">worker1$ curl -sS https://192.168.104.1:6443/version                      # CA 를 주지 않으면
+curl: (60) SSL certificate problem: unable to get local issuer certificate
+worker1$ curl -sS http://192.168.104.1:6443/version    # TLS 없이 평문으로 보내면
+Client sent an HTTP request to an HTTPS server.
+
+worker1$ curl -sS --cacert /etc/kubernetes/pki/ca.crt https://192.168.104.1:6443/version | grep gitVersion
+  "gitVersion": "v1.37.2",
+worker1$ openssl s_client -connect 192.168.104.1:6443 | openssl x509 -noout -subject -issuer   # API 서버가 내민 인증서
+subject=CN = kube-apiserver
+issuer=CN = kubernetes</div>
+<p>&rarr; CA를 주지 않으면 curl이 서버 인증서를 믿을 근거가 없어서 연결을 끊어요(종료 코드 60). 평문 http로 보내면 API 서버가 "HTTPS 서버에 HTTP 요청을 보냈다"고 답해요. 노드에 있는 CA 파일을 주자 같은 요청에 버전 정보가 돌아왔어요. 서버 인증서의 발급자 CN=kubernetes는 kubeadm init이 만든 클러스터 CA예요(5편).</p>
+<p>문서에 따르면 사설 CA를 쓰는 클러스터에서는 클라이언트의 kubeconfig에 그 CA 인증서를 넣어 두어야 연결이 가로채이지 않았다고 믿을 수 있어요. kubectl은 같은 상황에서 <code style="font-family:Menlo,monospace;font-size:14px;">Unable to connect to the server: tls: failed to verify certificate: x509: certificate signed by unknown authority</code>를 출력했어요. <span class="obsv-mark">TLS에서 막힌 요청은 401도 403도 받지 못해요. 그 두 코드는 연결이 맺어진 뒤에 API 서버가 직접 보내는 응답이에요.</span></p>
+
+<h2>2. 인증은 요청에 실린 자격을 사용자 이름과 그룹으로 바꾼다</h2>
+
+<p>쿠버네티스 API에는 사람 사용자를 나타내는 객체가 없어요. <a href="https://kubernetes.io/docs/reference/access-authn-authz/authentication/">Authenticating 문서</a>에 따르면 일반 사용자는 API 호출로 클러스터에 추가할 수 없고 대신 클러스터 CA가 서명한 유효한 인증서를 내는 사용자는 누구든 인증된 것으로 봐요. 그렇다면 API 서버는 kubectl을 친 사람이 누구인지 어디서 알아낼까요? 답은 요청에 실린 자격 안에 들어 있어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/32/01-cert-identity.png" alt="마스터의 admin.conf에 든 클라이언트 인증서를 openssl로 풀면 subject가 O = kubeadm:cluster-admins, CN = kubernetes-admin이고 발급자는 CN = kubernetes, 만료는 2027년 11월 4일, 용도는 TLS Web Client Authentication이다. kubectl auth whoami는 Username kubernetes-admin, Groups kubeadm:cluster-admins와 system:authenticated를 보여 주고 ClusterRoleBinding kubeadm:cluster-admins는 ClusterRole cluster-admin을 그룹 kubeadm:cluster-admins에 묶는다. worker1 kubelet의 인증서는 O = system:nodes, CN = system:node:k8s-worker1이고 그 kubeconfig로 whoami를 하면 system:node:k8s-worker1, 그룹 system:nodes와 system:authenticated가 나온다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 관리자의 이름도 kubelet의 이름도 인증서의 CN과 O에 적힌 글자였다</div>
+
+<p>평소 쓰는 관리자 kubeconfig(admin.conf)에 든 인증서를 풀어 보면 인증서 주인을 적는 subject 칸이 <code style="font-family:Menlo,monospace;font-size:14px;">O = kubeadm:cluster-admins, CN = kubernetes-admin</code>이에요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth whoami</code>가 알려 준 사용자 이름 kubernetes-admin과 그룹 kubeadm:cluster-admins가 바로 이 두 칸에서 나왔어요. 문서의 X.509 절에 따르면 subject의 commonName은 사용자 이름으로, organization 칸은 그룹으로 쓰이고 인증에 성공한 요청은 자동으로 system:authenticated 그룹에도 들어가요. 그래서 whoami에 그룹이 두 개 나왔어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 인증서의 CN과 O</div>
+  X.509 인증서의 subject에 들어가는 칸이에요. CN(commonName)은 이름, O(organization)는 소속이고 한 인증서에 O를 여러 개 넣을 수 있어요. API 서버는 <code style="font-family:Menlo,monospace;font-size:14px;">--client-ca-file</code>로 지정한 CA가 서명한 인증서만 받고 그 인증서의 CN을 사용자 이름으로, O를 그룹으로 읽어요.
+</div>
+
+<p>kubernetes-admin이라는 사용자 객체는 클러스터 어디에도 없어요. 그런데도 이 이름이 관리자 권한을 받는 까닭은 kubeadm init이 만들어 둔 ClusterRoleBinding <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm:cluster-admins</code>가 같은 이름의 <b>그룹</b>에 cluster-admin 역할을 묶어 두었기 때문이에요. ClusterRoleBinding은 역할(권한 규칙 묶음)을 사용자나 그룹에 클러스터 전체 범위로 연결하는 객체라서 이 그룹에 속한 사용자는 누구나 cluster-admin 권한을 받아요. <a href="https://kubernetes.io/docs/reference/setup-tools/kubeadm/implementation-details/">kubeadm 구현 문서</a>에도 admin.conf의 인증서 subject가 <code style="font-family:Menlo,monospace;font-size:14px;">O = kubeadm:cluster-admins, CN = kubernetes-admin</code>이고 이 그룹이 init 때 cluster-admin에 묶인다고 적혀 있어요. RBAC(역할 기반 접근 제어) 검사 자체를 건너뛰는 system:masters 인증서(super-admin.conf)는 5편에서 봤어요.</p>
+<p>worker1의 kubelet도 같은 방식으로 이름을 얻어요. kubelet이 쓰는 인증서의 subject는 <code style="font-family:Menlo,monospace;font-size:14px;">O = system:nodes, CN = system:node:k8s-worker1</code>였고 그 인증서로 whoami를 실행하면 사용자 이름 system:node:k8s-worker1에 그룹 system:nodes가 나왔어요. 이 이름 형식은 4절에서 볼 Node 인가자(kubelet이 보낸 요청만 따로 판단하는 인가 모듈)와 이어져요.</p>
+<p>ServiceAccount는 파드 안에서 도는 프로그램 같은, 사람이 아닌 쪽이 쓰는 계정이에요. 사람 사용자와 달리 API 객체로 만들고 인증서 대신 서명된 토큰을 써요. w32에 ServiceAccount <code style="font-family:Menlo,monospace;font-size:14px;">reader</code>를 만들고 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl create token</code>으로 받은 토큰만 실어 worker1에서 whoami 요청을 보냈어요(클라이언트 인증서 없이 토큰만 보내야 하는 이유는 10편).</p>
+
+<div class="obsv-code">worker1$ kubectl --kubeconfig=/dev/null --server=https://192.168.104.1:6443 --certificate-authority=/etc/kubernetes/pki/ca.crt --token=$TOKEN auth whoami
+Username system:serviceaccount:w32:reader
+Groups   ["system:serviceaccounts","system:serviceaccounts:w32","system:authenticated"]</div>
+<p>&rarr; API 서버가 토큰의 서명을 확인하고 이 요청을 w32 네임스페이스의 ServiceAccount reader로 인식했다는 뜻이에요. 그룹 세 개는 문서에 적힌 그대로 각각 모든 ServiceAccount, w32의 ServiceAccount, 인증된 사용자 전체를 뜻해요.</p>
+<p>토큰의 서명을 확인하는 공개 키는 API 서버 플래그 <code style="font-family:Menlo,monospace;font-size:14px;">--service-account-key-file=/etc/kubernetes/pki/sa.pub</code>로 지정돼 있어요. 파드 안의 프로그램도 자기 ServiceAccount의 토큰을 들고 API 서버에 붙어요. 이때는 6443 대신 kubernetes Service의 주소 10.96.0.1:443을 쓰고 그 Service의 EndpointSlice는 192.168.104.1:6443을 가리켜요. 19편 원자료를 보면 CoreDNS 파드와 calico-kube-controllers 파드가 실제로 10.96.0.1:443에 연결돼 있었어요. 파드에 토큰이 어떻게 들어가는지는 33편에서 어드미션과 함께 봐요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 375" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k32b1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k32b2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">인증 단계는 자격을 이름과 그룹으로 바꾼다</text>
+<path d="M20 48 C 85 46.5, 150 49, 215 47.5 C 216.5 62, 214 80, 215.5 96 C 150 97.5, 85 95, 20 96.5 C 18.5 80, 21 62, 20 48 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="117" y="69" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">🔑 관리자 인증서</text>
+<text x="117" y="87" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">admin.conf</text>
+<path d="M20 108 C 85 106.5, 150 109, 215 107.5 C 216.5 122, 214 140, 215.5 156 C 150 157.5, 85 155, 20 156.5 C 18.5 140, 21 122, 20 108 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="117" y="129" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">🔑 kubelet 인증서</text>
+<text x="117" y="147" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">kubelet-client-current.pem</text>
+<path d="M20 168 C 85 166.5, 150 169, 215 167.5 C 216.5 182, 214 200, 215.5 216 C 150 217.5, 85 215, 20 216.5 C 18.5 200, 21 182, 20 168 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="117" y="189" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">ServiceAccount 토큰</text>
+<text x="117" y="207" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">create token reader</text>
+<path d="M20 228 C 85 226.5, 150 229, 215 227.5 C 216.5 242, 214 260, 215.5 276 C 150 277.5, 85 275, 20 276.5 C 18.5 260, 21 242, 20 228 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="117" y="249" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">자격 없음</text>
+<text x="117" y="267" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">인증서도 토큰도 없다</text>
+<path d="M20 288 C 85 286.5, 150 289, 215 287.5 C 216.5 302, 214 320, 215.5 336 C 150 337.5, 85 335, 20 336.5 C 18.5 320, 21 302, 20 288 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="117" y="309" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">가짜 · 서명 틀린 토큰</text>
+<text x="117" y="327" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">Bearer not-a-real-token</text>
+<path d="M220 74 C 255 72, 290 75, 323 73" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#k32b1)"/>
+<path d="M220 134 C 255 132, 290 135, 323 133" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#k32b1)"/>
+<path d="M220 194 C 255 192, 290 195, 323 193" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#k32b1)"/>
+<path d="M220 254 C 255 252, 290 255, 323 253" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" marker-end="url(#k32b1)"/>
+<path d="M220 314 C 255 312, 290 315, 323 313" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#k32b2)"/>
+<text x="272" y="64" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">x509 · CA 서명</text>
+<text x="272" y="124" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">x509 · CA 서명</text>
+<text x="272" y="184" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">서명 확인 · sa.pub</text>
+<text x="272" y="244" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#c07f18" text-anchor="middle">익명으로 이름 붙임</text>
+<text x="272" y="304" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#b3502f" text-anchor="middle">토큰 인증이 거절</text>
+<path d="M330 48 C 445 46.5, 560 49, 680 47.5 C 681.5 62, 679 80, 680.5 96 C 560 97.5, 445 95, 330 96.5 C 328.5 80, 331 62, 330 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="69" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="start">kubernetes-admin</text>
+<text x="345" y="87" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="start">kubeadm:cluster-admins · system:authenticated</text>
+<path d="M330 108 C 445 106.5, 560 109, 680 107.5 C 681.5 122, 679 140, 680.5 156 C 560 157.5, 445 155, 330 156.5 C 328.5 140, 331 122, 330 108 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="129" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="start">system:node:k8s-worker1</text>
+<text x="345" y="147" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="start">system:nodes · system:authenticated</text>
+<path d="M330 168 C 445 166.5, 560 169, 680 167.5 C 681.5 182, 679 200, 680.5 216 C 560 217.5, 445 215, 330 216.5 C 328.5 200, 331 182, 330 168 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="189" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="start">system:serviceaccount:w32:reader</text>
+<text x="345" y="207" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="start">system:serviceaccounts(:w32) · system:authenticated</text>
+<path d="M330 228 C 445 226.5, 560 229, 680 227.5 C 681.5 242, 679 260, 680.5 276 C 560 277.5, 445 275, 330 276.5 C 328.5 260, 331 242, 330 228 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="249" font-family="Menlo, monospace" font-size="12" fill="#c07f18" text-anchor="start">system:anonymous</text>
+<text x="345" y="267" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="start">system:unauthenticated</text>
+<path d="M330 288 C 445 286.5, 560 289, 680 287.5 C 681.5 302, 679 320, 680.5 336 C 560 337.5, 445 335, 330 336.5 C 328.5 320, 331 302, 330 288 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="311" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="start">✗ 401 Unauthorized</text>
+<text x="345" y="328" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">익명으로 넘어가지 않고 인증 단계에서 끝난다</text>
+<text x="350" y="364" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">다음 관문인 인가는 오른쪽의 이름과 그룹만 보고 판단한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 자격이 무엇이든 인증이 끝나면 이름과 그룹만 남는다. 틀린 자격만이 401로 끝난다</div>
+
+<p>문서에 따르면 인증 모듈이 여럿 켜져 있을 때는 요청을 처음으로 인증해 낸 모듈에서 평가가 끝나고 API 서버는 모듈이 도는 순서를 보장하지 않아요. 그래서 인증서와 토큰을 함께 실은 요청은 어느 쪽 이름으로 인식될지 장담할 수 없어요(10편). <span class="obsv-mark">인증이 끝나면 요청에 남는 것은 사용자 이름과 그룹뿐이고 그다음 관문은 그 문자열만 봐요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 클라이언트 인증서는 중간에 폐기할 수 없어요</div>
+  &bull; 인증 문서에 따르면 쿠버네티스 1.37은 인증서 폐기(revocation)를 지원하지 않고 한 번 발급한 인증서는 만료될 때까지 유효해요<br>
+  &bull; 우리 admin.conf 인증서의 만료일은 2027년 11월 4일이었어요. 이 파일이 새 나가면 그날까지 cluster-admin 권한이 같이 새 나가요<br>
+  &bull; kubeadm 구현 문서도 admin.conf는 컨트롤 플레인 노드에 두고 다른 사용자와 공유하지 말고 추가 사용자의 kubeconfig는 <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm kubeconfig user</code>로 만들라고 안내해요
+</div>
+
+<h2>3. 자격이 없으면 403, 틀린 자격이면 401이 나온다</h2>
+
+<p>도입에서 한 실험으로 돌아가 볼게요. worker1에서 CA 확인은 그대로 하면서 경로 여섯 개에 자격 없는 요청과 가짜 토큰 요청을 하나씩 보냈어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/32/02-anonymous-vs-bad-token.png" alt="worker1에서 curl로 경로 여섯 개에 요청한 결과. /version, /livez, /readyz, /healthz는 자격 없이 200이고 /api와 /api/v1/namespaces/default/pods는 자격 없이 403이다. 가짜 토큰을 붙이면 여섯 경로 모두 401이다. 자격 없는 파드 목록 요청의 응답은 403 Forbidden, User system:anonymous cannot list resource pods이고 가짜 토큰을 붙인 /version 응답은 401 Unauthorized다. 아래에는 ClusterRoleBinding system:public-info-viewer가 system:authenticated와 system:unauthenticated에, system:discovery와 system:basic-user는 system:authenticated에만 묶여 있고 system:public-info-viewer 규칙은 /healthz, /livez, /readyz, /version에 get만 허용한다. 익명 사용자로 can-i --list를 하면 selfsubjectrulesreviews를 만들 권한이 없다는 Forbidden이 나온다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 자격이 없으면 경로에 따라 200 또는 403이었고 가짜 토큰을 붙이면 공개 경로까지 모두 401이었다</div>
+
+<p>자격 없는 요청은 <code style="font-family:Menlo,monospace;font-size:14px;">/version</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/livez</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/readyz</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/healthz</code>에서 200을, <code style="font-family:Menlo,monospace;font-size:14px;">/api</code>와 파드 목록에서 403을 받았어요. 403 메시지에 찍힌 사용자 이름은 system:anonymous였어요. 가짜 토큰을 붙인 요청은 여섯 경로 모두 401이었어요. 누구나 열 수 있는 <code style="font-family:Menlo,monospace;font-size:14px;">/version</code>도 예외가 아니었어요.</p>
+<p>이 결과는 Authenticating 문서의 <a href="https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-requests">Anonymous requests 절</a>과 그대로 맞아요. 익명 요청이 켜져 있으면 다른 인증 방법이 거절하지 않은 요청은 익명 요청으로 취급되고 사용자 이름 system:anonymous와 그룹 system:unauthenticated를 받아요. 문서는 예도 하나 들어요. 토큰 인증과 익명 요청이 함께 켜진 서버에서 틀린 토큰을 낸 요청은 401을 받고 토큰을 내지 않은 요청은 익명 요청이 된다고요. <span class="obsv-mark">자격이 없는 요청은 인증에 실패한 것이 아니라 익명 사용자로 인증된 뒤 인가에서 거절됐어요.</span> 틀린 토큰은 토큰 인증 모듈이 거절해 버리기 때문에 익명으로 넘어갈 기회가 없어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 익명 요청 (anonymous request)</div>
+  인증서도 토큰도 없이 들어온 요청이에요. API 서버는 이 요청을 바로 거절하지 않고 사용자 이름 system:anonymous, 그룹 system:unauthenticated를 붙여 인가 단계로 넘겨요. 그래서 익명 요청이 무엇을 할 수 있는지는 인가 규칙이 정해요.
+</div>
+
+<p>보낸 여섯 경로 가운데 익명 사용자가 공개 경로 네 곳만 열 수 있었던 이유는 기본 ClusterRoleBinding에 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">system:public-info-viewer</code>는 system:authenticated와 system:unauthenticated 두 그룹에 묶여 있고 허용하는 규칙은 <code style="font-family:Menlo,monospace;font-size:14px;">/healthz</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/livez</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/readyz</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/version</code>에 대한 get 하나뿐이었어요. API 목록(<code style="font-family:Menlo,monospace;font-size:14px;">/api</code>)을 읽게 하는 <code style="font-family:Menlo,monospace;font-size:14px;">system:discovery</code>와 자기 정보를 묻게 하는 <code style="font-family:Menlo,monospace;font-size:14px;">system:basic-user</code>는 system:authenticated에만 묶여 있었어요. <a href="https://kubernetes.io/docs/reference/access-authn-authz/rbac/#discovery-roles">RBAC 문서의 기본 역할 표</a>를 보면 두 역할은 v1.14 전에는 system:unauthenticated에도 묶여 있었어요. 그래서 익명 사용자는 자기 권한 목록을 묻는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth can-i --list</code>조차 실행할 수 없었어요. 그 질문을 담은 SelfSubjectRulesReview를 만들 권한이 없다는 403이 돌아왔어요.</p>
+
+<h3>익명 요청은 왜 기본으로 켜져 있을까</h3>
+<p>문서에 따르면 인가 모드가 AlwaysAllow가 아니면 익명 요청이 기본으로 켜지고 <code style="font-family:Menlo,monospace;font-size:14px;">--anonymous-auth=false</code>로 끌 수 있어요. 우리 API 서버의 실행 플래그에는 --anonymous-auth가 아예 없었고 v1.37.2 바이너리의 --help에도 기본값이 true로 적혀 있었어요. Authenticating 문서에는 "그래서 켜 둔다"는 이유가 한 문장으로 적혀 있지 않았어요. 대신 RBAC 문서에는 기본 바인딩이 공개해도 안전하다고 판단한 API 정보를 인증하지 않은 사용자도 읽을 수 있게 한다는 설명이 있어요. 익명 요청에 기대는 쓰임새는 다른 문서에 적혀 있어요. <a href="https://kubernetes.io/docs/reference/setup-tools/kubeadm/implementation-details/">kubeadm 구현 문서</a>에 따르면 kubeadm init은 kube-public 네임스페이스의 cluster-info ConfigMap을 인증하지 않은 사용자도 읽게 해 두고 kubeadm join은 토큰 디스커버리 때 이 ConfigMap에서 CA 인증서를 자격 없이 받아 와요. 우리 클러스터에서도 RoleBinding(한 네임스페이스 안에서 권한을 주는 객체) <code style="font-family:Menlo,monospace;font-size:14px;">kubeadm:bootstrap-signer-clusterinfo</code>가 system:anonymous에게 이 ConfigMap 하나에 대한 get 권한을 주고 있었고 worker1에서 자격 없이 요청하자 200이 돌아왔어요(같은 네임스페이스의 ConfigMap 목록은 403). 익명 사용자가 읽을 수 있는 것이 위의 공개 경로 네 곳만은 아니라는 뜻이에요. <a href="https://kubernetes.io/blog/2025/08/27/kubernetes-v1-34-release/">v1.34 릴리스 블로그</a>도 /healthz, /readyz, /livez 같은 헬스 체크·부트스트랩 경로에 익명 접근을 쓰는 클러스터를 언급해요. 우리 클러스터에서는 공개 경로를 실제로 쓰는 곳도 하나 보였어요.</p>
+
+<div class="obsv-code">master$ sudo grep -A6 -E 'livenessProbe|readinessProbe|startupProbe' /etc/kubernetes/manifests/kube-apiserver.yaml
+    livenessProbe:
+        host: 192.168.104.1
+        path: /livez
+        port: probe-port
+        scheme: HTTPS
+    readinessProbe:
+        host: 192.168.104.1
+        path: /readyz
+...
+  프로브 정의 안의 httpHeaders 줄 수: 0</div>
+<p>&rarr; kubelet은 API 서버 정적 파드가 살아 있는지 6443 포트의 <code style="font-family:Menlo,monospace;font-size:14px;">/livez</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">/readyz</code>로 확인하고 그 요청에 따로 넣는 헤더는 없다는 뜻이에요. probe-port는 같은 매니페스트에서 containerPort 6443에 붙인 이름이고 startupProbe도 <code style="font-family:Menlo,monospace;font-size:14px;">/livez</code>를 불러요.</p>
+<p>kubelet의 HTTP 프로브 코드(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/probe/http/http.go">pkg/probe/http/http.go</a>, v1.37.2)는 HTTPS 프로브에 서버 인증서 확인을 건너뛰는 설정만 넣고 클라이언트 인증서는 싣지 않아요. 요청 헤더도 User-Agent와 Accept에 사용자가 적은 httpHeaders만 더해요(request.go). 그러니 이 프로브는 API 서버가 보기에 익명 요청이고 public-info-viewer 덕분에 200을 받아요. 우리 클러스터에서 익명 요청을 꺼 보지는 않았어요. 그래도 문서에 실린 익명 인증 설정 예시가 익명 요청을 딱 <code style="font-family:Menlo,monospace;font-size:14px;">/livez</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/readyz</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/healthz</code>에만 허용한다는 점은 이 쓰임새와 맞아떨어져요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 익명 요청을 막는 것은 인가 규칙뿐이에요</div>
+  &bull; 6443에 닿기만 하면 누구든 system:anonymous라는 이름을 받아 인가 단계까지 들어와요. <a href="https://kubernetes.io/docs/concepts/architecture/control-plane-node-communication/">노드와 컨트롤 플레인의 통신 문서</a>도 익명 요청이나 ServiceAccount 토큰을 허용한다면 특히 인가를 켜 두라고 적어요<br>
+  &bull; system:anonymous 사용자나 system:unauthenticated 그룹에 권한을 주는 바인딩을 만들면 그 권한은 6443에 닿을 수 있는 모든 곳에 열려요. 9편에서 인증서 없이 연 API 서버 프록시 경로가 403을 받은 것도 익명 사용자에게 그 권한이 없었기 때문이에요<br>
+  &bull; 익명 요청을 좁히고 싶다면 v1.34부터 정식 기능인 AuthenticationConfiguration의 anonymous 설정으로 익명 요청을 받을 경로만 지정할 수 있어요(이 설정은 --anonymous-auth 플래그와 함께 쓸 수 없어요)
+</div>
+
+<p>kubelet은 같은 "자격 없는 요청"을 다르게 처리해요. worker1의 kubelet 설정에서는 authentication.anonymous.enabled가 false라서 10250 포트에 자격 없이 보낸 요청이 401을 받았어요(19편 원자료, 26편). API 서버는 익명 요청을 받아 준 뒤 인가에서 막았고 kubelet은 인증 단계에서 바로 막은 거예요.</p>
+
+<h2>4. 인가는 이름으로 규칙을 찾고 Node 인가자는 kubelet을 자기 노드에 묶는다</h2>
+
+<p>우리 API 서버의 인가 설정은 <code style="font-family:Menlo,monospace;font-size:14px;">--authorization-mode=Node,RBAC</code>이에요. <a href="https://kubernetes.io/docs/reference/access-authn-authz/authorization/">Authorization 문서</a>에 따르면 인가 모듈은 적힌 순서대로 판단하고 어느 모듈이든 허락이나 거부를 내리면 그 결정으로 곧바로 판단이 끝나요. 모든 모듈이 의견 없음(no opinion)을 내면 요청은 거절되고 HTTP 403을 받아요. RBAC에는 거부 규칙이 없어요. 권한을 더하는 규칙만 있으니 아무 규칙에도 걸리지 않은 요청은 의견 없음으로 끝나고 결국 403을 받아요. Node 인가자는 kubelet이 아닌 요청에는 의견 없음을 내기 때문에(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/plugin/pkg/auth/authorizer/node/node_authorizer.go">node_authorizer.go</a>, v1.37.2) 사람과 ServiceAccount의 요청은 사실상 RBAC 규칙이 판단해요.</p>
+
+<h3>RBAC: 권한 없는 토큰에 RoleBinding 하나를 붙인다</h3>
+<p>2절에서 만든 w32의 reader 토큰으로 파드 목록을 요청했어요. 같은 토큰에서 서명 부분만 뒤집은 토큰으로도 같은 요청을 보냈어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/32/03-sa-token-403-401.png" alt="w32 네임스페이스와 ServiceAccount reader를 만들고 10분짜리 토큰을 받는다. worker1에서 그 토큰만 실은 whoami는 system:serviceaccount:w32:reader와 그룹 셋을 보여 주고 같은 토큰으로 w32의 파드 목록을 요청하면 403 Forbidden, User system:serviceaccount:w32:reader cannot list resource pods다. 서명 부분만 뒤집은 토큰은 401 Unauthorized다. 관리자가 --as로 물은 can-i list, get, delete pods는 모두 no다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 진짜 토큰은 이름을 얻고 403에서 막혔고 서명이 틀린 토큰은 이름도 얻지 못하고 401에서 막혔다</div>
+
+<p>진짜 토큰은 403을 받았고 메시지에 <code style="font-family:Menlo,monospace;font-size:14px;">User "system:serviceaccount:w32:reader"</code>라는 이름이 찍혔어요. 인증은 통과했지만 인가에서 막혔다는 뜻이에요. 서명을 뒤집은 토큰은 모양이 같아도 서명 확인에 실패해서 401이었어요. 관리자 kubeconfig로 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth can-i ... --as=system:serviceaccount:w32:reader</code>를 실행해 봐도 list, get, delete 모두 no였어요. can-i는 SelfSubjectAccessReview API로 인가 단계에 직접 묻는 명령이고 --as는 관리자가 다른 사용자 행세를 하며 묻게 해 주는 옵션(impersonation)이에요.</p>
+<p>권한을 하나도 주지 않은 상태에서 <code style="font-family:Menlo,monospace;font-size:14px;">can-i --list</code>로 본 reader의 권한 목록에는 SelfSubjectReview·SelfSubjectAccessReview·SelfSubjectRulesReview 만들기와 <code style="font-family:Menlo,monospace;font-size:14px;">/api</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/apis</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/openapi</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/version</code>, <code style="font-family:Menlo,monospace;font-size:14px;">/healthz</code> 같은 경로 읽기가 있었어요. 인증된 사용자라면 누구나 기본 바인딩으로 받는 권한이에요. 파드에 대한 권한은 없었어요. 이제 w32 안에서만 효력이 있는 Role과 RoleBinding을 만들었어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Role과 RoleBinding</div>
+  Role은 한 네임스페이스 안에서 "어떤 리소스에 어떤 동작을 할 수 있다"는 규칙 묶음이고 RoleBinding은 그 묶음을 사용자, 그룹, ServiceAccount에게 주는 객체예요. 권한을 받는 쪽은 RoleBinding의 subjects 칸에 적어요(앞에서 본 인증서의 subject와는 다른 칸이에요). 둘 다 네임스페이스에 속해서 효력도 그 네임스페이스 안에만 미쳐요. 클러스터 전체에 미치는 ClusterRole과 ClusterRoleBinding은 10편에서 다뤘어요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/32/04-rolebinding-200.png" alt="kubectl -n w32 create role pod-reader --verb=get,list,watch --resource=pods와 create rolebinding reader-can-read-pods --role=pod-reader --serviceaccount=w32:reader를 실행하고 바인딩이 Role/pod-reader를 w32/reader에 준다. 이어서 can-i list pods -n w32는 yes, delete pods -n w32는 no, list secrets -n w32는 no, list pods -n default는 no다. 같은 토큰으로 w32 파드 목록을 요청하면 200 PodList items 0이고 default 파드 목록은 여전히 403이다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. RoleBinding 하나로 w32의 파드 읽기만 열렸다. 다른 동작, 다른 리소스, 다른 네임스페이스는 그대로 no였다</div>
+
+<p>Role pod-reader는 파드에 get, list, watch만 허용하고 RoleBinding reader-can-read-pods는 그 Role을 w32/reader에게 줘요. 바인딩을 만든 뒤 같은 토큰으로 보낸 w32 파드 목록 요청은 200을 받았어요(파드가 없어서 items 0). 같은 토큰으로 default의 파드 목록을 요청했을 때는 여전히 403이었고 can-i로 물어본 delete pods와 list secrets도 no였어요. <span class="obsv-mark">토큰은 그대로였고 바뀐 것은 w32 안의 RoleBinding 하나였어요. 인증 결과는 같고 인가 결과만 바뀌었어요.</span> can-i는 요청을 실제로 보내기 전에 권한을 확인하는 데 쓰고 토큰이 정말 그 이름으로 인증되는지는 토큰을 직접 실어 확인해요. 이번에는 두 가지를 다 했어요.</p>
+
+<h3>Node 인가자: kubelet은 자기 노드와 관련된 객체만 읽는다</h3>
+<p>kubelet은 자기 노드에 배정된 파드를 띄우려고 그 파드가 쓰는 Secret과 ConfigMap을 읽어야 해요. 모든 kubelet에게 모든 Secret을 읽을 권한을 주면 노드 한 대의 kubelet 자격이 새 나가는 순간 클러스터의 Secret도 전부 새 나가요. RBAC 문서의 기본 역할 표를 보면 <code style="font-family:Menlo,monospace;font-size:14px;">system:node</code> ClusterRole에는 모든 Secret 읽기와 모든 파드 status 쓰기가 들어 있어요. 문서는 이 역할 대신 Node 인가자와 NodeRestriction(kubelet이 고칠 수 있는 Node와 파드 객체를 자기 노드 것으로 좁히는 어드미션 플러그인)을 쓰라고 하고 이 역할은 v1.8 이전 버전에서 업그레이드한 클러스터와 호환하려고만 남겨 두었다고 적어요. 우리 클러스터의 ClusterRoleBinding system:node에는 subjects가 하나도 없었어요. 이 역할을 받은 사용자나 그룹이 없다는 뜻이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Node 인가자 (Node authorizer)</div>
+  kubelet이 보낸 요청만 판단하는 특수한 인가 모드예요. 사용자 이름이 system:node:&lt;노드 이름&gt;이고 그룹이 system:nodes인 요청을 kubelet의 요청으로 봐요. Secret, ConfigMap, PVC, PV는 그 노드에 배정된 파드가 쓰는 것만 읽게 하고 노드와 파드 객체는 자기 것만 읽게 해요. kubelet이 아닌 사용자의 요청에는 의견을 내지 않아요.
+</div>
+
+<p>실험은 이렇게 짰어요. w32에 Secret s-w1과 s-w2를 만들고 s-w1을 쓰는 파드 p-w1은 worker1에, s-w2를 쓰는 파드 p-w2는 worker2에 <code style="font-family:Menlo,monospace;font-size:14px;">nodeName</code>으로 바로 배정했어요. 그리고 worker1에서 kubelet이 실제로 쓰는 kubeconfig(<code style="font-family:Menlo,monospace;font-size:14px;">/etc/kubernetes/kubelet.conf</code>)로 kubectl을 실행했어요. 쓰기 요청은 모두 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=server</code>(API 서버가 인증부터 어드미션까지 다 처리하되 저장만 하지 않게 하는 옵션)로 보내서 아무것도 저장되지 않게 했어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/32/05-node-authz.png" alt="worker1의 kubelet.conf로 실행한 kubectl. whoami는 system:node:k8s-worker1이다. secret s-w1은 읽히고 s-w2는 Forbidden, no relationship found between node k8s-worker1 and this object다. node k8s-worker1은 읽히고 k8s-worker2는 only its own Node object로 막힌다. pod p-w1은 읽히고 p-w2는 막히며 파드 목록은 spec.nodeName 필드 셀렉터를 붙여야만 나온다. can-i create pods와 delete pods는 yes인데 보통 파드를 만들면 node can only create mirror pods로, worker2의 p-w2를 지우면 can only delete pods with spec.nodeName set to itself로 막히고 자기 노드의 p-w1 삭제는 server dry run으로 통과한다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. worker1의 kubelet은 자기 노드와 이어진 객체만 읽었고 인가가 허락한 쓰기도 남의 노드 파드에는 어드미션에서 막혔다</div>
+
+<p>읽기는 Node 인가자가 판단했어요. p-w1이 쓰는 s-w1은 읽혔고 s-w2는 <code style="font-family:Menlo,monospace;font-size:14px;">node: no relationship found between node 'k8s-worker1' and this object</code>로 막혔어요. 노드 객체도 k8s-worker1만 읽혔고 k8s-worker2는 <code style="font-family:Menlo,monospace;font-size:14px;">only its own Node object</code>로 막혔어요. 파드는 p-w1만 읽혔고 목록은 <code style="font-family:Menlo,monospace;font-size:14px;">spec.nodeName=k8s-worker1</code> 필드 셀렉터를 붙였을 때만 나왔어요. <a href="https://kubernetes.io/docs/reference/access-authn-authz/node/">Node Authorization 문서</a>에 적힌 그대로예요. Node 인가자는 Service와 Endpoints 같은 객체의 읽기는 허락하지만 Secret, ConfigMap, PVC, PV는 자기 노드에 배정된 파드와 관련된 것만 읽게 하고 v1.34부터 정식 기능인 AuthorizeNodeWithSelectors에 따라 노드 객체와 파드도 자기 것만 읽게 해요. 문서는 이름 형식도 정해 둬요. 사용자 이름이 system:node:&lt;노드 이름&gt;이고 그룹이 system:nodes여야 Node 인가자가 판단해요. 2절에서 본 kubelet 인증서의 CN과 O가 정확히 그 모양이었어요.</p>
+<p>쓰기는 달랐어요. kubelet 자격으로 물은 <code style="font-family:Menlo,monospace;font-size:14px;">can-i create pods</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">can-i delete pods</code>는 둘 다 yes였어요. 문서에도 Node 인가자는 파드와 파드 status 쓰기를 허락하고 kubelet을 자기 노드의 파드로 좁히는 일은 NodeRestriction 어드미션 플러그인에 맡긴다고 적혀 있어요. 어드미션은 인가를 통과한 요청을 저장하기 전에 객체 내용까지 보고 고치거나 거절하는 단계예요(33편). 실제로 보통 파드를 만들려 하자 <code style="font-family:Menlo,monospace;font-size:14px;">pod does not have "kubernetes.io/config.mirror" annotation, node "k8s-worker1" can only create mirror pods</code>로, worker2에 배정된 p-w2를 지우려 하자 <code style="font-family:Menlo,monospace;font-size:14px;">node "k8s-worker1" can only delete pods with spec.nodeName set to itself</code>로 막혔어요. 자기 노드의 p-w1 삭제만 통과했어요(dry run). 미러 파드는 kubelet이 정적 파드를 API에서도 보이게 하려고 만드는 파드예요(26편).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k32c1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k32c2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k32c3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k32c4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">worker1의 kubelet이 읽고 쓸 수 있는 것</text>
+<path d="M20 52 C 68 50.5, 116 53, 162 51.5 C 163.5 82, 161 120, 162.5 150 C 116 151.5, 68 149, 20 150.5 C 18.5 120, 21 82, 20 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="91" y="82" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5" text-anchor="middle">kubelet</text>
+<text x="91" y="104" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">worker1</text>
+<text x="91" y="124" font-family="Menlo, monospace" font-size="9.5" fill="#8a8272" text-anchor="middle">system:node:</text>
+<text x="91" y="138" font-family="Menlo, monospace" font-size="9.5" fill="#8a8272" text-anchor="middle">k8s-worker1</text>
+<path d="M205 55 C 240 53.5, 280 56, 315 54.5 C 316.5 68, 314 84, 315.5 96 C 280 97.5, 240 95, 205 96.5 C 203.5 84, 206 68, 205 55 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="260" y="73" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">✓ node</text>
+<text x="260" y="89" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">k8s-worker1</text>
+<path d="M375 55 C 412 53.5, 448 56, 485 54.5 C 486.5 68, 484 84, 485.5 96 C 448 97.5, 412 95, 375 96.5 C 373.5 84, 376 68, 375 55 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="430" y="73" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">✓ pod</text>
+<text x="430" y="89" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">p-w1</text>
+<path d="M560 55 C 600 53.5, 640 56, 680 54.5 C 681.5 68, 679 84, 680.5 96 C 640 97.5, 600 95, 560 96.5 C 558.5 84, 561 68, 560 55 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="620" y="73" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">✓ secret</text>
+<text x="620" y="89" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">s-w1</text>
+<path d="M373 76 C 357 75, 335 77, 318 76" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k32c3)"/>
+<text x="346" y="69" font-family="Menlo, monospace" font-size="9" fill="#8a8272" text-anchor="middle">nodeName</text>
+<path d="M487 76 C 510 75, 535 77, 557 76" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k32c3)"/>
+<text x="522" y="69" font-family="Menlo, monospace" font-size="9" fill="#8a8272" text-anchor="middle">volume</text>
+<path d="M205 118 C 240 116.5, 280 119, 315 117.5 C 316.5 131, 314 147, 315.5 159 C 280 160.5, 240 158, 205 159.5 C 203.5 147, 206 131, 205 118 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="260" y="136" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">✗ node</text>
+<text x="260" y="152" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">k8s-worker2</text>
+<path d="M375 118 C 412 116.5, 448 119, 485 117.5 C 486.5 131, 484 147, 485.5 159 C 448 160.5, 412 158, 375 159.5 C 373.5 147, 376 131, 375 118 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="430" y="136" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">✗ pod</text>
+<text x="430" y="152" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">p-w2</text>
+<path d="M560 118 C 600 116.5, 640 119, 680 117.5 C 681.5 131, 679 147, 680.5 159 C 640 160.5, 600 158, 560 159.5 C 558.5 147, 561 131, 560 118 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="620" y="136" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">✗ secret</text>
+<text x="620" y="152" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">s-w2</text>
+<path d="M373 139 C 357 138, 335 140, 318 139" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k32c3)"/>
+<path d="M487 139 C 510 138, 535 140, 557 139" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k32c3)"/>
+<path d="M165 82 C 178 80, 190 78, 202 76" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k32c1)"/>
+<path d="M165 124 C 178 128, 190 134, 202 138" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#k32c2)"/>
+<text x="440" y="186" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">아래 줄은 읽기 403: worker1과 이어진 길이 없다</text>
+<text x="440" y="204" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">no relationship found · only its own Node object</text>
+<path d="M20 222 C 200 220, 450 224, 680 222" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<path d="M20 240 C 110 238.5, 200 241, 290 239.5 C 291.5 280, 289 320, 290.5 350 C 200 351.5, 110 349, 20 350.5 C 18.5 320, 21 280, 20 240 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="155" y="266" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">2 · 인가 (Node 인가자)</text>
+<text x="40" y="298" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="start">can-i create pods → yes</text>
+<text x="40" y="322" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="start">can-i delete pods → yes</text>
+<path d="M295 295 C 310 294, 325 296, 340 295" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k32c4)"/>
+<path d="M348 240 C 458 238.5, 570 241, 680 239.5 C 681.5 280, 679 320, 680.5 350 C 570 351.5, 458 349, 348 350.5 C 346.5 320, 349 280, 348 240 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="514" y="266" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18" text-anchor="middle">3 · 어드미션 (NodeRestriction)</text>
+<text x="366" y="294" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="start">✗ 보통 파드 만들기 → 403 (미러 파드만)</text>
+<text x="366" y="317" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="start">✗ worker2의 p-w2 지우기 → 403</text>
+<text x="366" y="340" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="start">✓ 자기 노드의 p-w1 지우기 → 통과</text>
+<text x="350" y="385" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">읽기는 Node 인가자가, 쓰기는 NodeRestriction이 자기 노드로 좁힌다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 8. kubelet을 자기 노드에 묶는 일은 인가와 어드미션 두 관문이 나눠 맡는다</div>
+
+<p><span class="obsv-mark">인가 단계에서 yes였던 쓰기 요청이 어드미션 단계에서 403으로 막혔어요.</span> 인가는 사용자 이름, 동작, 리소스, 네임스페이스 같은 요청의 겉모습만 보고 판단해요. 지우려는 파드의 spec.nodeName이 무엇인지는 객체 내용을 봐야 알 수 있는데 그건 어드미션이 하는 일이에요. kubeadm이 API 서버에 <code style="font-family:Menlo,monospace;font-size:14px;">--enable-admission-plugins=NodeRestriction</code>을 넣어 두는 이유가 여기 있어요. 노드 객체에 쓰는 실험은 클러스터 전체에 영향을 줄 수 있어서 하지 않았어요. 문서에는 NodeRestriction이 kubelet에게 자기 Node 객체만 고치게 하고 taint를 고치거나 지우지 못하게 한다고 적혀 있어요.</p>
+
+<h2>5. 401과 403을 만나면 메시지로 어느 관문에서 막혔는지 가린다</h2>
+
+<p>여기까지 실험에서 나온 오류 문구를 관문별로 모았어요. 어드미션 줄은 33편의 실험과 이번 편 4절(NodeRestriction)에서 나온 것이고 나머지는 이번 편 원자료에 찍힌 문구예요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:640px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">이렇게 나오면</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">막힌 곳</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">먼저 볼 곳</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">Unable to connect to the server: tls: failed to verify certificate: x509: certificate signed by unknown authority</code></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0. TLS</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">kubeconfig의 certificate-authority-data와 server 주소가 같은 클러스터의 것인지</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">Error from server (BadRequest): the server rejected our request for an unknown reason</code> (https 포트에 http로 보냄)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0. TLS</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">server 주소가 <code style="font-family:Menlo,monospace;font-size:14px;">https://</code>로 시작하는지</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">error: You must be logged in to the server (the server has asked for the client to provide credentials)</code> = 401</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1. 인증</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">토큰이 틀렸거나 서명이 맞지 않는지, 클라이언트 인증서가 만료됐는지. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth whoami</code>가 되는지</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">User "system:anonymous" cannot list resource ...</code> = 403</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2. 인가(자격이 안 실림)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">요청에 인증서나 토큰이 실렸는지</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">User "system:serviceaccount:w32:reader" cannot list resource "pods" ...</code> = 403</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2. 인가(RBAC)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth can-i ... --as=</code>, 그 이름에 걸린 RoleBinding</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">node: no relationship found between node ...</code>, <code style="font-family:Menlo,monospace;font-size:14px;">only its own Node object</code></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2. 인가(Node 인가자)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">kubelet 자격으로 다른 노드의 객체를 요청했는지</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">is forbidden: failed quota</code>, <code style="font-family:Menlo,monospace;font-size:14px;">exceeded quota</code>, <code style="font-family:Menlo,monospace;font-size:14px;">maximum memory usage per Container</code>, <code style="font-family:Menlo,monospace;font-size:14px;">violates PodSecurity</code>, <code style="font-family:Menlo,monospace;font-size:14px;">error looking up service account</code>, <code style="font-family:Menlo,monospace;font-size:14px;">node "..." can only ...</code> = 403</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">3. 어드미션</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">ResourceQuota, LimitRange, 네임스페이스 라벨, ServiceAccount 이름, 컨트롤러가 만든 객체면 이벤트(33편)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">Error from server (NotFound): namespaces "w32-none" not found</code></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">3. 어드미션(NamespaceLifecycle)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">네임스페이스 이름</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>표를 만들고 보니 이번에 본 403은 두 가지 모양으로 나뉘었어요. <span class="obsv-mark">인가에서 막힌 403에는 <code style="font-family:Menlo,monospace;font-size:14px;">User "..." cannot &lt;동작&gt; resource</code> 문구가 붙었고 어드미션에서 막힌 403에는 그 문구 대신 플러그인이 적은 이유가 붙었어요.</span> 그래서 Forbidden을 만나면 메시지에 User 이름이 있는지부터 확인해요. 이름이 있으면 그 이름이 내가 생각한 사용자인지 확인하고(system:anonymous라면 자격이 실리지 않은 거예요) 이름이 없으면 네임스페이스에 걸린 정책을 봐요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 관문 순서대로 하나씩 확인해요</div>
+  &bull; 연결부터 안 되면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl config view --minify</code>로 지금 컨텍스트의 server 주소와 CA를 봐요<br>
+  &bull; 401이면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth whoami</code>로 API 서버가 나를 누구로 보는지 확인해요. 토큰을 확인할 때는 다른 자격을 빼고 토큰만 보내요(10편)<br>
+  &bull; 인가 403이면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth can-i &lt;동작&gt; &lt;리소스&gt; -n &lt;네임스페이스&gt;</code>로 물어보고 관리자라면 <code style="font-family:Menlo,monospace;font-size:14px;">--as</code>로 그 사용자가 되어 물어봐요. <code style="font-family:Menlo,monospace;font-size:14px;">--list</code>를 붙이면 그 네임스페이스에서 할 수 있는 일 전체가 나와요<br>
+  &bull; 어드미션 403이면 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=server</code>로 같은 요청을 저장 없이 다시 보내 봐요(33편). Deployment의 파드 같은 객체는 컨트롤러가 대신 만들기 때문에 이벤트를 확인해요
+</div>
+
+<p>모든 관문을 통과한 요청은 객체 종류별 검증을 거쳐 etcd에 기록돼요. 그 뒤에 kubectl이 보여 주는 resourceVersion이 etcd 키의 리비전과 어떻게 이어지는지는 22편에서 봤어요.</p>
+
+<p style="font-size:14.5px;color:#8a8272;">📎 이 글에서 확인한 문서와 소스<br>
+&middot; kubernetes.io: <a href="https://kubernetes.io/docs/concepts/security/controlling-access/">Controlling Access to the Kubernetes API</a>, <a href="https://kubernetes.io/docs/reference/access-authn-authz/authentication/">Authenticating</a>, <a href="https://kubernetes.io/docs/reference/access-authn-authz/authorization/">Authorization</a>, <a href="https://kubernetes.io/docs/reference/access-authn-authz/rbac/">Using RBAC Authorization</a>, <a href="https://kubernetes.io/docs/reference/access-authn-authz/node/">Using Node Authorization</a>, <a href="https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#noderestriction">Admission Control의 NodeRestriction 절</a>, <a href="https://kubernetes.io/docs/concepts/architecture/control-plane-node-communication/">Communication between Nodes and the Control Plane</a>, <a href="https://kubernetes.io/docs/reference/setup-tools/kubeadm/implementation-details/">kubeadm Implementation details</a>, <a href="https://kubernetes.io/blog/2025/08/27/kubernetes-v1-34-release/">Kubernetes v1.34 릴리스 블로그</a>, 기능 게이트 AnonymousAuthConfigurableEndpoints·AuthorizeNodeWithSelectors<br>
+&middot; 쿠버네티스 소스(v1.37.2): pkg/probe/http/http.go와 request.go, plugin/pkg/auth/authorizer/node/node_authorizer.go (본문 링크)</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>401은 인증에서 나오고 인가에서 막힌 403에는 User 이름이 찍혀요.</b><br><br>
+  kubectl 요청은 TLS로 서버를 확인한 뒤 인증에서 사용자 이름과 그룹을 얻고 인가에서 그 이름으로 규칙을 찾아요. 이름은 클라이언트 인증서의 CN과 O, ServiceAccount 토큰의 서명된 내용에서 나왔어요. 자격이 없는 요청은 system:anonymous로 인증된 뒤 인가에서 403을 받았고 틀린 토큰은 익명으로 넘어가지 못해서 공개 경로인 /version에서도 401을 받았어요. 같은 ServiceAccount 토큰의 응답이 w32의 RoleBinding 하나로 403에서 200으로 바뀌었고 kubelet은 Node 인가자와 NodeRestriction 때문에 자기 노드의 객체만 읽고 고칠 수 있었어요. 403은 어드미션에서도 나오니(33편) Forbidden을 보면 메시지에 User 이름이 있는지부터 봐요. 401과 403을 만나면 관문을 앞에서부터 하나씩 짚어 가요.
+</div>
+
+</div>

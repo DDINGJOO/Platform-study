@@ -1,0 +1,395 @@
+<!-- ============================================================
+  k8s 스터디 29편: 다른 네임스페이스의 Service는 왜 짧은 이름으로 안 찾아질까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 다른 네임스페이스의 파드에서 redis-dns-svc라고만 부르면 못 찾고 .default를 붙여야 찾아요. 파드 resolv.conf의 search 목록과 ndots:5, CoreDNS의 이름 규칙을 실제 DNS 질의로 확인했어요. -->
+<!-- tags: CoreDNS, 쿠버네티스 DNS, resolv.conf search, ndots, 서비스 디스커버리, nslookup NXDOMAIN -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 29편</div>
+  27편. 파드 하나가 뜰 때 kubelet과 containerd 사이에 어떤 CRI 호출이 오갈까<br>
+  28편. ClusterIP는 ping이 안 되는데 curl은 되는 이유와 kube-proxy 모드<br>
+  <b>29편. 다른 네임스페이스의 Service는 왜 짧은 이름으로 안 찾아질까</b> &larr; 지금 이 글<br>
+  30편. Calico에서 BIRD를 멈춰도 파드 통신이 끊기지 않는 이유<br>
+  31편. 노드의 podCIDR과 실제 파드 IP 대역이 다른 이유와 Calico IPAM
+</div>
+
+<p>"CoreDNS를 이용한 DNS 검증"이라고 적어 둔 실습은 명령 세 줄짜리였어요. redis 파드 하나를 띄우는 Deployment와 그 파드를 가리키는 Service를 만든 뒤 Deployment·파드·Service가 함께 보이는지 확인하는 실습이에요. 저도 그대로 해 봤어요. Service 이름은 redis-dns-svc였고 같은 default 네임스페이스의 파드에서 이 이름으로 redis에 PING을 보내자 +PONG이 돌아왔어요.</p>
+<p>그런데 새 네임스페이스 dns-test에 파드를 하나 더 띄워 같은 이름을 부르자 결과는 "못 찾음"이었어요. 뒤에 <code style="font-family:Menlo,monospace;font-size:14px;">.default</code>를 붙여 redis-dns-svc.default로 부르면 다시 찾았어요. 같은 클러스터의 같은 Service인데 묻는 파드가 어느 네임스페이스에 있느냐에 따라 짧은 이름이 풀리기도 하고 안 풀리기도 한 거예요. 이번 글에서는 이 차이가 어디서 오는지를 실습 클러스터(Lima VM 4대, 쿠버네티스 v1.37.2, CoreDNS v1.14.6)에서 파드가 실제로 보낸 DNS 질의까지 잡아 가며 따라가요. 같이 메모해 둔 클러스터 add-on 목록(CNI plugin, CoreDNS, Metrics Server, Web UI)이 우리 클러스터에는 어떻게 깔려 있는지도 마지막에 확인해요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 같은 네임스페이스에서는 되는 짧은 이름이 다른 네임스페이스에서는 왜 안 될까?<br>
+&middot; 파드의 /etc/resolv.conf는 누가 쓰고 search 목록은 어떻게 정해질까?<br>
+&middot; ndots:5는 바깥 도메인을 부를 때 DNS 질의를 몇 번이나 만들까?<br>
+&middot; busybox의 nslookup으로 확인하면 왜 멀쩡한 이름이 NXDOMAIN으로 나올까?<br>
+&middot; Service 환경 변수는 언제 들어가고 CoreDNS와 나머지 add-on은 우리 클러스터에 어떻게 깔려 있을까?</p>
+
+<h2>1. redis-dns를 만들고 같은 네임스페이스와 다른 네임스페이스에서 불러 봤다</h2>
+
+<p>메모의 명령 세 줄을 그대로 돌렸어요. <code style="font-family:Menlo,monospace;font-size:14px;">--image=redis</code>에 태그를 적지 않았으니 이날 받아 온 redis는 8.10.3이었어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/29/01-redis-dns.png" alt="29-coredns-redis.sh 1절 출력. kubectl create deployment redis-dns --image=redis --replicas=1, kubectl expose deployment redis-dns --name=redis-dns-svc --port=6379 --target-port=6379, kubectl get deploy,po,svc -o wide | grep redis-dns 결과로 deployment.apps/redis-dns 1/1, pod/redis-dns-7f8bbd9f9c-m686w Running 10.244.126.36 k8s-worker2, service/redis-dns-svc ClusterIP 10.97.144.205 6379/TCP selector app=redis-dns, redis 버전 Redis server v=8.10.3" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 명령 세 줄로 redis 파드(worker2, 10.244.126.36)와 Service redis-dns-svc(10.97.144.205)가 생겼다</div>
+
+<p>파드는 worker2에 떴고 IP는 10.244.126.36이에요. Service redis-dns-svc는 ClusterIP 10.97.144.205를 받았고 셀렉터 <code style="font-family:Menlo,monospace;font-size:14px;">app=redis-dns</code>로 이 파드를 가리켜요. 파드 IP는 파드가 다시 만들어지면 바뀔 수 있지만 Service의 이름과 ClusterIP는 그대로예요. 그래서 다른 파드는 파드 IP 대신 Service 이름을 불러요. 이름을 주소로 바꿔 주는 것이 CoreDNS예요.</p>
+<p>이제 이름으로 불러 볼 차례예요. default 네임스페이스에 busybox:1.36.1 파드 dns-client를 띄워 네 가지 모양의 이름을 풀었고 dns-test 네임스페이스에 dns-client2를 띄워 두 가지를 풀었어요. 이름 풀이 결과는 파드의 기본 리졸버를 쓰는 ping이 첫 줄에 찍는 주소로 확인했어요. ClusterIP는 ping에 답하지 않지만(28편) 이름을 주소로 바꾼 결과는 첫 줄에 찍혀요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/29/02-same-other-ns.png" alt="29-coredns-redis.sh 2~4절 출력. dns-client는 k8s-worker3에 있고 resolv.conf는 search default.svc.cluster.local svc.cluster.local cluster.local, nameserver 10.96.0.10, options ndots:5. 같은 네임스페이스에서 redis-dns-svc, redis-dns-svc.default, redis-dns-svc.default.svc, redis-dns-svc.default.svc.cluster.local 모두 10.97.144.205. dns-test/dns-client2의 search는 dns-test.svc.cluster.local svc.cluster.local cluster.local이고 redis-dns-svc는 못 찾음, redis-dns-svc.default는 10.97.144.205. nc로 PING을 보내면 두 파드 모두 +PONG" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. default의 파드는 네 모양 모두 풀었고 dns-test의 파드는 짧은 이름만 못 풀었다</div>
+
+<p>default의 dns-client에서는 redis-dns-svc, redis-dns-svc.default, redis-dns-svc.default.svc, redis-dns-svc.default.svc.cluster.local이 모두 10.97.144.205로 풀렸어요. <span class="obsv-mark">dns-test의 dns-client2에서는 redis-dns-svc가 풀리지 않았고 redis-dns-svc.default는 풀렸어요.</span> nc로 redis 포트 6379에 PING을 보내면 dns-client는 짧은 이름으로, dns-client2는 .default를 붙인 이름으로 둘 다 +PONG을 받았어요.</p>
+<p>네 모양 가운데 끝까지 다 적은 redis-dns-svc.default.svc.cluster.local이 이 Service의 정식 이름이에요. <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#a-aaaa-records">DNS for Services and Pods 문서</a>는 일반 Service가 <code style="font-family:Menlo,monospace;font-size:14px;">my-svc.my-namespace.svc.cluster-domain.example</code> 모양의 이름으로 A 레코드를 받고 이 이름이 Service의 ClusterIP로 풀린다고 적어요. 우리 클러스터의 cluster-domain은 cluster.local이에요. 나머지 세 모양은 이 정식 이름의 앞부분만 적은 거예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: FQDN (완전한 도메인 이름)</div>
+  최상위까지 빠짐없이 적은 도메인 이름이에요. 쿠버네티스 Service라면 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;서비스&gt;.&lt;네임스페이스&gt;.svc.cluster.local</code>이 FQDN이에요. 엄밀하게는 끝에 점까지 붙인 <code style="font-family:Menlo,monospace;font-size:14px;">redis-dns-svc.default.svc.cluster.local.</code>이어야 "더 넓혀 볼 필요 없는 이름"으로 다뤄져요. 3장에서 이 끝 점이 질의 수를 바꾸는 것을 봐요.
+</div>
+
+<h2>2. 짧은 이름을 넓혀 주는 것은 kubelet이 써 넣은 search 목록이다</h2>
+
+<p>앞부분만 적은 이름을 정식 이름으로 넓혀 주는 것은 파드 안의 /etc/resolv.conf예요. 같은 실험을 w29 네임스페이스에서 다시 하면서 이 파일과 그 파일을 만든 쪽의 설정을 함께 뽑았어요.</p>
+
+<div class="obsv-code">dns-client$ cat /etc/resolv.conf                                  # w29 네임스페이스의 파드
+  search w29.svc.cluster.local svc.cluster.local cluster.local &lt;router-domain&gt;
+  nameserver 10.96.0.10
+  options ndots:5
+k8s-worker2$ grep -A1 -E 'clusterDNS|clusterDomain|resolvConf' /var/lib/kubelet/config.yaml
+  clusterDNS:
+  - 10.96.0.10
+  clusterDomain: cluster.local
+  resolvConf: /run/systemd/resolve/resolv.conf
+k8s-worker2$ grep search /run/systemd/resolve/resolv.conf
+  search &lt;router-domain&gt;</div>
+<p>&rarr; 파드의 DNS 서버(nameserver)는 kubelet 설정의 clusterDNS 10.96.0.10이고 search 목록은 "자기 네임스페이스.svc.cluster.local, svc.cluster.local, cluster.local" 뒤에 노드의 search 도메인이 붙은 모양이라는 뜻이에요. &lt;router-domain&gt;은 실습 Mac이 연결된 공유기가 준 검색 도메인을 가린 자리예요. 그림 2의 search 줄에는 이 칸이 없는데 그 출력을 만들 때 공유기 도메인을 지워서 가렸기 때문이에요. 같은 날 default의 myweb 파드에서 본 search 목록도 네 칸이었어요.</p>
+
+<p>이 파일은 kubelet이 파드를 띄울 때 써 넣어요. 문서에도 kubelet이 파드마다 이 파일을 설정한다고 적혀 있고 v1.37.2 kubelet 소스(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/network/dns/dns.go">pkg/kubelet/network/dns/dns.go</a>)를 보면 순서가 그대로 보여요. dnsPolicy가 ClusterFirst인 파드라면 nameserver에는 clusterDNS만 넣고 search 목록에는 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;파드 네임스페이스&gt;.svc.&lt;clusterDomain&gt;</code>, <code style="font-family:Menlo,monospace;font-size:14px;">svc.&lt;clusterDomain&gt;</code>, <code style="font-family:Menlo,monospace;font-size:14px;">&lt;clusterDomain&gt;</code>을 차례로 적고 그 뒤에 노드 resolv.conf의 search를 이어 붙여요. options에는 <code style="font-family:Menlo,monospace;font-size:14px;">ndots:5</code>를 넣어요. 파드 스펙에 dnsPolicy를 적지 않으면 ClusterFirst가 쓰인다고 <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-s-dns-policy">문서</a>에 적혀 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: search 목록</div>
+  resolv.conf의 search 줄에 적힌 도메인 목록이에요. 리졸버는 조건에 맞는 짧은 이름을 받으면 이 목록의 도메인을 하나씩 뒤에 붙여 차례로 물어봐요. 15편에서 loadgen 파드가 myweb이라고만 불러도 CoreDNS에서 주소를 받은 것도 이 목록 덕분이에요.
+</div>
+
+<p>이제 처음 질문의 답이 보여요. <span class="obsv-mark">search 목록의 첫 칸은 묻는 파드 자신의 네임스페이스예요.</span> default의 파드가 redis-dns-svc를 물으면 첫 후보가 redis-dns-svc.default.svc.cluster.local이라서 바로 찾아요. dns-test의 파드가 같은 이름을 물으면 첫 후보는 redis-dns-svc.dns-test.svc.cluster.local이에요. 그런 Service는 없고 svc.cluster.local, cluster.local, 공유기 도메인을 붙인 후보도 모두 없는 이름이에요. 반면 redis-dns-svc.default를 물으면 둘째 후보 svc.cluster.local을 붙인 redis-dns-svc.default.svc.cluster.local이 정식 이름과 같아져서 찾아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">같은 짧은 이름, 묻는 파드에 따라 다른 후보</text>
+<path d="M20 52 C 110 50, 220 53, 330 51 C 332 150, 329 250, 331 350 C 220 352, 110 349, 19 351 C 18 250, 21 150, 20 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="175" y="80" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">default의 파드: redis-dns-svc</text>
+<text x="36" y="118" font-family="Menlo, monospace" font-size="11" fill="#2e6b41">① redis-dns-svc.default.svc.cluster.local</text>
+<text x="36" y="142" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41">✅ → 10.97.144.205, 첫 후보에서 끝</text>
+<text x="36" y="182" font-family="Menlo, monospace" font-size="11" fill="#8a8272">② redis-dns-svc.svc.cluster.local</text>
+<text x="36" y="206" font-family="Menlo, monospace" font-size="11" fill="#8a8272">③ redis-dns-svc.cluster.local</text>
+<text x="36" y="230" font-family="Menlo, monospace" font-size="11" fill="#8a8272">④ redis-dns-svc.&lt;router-domain&gt;</text>
+<text x="36" y="254" font-family="Menlo, monospace" font-size="11" fill="#8a8272">⑤ redis-dns-svc.</text>
+<text x="175" y="290" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">②~⑤는 물어보지 않는다</text>
+<text x="175" y="330" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">search 첫 칸 = default.svc.cluster.local</text>
+<path d="M370 52 C 460 50, 570 53, 680 51 C 682 150, 679 250, 681 350 C 570 352, 460 349, 369 351 C 368 250, 371 150, 370 52 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="525" y="80" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">dns-test의 파드: redis-dns-svc</text>
+<text x="384" y="118" font-family="Menlo, monospace" font-size="11" fill="#b3502f">① redis-dns-svc.dns-test.svc.cluster.local</text>
+<text x="384" y="142" font-family="Menlo, monospace" font-size="11" fill="#b3502f">② redis-dns-svc.svc.cluster.local</text>
+<text x="384" y="166" font-family="Menlo, monospace" font-size="11" fill="#b3502f">③ redis-dns-svc.cluster.local</text>
+<text x="384" y="190" font-family="Menlo, monospace" font-size="11" fill="#b3502f">④ redis-dns-svc.&lt;router-domain&gt;</text>
+<text x="384" y="214" font-family="Menlo, monospace" font-size="11" fill="#b3502f">⑤ redis-dns-svc.</text>
+<text x="525" y="244" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">❌ 다섯 후보 모두 없는 이름 → 못 찾음</text>
+<path d="M384 262 C 470 260, 580 263, 666 261" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="525" y="288" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">redis-dns-svc.default로 물으면</text>
+<text x="384" y="314" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272">① ….default.dns-test.svc.cluster.local ❌</text>
+<text x="384" y="336" font-family="Menlo, monospace" font-size="10.5" fill="#2e6b41">② redis-dns-svc.default.svc.cluster.local ✅</text>
+<text x="350" y="392" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">네임스페이스를 적지 않은 이름은 묻는 파드의 네임스페이스에서만 찾는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. search 목록의 첫 칸이 묻는 파드의 네임스페이스라서 다른 네임스페이스의 Service는 최소한 .&lt;네임스페이스&gt;를 붙여야 찾는다</div>
+
+<p>문서의 설명도 같아요. <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#namespaces-of-services">DNS for Services and Pods 문서</a>는 네임스페이스를 적지 않은 DNS 질의가 파드 자신의 네임스페이스로 한정된다고 적고 test 네임스페이스의 파드가 prod 네임스페이스의 Service data를 찾는 예를 들어요. data만 물으면 결과가 없고 data.prod나 data.prod.svc.cluster.local로 물으면 찾는다고 해요. 그림 3의 ⑤에 적은 마지막 단계(이름을 그대로 묻는 것)는 3장에서 잡은 질의 순서로 확인했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 다른 네임스페이스의 Service는 이렇게 불러요</div>
+  &bull; 같은 네임스페이스: <code style="font-family:Menlo,monospace;font-size:14px;">redis-dns-svc</code>로 충분해요<br>
+  &bull; 다른 네임스페이스: 최소한 네임스페이스를 붙여 <code style="font-family:Menlo,monospace;font-size:14px;">redis-dns-svc.default</code>로 불러요. <a href="https://kubernetes.io/docs/concepts/services-networking/service/#dns">Service 문서</a>도 다른 네임스페이스의 파드는 <code style="font-family:Menlo,monospace;font-size:14px;">my-service.my-ns</code> 모양으로 이름을 한정해야 한다고 적어요<br>
+  &bull; 설정 파일에 넣을 주소라면 <code style="font-family:Menlo,monospace;font-size:14px;">redis-dns-svc.default.svc.cluster.local</code>까지 적어 두면 어느 네임스페이스에서 읽어도 같은 Service를 가리켜요. 3장에서 볼 질의 수까지 줄이려면 끝에 점을 하나 더 붙여요<br>
+  &bull; 네임스페이스는 이름의 일부일 뿐 접근 제한이 아니에요. 다른 네임스페이스에서도 .default만 붙이면 redis에 PING이 닿았어요. 막으려면 NetworkPolicy가 필요해요
+</div>
+
+<h2>3. ndots:5 때문에 바깥 이름과 끝 점 없는 FQDN은 search 목록부터 돈다</h2>
+
+<p>search 목록을 언제 붙이는지는 options의 <code style="font-family:Menlo,monospace;font-size:14px;">ndots:5</code>가 정해요. <a href="https://www.man7.org/linux/man-pages/man5/resolv.conf.5.html">resolv.conf 매뉴얼</a>에 따르면 이름에 든 점의 개수가 ndots보다 적으면 search 목록의 도메인을 차례로 붙여 물어보고 ndots 이상이면 먼저 이름 그대로 물어봐요. 매뉴얼에 적힌 기본값은 1인데 kubelet은 파드에 5를 넣어요. 그래서 파드 안에서는 점이 넷 이하인 이름이 모두 search 목록부터 돌아요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ndots</div>
+  resolv.conf의 options에 적는 값이에요. "이름에 점이 몇 개 이상이면 완성된 이름으로 보고 먼저 그대로 물을지"를 정해요. ndots:5라면 www.kubernetes.io(점 2개)도 redis-dns-svc.default.svc.cluster.local(점 4개)도 아직 덜 완성된 이름으로 보고 search 목록부터 붙여 봐요. 이름 끝에 점을 붙이면 점 개수와 상관없이 그대로 한 번만 물어요.
+</div>
+
+<p>이 규칙 때문에 질의가 몇 번 나가는지 보려고 w29의 dns-client가 있는 worker2에서 그 파드의 veth 인터페이스를 지나는 패킷을 tcpdump로 잡고 파드 안에서 ping으로 이름 네 개를 풀었어요. busybox:1.36.1 이미지에는 glibc(libc.so.6)가 들어 있어서 ping은 glibc 리졸버로 이름을 풀어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/29/03-ndots-queries.png" alt="29-dns-search.sh 4절 출력 앞부분. dns-client에서 ping -c1 -W1 www.kubernetes.io를 실행하자 보낸 질의 10개: www.kubernetes.io.w29.svc.cluster.local, www.kubernetes.io.svc.cluster.local, www.kubernetes.io.cluster.local, www.kubernetes.io.router-domain, www.kubernetes.io 각각에 A와 AAAA. 끝에 점을 붙인 www.kubernetes.io.는 A와 AAAA 질의 2개" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. www.kubernetes.io 하나를 풀려고 질의 10개가 나갔고 끝에 점을 붙이자 2개로 줄었다</div>
+
+<p>www.kubernetes.io는 점이 2개라서 5보다 적어요. 그래서 리졸버는 search 목록의 네 도메인을 차례로 붙여 물었고 넷 다 찾지 못했다는 답을 받은 뒤에야 www.kubernetes.io를 그대로 물었어요. 이름마다 IPv4 주소(A)와 IPv6 주소(AAAA)를 함께 물으니 바깥 이름 하나에 질의가 10개였어요. 이름 끝에 점을 붙인 www.kubernetes.io.는 질의 2개로 끝났어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: NXDOMAIN</div>
+  DNS 서버가 "그런 이름은 없다"고 답할 때 쓰는 응답 코드예요. 서버가 고장 났다는 뜻이 아니라 물어본 이름 자체가 존재하지 않는다는 뜻이에요. search 목록을 도는 동안 받는 NXDOMAIN은 정상적인 과정이에요.
+</div>
+
+<p>같은 캡처의 뒷부분에는 클러스터 안 이름 둘이 있어요.</p>
+
+<div class="obsv-code">dns-client$ ping -c1 -W1 redis-dns-svc
+  보낸 질의 2개:
+    A? redis-dns-svc.w29.svc.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.
+dns-client$ ping -c1 -W1 redis-dns-svc.w29.svc.cluster.local
+  보낸 질의 10개:
+    A? redis-dns-svc.w29.svc.cluster.local.w29.svc.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.w29.svc.cluster.local.
+    A? redis-dns-svc.w29.svc.cluster.local.svc.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.svc.cluster.local.
+    (… cluster.local, &lt;router-domain&gt; 을 붙인 질의 4개 …)
+    A? redis-dns-svc.w29.svc.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.</div>
+<p>&rarr; 같은 네임스페이스의 짧은 이름은 첫 후보에서 바로 찾아 질의 2개로 끝났다는 뜻이에요. 끝 점 없이 적은 정식 이름은 점이 4개라 ndots:5에 못 미쳐서 search 목록 네 개를 다 돌고 다섯 번째에 찾았어요.</p>
+
+<p><span class="obsv-mark">정식 이름을 다 적어도 끝에 점이 없으면 ndots:5 아래에서는 질의가 바깥 이름과 같은 10개로 가장 많았어요.</span> 바깥 도메인을 자주 부르는 파드라면 이 차이가 CoreDNS의 부하와 이름 풀이 시간으로 쌓여요. resolv.conf 매뉴얼도 search 목록을 도는 과정은 느릴 수 있고 목록의 도메인 서버가 가까이 있지 않으면 네트워크 트래픽을 많이 만든다고 적어요. 이번 실습의 네 번째 후보는 공유기 도메인이었는데 CoreDNS가 직접 답할 수 없는 이름이라 바깥 DNS로 넘어갔을 거예요(6장의 forward).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k29a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">ndots:5 아래에서 이름 하나가 만드는 질의 수 (w29에서 잰 값)</text>
+<path d="M250 52 C 300 50, 400 53, 450 51 C 452 72, 449 92, 451 112 C 400 114, 300 111, 249 113 C 248 92, 251 72, 250 52 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="78" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">이름 끝에 점이 있나?</text>
+<text x="350" y="102" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">없으면 점 개수를 센다</text>
+<path d="M440 116 C 500 130, 560 140, 590 160" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k29a1)"/>
+<text x="548" y="128" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41">있다</text>
+<path d="M520 166 C 570 164, 630 167, 680 165 C 682 190, 679 215, 681 240 C 630 242, 570 239, 519 241 C 518 215, 521 190, 520 166 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600" y="190" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">그대로 한 번</text>
+<text x="600" y="212" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="middle">www.kubernetes.io.</text>
+<text x="600" y="232" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">질의 2개</text>
+<path d="M260 116 C 200 130, 150 140, 120 160" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k29a1)"/>
+<text x="150" y="128" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">없고 점이 5개 미만</text>
+<path d="M20 166 C 120 164, 360 167, 480 165 C 482 190, 479 215, 481 240 C 360 242, 120 239, 19 241 C 18 215, 21 190, 20 166 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="250" y="190" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18" text-anchor="middle">search 네 도메인을 차례로 붙이고 마지막에 그대로</text>
+<text x="250" y="214" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">찾는 순간 멈춘다 · 후보마다 A와 AAAA 두 질의</text>
+<path d="M60 246 C 62 262, 58 276, 61 290" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k29a1)"/>
+<path d="M250 246 C 252 262, 248 276, 251 290" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k29a1)"/>
+<path d="M420 246 C 422 262, 418 276, 421 290" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k29a1)"/>
+<text x="60" y="312" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="middle">redis-dns-svc</text>
+<text x="60" y="334" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">첫 후보 ✅ 2개</text>
+<text x="250" y="312" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">redis-dns-svc.w29.svc.cluster.local</text>
+<text x="250" y="334" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">점 4개, 다섯째에 ✅ 10개</text>
+<text x="430" y="312" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">www.kubernetes.io</text>
+<text x="430" y="334" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">점 2개, 다섯째에 ✅ 10개</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 끝 점이 없고 점이 5개 미만이면 search 목록부터 돌기 때문에 짧은 이름은 2개, 바깥 이름과 끝 점 없는 정식 이름은 10개의 질의를 만들었다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: ndots를 바꿀지 고민될 때</div>
+  &bull; 먼저 이름 쪽을 고쳐요. 바깥 도메인이나 고정된 클러스터 주소는 설정 파일에 끝 점까지 적으면 질의가 2개로 줄었어요(그림 4)<br>
+  &bull; 파드 단위로는 <code style="font-family:Menlo,monospace;font-size:14px;">spec.dnsConfig.options</code>로 ndots를 바꿀 수 있어요. <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-dns-config">문서의 예시</a>는 <code style="font-family:Menlo,monospace;font-size:14px;">ndots:2</code>를 넣었을 때 resolv.conf가 어떻게 바뀌는지 보여 줘요<br>
+  &bull; 매뉴얼의 규칙대로라면 ndots:2로 낮춘 파드에서 redis-dns-svc.default.svc(점 2개) 같은 이름은 search 목록보다 이름 그대로를 먼저 물어요. cluster.local로 끝나지 않는 그 이름은 6장의 forward를 거쳐 바깥 DNS로 나갔다가 없다는 답을 받은 뒤에야 search 목록으로 돌아와요. 이번 실습에서 ndots를 바꿔 재 보지는 않았으니 바꾼다면 그 파드에서 질의를 직접 잡아 확인해요
+</div>
+
+<h2>4. busybox nslookup으로 확인하면 멀쩡한 이름이 NXDOMAIN으로 나온다</h2>
+
+<p>이름 풀이를 확인할 때 많이 쓰는 도구가 nslookup이에요. 그런데 w29의 같은 dns-client에서 같은 이름들을 ping과 busybox의 nslookup으로 나란히 풀어 보니 결과가 달랐어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/29/04-nslookup-trap.png" alt="29-dns-search.sh 3절 출력. redis-dns-svc는 ping과 nslookup 모두 10.96.115.83, redis-dns-svc.w29와 redis-dns-svc.w29.svc는 ping은 10.96.115.83인데 nslookup은 NXDOMAIN, redis-dns-svc.w29.svc.cluster.local은 둘 다 10.96.115.83, kubernetes는 ping 못 찾음 nslookup NXDOMAIN, kubernetes.default는 ping 10.96.0.1 nslookup NXDOMAIN, kubernetes.default.svc.cluster.local은 둘 다 10.96.0.1. nc로 redis-dns-svc 6379에 PING을 보내 +PONG" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. ping(glibc 리졸버)은 모두 풀었지만 busybox nslookup은 점이 있는데 정식 이름이 아닌 이름에 NXDOMAIN으로 답했다</div>
+
+<p>점이 없는 redis-dns-svc와 끝까지 다 적은 정식 이름은 둘 다 풀렸어요. 문제는 그 사이의 redis-dns-svc.w29, redis-dns-svc.w29.svc, kubernetes.default였어요. ping은 셋 다 풀었는데 nslookup은 NXDOMAIN으로 답했어요. 다른 네임스페이스의 Service를 확인하려고 nslookup redis-dns-svc.default를 쳤다면 "다른 네임스페이스는 .default를 붙여도 안 된다"고 잘못 결론 내리기 쉬운 결과예요. 하지만 nc는 같은 이름으로 +PONG을 받았어요.</p>
+<p>이유는 busybox 1.36.1의 nslookup 소스(<a href="https://github.com/mirror/busybox/blob/1_36_1/networking/nslookup.c#L797-L816">networking/nslookup.c의 add_query_with_search</a>)에 있어요. 이 nslookup은 glibc의 이름 풀이 함수를 거치지 않아요. /etc/resolv.conf에서 search(없으면 domain)와 nameserver 줄만 읽고(<a href="https://github.com/mirror/busybox/blob/1_36_1/networking/nslookup.c#L715-L772">L715~L772</a>) 질의를 직접 만들어 보내는데 이름에 점이 하나라도 있으면 search 목록을 붙이지 않고 그대로 물어요. options 줄의 ndots:5는 읽지 않아요. 그래서 redis-dns-svc.w29는 nslookup이 redis-dns-svc.w29라는 이름 그대로 물었고 CoreDNS는 그런 이름이 없다고 답했어요. 점이 없는 redis-dns-svc는 search 목록을 붙여 물었기 때문에 찾았어요. <span class="obsv-mark">busybox nslookup의 NXDOMAIN은 그 이름이 클러스터에 없다는 뜻이 아니라 search 목록을 붙이지 않고 물었다는 뜻일 수 있어요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: nslookup·dig로 확인할 때는 정식 이름(FQDN)을 써요</div>
+  &bull; 확인 도구마다 search 목록과 ndots를 다루는 방식이 달라요. 이번 busybox:1.36.1의 nslookup은 점이 있는 이름에 search를 붙이지 않았어요<br>
+  &bull; 그러니 확인할 때는 정식 이름으로 <code style="font-family:Menlo,monospace;font-size:14px;">nslookup redis-dns-svc.default.svc.cluster.local</code>을 쳐요. 그림 6에서 정식 이름은 두 방식 모두 같은 답을 냈어요<br>
+  &bull; 애플리케이션이 실제로 어떻게 푸는지 보고 싶다면 애플리케이션과 같은 리졸버를 쓰는 명령(이번에는 ping의 첫 줄, nc)으로 확인해요. 도구의 NXDOMAIN만 보고 Service나 CoreDNS를 의심하지 않아요
+</div>
+
+<h2>5. Service 환경 변수는 컨테이너가 시작할 때 있던 Service만 담는다</h2>
+
+<p>파드가 Service를 찾는 길은 DNS 말고 하나 더 있어요. kubelet이 컨테이너에 넣어 주는 환경 변수예요. 처음 redis 실험의 dns-client에는 이런 값이 들어 있었어요.</p>
+
+<div class="obsv-code">  REDIS_DNS_SVC_SERVICE_PORT=6379
+  REDIS_DNS_SVC_SERVICE_HOST=10.97.144.205
+  svc 생성 2026-11-14T06:59:36Z / redis-dns 컨테이너 시작 2026-11-14T06:59:49Z → redis-dns 파드에도 1개</div>
+<p>&rarr; Service 이름 redis-dns-svc가 대문자 REDIS_DNS_SVC로 바뀌고 _SERVICE_HOST에는 ClusterIP, _SERVICE_PORT에는 포트가 들어갔다는 뜻이에요. Service보다 먼저 만든 Deployment의 redis 파드에도 이 변수가 있었어요.</p>
+
+<p><a href="https://kubernetes.io/docs/concepts/services-networking/service/#environment-variables">Service 문서</a>는 kubelet이 파드를 노드에서 실행할 때 활성 Service마다 이런 변수를 넣는다고 적고 환경 변수로 Service를 찾으려면 클라이언트 파드보다 Service를 먼저 만들어야 한다고 주의를 줘요. 그런데 위에서는 Service보다 먼저 만든 Deployment의 redis 파드에도 변수가 들어갔어요. redis 컨테이너가 이미지를 받느라 Service 생성 13초 뒤인 06:59:49에 시작했기 때문이에요. 기준이 파드를 만든 시각인지 컨테이너가 시작한 시각인지 확인하려고 w29에서 같은 파드의 컨테이너가 다시 시작하게 만들어 봤어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/29/05-env-timing.png" alt="29-dns-search.sh 5절 출력. 16:38:10 Service late-svc 생성(ClusterIP 10.105.142.196). 같은 파드 envcheck의 첫 컨테이너는 16:38:07에 시작해 LATE_SVC_SERVICE_HOST=없음, 재시작한 컨테이너는 16:38:23에 시작해 LATE_SVC_SERVICE_HOST=10.105.142.196. late-svc 전에 시작한 dns-client의 SERVICE_HOST 변수는 KUBERNETES_SERVICE_HOST와 REDIS_DNS_SVC_SERVICE_HOST뿐이고 default 네임스페이스의 Service는 kubernetes와 myweb" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. 같은 파드라도 Service가 생긴 뒤 다시 시작한 컨테이너에만 변수가 들어갔다</div>
+
+<p>envcheck 파드에는 시작하자마자 LATE_SVC_SERVICE_HOST 값을 찍고 15초 뒤 끝나는 컨테이너 하나만 넣었어요. 첫 컨테이너는 16:38:07에 시작했고 그때는 late-svc가 없어서 "없음"이었어요. 16:38:10에 late-svc를 만들었고 kubelet이 같은 파드의 컨테이너를 16:38:23에 다시 시작하자 이번에는 10.105.142.196이 들어 있었어요. late-svc보다 먼저 시작한 dns-client에도 이 변수가 없었어요. <span class="obsv-mark">기준은 파드를 만든 시각이 아니라 컨테이너가 시작한 시각이었어요.</span></p>
+<p>v1.37.2 kubelet 소스(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet_pods.go#L705-L742">kubelet_pods.go의 getServiceEnvVarMap</a>)를 보면 kubelet은 컨테이너를 실행할 옵션을 만드는 단계에서 그 순간 자기가 아는 Service 목록으로 이 변수를 계산해요. 대상도 정해져 있어요. 파드와 같은 네임스페이스의 Service(파드의 enableServiceLinks가 true일 때)와 default 네임스페이스의 kubernetes Service뿐이에요. 그래서 w29의 dns-client에는 KUBERNETES_SERVICE_HOST와 REDIS_DNS_SVC_SERVICE_HOST만 있었고 default 네임스페이스에 있는 myweb의 변수(MYWEB_SERVICE_HOST)는 없었어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: Service 주소를 환경 변수에 기대지 않아요</div>
+  &bull; 변수는 컨테이너가 시작할 때 한 번 정해져요. 나중에 만든 Service는 컨테이너가 다시 시작할 때까지 보이지 않아요<br>
+  &bull; 다른 네임스페이스의 Service는 처음부터 변수로 받을 수 없어요(default의 kubernetes Service만 예외예요)<br>
+  &bull; DNS 이름에는 두 제약이 모두 해당되지 않아요. 문서도 DNS로만 ClusterIP를 찾는다면 생성 순서를 걱정할 필요가 없다고 적어요
+</div>
+
+<h2>6. 이름에 답하는 CoreDNS와 나머지 add-on은 우리 클러스터에 어떻게 깔려 있나</h2>
+
+<p>마지막으로 이름에 답하는 쪽을 봐요. 파드의 nameserver 10.96.0.10은 kube-system의 Service kube-dns의 ClusterIP예요. 28편에서 본 것과 같은 구조로 이 주소도 kube-proxy 규칙을 지나며 CoreDNS 파드의 IP로 바뀌어요.</p>
+
+<div class="obsv-code">  coredns-559f6c778d-bt7zz   10.244.126.30    k8s-worker2
+  coredns-559f6c778d-sqvxb   10.244.100.221   k8s-worker3
+  -A KUBE-SERVICES -d 10.96.0.10/32 -p udp "kube-system/kube-dns:dns cluster IP" -m udp --dport 53 -j KUBE-SVC-TCOU7JCQXEZGVUNU
+  -A KUBE-SVC-TCOU7JCQXEZGVUNU "kube-system/kube-dns:dns -&gt; 10.244.100.221:53" -m statistic --mode random --probability 0.50000000000 -j KUBE-SEP-RGAAHJ…
+  -A KUBE-SVC-TCOU7JCQXEZGVUNU "kube-system/kube-dns:dns -&gt; 10.244.126.30:53" -j KUBE-SEP-L2K2T5DGSSGU7P7L</div>
+<p>&rarr; UDP 53번으로 10.96.0.10에 보낸 DNS 질의는 0.5 확률로 worker3의 CoreDNS로, 나머지는 worker2의 CoreDNS로 간다는 뜻이에요. 파드가 둘이라서 확률이 붙은 줄은 하나예요.</p>
+
+<p>CoreDNS가 무엇을 어떻게 답할지는 ConfigMap coredns의 Corefile에 적혀 있어요.</p>
+
+<div class="obsv-code">.:53 {
+    errors
+    health {
+       lameduck 5s
+    }
+    ready
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+       pods insecure
+       fallthrough in-addr.arpa ip6.arpa
+       ttl 30
+    }
+    prometheus :9153
+    forward . /etc/resolv.conf {
+       max_concurrent 1000
+    }
+    cache 30 {
+       disable success cluster.local
+       disable denial cluster.local
+    }
+    loop
+    reload
+    loadbalance
+}</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Corefile과 플러그인</div>
+  CoreDNS의 설정 파일이에요. CoreDNS는 기능을 플러그인으로 나눠 두고 Corefile에 적힌 플러그인만 켜요. <code style="font-family:Menlo,monospace;font-size:14px;">.:53</code>은 53번 포트로 들어오는 모든 이름을 이 블록이 맡는다는 뜻이고 블록 안의 한 줄이 플러그인 하나예요.
+</div>
+
+<p>이번 글과 관계있는 플러그인만 CoreDNS v1.14.6 저장소의 플러그인 설명과 맞춰 보면 이래요.</p>
+<p>&middot; <b>kubernetes</b>: <a href="https://coredns.io/plugins/kubernetes/">쿠버네티스 DNS 기반 서비스 디스커버리 규격</a>을 구현해요. 클러스터 안에서 쿠버네티스 API에 붙어 cluster.local 아래 Service와 파드 이름에 답해요. ttl 30은 응답에 붙이는 TTL을 30초로 정한 거예요(기본 5초).<br>
+&middot; <b>pods insecure</b>: <code style="font-family:Menlo,monospace;font-size:14px;">10-244-126-36.default.pod.cluster.local</code> 모양의 파드 A 레코드를 켜요. 설명서에 따르면 insecure는 쿠버네티스에 확인하지 않고 질의에 적힌 IP로 그대로 답해요. w29에서 클러스터에 없는 IP로 <code style="font-family:Menlo,monospace;font-size:14px;">10-244-0-99.w29.pod.cluster.local</code>을 물었더니 정말 10.244.0.99가 돌아왔어요. 이 이름은 파드가 있다는 증거가 아니에요.<br>
+&middot; <b>forward . /etc/resolv.conf</b>: cluster.local 밖의 이름은 CoreDNS 파드의 /etc/resolv.conf에 적힌 서버로 넘겨요. CoreDNS Deployment의 dnsPolicy는 Default라서 이 파일은 노드의 DNS 설정을 따라요. 3장의 www.kubernetes.io는 이 길로 바깥에 물었어요.<br>
+&middot; <b>cache 30</b>: 응답을 최대 30초 캐시해요. 다만 <code style="font-family:Menlo,monospace;font-size:14px;">disable success/denial cluster.local</code>로 cluster.local 이름의 응답은 캐시하지 않게 해 두었어요.<br>
+&middot; <b>loop, reload, loadbalance</b>: loop는 시작할 때 자기 자신에게 시험 질의를 보내 forward가 다시 자기에게 돌아오는 고리를 찾으면 CoreDNS를 멈춰요. reload는 Corefile이 바뀌면 다시 읽어요. loadbalance는 응답의 A·AAAA 레코드 순서를 섞어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k29a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k29a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">파드의 DNS 질의가 답을 받기까지</text>
+<path d="M20 60 C 70 58, 120 61, 170 59 C 172 100, 169 140, 171 180 C 120 182, 70 179, 19 181 C 18 140, 21 100, 20 60 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="86" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">파드</text>
+<text x="95" y="110" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">resolv.conf</text>
+<text x="95" y="130" font-family="Menlo, monospace" font-size="10.5" fill="#4a7fb5" text-anchor="middle">nameserver</text>
+<text x="95" y="148" font-family="Menlo, monospace" font-size="10.5" fill="#4a7fb5" text-anchor="middle">10.96.0.10</text>
+<text x="95" y="170" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">kubelet이 써 넣음</text>
+<path d="M174 120 C 190 119, 205 121, 220 120" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k29a2)"/>
+<path d="M224 70 C 270 68, 320 71, 366 69 C 368 103, 365 137, 367 171 C 320 173, 270 170, 223 172 C 222 137, 225 103, 224 70 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="295" y="98" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="middle">kube-proxy 규칙</text>
+<text x="295" y="122" font-family="Menlo, monospace" font-size="10" fill="#c07f18" text-anchor="middle">KUBE-SVC-TCOU…</text>
+<text x="295" y="146" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">0.5 / 나머지 (28편)</text>
+<path d="M370 100 C 395 92, 410 82, 430 78" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k29a2)"/>
+<path d="M370 145 C 395 152, 410 160, 430 164" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k29a2)"/>
+<path d="M434 52 C 490 50, 545 53, 600 51 C 602 70, 599 88, 601 106 C 545 108, 490 105, 433 107 C 432 88, 435 70, 434 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="517" y="76" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5" text-anchor="middle">CoreDNS (worker3)</text>
+<text x="517" y="96" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">10.244.100.221</text>
+<path d="M434 136 C 490 134, 545 137, 600 135 C 602 154, 599 172, 601 190 C 545 192, 490 189, 433 191 C 432 172, 435 154, 434 136 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="517" y="160" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5" text-anchor="middle">CoreDNS (worker2)</text>
+<text x="517" y="180" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">10.244.126.30</text>
+<path d="M20 222 C 200 220, 450 224, 680 222" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="350" y="214" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">CoreDNS 안에서 이름에 따라 갈린다 (Corefile)</text>
+<path d="M30 240 C 150 238, 210 241, 330 239 C 332 275, 329 310, 331 344 C 210 346, 150 343, 29 345 C 28 310, 31 275, 30 240 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="180" y="266" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">…cluster.local → kubernetes</text>
+<text x="180" y="292" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">API 서버를 지켜본 Service·파드로 답</text>
+<text x="180" y="316" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">TTL 30초, 캐시 안 함</text>
+<text x="180" y="336" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">없는 이름이면 NXDOMAIN</text>
+<path d="M370 240 C 490 238, 550 241, 670 239 C 672 275, 669 310, 671 344 C 550 346, 490 343, 369 345 C 368 310, 371 275, 370 240 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="266" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">그 밖의 이름 → forward</text>
+<text x="520" y="292" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">CoreDNS 파드의 resolv.conf 서버로</text>
+<text x="520" y="316" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">dnsPolicy Default = 노드 설정</text>
+<text x="520" y="336" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">응답은 최대 30초 캐시</text>
+<text x="350" y="372" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">짧은 이름을 넓히는 일은 파드 쪽 리졸버가, 답은 CoreDNS가 한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 8. search 목록으로 넓힌 이름은 kube-proxy 규칙을 지나 CoreDNS 둘 중 하나에 닿고 cluster.local이면 kubernetes 플러그인이, 아니면 forward가 답을 구한다</div>
+
+<p>여기서 처음 질문을 한 번 더 정리할 수 있어요. <span class="obsv-mark">CoreDNS는 질의에 적힌 이름만 보고 답해요.</span> 누가 물었는지에 따라 이름을 고쳐 주지 않아요. redis-dns-svc를 redis-dns-svc.dns-test.svc.cluster.local로 넓힌 것은 dns-test 파드의 리졸버였고 CoreDNS는 그런 Service가 없다고 답했을 뿐이에요.</p>
+
+<p>마지막으로 메모해 둔 add-on 네 가지가 우리 클러스터에는 어떻게 깔려 있는지 확인했어요.</p>
+
+<div class="obsv-code">master$ kubeadm init phase addon --help
+Available Commands:
+  all         Install all the addons
+  coredns     Install the CoreDNS addon to a Kubernetes cluster
+  kube-proxy  Install the kube-proxy addon to a Kubernetes cluster
+
+daemonset.apps/calico-node 4 4 4
+deployment.apps/calico-kube-controllers 1/1 1 1
+deploy/coredns READY 2/2
+svc/kube-dns 10.96.0.10 53/UDP,53/TCP,9153/TCP
+APIService v1beta1.metrics.k8s.io: Error from server (NotFound)
+kubectl top node: error: Metrics API not available
+kubernetes-dashboard 네임스페이스: Error from server (NotFound)
+Headlamp: headlamp/headlamp READY 1/1
+Portainer: portainer/portainer READY 1/1</div>
+<p>&rarr; kubeadm이 add-on으로 직접 설치하는 것은 CoreDNS와 kube-proxy 둘이고 CNI인 Calico, Metrics Server, 대시보드는 kubeadm이 깔지 않는다는 뜻이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: add-on (애드온)</div>
+  쿠버네티스 본체 프로그램이 아니라 클러스터 위에 파드로 올라가 기능을 더하는 구성 요소예요. <a href="https://kubernetes.io/docs/concepts/cluster-administration/addons/">Installing Addons 문서</a>는 네트워크(Calico 등), 서비스 디스커버리(CoreDNS), 화면과 제어(Dashboard, Headlamp) 같은 분류로 목록을 보여 줘요.
+</div>
+
+<p>&middot; <b>CNI plugin</b>: Calico가 calico-node DaemonSet 4/4와 calico-kube-controllers 1/1로 떠 있어요. kubeadm이 깔지 않아 따로 설치했고 그 이유는 6편에서 다뤘어요.<br>
+&middot; <b>CoreDNS</b>: kubeadm이 add-on으로 설치했고 2/2로 떠 있어요. 이번 글의 주인공이에요.<br>
+&middot; <b>Metrics Server</b>: 없어요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl top node</code>는 "Metrics API not available"로 실패했고 w29 실험 때 APIService 목록에서 metrics가 들어간 줄은 0줄이었어요. <a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/">자원 메트릭 파이프라인 문서</a>에 따르면 Metrics API는 HPA와 VPA, <code style="font-family:Menlo,monospace;font-size:14px;">kubectl top</code>이 쓰는 API이고 metrics-server 같은 구현을 배포해야 쓸 수 있어요. 그래서 이 클러스터에서는 HPA가 CPU 사용률로 파드 수를 조절할 수 없어요. 18편 k9s의 CPU·MEM 칸이 n/a였던 것도 같은 이유예요.<br>
+&middot; <b>Web UI</b>: kubernetes-dashboard 네임스페이스는 없어요. 9편에서 본 대로 Kubernetes Dashboard 저장소가 아카이브되어 Headlamp를 대신 설치했고 16·17편에서는 Portainer도 올렸어요. 둘 다 1/1로 떠 있어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>짧은 Service 이름은 묻는 파드의 resolv.conf search 목록이 넓혀 주고 그 목록의 첫 칸이 파드 자신의 네임스페이스라서 다른 네임스페이스의 Service는 최소한 .&lt;네임스페이스&gt;를 붙여야 찾아요.</b><br><br>
+  search 목록과 nameserver 10.96.0.10, ndots:5는 kubelet이 clusterDNS·clusterDomain 설정으로 써 넣어요. ndots:5 때문에 점이 5개 미만인 이름은 search 목록부터 돌아서 바깥 이름 하나와 끝 점 없는 정식 이름이 각각 질의 10개를 만들었고 끝에 점을 붙이면 2개로 줄었어요. busybox nslookup은 점이 있는 이름에 search를 붙이지 않으니 확인은 정식 이름으로 해요. Service 환경 변수는 컨테이너가 시작할 때 있던 같은 네임스페이스의 Service와 default의 kubernetes Service만 담아요. DNS 질의는 kube-proxy 규칙을 지나 CoreDNS 파드 둘에 나뉘어 도착하고 cluster.local은 kubernetes 플러그인이, 나머지는 forward가 답을 구해요. 이름을 고치는 것은 묻는 쪽이고 CoreDNS는 받은 이름에만 답해요.
+</div>
+
+</div>

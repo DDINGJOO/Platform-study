@@ -1,0 +1,229 @@
+<!-- ============================================================
+  k8s 스터디 31편: 노드의 podCIDR과 실제 파드 IP 대역이 다른 이유와 Calico IPAM
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: kubectl get node로 본 worker1의 podCIDR은 10.244.2.0/24인데 파드 IP는 10.244.194.x였어요. IP 대역을 나누는 곳이 두 군데인 이유와 Calico IPAM 블록이 찼을 때의 동작, IP 풀 크기를 정하는 법을 정리했어요. -->
+<!-- tags: Calico IPAM, podCIDR, calico-ipam, IPAM 블록, blockSize, IP 풀 크기, allocate-node-cidrs -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 31편</div>
+  29편. 다른 네임스페이스의 Service는 왜 짧은 이름으로 안 찾아질까<br>
+  30편. Calico에서 BIRD를 멈춰도 파드 통신이 끊기지 않는 이유<br>
+  <b>31편. 노드의 podCIDR과 실제 파드 IP 대역이 다른 이유와 Calico IPAM</b> &larr; 지금 이 글<br>
+  32편. kubectl 요청이 401과 403을 받는 곳, API 서버의 인증과 인가<br>
+  33편. API 서버의 어드미션은 요청을 어떻게 고치고 거절할까
+</div>
+
+<p>worker1의 Node 객체를 열어 보면 노드의 파드용 대역인 podCIDR이 10.244.2.0/24로 적혀 있어요. 그런데 같은 노드에 떠 있는 myweb 파드의 IP는 10.244.194.100과 10.244.194.101이에요. 10.244.2.x와는 한참 떨어진 주소예요. 나머지 세 노드도 마찬가지였어요. 노드에 적힌 대역과 실제 파드 IP가 맞는 노드가 하나도 없었어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/31/01-podcidr-vs-block.png" alt="31-ipam-blocks.sh 실행 화면 일부. 노드별 K8S_PODCIDR과 CALICO_BLOCK 표에서 k8s-master 10.244.0.0/24와 10.244.235.192/26, k8s-worker1 10.244.2.0/24와 10.244.194.64/26, k8s-worker2 10.244.1.0/24와 10.244.126.0/26, k8s-worker3 10.244.4.0/24와 10.244.100.192/26이 서로 다르다. myweb 파드 IP는 10.244.100.222, 10.244.194.101, 10.244.126.31, 10.244.194.100, 10.244.100.225이고 CNI의 ipam type은 calico-ipam이다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 노드의 podCIDR과 Calico 블록이 네 노드 모두 달랐고 파드 IP는 Calico 블록 쪽에 있었다</div>
+
+<p>쿠버네티스 아키텍처를 공부하던 날 제가 남긴 메모 중에 "IPAM 이런 것도 중요한 듯"이 있어요. 그래서 노드에 적힌 대역과 Calico가 실제로 나눈 블록을 나란히 놓고 비교했고 노드 하나의 블록은 일부러 가득 채워 봤어요. 30편에서 Felix가 노드 간 경로를 "IPAM 블록"으로 계산한다고 했어요. 이번 글에서는 Calico IPAM(IP 주소 관리)이 IP 풀을 잘라 노드마다 붙여 두는 이 블록을 자세히 봐요. 블록에서 IP가 할당되고 반납되는 흐름은 34편에서 따로 다뤄요. 클러스터는 Lima VM 4대에 kubeadm v1.37.2, containerd 2.4.1, Calico v3.33.0(매니페스트 설치)을 올린 실습 환경이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; kubectl get node에 보이는 podCIDR은 누가 정할까?<br>
+&middot; 실제 파드 IP는 어디에서 나오고 왜 podCIDR과 다를까?<br>
+&middot; 노드의 /26 블록 64칸이 다 차면 어떻게 될까?<br>
+&middot; IP 풀 크기는 무엇을 기준으로 정할까?</p>
+
+<h2>1. 노드의 podCIDR은 컨트롤러 매니저가 /24로 나눠 적어 둔 값이다</h2>
+
+<p>노드의 podCIDR을 적는 쪽은 쿠버네티스의 컨트롤러 매니저예요. 이 클러스터의 kube-controller-manager 매니페스트에는 두 플래그가 들어 있어요.</p>
+<div class="obsv-code">master$ sudo grep -E -- '--(allocate-node-cidrs|cluster-cidr|node-cidr-mask-size)' /etc/kubernetes/manifests/kube-controller-manager.yaml
+    - --allocate-node-cidrs=true
+    - --cluster-cidr=10.244.0.0/16</div>
+<p>&rarr; 컨트롤러 매니저가 10.244.0.0/16을 잘라 노드마다 파드용 대역을 나눠 준다는 뜻이에요. 대역 크기를 정하는 <code style="font-family:Menlo,monospace;font-size:14px;">--node-cidr-mask-size</code>는 적혀 있지 않아요.</p>
+<p><a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/">kube-controller-manager 레퍼런스</a>를 보면 <code style="font-family:Menlo,monospace;font-size:14px;">--allocate-node-cidrs</code>는 노드에 파드용 CIDR을 할당할지 정하는 플래그이고 이 플래그를 쓰려면 <code style="font-family:Menlo,monospace;font-size:14px;">--cluster-cidr</code>가 함께 있어야 해요. <code style="font-family:Menlo,monospace;font-size:14px;">--node-cidr-mask-size</code>의 기본값은 IPv4에서 24예요. 이 일은 컨트롤러 매니저 안의 node-ipam-controller가 맡아요. 그래서 노드마다 /24를 하나씩 받았고(master는 10.244.0.0/24, worker1은 10.244.2.0/24) 그 값이 Node 객체의 <code style="font-family:Menlo,monospace;font-size:14px;">spec.podCIDR</code>에 적혔어요. <a href="https://docs.tigera.io/calico/latest/networking/ipam/get-started-ip-addresses">Calico IPAM 문서</a>에도 kubeadm에 파드 대역(<code style="font-family:Menlo,monospace;font-size:14px;">--pod-network-cidr</code>)을 주면 kubeadm이 이 노드 CIDR 할당을 자동으로 켠다고 적혀 있어요. 5편에서 kubeadm 설정에 넣은 podSubnet이 이 <code style="font-family:Menlo,monospace;font-size:14px;">--pod-network-cidr</code>에 해당하는 값이에요. <span class="obsv-mark">kubectl get node에 보이는 podCIDR은 컨트롤러 매니저가 이렇게 나눠 적어 둔 값이에요.</span></p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: podCIDR (node.spec.podCIDR)</div>
+  Node 객체에 적히는 "이 노드의 파드가 쓸 주소 대역"이에요. kube-controller-manager의 node-ipam-controller가 <code style="font-family:Menlo,monospace;font-size:14px;">--cluster-cidr</code>를 잘라 노드마다 하나씩 적어요. 컨트롤러는 적어 두기만 하고 실제로 이 대역에서 파드 IP를 꺼내 쓸지는 노드의 CNI 설정이 정해요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get node &lt;이름&gt; -o jsonpath='{.spec.podCIDR}'</code>로 볼 수 있어요.
+</div>
+<h2>2. 실제 파드 IP는 CNI 설정이 고른 Calico IPAM의 /26 블록에서 나온다</h2>
+
+<p>실제 파드 IP를 정하는 쪽은 노드의 CNI 설정이 고른 IPAM 플러그인이에요. worker1의 <code style="font-family:Menlo,monospace;font-size:14px;">/etc/cni/net.d/10-calico.conflist</code>를 요약하면 이래요.</p>
+<div class="obsv-code">name= k8s-pod-network | plugin type= calico | ipam type= calico-ipam | datastore= kubernetes | 그다음 plugin= portmap
+CNI 바이너리: calico calico-ipam</div>
+<p>&rarr; 파드 네트워크를 붙이는 플러그인은 calico이고 IP를 고르는 IPAM은 calico-ipam이며 기록은 쿠버네티스 API에 남긴다는 뜻이에요. 그 뒤의 portmap은 hostPort를 처리하는 플러그인이에요(<a href="https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/">쿠버네티스 네트워크 플러그인 문서</a>).</p>
+<p>calico-ipam은 Calico의 IP 풀(10.244.0.0/16)을 /26 블록으로 잘라 노드에 붙이고(6편) 그 블록에서 IP를 꺼내요. 블록을 노드에 붙인 이 연결을 affinity라고 하고 Calico는 BlockAffinity라는 리소스로 기록해요. Calico IPAM 문서에는 이렇게 적혀 있어요. "Calico IPAM은 쿠버네티스의 노드 CIDR 할당(Node.spec.podCIDR)을 쓰지 않으니 kube-controller-manager에 <code style="font-family:Menlo,monospace;font-size:14px;">--allocate-node-cidrs=false</code>를 줄 수 있다. 그러면 쓰지 않는 노드 CIDR을 할당하지 않고 노드의 CIDRNotAvailable 이벤트도 피할 수 있다." Calico에서 podCIDR을 실제로 쓰는 것은 host-local IPAM이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: host-local IPAM</div>
+  노드마다 미리 정해 둔 대역 안에서 IP를 고르고 할당 기록을 그 노드의 파일에 남기는 단순한 IPAM 플러그인이에요. <a href="https://docs.tigera.io/calico/latest/reference/configure-cni-plugins">Calico CNI 설정 문서</a>에 따르면 subnet에 <code style="font-family:Menlo,monospace;font-size:14px;">usePodCidr</code>를 적으면 쿠버네티스 API의 Node.podCIDR에서 대역을 가져와요. 문서에는 host-local을 쿠버네티스 route controller와 연동해야 하는 클러스터에서 주로 쓴다고 나와 있어요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 432" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">파드 IP 대역을 나누는 곳이 두 군데다 (worker1 기준)</text>
+<defs>
+<marker id="k31a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k31a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k31a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<path d="M20 60 C 86 58, 152 61, 220 59 C 222 83, 219 108, 221 134 C 152 136, 86 133, 21 135 C 19 108, 21 83, 20 60 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="82" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">kube-controller-manager</text>
+<text x="120" y="103" font-family="Menlo, monospace" font-size="11.5" fill="#8a8272" text-anchor="middle">node-ipam-controller</text>
+<text x="120" y="122" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">--cluster-cidr=10.244.0.0/16</text>
+<path d="M250 60 C 316 58, 382 61, 450 59 C 452 83, 449 108, 451 134 C 382 136, 316 133, 251 135 C 249 108, 251 83, 250 60 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="82" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">Node 객체</text>
+<text x="350" y="103" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">spec.podCIDR</text>
+<text x="350" y="123" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">10.244.2.0/24</text>
+<path d="M480 60 C 546 58, 612 61, 680 59 C 682 83, 679 108, 681 134 C 612 136, 546 133, 481 135 C 479 108, 481 83, 480 60 Z" fill="#fffdf7" stroke="#b9b1a0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 6"/>
+<text x="580" y="82" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272" text-anchor="middle">host-local IPAM</text>
+<text x="580" y="104" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">podCIDR 안에서 IP를 고른다</text>
+<text x="580" y="124" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">이 클러스터는 쓰지 않음</text>
+<path d="M224 96 C 231 94, 239 98, 246 96" fill="none" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k31a1)"/>
+<path d="M454 96 C 461 94, 469 98, 476 96" fill="none" stroke="#b9b1a0" stroke-width="2.0" stroke-linecap="round" stroke-dasharray="5 5" marker-end="url(#k31a1)"/>
+<path d="M170 182 C 289 180, 408 183, 530 181 C 532 202, 529 224, 531 246 C 408 248, 289 245, 171 247 C 169 224, 171 202, 170 182 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="203" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">worker1의 CNI 설정이 고른 IPAM</text>
+<text x="350" y="222" font-family="Menlo, monospace" font-size="11.5" fill="#8a8272" text-anchor="middle">/etc/cni/net.d/10-calico.conflist</text>
+<text x="350" y="239" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">"ipam": { "type": "calico-ipam" }</text>
+<path d="M500 178 C 520 163, 540 153, 560 138" fill="none" stroke="#e5533c" stroke-width="2.0" stroke-linecap="round" stroke-dasharray="4 5"/>
+<path d="M522 150 C 528 157, 532 159, 538 166" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/><path d="M538 150 C 532 155, 528 161, 522 166" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+<path d="M220 248 C 193 259, 167 275, 140 286" fill="none" stroke="#5a9e6f" stroke-width="3.2" stroke-linecap="round" marker-end="url(#k31a2)"/>
+<path d="M20 292 C 86 290, 152 293, 220 291 C 222 315, 219 340, 221 366 C 152 368, 86 365, 21 367 C 19 340, 21 315, 20 292 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="314" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">Calico IPAM</text>
+<text x="120" y="335" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">IPPool 10.244.0.0/16</text>
+<text x="120" y="354" font-family="Menlo, monospace" font-size="11.5" fill="#8a8272" text-anchor="middle">blockSize 26</text>
+<path d="M250 292 C 316 290, 382 293, 450 291 C 452 315, 449 340, 451 366 C 382 368, 316 365, 251 367 C 249 340, 251 315, 250 292 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="314" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">worker1의 블록</text>
+<text x="350" y="335" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5" text-anchor="middle">10.244.194.64/26</text>
+<text x="350" y="354" font-family="Menlo, monospace" font-size="11.5" fill="#8a8272" text-anchor="middle">BlockAffinity</text>
+<path d="M480 292 C 546 290, 612 293, 680 291 C 682 315, 679 340, 681 366 C 612 368, 546 365, 481 367 C 479 340, 481 315, 480 292 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="314" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">실제 파드 IP</text>
+<text x="580" y="335" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">10.244.194.100</text>
+<text x="580" y="354" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">10.244.194.101 …</text>
+<path d="M224 328 C 231 326, 239 330, 246 328" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" marker-end="url(#k31a2)"/>
+<path d="M454 328 C 461 326, 469 330, 476 328" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" marker-end="url(#k31a2)"/>
+<text x="350" y="410" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">kubectl get node의 podCIDR은 이 클러스터의 파드 IP와 상관없는 값이다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 컨트롤러 매니저가 나눈 /24는 Node 객체에 적히기만 하고 실제 파드 IP는 Calico IPAM의 /26 블록에서 나온다</div>
+
+<p><span class="obsv-mark">이 클러스터에서 파드 IP를 실제로 정하는 것은 Calico IPAM이고 node.spec.podCIDR은 파드 IP와 상관없는 값이에요.</span> node-ipam-controller와 Calico IPAM이 같은 10.244.0.0/16을 서로 모른 채 따로 나누니 노드마다 결과가 달라요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: Calico IPAM을 쓴다면 kubectl get node의 podCIDR을 믿지 마세요</div>
+  &bull; 먼저 노드의 CNI 설정에서 <code style="font-family:Menlo,monospace;font-size:14px;">"ipam": {"type": ...}</code>를 봐요. calico-ipam이면 podCIDR은 파드 IP와 상관이 없어요. <a href="https://docs.tigera.io/calico/latest/networking/ipam/change-block-size">Calico 문서</a>도 같은 방법(10-calico.conflist의 ipam 항목)으로 Calico IPAM인지 확인하라고 안내해요<br>
+  &bull; 노드에 실제로 붙은 대역은 <code style="font-family:Menlo,monospace;font-size:14px;">calicoctl ipam show --show-blocks</code>나 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get blockaffinities.crd.projectcalico.org</code>로 봐요<br>
+  &bull; 방화벽이나 모니터링에서 "이 노드의 파드 대역"을 podCIDR로 적어 두면 실제 파드 IP와 어긋나요
+</div>
+
+<p>파드가 뜰 때 이 블록에서 IP를 꺼내는 과정을 짧게 정리하면 이래요. kubelet이 containerd에 RunPodSandbox를 보내면 containerd가 CNI 플러그인 calico를 ADD 명령으로 실행하고 calico는 IP 고르기를 calico-ipam에 맡겨요. calico-ipam은 그 노드 블록의 빈칸 하나를 골라 기록하고 calico가 노드 쪽 veth(cali…)와 /32 경로를 만들어요. worker1에서 잰 이 과정은 RunPodSandbox 123ms 안에 끝났고 앱 컨테이너를 만들기 전이었어요. 로그로 본 자세한 순서와 파드를 지울 때 IP가 반납되는 과정, 노드가 죽으면 IP가 남는 이유는 34편에서 이어 가요.</p>
+
+<h2>3. 블록 64칸이 차면 노드가 블록을 하나 더 받는다</h2>
+
+<p>blockSize가 26이니 블록 하나는 64칸이에요. worker2의 블록 10.244.126.0/26은 64칸 중 6칸을 쓰고 있었어요. 여기에 worker2로 고정한 pause 파드 62개를 한 번에 만들었어요. 빈칸 58개보다 많은 수예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: IP 풀(IPPool)과 blockSize</div>
+  Calico가 파드 IP를 꺼내 쓰는 주소 범위를 정한 리소스가 IPPool이에요. 이 클러스터에는 default-ipv4-ippool(10.244.0.0/16) 하나가 있고 blockSize 26은 그 풀을 64칸(/26)짜리 블록으로 잘라 노드에 붙인다는 뜻이에요. <a href="https://docs.tigera.io/calico/latest/reference/resources/ippool">IPPool 문서</a>에 따르면 IPv4의 기본값이 26이고 이 값은 풀을 만들 때만 정할 수 있어요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/31/02-block-fill.png" alt="31-ipam-blocks.sh 실행 화면 일부. 채우기 전 15:29:37 worker2 블록은 10.244.126.0/26 하나이고 6/64 사용. 15:29:37 kubectl apply ipam-fill(replicas 62, nodeSelector worker2), 15:29:43 ready 47/62, 15:29:49 ready 62/62이고 worker2 블록이 10.244.126.0/26과 10.244.126.64/26 두 개가 된다. 다 뜬 뒤 10.244.126.0/26은 64(100%), 10.244.126.64/26은 4(6%) 사용. worker1 라우팅 표에 10.244.126.0/26과 10.244.126.64/26 via 192.168.104.4 dev tunl0 proto 80 두 줄. 15:29:49 delete 뒤 15:29:54 ipam-fill 파드 0개인데 10.244.126.0/26은 30(47%), 10.244.126.64/26은 1(2%) 사용" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 첫 블록이 64/64로 차자 두 번째 블록이 붙었고 다른 노드의 라우팅 표에도 한 줄이 늘었다</div>
+
+<p>12초 뒤(15:29:49) 62개가 모두 Ready 상태가 됐고 worker2에는 두 번째 블록 10.244.126.64/26이 붙어 있었어요. 첫 블록은 64/64(100%), 두 번째 블록은 4/64였어요. 원래 쓰던 6칸에 새 파드 62개를 더한 68이 64 + 4로 나뉜 거예요. 파드 IP를 세어 보면 62개 모두 10.244.126.x였어요.</p>
+<p>다른 노드에서도 변화가 보였어요. worker1의 라우팅 표에서 worker2(192.168.104.4)로 가는 줄이 <code style="font-family:Menlo,monospace;font-size:14px;">10.244.126.0/26</code>과 <code style="font-family:Menlo,monospace;font-size:14px;">10.244.126.64/26</code> 두 줄로 늘었어요. <span class="obsv-mark">블록이 하나 늘면 다른 노드의 라우팅 표에도 경로가 한 줄 늘어요.</span> 30편에서 본 대로 이 경로도 Felix가 IPAM 블록을 보고 넣은 proto 80 경로예요.</p>
+<p><a href="https://docs.tigera.io/calico/latest/networking/ipam/get-started-ip-addresses">Calico IPAM 문서</a>에서는 이 동작을 이렇게 설명해요. Calico는 기본적으로 노드에 붙은 블록 안에서 IP를 주고 필요하면 블록을 새로 만들어요. 블록은 같은 노드의 파드 주소를 하나로 묶어 라우팅 표의 크기를 줄이려고 써요. 노드와 파드 수가 늘고 줄면 블록도 자동으로 만들어지고 없어져요. 노드에 붙은 블록 밖에서 주소를 줄 수도 있는데 <a href="https://docs.tigera.io/calico/latest/reference/resources/ipamconfig">IPAMConfiguration</a>의 strictAffinity가 true면 이렇게 다른 노드의 블록에서 빌려 오는 것을 막아요(기본값 false).</p>
+<p>이 파드 62개를 지울 때는 파드 객체가 먼저 사라졌고 IP는 약 14초 뒤에 돌아왔어요. 비어 버린 두 번째 블록은 15분 넘게 worker2에 붙어 있다가 반납됐어요. 왜 이런 순서로 일어나는지는 34편에서 봐요.</p>
+
+<h2>4. IP 풀 크기는 노드 수와 노드당 파드 수로 정한다</h2>
+
+<p>여기까지 보면 <span class="obsv-mark">IP 풀의 크기를 정할 때 세어야 할 것은 IP 수가 아니라 블록 수</span>라는 점을 알 수 있어요. 이 클러스터의 풀은 10.244.0.0/16(65,536개)이고 blockSize는 26(64개)이라서 블록이 1,024개 나와요. 노드는 블록을 하나 이상 가져야 하고 블록이 차면 하나를 더 받아요.</p>
+<p>노드당 파드 수의 상한은 kubelet이 정해요. <a href="https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/">kubelet 설정 레퍼런스</a>의 maxPods 기본값은 110이고 이 클러스터의 노드 네 대도 capacity.pods가 모두 110이었어요. worker2의 kubelet 설정 파일에는 maxPods 줄이 없었어요. 노드 하나가 꽉 차면 파드 110개에 노드 터널 IP 하나를 더한 111개가 필요해요. /26 블록으로 치면 2개예요. 계산을 정리하면 이래요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: maxPods</div>
+  kubelet이 한 노드에서 함께 돌릴 수 있는 파드 수의 상한이에요. kubelet 설정 파일의 maxPods로 정하고 정하지 않으면 기본값 110을 써요. 이 클러스터에서는 노드 네 대 모두 Node 객체의 capacity.pods와 allocatable.pods가 110이었어요.
+</div>
+<div class="obsv-code">필요한 블록 수 ≈ 노드 수 × ⌈(maxPods + 노드 터널 IP 1) ÷ 블록 크기⌉
+이 클러스터: ⌈(110 + 1) ÷ 64⌉ = 2 블록/노드
+풀 10.244.0.0/16 ÷ /26 = 1,024 블록 → 모든 노드가 꽉 찬다면 1,024 ÷ 2 = 512대까지</div>
+<p>&rarr; 노드가 모두 maxPods까지 찬다고 가정하면 이 풀로는 노드 512대까지 감당할 수 있다는 뜻이에요. 블록은 필요할 때만 붙으니 실제로는 더 여유가 있지만 상한을 잡을 때는 이 계산이 안전해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 392" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">IP 풀을 IP 수가 아니라 블록 수로 세면 (이 클러스터)</text>
+<defs>
+<marker id="k31f1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<path d="M20 54 C 238 52, 456 55, 680 53 C 682 74, 679 97, 681 120 C 456 122, 238 119, 21 121 C 19 97, 21 74, 20 54 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="36" y="80" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="start">IPPool 10.244.0.0/16</text>
+<text x="36" y="104" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="start">65,536개 = /26 블록 1,024개 × 64칸</text>
+<path d="M360 72 C 367 70, 373 73, 380 71 C 382 81, 379 92, 381 104 C 373 106, 367 103, 361 105 C 359 92, 361 81, 360 72 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M385 72 C 392 70, 398 73, 405 71 C 407 81, 404 92, 406 104 C 398 106, 392 103, 386 105 C 384 92, 386 81, 385 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M410 72 C 417 70, 423 73, 430 71 C 432 81, 429 92, 431 104 C 423 106, 417 103, 411 105 C 409 92, 411 81, 410 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M435 72 C 442 70, 448 73, 455 71 C 457 81, 454 92, 456 104 C 448 106, 442 103, 436 105 C 434 92, 436 81, 435 72 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M460 72 C 467 70, 473 73, 480 71 C 482 81, 479 92, 481 104 C 473 106, 467 103, 461 105 C 459 92, 461 81, 460 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M485 72 C 492 70, 498 73, 505 71 C 507 81, 504 92, 506 104 C 498 106, 492 103, 486 105 C 484 92, 486 81, 485 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M510 72 C 517 70, 523 73, 530 71 C 532 81, 529 92, 531 104 C 523 106, 517 103, 511 105 C 509 92, 511 81, 510 72 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M535 72 C 542 70, 548 73, 555 71 C 557 81, 554 92, 556 104 C 548 106, 542 103, 536 105 C 534 92, 536 81, 535 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M560 72 C 567 70, 573 73, 580 71 C 582 81, 579 92, 581 104 C 573 106, 567 103, 561 105 C 559 92, 561 81, 560 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M585 72 C 592 70, 598 73, 605 71 C 607 81, 604 92, 606 104 C 598 106, 592 103, 586 105 C 584 92, 586 81, 585 72 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M610 72 C 617 70, 623 73, 630 71 C 632 81, 629 92, 631 104 C 623 106, 617 103, 611 105 C 609 92, 611 81, 610 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M635 72 C 642 70, 648 73, 655 71 C 657 81, 654 92, 656 104 C 648 106, 642 103, 636 105 C 634 92, 636 81, 635 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="668" y="100" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="end">…</text>
+<path d="M200 124 C 190 133, 185 141, 175 150" fill="none" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" marker-end="url(#k31f1)"/>
+<path d="M500 124 C 506 133, 519 141, 525 150" fill="none" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" marker-end="url(#k31f1)"/>
+<path d="M20 156 C 122 154, 225 157, 330 155 C 332 196, 329 237, 331 280 C 225 282, 122 279, 21 281 C 19 237, 21 196, 20 156 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="175" y="179" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">노드 하나가 꽉 차면</text>
+<text x="175" y="200" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">maxPods 110 + 터널 IP 1 = 111</text>
+<path d="M80 212 C 106 210, 133 213, 160 211 C 162 221, 159 232, 161 244 C 133 246, 106 243, 81 245 C 79 232, 81 221, 80 212 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="232" font-family="Menlo, monospace" font-size="13" fill="#2e6b41" text-anchor="middle">64</text>
+<path d="M190 212 C 216 210, 243 213, 270 211 C 272 221, 269 232, 271 244 C 243 246, 216 243, 191 245 C 189 232, 191 221, 190 212 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="230" y="232" font-family="Menlo, monospace" font-size="13" fill="#2e6b41" text-anchor="middle">64</text>
+<text x="175" y="268" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">블록 2개</text>
+<path d="M370 156 C 472 154, 575 157, 680 155 C 682 196, 679 237, 681 280 C 575 282, 472 279, 371 281 C 369 237, 371 196, 370 156 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="525" y="179" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">worker2에서 본 것 (3절)</text>
+<text x="525" y="200" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">6 + 62 = 68 = 64 + 4</text>
+<path d="M430 212 C 456 210, 483 213, 510 211 C 512 221, 509 232, 511 244 C 483 246, 456 243, 431 245 C 429 232, 431 221, 430 212 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="470" y="232" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">64/64</text>
+<path d="M540 212 C 566 210, 593 213, 620 211 C 622 221, 619 232, 621 244 C 593 246, 566 243, 541 245 C 539 232, 541 221, 540 212 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="580" y="232" font-family="Menlo, monospace" font-size="13" fill="#2e6b41" text-anchor="middle">4/64</text>
+<text x="525" y="268" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">블록 2개 · 다른 노드 경로 +1줄</text>
+<text x="350" y="310" font-family="Menlo, monospace" font-size="12.5" fill="#3d3a34" text-anchor="middle">1,024 블록 ÷ 노드당 2 블록 = 노드 512대 (모든 노드가 꽉 찬다고 가정)</text>
+<text x="350" y="344" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">블록을 작게 하면 낭비는 줄고 블록 수와 경로 수가 는다. 크게 하면 반대다</text>
+<text x="350" y="374" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">풀 크기는 노드마다 필요한 블록 수로 센다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. /16 풀은 /26 블록 1,024개이고 꽉 찬 노드는 블록 2개를 쓰니 모든 노드가 꽉 찬다면 512대가 상한이다</div>
+
+<p>blockSize를 바꾸면 이 계산이 달라져요. 블록을 작게 하면(예: /28, 16칸) 파드가 적은 노드가 블록을 덜 낭비하지만 블록 수가 늘어나 3절에서 본 대로 다른 노드의 라우팅 표에 줄이 늘어요. 블록을 크게 하면 반대예요. <a href="https://docs.tigera.io/calico/latest/reference/resources/ippool">IPPool 문서</a>에 따르면 blockSize는 IPv4에서 20~32 사이 값을 쓰고 풀을 만들 때만 정할 수 있어요. <a href="https://docs.tigera.io/calico/latest/networking/ipam/change-block-size">블록 크기 변경 문서</a>에는 설치 뒤에 바꾸려면 임시 풀을 만들고 기존 풀을 끄고 파드를 다시 띄우는 순서를 밟아야 하니 설치 전에 정하는 것이 가장 좋다고 나와 있어요. 파드 대역 자체를 설치 뒤에 바꿔도 효과가 없다는 점은 6편에서 봤어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: IP 풀은 설치 전에 이렇게 정해요</div>
+  &bull; 노드 수 상한 × ⌈(maxPods + 1) ÷ 블록 크기⌉가 풀의 블록 수(풀 크기 ÷ 블록 크기)를 넘지 않게 잡아요. /16 풀에 /26 블록이면 블록은 1,024개예요<br>
+  &bull; 노드당 파드가 적다면 블록을 작게(숫자를 크게) 해서 낭비를 줄일지 아니면 경로 수가 늘지 않게 기본 /26을 그대로 둘지 정해요. 풀을 만든 뒤에는 바꾸기 번거로워요<br>
+  &bull; kubeadm의 podSubnet, Calico IPPool, 노드 네트워크가 서로 겹치지 않는지 봐요(6편)<br>
+  &bull; Calico IPAM을 쓴다면 Calico 문서대로 kube-controller-manager에 <code style="font-family:Menlo,monospace;font-size:14px;">--allocate-node-cidrs=false</code>를 줄지 검토해요. 쓰지 않는 podCIDR을 나누지 않고 CIDRNotAvailable 이벤트도 피할 수 있어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>Calico IPAM을 쓰는 클러스터에서 노드의 podCIDR은 컨트롤러 매니저가 적어 두기만 한 값이고 실제 파드 IP는 Calico의 /26 블록에서 나와요.</b><br><br>
+  kube-controller-manager의 node-ipam-controller는 --cluster-cidr를 /24로 잘라 Node 객체에 적었지만 CNI 설정의 ipam.type이 calico-ipam이라서 그 값은 파드 IP와 상관이 없었어요. 실제 파드 IP는 Calico가 IP 풀을 /26 블록으로 잘라 노드에 붙여 둔 블록의 빈칸에서 나왔어요. 블록 64칸이 차자 노드는 12초 안에 블록을 하나 더 받았고 다른 노드의 라우팅 표에도 한 줄이 늘었어요. 그래서 IP 풀 크기는 IP 수가 아니라 노드마다 필요한 블록 수로 세요. 이 클러스터의 /16 풀은 /26 블록 1,024개이고 maxPods 110인 노드가 꽉 차면 블록이 2개 필요하니 노드 512대가 상한이에요. blockSize는 풀을 만들 때만 정할 수 있으니 설치 전에 정하고 노드의 실제 파드 대역은 podCIDR이 아니라 calicoctl ipam show --show-blocks로 봐요.
+</div>
+
+</div>

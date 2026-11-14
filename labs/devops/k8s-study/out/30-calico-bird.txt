@@ -1,0 +1,85 @@
+# E8 Calico 와 BIRD (2026-11-14 15:21:30 KST), 대상 calico-node 파드: calico-node-lj6rx (k8s-worker1)
+
+## 1. Calico 설정: 백엔드와 캡슐화
+calico_backend=bird
+POOL                  CIDR            IPIP     VXLAN   NAT
+default-ipv4-ippool   10.244.0.0/16   Always   Never   true
+
+## 2. calico-node 파드 안의 프로세스 (bird = BGP, felix = 정책·인터페이스, confd = bird 설정 생성)
+   2415    1873 /usr/local/bin/runsvdir -P /etc/service/enabled
+   2508    2415 runsv confd
+   2509    2415 runsv bird
+   2510    2415 runsv bird6
+   2511    2415 runsv node-services
+   2512    2415 runsv felix
+   2513    2512 calico component felix
+   2517    2508 calico component confd
+   2674    2510 bird6 -R -s /var/run/calico/bird6.ctl -d -c /etc/calico/confd/config/bird6.cfg
+   2675    2509 bird -R -s /var/run/calico/bird.ctl -d -c /etc/calico/confd/config/bird.cfg
+
+## 3. calico-node 준비 상태 검사에 bird 가 들어 있음
+readiness: ["calico","component","node","health","--felix-ready","--bird-ready"]
+liveness:  ["calico","component","node","health","--felix-live","--bird-live"]
+
+## 4. BIRD 의 BGP 세션 (birdcl show protocols): 노드 4대 full mesh → 상대 3개
+BIRD v0.3.3+birdv1.6.8 ready.
+name     proto    table    state  since       info
+static1  Static   master   up     05:41:58    
+kernel1  Kernel   master   up     05:41:58    
+device1  Device   master   up     05:41:58    
+direct1  Direct   master   up     05:41:58    
+Mesh_192_168_104_1 BGP      master   up     05:42:00    Established   
+Mesh_192_168_104_4 BGP      master   up     05:42:00    Established   
+Mesh_192_168_104_5 BGP      master   up     05:42:00    Established   
+
+## 5. 노드별 파드 대역 블록 (Calico IPAM blockaffinity)
+NODE          CIDR                STATE
+k8s-master    10.244.235.192/26   confirmed
+k8s-worker1   10.244.194.64/26    confirmed
+k8s-worker2   10.244.126.0/26     confirmed
+k8s-worker3   10.244.100.192/26   confirmed
+
+## 6. BIRD 가 받은 경로 (birdcl show route)
+BIRD v0.3.3+birdv1.6.8 ready.
+0.0.0.0/0          via 192.168.64.1 on lima1 [kernel1 05:41:59] * (10)
+192.168.104.2/32   dev eth0 [kernel1 05:41:59] * (10)
+192.168.104.0/24   dev eth0 [direct1 05:41:58] * (240)
+10.244.194.64/26   blackhole [static1 05:41:58] * (200)
+                   blackhole [kernel1 05:41:59] (10)
+10.244.194.64/32   dev tunl0 [direct1 05:41:58] * (240)
+192.168.64.0/24    dev lima1 [direct1 05:41:58] * (240)
+192.168.64.1/32    dev lima1 [kernel1 05:41:59] * (10)
+10.244.235.192/26  via 192.168.104.1 on eth0 [Mesh_192_168_104_1 05:42:00] * (200/0) [i]
+                   via 192.168.104.1 on eth0 [Mesh_192_168_104_1 05:42:00] (100/0) [i]
+                   via 192.168.104.1 on tunl0 [kernel1 05:41:59] (10)
+10.244.194.94/32   dev calied6d2393b25 [kernel1 05:42:00] * (10)
+10.244.194.95/32   dev cali60fd651f236 [kernel1 05:42:00] * (10)
+10.244.194.100/32  dev calicd0b7984a6e [kernel1 05:58:04] * (10)
+10.244.194.101/32  dev caliac2026cfde8 [kernel1 05:58:05] * (10)
+10.244.194.99/32   dev calie620301c135 [kernel1 05:42:07] * (10)
+10.244.194.96/32   dev cali2b6d2c097cc [kernel1 05:42:00] * (10)
+10.244.194.97/32   dev calicb8a8efbf9c [kernel1 05:42:05] * (10)
+10.244.126.0/26    via 192.168.104.4 on eth0 [Mesh_192_168_104_4 05:42:00] * (200/0) [i]
+                   via 192.168.104.4 on eth0 [Mesh_192_168_104_4 05:42:00] (100/0) [i]
+                   via 192.168.104.4 on tunl0 [kernel1 05:41:59] (10)
+10.244.100.192/26  via 192.168.104.5 on eth0 [Mesh_192_168_104_5 05:42:00] * (200/0) [i]
+                   via 192.168.104.5 on eth0 [Mesh_192_168_104_5 05:42:00] (100/0) [i]
+                   via 192.168.104.5 on tunl0 [kernel1 05:41:59] (10)
+
+## 7. worker1 커널 라우팅 표: 다른 노드의 /26 블록은 tunl0(IPIP) 로, 자기 블록은 blackhole
+10.244.100.192/26 via 192.168.104.5 dev tunl0 proto 80 onlink mtu 1480 
+10.244.126.0/26 via 192.168.104.4 dev tunl0 proto 80 onlink mtu 1480 
+blackhole 10.244.194.64/26 proto 80 
+10.244.235.192/26 via 192.168.104.1 dev tunl0 proto 80 onlink mtu 1480 
+
+## 8. BGP TCP 179 연결 (worker1)
+Recv-Q Send-Q Local Address:Port   Peer Address:Port Process
+0      0      192.168.104.3:179   192.168.104.4:46705       
+0      0      192.168.104.3:179   192.168.104.5:37173       
+0      0      192.168.104.3:52777 192.168.104.1:179         
+
+## 9. worker1 → worker3 의 파드로 가는 길
+worker3 의 myweb 파드 IP: 10.244.100.222
+10.244.100.222 via 192.168.104.5 dev tunl0 src 10.244.194.64 uid 501 
+    cache expires 563sec mtu 1480 
+worker1 → 10.244.100.222:80 HTTP 200

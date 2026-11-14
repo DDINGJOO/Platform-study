@@ -1,0 +1,440 @@
+<!-- ============================================================
+  k8s 스터디 28편: ClusterIP는 ping이 안 되는데 curl은 되는 이유와 kube-proxy 모드
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: ClusterIP로 ping을 보내면 100% 손실인데 curl은 200이 나와요. kube-proxy가 노드에 넣은 iptables 규칙을 따라가며 ClusterIP의 정체, 파드를 고르는 확률, 지금 쓸 수 있는 kube-proxy 모드를 정리했어요. -->
+<!-- tags: ClusterIP ping, kube-proxy 모드, iptables 규칙, KUBE-SVC, nftables 모드, 서비스 로드밸런싱 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 28편</div>
+  26편. kubelet과 containerd를 재시작해도 컨테이너가 죽지 않는 이유<br>
+  27편. 파드 하나가 뜰 때 kubelet과 containerd 사이에 어떤 CRI 호출이 오갈까<br>
+  <b>28편. ClusterIP는 ping이 안 되는데 curl은 되는 이유와 kube-proxy 모드</b> &larr; 지금 이 글<br>
+  29편. 다른 네임스페이스의 Service는 왜 짧은 이름으로 안 찾아질까<br>
+  30편. Calico에서 BIRD를 멈춰도 파드 통신이 끊기지 않는 이유
+</div>
+
+<p>worker1에 들어가 Service myweb의 ClusterIP 10.105.164.156으로 ping을 보냈어요. 결과는 <code style="font-family:Menlo,monospace;font-size:14px;">100% packet loss</code>였어요. 같은 주소의 80번 포트로 curl을 보내자 이번에는 HTTP 200이 돌아왔어요. 노드의 인터페이스 목록(<code style="font-family:Menlo,monospace;font-size:14px;">ip addr</code>)에서 이 주소를 찾아보니 0개였어요. 어느 인터페이스에도 붙어 있지 않은 주소가 HTTP 요청에는 답한 거예요.</p>
+<p>이 실험은 제가 "kube-proxy도 중요하대"라고 적어 둔 뒤에 시작했어요. 그때 메모한 kube-proxy 설명은 네 문장이었어요. API 서버와 통신해서 Service와 파드의 IP·Port 정보를 가져온다. Service와 Endpoint를 지켜보다가 정해진 모드로 규칙을 만들고 고친다. 모드에는 IPTables, IPVS, User space, Kernel space가 있다. IPTables 모드는 백엔드 파드를 Random으로 고른다. 이번 글에서는 이 네 문장을 실습 클러스터(Lima VM 4대, 쿠버네티스 v1.37.2)에서 하나씩 확인해요. 세 문장은 출력으로 확인했고 모드 목록을 적은 한 문장은 지금 버전과 달랐어요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; ClusterIP로 ping은 안 되는데 curl은 되는 이유는 무엇일까?<br>
+&middot; kube-proxy가 만든 iptables 규칙은 패킷의 목적지를 어디서 어떻게 바꿀까?<br>
+&middot; 규칙에 적힌 확률 0.2, 0.25, 0.333, 0.5는 왜 아래로 갈수록 커질까?<br>
+&middot; 파드 수가 바뀌면 규칙은 몇 초 만에 바뀔까? kube-proxy가 잠깐 사라지면 트래픽은 끊길까?<br>
+&middot; kube-proxy 모드는 지금 몇 가지이고 무엇을 골라야 할까? Service로 요청이 안 갈 때는 어디부터 볼까?</p>
+
+<h2>1. ClusterIP는 어느 인터페이스에도 없고 ping은 기본 경로로 나가 버린다</h2>
+
+<p>먼저 이 클러스터의 kube-proxy가 어떤 모드로 도는지 봤어요. kube-system 네임스페이스의 ConfigMap kube-proxy에는 <code style="font-family:Menlo,monospace;font-size:14px;">mode: iptables</code>가 적혀 있었고 worker1의 kube-proxy에 <code style="font-family:Menlo,monospace;font-size:14px;">127.0.0.1:10249/proxyMode</code>로 물어도 iptables라고 답했어요. 실습 저장소의 kubeadm 설정 파일에는 kube-proxy 모드를 적지 않았으니 ConfigMap의 이 값은 kubeadm이 ConfigMap을 만들면서 넣은 거예요. 같은 화면에는 도입부에서 본 세 결과도 이어서 찍혀 있어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/28/01-clusterip-ping-curl.png" alt="28-kube-proxy.sh 1·2절 출력. configmap kube-proxy mode iptables, worker1 kube-proxy /proxyMode iptables, worker1 ip addr에서 10.105.164.156은 0개, worker1에서 10.105.164.156으로 ping 100% packet loss, 같은 주소 80번 포트로 curl 200" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 모드는 iptables, ClusterIP는 인터페이스 0개, ping은 100% 손실, curl은 200</div>
+
+<p>ping이 실패한 이유를 보려고 w28 네임스페이스에 nginx 파드 3개와 Service web을 따로 만들고 worker1에서 패킷을 직접 잡아 봤어요. 파드마다 응답 본문에 자기 파드 이름을 담아 보내게 해서 어느 파드가 답했는지도 보이게 했어요. 이 Service의 ClusterIP는 10.105.107.184였어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/28/02-wire.png" alt="28-clusterip-wire.sh 1·2절 출력. ip route get 10.105.107.184 결과는 via 192.168.64.1 dev lima1. KUBE-SERVICES 규칙은 -p tcp --dport 80인 한 줄뿐. ping 2개 전송 0개 수신 100% packet loss이고 tcpdump에는 lima1 Out IP 192.168.64.3 &gt; 10.105.107.184 ICMP echo request 두 줄. curl은 web-86f7b96456-l42nd 200 remote_ip=10.105.107.184를 출력했고 tcpdump host 10.105.107.184로 잡힌 패킷은 0개, SYN은 calieb2f6ce3842 인터페이스로 192.168.104.3에서 10.244.194.114:80으로 나갔다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. ping은 목적지가 ClusterIP인 채로 lima1로 나갔고 curl의 패킷에서는 ClusterIP가 한 번도 보이지 않았다</div>
+
+<p>이 그림의 위쪽 절반이 ping 결과예요. <code style="font-family:Menlo,monospace;font-size:14px;">ip route get</code>은 이 주소로 가는 패킷이 기본 경로(192.168.64.1, lima1 인터페이스)로 나간다고 답했어요. 노드의 라우팅 표에 서비스 대역(10.96.0.0/12)으로 가는 경로가 따로 없어서 기본 경로를 탄 거예요. 그 아래 iptables 규칙을 보면 kube-proxy가 이 주소에 걸어 둔 규칙은 <code style="font-family:Menlo,monospace;font-size:14px;">-p tcp ... --dport 80</code> 한 줄뿐이에요. ICMP인 ping은 이 규칙에 걸리지 않아요. 그래서 tcpdump에는 목적지가 10.105.107.184 그대로인 ICMP echo request가 lima1로 나가는 모습이 두 번 찍혔어요. 그 주소를 가진 기계가 어디에도 없으니 답이 올 곳도 없어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: netfilter와 iptables의 nat 표</div>
+  netfilter는 리눅스 커널 안에서 패킷이 지나가는 지점마다 규칙을 검사하는 기능이에요. iptables는 그 규칙을 넣고 보는 명령이고 규칙은 표(table)로 나뉘어요. 주소를 바꾸는 규칙은 nat 표에 들어가요. kube-proxy의 iptables 모드는 Service마다 이 nat 표에 규칙을 넣어요. 넣은 규칙은 <code style="font-family:Menlo,monospace;font-size:14px;">iptables-save -t nat</code>으로 전부 볼 수 있어요.
+</div>
+
+<p>아래쪽 절반은 curl 결과예요. curl 출력에는 <code style="font-family:Menlo,monospace;font-size:14px;">remote_ip=10.105.107.184</code>, 즉 ClusterIP에 연결했다고 나와요. 그런데 그동안 tcpdump로 이 주소가 들어간 패킷을 찾으니 0개였어요. 대신 연결을 여는 SYN 패킷은 목적지가 파드 IP 10.244.194.114:80으로 바뀐 채 그 파드의 cali 인터페이스로 나갔어요. <span class="obsv-mark">ClusterIP는 노드 커널의 규칙 안에만 있는 주소예요. TCP 80번으로 가는 패킷은 노드를 떠나기 전에 목적지가 파드 IP로 바뀌고 규칙이 없는 ICMP는 그대로 기본 경로로 나가요.</span> 목적지가 어디서 어떻게 바뀌는지는 다음 장에서 규칙을 한 줄씩 보며 따라가요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: ClusterIP에 ping이 안 되는 것은 장애가 아니에요</div>
+  &bull; 이 클러스터(iptables 모드)에서는 Service가 멀쩡해도 ClusterIP ping은 100% 손실이에요. Service가 살아 있는지는 실제 포트로 확인해요. <code style="font-family:Menlo,monospace;font-size:14px;">curl http://&lt;ClusterIP&gt;:&lt;port&gt;/</code>이나 <code style="font-family:Menlo,monospace;font-size:14px;">nc -zv &lt;ClusterIP&gt; &lt;port&gt;</code>를 써요<br>
+  &bull; 모드가 다르면 결과가 다를 수 있어요. <a href="https://kubernetes.io/blog/2025/02/28/nftables-kube-proxy/">nftables 모드 소개 글</a>에는 ipvs 모드에서 kube-ipvs0 장치에 모든 Service IP를 붙여야 한다는 설명이 있어요. 그 모드라면 ClusterIP가 노드 인터페이스에 붙어 있다는 뜻이에요. 이번 클러스터는 iptables 모드라서 ipvs 모드의 ping 결과는 확인하지 않았어요
+</div>
+
+<h2>2. curl의 목적지는 KUBE-SERVICES, KUBE-SVC, KUBE-SEP을 지나며 파드 IP로 바뀐다</h2>
+
+<p>2편에서는 Service hello의 KUBE-SERVICES 규칙 한 줄까지만 보고 그 아래는 출력으로 확인하지 않았어요. 이번에는 myweb의 규칙을 끝까지 따라갔어요. 출발점은 패킷이 kube-proxy의 규칙으로 들어가는 입구예요. worker1의 nat 표에서 입구와 출구에 해당하는 줄만 뽑으면 이래요.</p>
+
+<div class="obsv-code">worker1$ sudo iptables-save -t nat | grep -E '^-A (KUBE-MARK-MASQ|KUBE-POSTROUTING)|^-A POSTROUTING .*KUBE|^-A (OUTPUT|PREROUTING) .*KUBE-SERVICES'
+-A PREROUTING -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+-A OUTPUT -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+-A POSTROUTING -m comment --comment "kubernetes postrouting rules" -j KUBE-POSTROUTING
+-A KUBE-MARK-MASQ -j MARK --set-xmark 0x4000/0x4000
+-A KUBE-POSTROUTING -m mark ! --mark 0x4000/0x4000 -j RETURN
+-A KUBE-POSTROUTING -j MARK --set-xmark 0x4000/0x0
+-A KUBE-POSTROUTING -m comment --comment "kubernetes service traffic requiring SNAT" -j MASQUERADE --random-fully</div>
+<p>&rarr; 다른 곳에서 노드로 들어오는 패킷(PREROUTING)과 노드 안에서 나가는 패킷(OUTPUT)이 모두 KUBE-SERVICES 체인을 먼저 지난다는 뜻이에요. 파드가 보낸 패킷은 cali 인터페이스로 노드에 들어오니 PREROUTING을 거쳐 들어가고 노드에서 직접 친 curl은 OUTPUT을 거쳐 들어가요. 아래 네 줄은 뒤에서 다시 봐요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 체인 (chain)</div>
+  iptables 규칙을 순서대로 묶어 둔 목록이에요. 패킷은 체인의 첫 줄부터 차례로 검사받고 조건이 맞는 줄의 <code style="font-family:Menlo,monospace;font-size:14px;">-j</code> 뒤에 적힌 곳으로 넘어가요. 넘어간 곳이 다른 체인이면 그 체인의 첫 줄부터 다시 검사해요. kube-proxy는 KUBE-SERVICES 아래에 Service마다 KUBE-SVC-로 시작하는 체인을, 파드(엔드포인트)마다 KUBE-SEP-으로 시작하는 체인을 만들어요.
+</div>
+
+<p>KUBE-SERVICES부터 myweb에 걸린 규칙을 따라 내려가면 이래요. 이때 myweb 파드는 5개였어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/28/03-iptables-chain.png" alt="28-kube-proxy.sh 3절 출력. KUBE-SERVICES -d 10.105.164.156/32 tcp dport 80은 KUBE-SVC-FCM76ICS4D7Y4C5Y로, 그 체인의 첫 줄은 출발지가 10.244.0.0/16이 아니면 KUBE-MARK-MASQ, 다음 다섯 줄은 statistic random probability 0.20000000019, 0.25, 0.33333333349, 0.5와 조건 없는 줄로 파드 10.244.100.225, 10.244.100.227, 10.244.126.31, 10.244.126.7, 10.244.194.100의 KUBE-SEP 체인으로 간다. KUBE-SEP-PYX42HSMALBMHEWN은 DNAT --to-destination 10.244.100.225:80. worker1 nat 표의 KUBE 규칙 수 168" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. Service 한 개가 KUBE-SERVICES 한 줄, KUBE-SVC 여섯 줄, 파드마다 KUBE-SEP 두 줄이 된다</div>
+
+<p>위에서부터 읽으면 세 단계예요.</p>
+<p>&middot; <b>KUBE-SERVICES</b>: 목적지가 10.105.164.156이고 TCP 80번이면 KUBE-SVC-FCM76ICS4D7Y4C5Y 체인으로 보내요. Service의 ClusterIP와 포트마다 이런 줄이 하나씩 있어요.<br>
+&middot; <b>KUBE-SVC</b>: 첫 줄은 출발지가 파드 대역 10.244.0.0/16이 아닐 때 KUBE-MARK-MASQ로 표시만 남기고 돌아와요. 다음 다섯 줄이 파드를 고르는 줄이에요. <code style="font-family:Menlo,monospace;font-size:14px;">statistic --mode random --probability</code>가 붙은 줄은 그 확률로만 걸리고 마지막 줄에는 조건이 없어요. 확률 숫자의 뜻은 3장에서 풀어요.<br>
+&middot; <b>KUBE-SEP</b>: 고른 파드의 체인이에요. 둘째 줄의 <code style="font-family:Menlo,monospace;font-size:14px;">DNAT --to-destination 10.244.100.225:80</code>이 목적지 주소를 파드 IP로 바꾸는 줄이에요. 첫 줄은 출발지가 그 파드 자신일 때(파드가 자기 Service를 불렀다가 자기가 뽑힌 경우)에도 표시를 남기는 줄이에요.</p>
+<p><span class="obsv-mark">KUBE-SERVICES는 ClusterIP를 알아보고 KUBE-SVC는 파드를 고르고 KUBE-SEP은 목적지를 그 파드 IP로 바꿔요.</span> 이렇게 Service 하나에 규칙이 여러 줄 생기니 worker1의 nat 표에는 KUBE가 들어간 줄이 168줄 있었어요. 이 숫자는 Service와 파드가 늘수록 커져요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: MASQUERADE (출발지 주소 바꾸기)</div>
+  나가는 패킷의 출발지 주소를 그 패킷이 나가는 인터페이스의 주소로 바꾸는 규칙이에요. kube-proxy는 KUBE-MARK-MASQ로 0x4000 표시를 붙여 두고 패킷이 인터페이스로 나갈 때(POSTROUTING) KUBE-POSTROUTING에서 표시가 있는 패킷만 MASQUERADE해요. 그림 2에서 ping 패킷의 출발지는 192.168.64.3이었는데 curl의 SYN 출발지는 192.168.104.3이었어요. 노드에서 출발한 패킷은 출발지가 파드 대역 밖이라 표시를 받았고 cali 인터페이스로 나갈 때 출발지가 바뀐 거예요.
+</div>
+
+<p>그러면 그림 2의 curl은 왜 ClusterIP에 연결했다고 표시했을까요? 목적지 변환은 연결의 첫 패킷에서 한 번 정해지고 커널이 그 결정을 연결마다 기억해 두기 때문이에요. 파드가 보낸 응답이 돌아오면 커널은 기억해 둔 변환을 거꾸로 적용해 출발지를 다시 ClusterIP로 바꿔서 curl에 넘겨요. 그래서 curl은 처음부터 끝까지 ClusterIP와 통신했다고 알고 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: conntrack (연결 추적)</div>
+  netfilter가 지나가는 연결을 하나씩 기억해 두는 표예요. 첫 패킷에서 DNAT으로 목적지를 바꿨다면 같은 연결의 다음 패킷에도 같은 변환을 적용하고 돌아오는 응답에는 반대 변환을 적용해요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k28a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k28a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">같은 ClusterIP 10.105.107.184로 보낸 두 패킷 (worker1)</text>
+<text x="22" y="66" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">✅ curl: TCP 80</text>
+<path d="M20 80 C 50 78, 85 81, 115 79 C 117 100, 114 122, 116 142 C 85 144, 50 141, 19 143 C 18 122, 21 100, 20 80 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="67" y="106" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">OUTPUT</text>
+<text x="67" y="128" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">노드가 보냄</text>
+<path d="M119 111 C 125 110, 131 112, 137 111" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k28a1)"/>
+<path d="M141 80 C 180 78, 220 81, 258 79 C 260 100, 257 122, 259 142 C 220 144, 180 141, 140 143 C 139 122, 142 100, 141 80 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="104" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">KUBE-SERVICES</text>
+<text x="200" y="128" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">tcp 80 맞음</text>
+<path d="M262 111 C 268 110, 274 112, 280 111" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k28a1)"/>
+<path d="M284 80 C 322 78, 360 81, 398 79 C 400 100, 397 122, 399 142 C 360 144, 322 141, 283 143 C 282 122, 285 100, 284 80 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="341" y="104" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">KUBE-SVC</text>
+<text x="341" y="128" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">🎲 파드 하나 고름</text>
+<path d="M403 111 C 409 110, 415 112, 421 111" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k28a1)"/>
+<path d="M425 80 C 462 78, 500 81, 538 79 C 540 100, 537 122, 539 142 C 500 144, 462 141, 424 143 C 423 122, 426 100, 425 80 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="481" y="104" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">KUBE-SEP</text>
+<text x="481" y="128" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">DNAT → 파드 IP</text>
+<path d="M543 111 C 549 110, 555 112, 561 111" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k28a1)"/>
+<path d="M565 78 C 602 76, 640 79, 680 77 C 682 100, 679 124, 681 145 C 640 147, 602 144, 564 146 C 563 124, 566 100, 565 78 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="622" y="102" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="middle">10.244.194.114</text>
+<text x="622" y="122" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">cali로 나감</text>
+<text x="622" y="140" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">200 ✅</text>
+<text x="350" y="172" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">응답은 conntrack이 출발지를 ClusterIP로 되돌린다 · 'host ClusterIP' 패킷 0개</text>
+<path d="M20 192 C 200 190, 450 194, 680 192" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="22" y="228" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">❌ ping: ICMP</text>
+<path d="M20 242 C 50 240, 85 243, 115 241 C 117 262, 114 284, 116 304 C 85 306, 50 303, 19 305 C 18 284, 21 262, 20 242 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="67" y="268" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">OUTPUT</text>
+<text x="67" y="290" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">노드가 보냄</text>
+<path d="M119 273 C 125 272, 131 274, 137 273" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k28a2)"/>
+<path d="M141 242 C 180 240, 220 243, 258 241 C 260 262, 257 284, 259 304 C 220 306, 180 303, 140 305 C 139 284, 142 262, 141 242 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="266" font-family="Menlo, monospace" font-size="12" fill="#b3502f" text-anchor="middle">KUBE-SERVICES</text>
+<text x="200" y="290" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">맞는 줄 없음</text>
+<path d="M262 273 C 300 272, 380 274, 421 273" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#k28a2)"/>
+<text x="341" y="262" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">목적지 그대로</text>
+<path d="M425 242 C 462 240, 500 243, 538 241 C 540 262, 537 284, 539 304 C 500 306, 462 303, 424 305 C 423 284, 426 262, 425 242 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="481" y="266" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">라우팅 표</text>
+<text x="481" y="290" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">10.96.0.0/12 경로 없음</text>
+<path d="M543 273 C 549 272, 555 274, 561 273" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k28a2)"/>
+<path d="M565 240 C 602 238, 640 241, 680 239 C 682 262, 679 286, 681 307 C 640 309, 602 306, 564 308 C 563 286, 566 262, 565 240 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="622" y="264" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">기본 경로 lima1</text>
+<text x="622" y="284" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">→ 192.168.64.1</text>
+<text x="622" y="302" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">답할 기계 없음</text>
+<text x="350" y="336" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">tcpdump: lima1 Out IP 192.168.64.3 &gt; 10.105.107.184 ICMP echo request (2번, 응답 0)</text>
+<text x="350" y="384" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">ClusterIP는 규칙 안에만 있다: 규칙에 맞는 TCP 80만 파드 IP로 바뀐다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 같은 ClusterIP로 보내도 TCP 80은 규칙에 걸려 목적지가 파드 IP로 바뀌고 ICMP는 아무 줄에도 걸리지 않아 기본 경로로 나간다</div>
+
+<h2>3. 0.2, 0.25, 0.333, 0.5는 파드 다섯 개가 1/5씩 받도록 맞춘 확률이다</h2>
+
+<p>메모의 넷째 문장 "IPTables 모드는 백엔드 파드를 Random으로 고른다"는 그림 3의 <code style="font-family:Menlo,monospace;font-size:14px;">statistic --mode random</code> 줄들을 가리켜요. <a href="https://kubernetes.io/docs/reference/networking/virtual-ips/#proxy-mode-iptables">Virtual IPs and Service Proxies 문서</a>도 iptables 모드에서는 엔드포인트마다 규칙을 넣고 이 규칙이 기본으로 백엔드 파드를 무작위로 고른다고 적어요. 그런데 확률이 0.2, 0.25, 0.333, 0.5로 줄마다 커져요. 파드 다섯 개라면 다섯 줄 모두 0.2여야 할 것 같은데 왜 이럴까요?</p>
+<p>체인을 위에서부터 차례로 검사하기 때문이에요. 첫 줄은 들어온 연결의 0.2를 가져가요. 첫 줄에 걸리지 않은 0.8만 둘째 줄로 내려오고 둘째 줄은 그 0.8의 0.25를 가져가요. 계산하면 이래요.</p>
+
+<div class="obsv-code">1번째 줄 (p=0.2)    0.2                                  = 0.2   남은 몫 0.8
+2번째 줄 (p=0.25)   0.8 × 0.25                           = 0.2   남은 몫 0.6
+3번째 줄 (p=0.333)  0.8 × 0.75 × 0.333…                  = 0.2   남은 몫 0.4
+4번째 줄 (p=0.5)    0.8 × 0.75 × 0.667 × 0.5             = 0.2   남은 몫 0.2
+5번째 줄 (조건 없음) 남은 0.2 전부                          = 0.2</div>
+<p>&rarr; 줄마다 "남은 몫 가운데 얼마를 가져갈지"를 적은 숫자라서 아래로 갈수록 커져요. 다섯 파드가 받는 몫은 모두 0.2예요. 0.20000000019, 0.33333333349의 끝자리 차이는 이 계산에서 무시할 만큼 작아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">KUBE-SVC 다섯 줄이 남은 몫을 차례로 나눠 갖는다</text>
+<text x="350" y="56" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">막대 길이 = 그 줄까지 내려온 연결의 몫 · 초록 = 그 줄이 가져가는 몫</text>
+<text x="24" y="98" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">1줄 p=0.2</text>
+<path d="M190 80 C 220 78, 255 81, 280 79 C 282 92, 280 104, 281 112 C 250 114, 220 111, 190 113 C 189 104, 191 92, 190 80 Z" fill="#5a9e6f" fill-opacity="0.35" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M280 79 C 400 77, 520 80, 640 79 C 642 92, 640 104, 641 112 C 520 114, 400 111, 281 112 C 280 104, 282 92, 280 79 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+<text x="235" y="102" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">0.2</text>
+<text x="460" y="102" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">남은 0.8 → 아래 줄로</text>
+<text x="24" y="148" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">2줄 p=0.25</text>
+<path d="M190 130 C 220 128, 255 131, 280 129 C 282 142, 280 154, 281 162 C 250 164, 220 161, 190 163 C 189 154, 191 142, 190 130 Z" fill="#5a9e6f" fill-opacity="0.35" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M280 129 C 370 127, 460 130, 550 129 C 552 142, 550 154, 551 162 C 460 164, 370 161, 281 162 C 280 154, 282 142, 280 129 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+<text x="235" y="152" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">0.8×0.25</text>
+<text x="415" y="152" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">남은 0.6</text>
+<text x="24" y="198" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">3줄 p=0.333</text>
+<path d="M190 180 C 220 178, 255 181, 280 179 C 282 192, 280 204, 281 212 C 250 214, 220 211, 190 213 C 189 204, 191 192, 190 180 Z" fill="#5a9e6f" fill-opacity="0.35" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M280 179 C 340 177, 400 180, 460 179 C 462 192, 460 204, 461 212 C 400 214, 340 211, 281 212 C 280 204, 282 192, 280 179 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+<text x="235" y="202" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">0.6×0.333</text>
+<text x="370" y="202" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">남은 0.4</text>
+<text x="24" y="248" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">4줄 p=0.5</text>
+<path d="M190 230 C 220 228, 255 231, 280 229 C 282 242, 280 254, 281 262 C 250 264, 220 261, 190 263 C 189 254, 191 242, 190 230 Z" fill="#5a9e6f" fill-opacity="0.35" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M280 229 C 310 227, 340 230, 370 229 C 372 242, 370 254, 371 262 C 340 264, 310 261, 281 262 C 280 254, 282 242, 280 229 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+<text x="235" y="252" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">0.4×0.5</text>
+<text x="325" y="252" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">남은 0.2</text>
+<text x="24" y="298" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">5줄 조건 없음</text>
+<path d="M190 280 C 220 278, 255 281, 280 279 C 282 292, 280 304, 281 312 C 250 314, 220 311, 190 313 C 189 304, 191 292, 190 280 Z" fill="#5a9e6f" fill-opacity="0.35" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="235" y="302" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">남은 전부</text>
+<text x="600" y="152" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">초록 칸은</text>
+<text x="600" y="178" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">모두 0.2</text>
+<text x="350" y="352" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">확률이 아래로 갈수록 커져야 다섯 파드가 1/5씩 받는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 각 줄의 확률은 "남은 몫 가운데 얼마"라서 0.2, 0.25, 0.333, 0.5로 커지고 파드마다 받는 몫은 0.2로 같다</div>
+
+<p>계산이 실제로 맞는지 w28의 파드 3개로 확인했어요. 파드가 3개면 규칙은 0.333, 0.5, 조건 없음의 세 줄이 돼요. worker1에서 curl을 300번 새로 띄워 각각 새 연결로 보냈어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/28/04-distribution.png" alt="28-clusterip-wire.sh 3·4절 출력. w28/web의 KUBE-SVC 규칙은 probability 0.33333333349, 0.5, 조건 없음의 세 줄. curl 300번 결과는 web-86f7b96456-l42nd 96번, rfggd 103번, wmkq2 101번. curl 한 번에 URL 30개를 보낸 세 번은 모두 요청 30번 새 연결 1개였고 응답한 파드는 l42nd x30, l42nd x30, wmkq2 x30" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 새 연결 300개는 96·103·101로 나뉘었고 연결 하나에 실은 요청 30개는 매번 한 파드로만 갔다</div>
+
+<p>300번은 96번, 103번, 101번으로 나뉘었어요. 각 파드가 32%, 34%, 34%쯤 받은 거예요. 15편에서 Kubeshark 서비스맵으로 본 숫자도 같은 규칙에서 나왔어요. 그때 ClusterIP로 586번 보냈더니 파드 3개가 200건, 199건, 187건을 받았는데 그때도 myweb 파드는 3개였으니 규칙은 이번과 같은 세 줄이었을 거예요. 서비스맵에서 본 고른 분배는 이 확률 규칙이 연결마다 한 번씩 파드를 무작위로 고른 결과예요.</p>
+<p>15편 4장에서는 "kube-proxy는 요청이 아니라 연결 단위로 고른다"고 적기만 하고 재현하지는 않았는데 이번에 재현했어요. curl을 한 번 실행하면서 같은 URL을 30개 주면 curl은 연결 하나를 열어 30번 요청을 보내요. 세 번 해 보니 매번 새 연결은 1개였고 30번 모두 한 파드가 받았어요. 처음 두 번은 l42nd였고 세 번째는 wmkq2였어요. <span class="obsv-mark">무작위로 고르는 시점은 연결이 처음 열릴 때 한 번뿐이고 그 연결에 실린 요청은 모두 같은 파드로 가요.</span></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: keep-alive (연결 재사용)</div>
+  HTTP 요청이 끝나도 TCP 연결을 닫지 않고 다음 요청에 다시 쓰는 방식이에요. 연결을 새로 여는 시간을 아끼려고 대부분의 HTTP 클라이언트와 커넥션 풀이 이렇게 동작해요. curl도 한 번 실행할 때 같은 서버로 가는 URL을 여러 개 주면 연결 하나를 이어서 써요.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 파드를 늘렸는데 새 파드에 요청이 안 갈 때</div>
+  &bull; 클라이언트가 커넥션 풀로 연결을 오래 붙잡고 있으면 기존 연결은 원래 파드에 계속 붙어 있어요. 새 파드는 새로 열리는 연결부터 받아요<br>
+  &bull; 그래서 파드 수를 늘린 직후에는 파드별 요청 수가 고르지 않을 수 있어요. 고르게 나뉘는지는 15편의 방법(같은 출발지에서 파드로 가는 선끼리 비교)이나 파드 로그의 건수로 확인해요<br>
+  &bull; 연결이 오래 유지돼 쏠림이 계속되면 클라이언트 쪽 커넥션 풀 설정(연결 최대 수명 같은 값)을 먼저 봐요. kube-proxy 규칙은 이미 열린 연결을 다른 파드로 옮기지 않아요
+</div>
+
+<h2>4. 규칙은 EndpointSlice를 따라 1초 안팎에 바뀌고 kube-proxy는 패킷이 지나는 길에 없다</h2>
+
+<p>메모의 첫째와 둘째 문장은 kube-proxy가 API 서버에서 정보를 가져와 규칙을 만들고 고친다는 내용이었어요. 문서에 따르면 각 kube-proxy는 컨트롤 플레인에서 Service와 EndpointSlice가 추가되고 지워지는 것을 지켜봐요(2편에서 본 EndpointSlice는 Service에 지금 연결된 파드 주소 목록이에요). 정말 그런지 myweb을 5개에서 3개로 줄였다가 다시 5개로 늘리며 worker1의 KUBE-SEP 규칙 수를 계속 세어 봤어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/28/05-scale-and-delete.png" alt="28-kube-proxy.sh 4·5절 출력. 15:48:42 SEP 규칙 5개, 15:48:43 kubectl scale --replicas=3, 15:48:44 SEP 규칙 3개(scale 뒤 1.3초), 15:48:44 replicas=5, 15:48:45 SEP 규칙 5개(scale 뒤 0.7초)이고 새 파드 IP 10.244.100.228과 10.244.126.62가 들어감. worker1 kube-proxy의 TCP 연결은 192.168.104.1:6443 하나. 15:48:45 kube-proxy-r2bzt 삭제 명령, 15:48:47 삭제 완료, 그동안 ClusterIP로 보낸 curl 24번이 모두 200, 15:49:00 새 kube-proxy-tb6sr 1/1 Running 14s" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. 파드 수를 바꾸면 1.3초와 0.7초 만에 규칙이 따라왔고 kube-proxy를 지우는 동안에도 curl 24번은 모두 200이었다</div>
+
+<p>3개로 줄이자 1.3초 만에 KUBE-SEP 규칙이 3개가 됐고 지워진 파드 둘의 IP가 규칙에서 빠졌어요. 다시 5개로 늘리자 0.7초 만에 새 파드 IP 10.244.100.228과 10.244.126.62가 규칙에 들어갔어요. 바로 아래 줄에서 두 파드의 ready가 true인 것도 확인했어요.</p>
+<p>규칙이 따라가는 기준은 파드가 떠 있는지가 아니라 EndpointSlice에서 ready인지예요. w28에서 파드 하나의 readiness probe를 일부러 실패시켜 봤어요. probe는 컨테이너 안의 <code style="font-family:Menlo,monospace;font-size:14px;">/tmp/ready</code> 파일이 있는지만 보게 해 두었어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/28/06-readiness.png" alt="28-clusterip-wire.sh 5절 출력. 16:33:15 대상 파드 web-86f7b96456-l42nd(10.244.194.114), SEP 규칙 3개. rm /tmp/ready 뒤 0.9초 만에 SEP 규칙 2개, EndpointSlice에서 10.244.194.114 ready=false, 파드는 READY 0/1 Running, worker1에서 curl 60번은 rfggd 30번과 wmkq2 30번. touch /tmp/ready 뒤 0.9초 만에 SEP 규칙 3개로 돌아오고 세 주소 모두 ready=true" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 8. 파드는 Running인데 ready가 false가 되자 0.9초 만에 규칙에서 빠졌고 curl 60번이 나머지 두 파드로만 갔다</div>
+
+<p>파일을 지우자 파드는 Running인 채 READY 0/1이 됐고 EndpointSlice에서 그 주소가 ready=false로 바뀌었어요. 0.9초 뒤 worker1의 KUBE-SEP 규칙은 2개가 됐고 curl 60번은 나머지 두 파드가 30번씩 나눠 받았어요. 파일을 다시 만들자 0.9초 만에 규칙이 3개로 돌아왔어요. <span class="obsv-mark">kube-proxy는 EndpointSlice의 ready 표시를 따라 규칙을 고쳐요.</span></p>
+<p>그러면 kube-proxy는 패킷이 지나는 길 위에도 있을까요? worker1에서 kube-proxy 프로세스가 연 TCP 연결은 192.168.104.1:6443 하나뿐이었어요(그림 7). 마스터의 API 서버로 가는 연결이고 파드로 가는 연결은 없어요. 패킷을 받아 전달하는 프로그램이라면 파드 쪽 연결이 보여야 해요.</p>
+<p>그림 7의 아래쪽은 kube-proxy 파드를 지워 본 결과예요. 15:48:45에 worker1의 kube-proxy-r2bzt를 지우는 명령을 보내면서 worker1에서 ClusterIP로 0.5초마다 curl을 24번(약 12초) 보냈어요. 삭제는 15:48:47에 끝났고 DaemonSet이 새로 띄운 kube-proxy-tb6sr의 로그에는 같은 시각인 15:48:47(로그 시각은 UTC 06:48:47)에 "Using iptables Proxier"가 찍혔어요. 그사이 curl 24번은 모두 200이었어요.</p>
+<p>다만 이 실험에서 kube-proxy가 아예 없던 시간은 길어야 2초 남짓이었어요. 이 결과만으로 "kube-proxy가 없어도 된다"고 말하기에는 근거가 약해요. 더 직접적인 증거는 2장의 tcpdump예요. 패킷의 목적지를 바꾼 것은 커널의 DNAT 규칙이었고 kube-proxy 프로세스는 그 패킷을 받지도 보내지도 않았어요. 쿠버네티스 1.24 버전의 <a href="https://github.com/kubernetes/website/blob/release-1.24/content/en/docs/concepts/services-networking/service.md">Service 문서</a>에는 iptables 모드에서는 패킷이 사용자 공간으로 복사되지 않고 가상 IP가 동작하는 데 kube-proxy가 실행 중일 필요가 없다는 문장이 있었어요. 지금 문서에서는 같은 문장을 찾지 못했어요. 대신 지금의 Virtual IPs 문서는 kube-proxy를 돌리면 커널 수준의 규칙이 바뀌고 경우에 따라 재부팅할 때까지 정리되지 않을 수 있다고 적어요. 규칙은 kube-proxy 프로세스가 아니라 커널에 남는다는 뜻이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k28a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k28a4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">kube-proxy는 규칙을 쓰고 패킷은 커널이 처리한다</text>
+<text x="22" y="62" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5">제어 경로: 규칙을 쓴다</text>
+<path d="M20 74 C 80 72, 140 75, 200 73 C 202 96, 199 120, 201 142 C 140 144, 80 141, 19 143 C 18 120, 21 96, 20 74 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="100" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">API 서버</text>
+<text x="110" y="124" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">192.168.104.1:6443</text>
+<path d="M204 108 C 240 106, 280 110, 318 108" fill="none" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k28a3)"/>
+<text x="262" y="96" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">watch</text>
+<text x="262" y="130" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">Service·EndpointSlice</text>
+<path d="M322 74 C 380 72, 440 75, 500 73 C 502 96, 499 120, 501 142 C 440 144, 380 141, 321 143 C 320 120, 323 96, 322 74 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="411" y="100" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">kube-proxy (worker1)</text>
+<text x="411" y="124" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">TCP 연결은 6443 하나뿐</text>
+<path d="M440 146 C 442 170, 438 195, 441 218" fill="none" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k28a3)"/>
+<text x="548" y="178" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">규칙 다시 쓰기</text>
+<text x="548" y="198" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">파드 수 변경 뒤 0.7~1.3초</text>
+<path d="M20 170 C 140 168, 260 172, 380 170" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<path d="M200 222 C 300 220, 420 224, 520 222 C 522 252, 519 282, 521 312 C 420 314, 300 311, 199 313 C 198 282, 201 252, 200 222 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="360" y="250" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18" text-anchor="middle">커널 netfilter · nat 표</text>
+<text x="360" y="274" font-family="Menlo, monospace" font-size="12" fill="#c07f18" text-anchor="middle">KUBE-SERVICES → KUBE-SVC → KUBE-SEP</text>
+<text x="360" y="298" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">worker1 KUBE 규칙 168줄 · conntrack</text>
+<text x="22" y="214" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">데이터 경로: 패킷이 지난다</text>
+<path d="M20 248 C 60 246, 100 249, 140 247 C 142 268, 139 290, 141 310 C 100 312, 60 309, 19 311 C 18 290, 21 268, 20 248 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="80" y="274" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">curl · 파드</text>
+<text x="80" y="296" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">→ ClusterIP:80</text>
+<path d="M144 279 C 160 278, 178 280, 194 279" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k28a4)"/>
+<path d="M524 268 C 540 267, 556 269, 572 268" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k28a4)"/>
+<path d="M576 238 C 610 236, 645 239, 680 237 C 682 260, 679 284, 681 304 C 645 306, 610 303, 575 305 C 574 284, 577 260, 576 238 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="628" y="264" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">파드 IP:80</text>
+<text x="628" y="288" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">DNAT 뒤</text>
+<text x="360" y="342" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">kube-proxy 파드를 지우고 새로 뜨는 동안 curl 24번 모두 200</text>
+<text x="350" y="380" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">kube-proxy는 규칙을 쓰는 쪽에만 있고 패킷은 커널 규칙대로 흐른다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 9. kube-proxy는 API 서버를 지켜보다가 커널의 규칙을 다시 쓸 뿐이고 패킷은 커널의 nat 표만 지나간다</div>
+
+<p>반대로 생각하면 약점도 보여요. 규칙을 고치는 쪽은 kube-proxy 하나뿐이에요. 문서는 kube-proxy의 제어 루프가 각 노드의 규칙을 API 서버의 Service·EndpointSlice 상태와 맞춰 둔다고 설명해요. 그러면 kube-proxy가 없는 동안 파드가 바뀌면 그 노드의 규칙은 어떻게 될까요? 이 경우는 직접 확인했어요. kube-proxy DaemonSet에 worker1을 빼는 nodeAffinity를 잠시 넣어 worker1의 kube-proxy만 없앴어요. DaemonSet을 고치면 다른 노드의 kube-proxy도 차례로 다시 떠요. 그렇게 worker1에 kube-proxy가 없던 약 1분 동안 myweb을 5개에서 2개로 줄였다가 다시 5개로 늘렸어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/28/07-stale-rules.png" alt="worker1의 kube-proxy만 뺀 동안 남긴 기록. worker1 규칙의 엔드포인트는 10.244.100.225, 10.244.100.228, 10.244.126.31, 10.244.126.62, 10.244.194.100 다섯 개 그대로다. myweb을 2개로 줄이자 master 규칙은 10.244.100.228과 10.244.194.100 두 개가 됐고 master에서 보낸 curl 30번은 200=30 실패=0, worker1에서 보낸 curl은 200=8 실패=22다. 다시 5개로 늘리자 master 규칙은 남아 있던 두 개와 새 파드 셋을 합친 다섯 개가 됐지만 worker1 규칙은 옛 다섯 개 그대로였고 worker1 curl은 200=14 실패=16이다. kube-proxy를 되돌리자 worker1 규칙이 새 다섯 개로 바뀌고 curl은 200=30 실패=0이다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 10. kube-proxy가 없는 worker1의 규칙에만 옛 엔드포인트 다섯 개가 그대로 남았고 그 노드에서 보낸 curl만 실패했다</div>
+<p>2개로 줄이자 마스터의 규칙은 곧바로 남은 파드 두 개만 가리키게 바뀌었고 마스터에서 보낸 curl 30번은 모두 200이었어요. 반면 worker1의 규칙은 지워진 파드 셋을 포함한 옛 엔드포인트 다섯 개를 그대로 가리켰어요. 그래서 worker1에서 보낸 curl은 30번 중 22번이 실패했어요. 다시 5개로 늘리자 새 파드 셋이 떴지만 worker1의 규칙에는 들어가지 않았어요. 이때 worker1의 규칙 다섯 줄 가운데 살아 있는 파드를 가리키는 줄은 두 줄뿐이라 curl은 30번 중 14번만 성공했어요. nodeAffinity를 지워 worker1에 kube-proxy를 다시 띄우자 규칙이 새 엔드포인트 다섯 개로 바뀌었고 curl 30번도 모두 200이었어요.</p>
+<p><span class="obsv-mark">kube-proxy가 없어도 트래픽은 흐르지만 그동안 파드가 바뀌면 그 노드만 사라진 파드 IP로 계속 요청을 보내요.</span> 그래서 같은 Service인데 어떤 노드에서 보낸 요청만 실패한다면 그 노드의 kube-proxy를 먼저 의심해 봐요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: kube-proxy 장애는 늦게 드러나요</div>
+  &bull; kube-proxy가 죽어도 이미 깔린 규칙으로 트래픽은 계속 흘러요. 그래서 kube-proxy가 멈춘 순간에는 ClusterIP 트래픽에 바로 드러나는 증상이 없어요<br>
+  &bull; 증상은 그 뒤 배포·스케일·재시작으로 파드 IP가 바뀔 때 나타나요(그림 10). 같은 Service인데 어떤 노드에서는 되고 어떤 노드에서는 연결이 실패하면 그 노드의 kube-proxy부터 봐요<br>
+  &bull; kube-proxy는 DaemonSet이라 노드마다 따로 있어요. 노드 하나의 kube-proxy만 멈추면 그 노드에서 출발하거나 그 노드로 들어오는 Service 트래픽만 영향을 받아요
+</div>
+
+<h2>5. kube-proxy 모드: userspace는 1.26에서 빠졌고 지금 리눅스에서는 iptables·ipvs·nftables다</h2>
+
+<p>메모의 셋째 문장은 IPTables, IPVS, User space, Kernel space라는 모드 목록이었어요. 이 목록이 맞는지 우리 v1.37.2 kube-proxy 바이너리에 직접 물어봤어요.</p>
+
+<div class="obsv-code">$ kubectl -n kube-system exec kube-proxy-tb6sr -- kube-proxy --version
+Kubernetes v1.37.2
+$ kube-proxy --help | --proxy-mode
+--proxy-mode ProxyMode   Which proxy mode to use: on Linux this can be 'iptables' (default), 'ipvs',
+                         or 'nftables'. On Windows the only supported value is 'kernelspace'. ...
+
+worker1 의 커널 모듈(ipvs) 로드 여부: 0
+worker1 의 nft 에 kube-proxy 테이블: 0개
+I1114 06:48:47.037457       1 server_linux.go:144] "Using iptables Proxier"</div>
+<p>&rarr; 리눅스에서 고를 수 있는 모드는 iptables(기본값), ipvs, nftables이고 Windows에서는 kernelspace 하나뿐이라는 뜻이에요. <span class="obsv-mark">메모의 User space는 목록에 없고 메모에 없던 nftables가 있어요.</span> worker1에는 ipvs 커널 모듈도 kube-proxy의 nftables 테이블도 없었고 로그에는 iptables 모드로 시작했다고 찍혀 있어요.</p>
+
+<p>모드마다 지금 상태를 공식 문서와 대조하면 이래요.</p>
+<p>&middot; <b>userspace</b>: 예전 버전에는 kube-proxy가 직접 트래픽을 중계하는 모드가 있었어요. <a href="https://github.com/kubernetes/website/blob/release-1.24/content/en/docs/concepts/services-networking/service.md">1.24 버전 Service 문서</a>의 설명에 따르면 Service마다 노드에 포트를 하나 열고 그 포트로 들어온 연결을 kube-proxy가 백엔드 파드 하나에 이어 주었고 기본으로 라운드로빈으로 골랐어요. 패킷이 kube-proxy 프로세스를 지나갔던 거예요. <a href="https://kubernetes.io/blog/2022/11/18/upcoming-changes-in-kubernetes-1-26/">1.26 변경 예고 글</a>과 <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.26.md">v1.26.0 변경 기록</a>에 따르면 이 모드는 1.26에서 리눅스와 Windows 모두 지원이 끝났고 <code style="font-family:Menlo,monospace;font-size:14px;">--mode userspace</code>를 주면 실패해요.<br>
+&middot; <b>kernelspace</b>: Windows 노드 전용 모드예요. <a href="https://kubernetes.io/docs/reference/networking/virtual-ips/#proxy-mode-kernelspace">문서</a>에 따르면 Windows vSwitch의 확장인 VFP(Virtual Filtering Platform)에 패킷 규칙을 넣어요.<br>
+&middot; <b>iptables</b>: 지금 우리 클러스터의 모드예요. Virtual IPs 문서는 쿠버네티스 1.37의 기본값이 iptables이고 앞으로 나올 버전에서 기본값을 nftables로 바꿀 것이라고 적어요. 업그레이드하면서 모드가 바뀌지 않도록 설정에 모드를 명시하라는 권고도 있어요.<br>
+&middot; <b>ipvs</b>: 같은 문서에 v1.35부터 deprecated로 표시돼 있어요. v1.40부터는 기본으로 꺼지고(<code style="font-family:Menlo,monospace;font-size:14px;">KubeProxyIPVS</code> 기능 게이트로 다시 켤 수 있어요) v1.43에서 완전히 제거될 예정이에요. 문서는 ipvs의 대안으로 nftables 모드를 권하고 nftables를 쓸 수 없는 오래된 리눅스라면 ipvs 대신 iptables 모드를 써 보라고 해요.<br>
+&middot; <b>nftables</b>: 리눅스 커널 5.13 이상에서만 쓸 수 있어요. 우리 노드의 커널은 6.8.0-147이에요. <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/command-line-tools-reference/feature-gates/NFTablesProxyMode.md">NFTablesProxyMode 기능 게이트</a>는 1.29에 알파, 1.31에 베타, 1.33에 GA가 됐어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: nftables</div>
+  iptables의 뒤를 잇는 리눅스 커널의 패킷 규칙 인터페이스예요. 규칙을 한 줄씩 차례로 검사하는 대신 "목적지 주소·포트 → 갈 곳"을 담은 맵 하나로 찾을 수 있어요. <a href="https://kubernetes.io/blog/2025/02/28/nftables-kube-proxy/">nftables 모드 소개 글</a>은 iptables 모드에서는 새 연결의 첫 패킷이 Service 수에 비례하는 개수의 규칙을 검사하지만 nftables 모드는 Service 수와 거의 무관하게 처리한다고 설명해요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">kube-proxy 모드가 버전마다 바뀐 길</text>
+<path d="M450 66 C 451 140, 449 230, 450 300" fill="none" stroke="#4a7fb5" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+<text x="450" y="58" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5" text-anchor="middle">지금 우리 v1.37.2</text>
+<text x="20" y="92" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">userspace</text>
+<path d="M135 88 C 150 87, 170 89, 186 88" fill="none" stroke="#8a8272" stroke-width="3" stroke-linecap="round"/>
+<path d="M182 80 L 196 96 M 196 80 L 182 96" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round"/>
+<text x="206" y="93" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">1.26 제거 · kube-proxy가 직접 중계</text>
+<text x="20" y="134" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">iptables</text>
+<path d="M135 130 C 300 128, 500 132, 676 130" fill="none" stroke="#4a7fb5" stroke-width="3.4" stroke-linecap="round"/>
+<text x="300" y="120" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5" text-anchor="middle">기본값 (1.37 문서 기준)</text>
+<text x="20" y="176" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">ipvs</text>
+<path d="M135 172 C 250 171, 330 173, 400 172" fill="none" stroke="#8a8272" stroke-width="3" stroke-linecap="round"/>
+<path d="M400 172 C 440 171, 480 173, 520 172" fill="none" stroke="#e5a33c" stroke-width="3" stroke-dasharray="8 6" stroke-linecap="round"/>
+<path d="M520 172 C 545 171, 565 173, 584 172" fill="none" stroke="#e5533c" stroke-width="3" stroke-dasharray="1 7" stroke-linecap="round"/>
+<path d="M584 164 L 598 180 M 598 164 L 584 180" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round"/>
+<text x="400" y="196" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18" text-anchor="middle">1.35 deprecated</text>
+<text x="520" y="160" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">1.40 기본 꺼짐</text>
+<text x="630" y="177" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">1.43 제거</text>
+<text x="20" y="232" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">nftables</text>
+<path d="M250 228 C 270 227, 285 229, 300 228" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-dasharray="1 6" stroke-linecap="round"/>
+<path d="M300 228 C 315 227, 335 229, 350 228" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-dasharray="8 5" stroke-linecap="round"/>
+<path d="M350 228 C 470 226, 580 230, 676 228" fill="none" stroke="#5a9e6f" stroke-width="3.4" stroke-linecap="round"/>
+<text x="250" y="252" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">1.29 알파</text>
+<text x="300" y="214" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">1.31 베타</text>
+<text x="350" y="252" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">1.33 GA</text>
+<text x="590" y="214" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">앞으로 기본값 예정</text>
+<text x="590" y="252" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">커널 5.13 이상</text>
+<text x="20" y="288" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">kernelspace</text>
+<path d="M135 284 C 300 283, 500 285, 676 284" fill="none" stroke="#8a8272" stroke-width="2.4" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="300" y="276" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">Windows 노드 전용</text>
+<path d="M135 306 C 300 305, 500 307, 676 306" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+<text x="190" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1.26</text>
+<text x="250" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1.29</text>
+<text x="300" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1.31</text>
+<text x="350" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1.33</text>
+<text x="400" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1.35</text>
+<text x="450" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1.37</text>
+<text x="520" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1.40</text>
+<text x="590" y="324" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1.43</text>
+<text x="350" y="358" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">새로 고른다면 리눅스에서는 iptables 아니면 nftables</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 11. userspace는 이미 빠졌고 ipvs는 빠지는 중이며 nftables는 GA를 지나 기본값 후보가 됐다</div>
+
+<p>기본값 이야기는 문서가 쓰인 시점에 따라 달라요. 2025년 2월의 nftables 모드 소개 글에는 nftables가 GA가 되더라도 호환성 때문에 iptables가 기본값으로 남고 기본값을 바꿀 계획은 아직 없다고 적혀 있었어요. 지금의 1.37 문서는 앞으로 나올 버전에서 기본값을 nftables로 바꾼다고 적어요. 몇 번째 버전에서 바뀌는지는 문서에 적혀 있지 않았어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 모드는 이렇게 골라요</div>
+  &bull; Service가 몇 개 안 되는 이 실습 클러스터(worker1의 nat 표에 KUBE 규칙 168줄)는 iptables로 충분했어요. 파드 수를 바꾼 뒤 규칙이 따라오기까지 1초 안팎이었고 kube-proxy가 규칙을 한 번 맞추는 데는 평균 약 14밀리초가 걸렸어요(6장). 문서가 iptables 모드의 한계로 드는 규모는 파드와 Service가 수만 개인 클러스터예요<br>
+  &bull; 새 클러스터를 커널 5.13 이상 노드로 만든다면 nftables를 검토해요. 소개 글은 노드의 nft 명령이 1.0.0보다 오래됐으면 쓰지 말고 CNI나 NetworkPolicy 구현이 nftables 모드를 지원하는지 먼저 확인하라고 해요. nftables 모드에서는 NodePort가 노드의 기본 IP에서만 열리는 차이도 있어요<br>
+  &bull; ipvs는 새로 고르지 않아요. 이미 쓰고 있다면 v1.40에서 기본으로 꺼지기 전에 nftables나 iptables로 옮길 계획을 세워요<br>
+  &bull; 어떤 모드든 kube-proxy 설정(ConfigMap kube-proxy의 <code style="font-family:Menlo,monospace;font-size:14px;">mode</code>)에 값을 명시해요. 그래야 기본값이 바뀌어도 업그레이드 때 모드가 바뀌지 않아요
+</div>
+
+<h2>6. Service로 요청이 안 갈 때는 EndpointSlice, iptables-save, kube-proxy 순서로 본다</h2>
+
+<p>여기까지 본 경로를 거꾸로 짚으면 Service 장애를 살펴볼 순서가 나와요. 위에서부터 차례로 확인하고 어느 단계에서 기대와 다른지 찾아요.</p>
+
+<div class="obsv-code"># 1. Service 뒤에 ready인 파드 주소가 있는가 (없으면 셀렉터나 readiness 문제)
+kubectl get endpointslices -l kubernetes.io/service-name=&lt;서비스&gt; -o wide
+
+# 2. 요청을 보내는 노드에 그 주소로 가는 규칙이 있는가 (KUBE-SEP 줄 수 = ready 파드 수)
+sudo iptables-save -t nat | grep -- '-d &lt;ClusterIP&gt;/32'
+sudo iptables-save -t nat | grep -- '-A KUBE-SVC-&lt;해시&gt; .*KUBE-SEP'
+
+# 3. 그 노드의 kube-proxy가 살아서 규칙을 맞추고 있는가
+kubectl -n kube-system logs &lt;그 노드의 kube-proxy 파드&gt;
+curl -s 127.0.0.1:10249/proxyMode        # 노드 안에서
+curl -s 127.0.0.1:10256/healthz          # 노드 안에서
+
+# 4. 확인은 ping이 아니라 실제 포트로
+curl -s -o /dev/null -w '%{http_code}\n' http://&lt;ClusterIP&gt;:&lt;port&gt;/</div>
+<p>&rarr; 1단계에서 주소가 없으면 kube-proxy까지 갈 필요가 없어요. 1단계는 정상인데 2단계에서 규칙 수가 다르면 그 노드의 kube-proxy가 의심스러워요. <span class="obsv-mark">kube-proxy는 노드마다 따로 있으니 2·3단계는 요청을 보내는 쪽 노드에서 봐요.</span></p>
+
+<p>3단계에서 볼 수 있는 값을 w28 실험 끝에 worker1에서 뽑아 봤어요.</p>
+
+<div class="obsv-code">kubeproxy_sync_proxy_rules_duration_seconds_sum{ip_family="IPv4"} 0.6386838429999999
+kubeproxy_sync_proxy_rules_duration_seconds_count{ip_family="IPv4"} 47
+kubeproxy_sync_proxy_rules_endpoint_changes_total 93
+kubeproxy_sync_proxy_rules_service_changes_total 84
+healthz: {"lastUpdated":"2026-11-14T07:33:17.508625735Z", ... "nodeEligible":true,"healthy":true, ...}</div>
+<p>&rarr; 새 kube-proxy가 뜬 뒤 IPv4 규칙을 47번 맞췄고 걸린 시간의 합이 약 0.64초라는 뜻이에요. 한 번에 평균 약 14밀리초예요. healthz 응답의 healthy는 true였어요. <a href="https://kubernetes.io/docs/reference/networking/virtual-ips/#external-traffic-policy">Virtual IPs 문서</a>에 따르면 10256번 포트의 /healthz는 kube-proxy가 네트워크 규칙을 제때 맞추고 있고 노드가 삭제 중이 아닐 때 200으로 응답해요. 규칙을 맞추는 시간이 갑자기 길어지거나 healthz가 503이면 그 노드의 kube-proxy를 먼저 봐요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>ClusterIP는 노드 커널의 iptables 규칙 안에만 있는 주소예요. 규칙에 맞는 TCP 80번 패킷은 노드를 떠나기 전에 목적지가 파드 IP로 바뀌고 규칙이 없는 ICMP는 그대로 기본 경로로 나가서 답을 받지 못해요.</b><br><br>
+  kube-proxy는 API 서버(6443)에서 Service와 EndpointSlice를 지켜보다가 노드마다 KUBE-SERVICES, KUBE-SVC, KUBE-SEP 규칙을 다시 써요. 0.2, 0.25, 0.333, 0.5는 남은 몫 가운데 얼마를 가져갈지를 적은 확률이라 다섯 파드가 1/5씩 받고 그 선택은 연결이 열릴 때 한 번만 일어나요. 파드 수나 readiness가 바뀌면 1초 안팎에 규칙이 따라왔고 kube-proxy를 지우는 동안에도 패킷은 커널 규칙대로 흘렀어요. 대신 worker1의 kube-proxy만 약 1분 빼 두자 그 노드의 규칙은 옛 엔드포인트에 멈춰 있었고 그동안 파드가 바뀌자 worker1에서 보낸 요청만 실패했어요. 모드 가운데 userspace는 1.26에서 빠졌고 ipvs는 1.35부터 deprecated예요. 지금 기본값은 iptables이고 앞으로 nftables로 바뀔 예정이에요. kube-proxy는 패킷을 나르지 않고 규칙을 최신으로 맞추는 일을 해요.
+</div>
+
+</div>

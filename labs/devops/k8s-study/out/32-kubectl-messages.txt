@@ -1,0 +1,13 @@
+# 32편: 관문별 kubectl 오류 문구 (2026-11-14 17:00:56 KST, Mac 에서 실습 저장소 루트로 bash 32-kubectl-messages.sh 실행, 조회만)
+
+## 관문 0 TLS: 서버 인증서를 확인할 CA 를 주지 않음 (토큰은 실음)
+worker1$ kubectl --kubeconfig=/dev/null --server=https://192.168.104.1:6443 --token=not-a-real-token -n default get pods
+Unable to connect to the server: tls: failed to verify certificate: x509: certificate signed by unknown authority
+
+## 관문 0 TLS: https 포트에 http 로
+worker1$ kubectl --kubeconfig=/dev/null --server=http://192.168.104.1:6443 --token=not-a-real-token -n default get pods
+Error from server (BadRequest): the server rejected our request for an unknown reason
+
+## 관문 1 인증: CA 는 맞고 토큰이 틀림
+worker1$ kubectl --kubeconfig=/dev/null --server=https://192.168.104.1:6443 --certificate-authority=/etc/kubernetes/pki/ca.crt --token=not-a-real-token -n default get pods
+error: You must be logged in to the server (the server has asked for the client to provide credentials)

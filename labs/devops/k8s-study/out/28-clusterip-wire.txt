@@ -1,0 +1,66 @@
+# w28 ClusterIP 패킷 관찰 (2026-11-14 16:33:02 KST, Mac 에서 ./lab 으로 실행, 네임스페이스 w28, 관찰 노드 worker1)
+
+## 0. 만든 것
+$ kubectl -n w28 get svc,pod -o wide
+svc/web ClusterIP 10.105.107.184 80/TCP
+pod/web-86f7b96456-l42nd 1/1 Running 10.244.194.114 k8s-worker1
+pod/web-86f7b96456-rfggd 1/1 Running 10.244.126.46 k8s-worker2
+pod/web-86f7b96456-wmkq2 1/1 Running 10.244.100.242 k8s-worker3
+16:33:03 worker1 nat 표에 10.105.107.184 규칙이 생긴 것을 확인한 뒤 시작
+
+## 1. ping: ICMP 에는 규칙이 없어 기본 경로로 나간다 (worker1)
+worker1$ ip route get 10.105.107.184
+10.105.107.184 via 192.168.64.1 dev lima1 src 192.168.64.3 uid 0 
+worker1$ iptables-save -t nat | grep -- '-A KUBE-SERVICES -d 10.105.107.184/32'
+-A KUBE-SERVICES -d 10.105.107.184/32 -p tcp -m comment --comment "w28/web cluster IP" -m tcp --dport 80 -j KUBE-SVC-BUKYKKXWAZ73NUBO
+worker1$ ping -c 2 -W 1 10.105.107.184
+2 packets transmitted, 0 received, 100% packet loss, time 1027ms
+같은 동안 tcpdump -i any 'icmp and host 10.105.107.184':
+lima1 Out IP 192.168.64.3 > 10.105.107.184: ICMP echo request, id 9, seq 1, length 64
+lima1 Out IP 192.168.64.3 > 10.105.107.184: ICMP echo request, id 9, seq 2, length 64
+
+## 2. curl: 노드를 떠나는 패킷에는 ClusterIP 가 없다 (worker1)
+worker1$ curl -s -w ' %{http_code} remote_ip=%{remote_ip}' http://10.105.107.184/
+web-86f7b96456-l42nd 200 remote_ip=10.105.107.184
+tcpdump -i any 'host 10.105.107.184' 로 잡힌 패킷: 0개
+tcpdump -i any 'tcp port 80 and (파드 IP 셋) and SYN' 로 잡힌 패킷:
+calieb2f6ce3842 Out IP 192.168.104.3.15763 > 10.244.194.114.80: Flags [S], seq 3332271513, win 64240, options [mss 1460,sackOK,TS val 2213735223 ecr 0,nop,wscale 7], length 0
+calieb2f6ce3842 In  IP 10.244.194.114.80 > 192.168.104.3.15763: Flags [S.], seq 365412659, ack 3332271514, win 64260, options [mss 1440,sackOK,TS val 2600416542 ecr 2213735223,nop,wscale 7], length 0
+
+## 3. 확률 규칙과 실제 분배 (worker1, 연결마다 curl 새로 실행)
+-A KUBE-SVC-BUKYKKXWAZ73NUBO "w28/web -> 10.244.100.242:80" -m statistic --mode random --probability 0.33333333349 -j KUBE-SEP-7G3LDWRZTERLHJTU
+-A KUBE-SVC-BUKYKKXWAZ73NUBO "w28/web -> 10.244.126.46:80" -m statistic --mode random --probability 0.50000000000 -j KUBE-SEP-2JZNVNWU6NSITOWR
+-A KUBE-SVC-BUKYKKXWAZ73NUBO "w28/web -> 10.244.194.114:80" -j KUBE-SEP-IXIJNUIKWOYNPNN5
+worker1$ for i in $(seq 300); do curl -s http://10.105.107.184/; echo; done | sort | uniq -c
+     96 web-86f7b96456-l42nd
+    103 web-86f7b96456-rfggd
+    101 web-86f7b96456-wmkq2
+
+## 4. 연결 하나로 여러 번 요청하면 (curl 한 번에 URL 30개 = keep-alive)
+1회차: 요청 30번, 새 연결 1개, 응답한 파드: web-86f7b96456-l42nd x30
+2회차: 요청 30번, 새 연결 1개, 응답한 파드: web-86f7b96456-l42nd x30
+3회차: 요청 30번, 새 연결 1개, 응답한 파드: web-86f7b96456-wmkq2 x30
+
+## 5. readiness 가 깨지면 규칙에서 빠진다
+16:33:15 대상 파드 web-86f7b96456-l42nd (10.244.194.114). worker1 SEP 규칙 3개, EndpointSlice: 10.244.100.242(ready=true) 10.244.126.46(ready=true) 10.244.194.114(ready=true) 
+16:33:15 kubectl -n w28 exec web-86f7b96456-l42nd -- rm /tmp/ready
+16:33:16 worker1 SEP 규칙 2개 (rm 뒤 0.9초)
+16:33:16 EndpointSlice: 10.244.100.242(ready=true) 10.244.126.46(ready=true) 10.244.194.114(ready=false) 
+16:33:16 파드: web-86f7b96456-l42nd READY 0/1 Running
+16:33:16 worker1 에서 60번 curl: web-86f7b96456-rfggd x30  web-86f7b96456-wmkq2 x30  
+16:33:16 kubectl -n w28 exec web-86f7b96456-l42nd -- touch /tmp/ready
+16:33:17 worker1 SEP 규칙 3개 (touch 뒤 0.9초), EndpointSlice: 10.244.100.242(ready=true) 10.244.126.46(ready=true) 10.244.194.114(ready=true) 
+
+## 6. kube-proxy 가 스스로 알려 주는 것 (worker1, 127.0.0.1:10249/metrics, :10256/healthz)
+kubeproxy_sync_proxy_rules_duration_seconds_sum{ip_family="IPv4"} 0.6386838429999999
+kubeproxy_sync_proxy_rules_duration_seconds_count{ip_family="IPv4"} 47
+kubeproxy_sync_proxy_rules_duration_seconds_sum{ip_family="IPv6"} 0.021066887
+kubeproxy_sync_proxy_rules_duration_seconds_count{ip_family="IPv6"} 1
+kubeproxy_sync_proxy_rules_endpoint_changes_total 93
+kubeproxy_sync_proxy_rules_last_timestamp_seconds{ip_family="IPv4"} 1.7946415970869663e+09
+kubeproxy_sync_proxy_rules_last_timestamp_seconds{ip_family="IPv6"} 1.7946389271878197e+09
+kubeproxy_sync_proxy_rules_service_changes_total 84
+healthz: {"lastUpdated":"2026-11-14T07:33:17.508625735Z","currentTime":"2026-11-14T07:33:17.508607734Z","nodeEligible":true,"healthy":true,"status":{"IPv4":{"lastUpdated
+
+## 7. 정리
+16:33:17 w28 네임스페이스 삭제

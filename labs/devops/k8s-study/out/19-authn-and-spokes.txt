@@ -1,0 +1,36 @@
+# 19편 보강: 401 과 403, API 서버에 붙는 다른 길 (2026-11-14 16:25:56 KST, Mac 에서 실습 저장소 루트로 bash 19-authn-and-spokes.sh 실행, 조회만)
+
+## 1. 같은 GET 요청을 세 가지 자격으로 (worker1 에서 curl)
+  자격 없음(인증서·토큰 없이) → HTTP 403 | Forbidden | pods is forbidden: User "system:anonymous" cannot list resource "pods" in API group "" in the namespace "default"
+  가짜 토큰(Bearer not-a-real-token) → HTTP 401 | Unauthorized | Unauthorized
+  관리자 kubeconfig(클라이언트 인증서) → 7줄 (목록이 나옴)
+
+## 2. API 서버의 익명 인증 설정
+  실행 플래그 중 --anonymous-auth: 0개 (없으면 기본값)
+  --help: --anonymous-auth                                    Enables anonymous requests to the secure port of the API server. Requests that are not rejected by another authentication method are treated as anonymous requests. Anonymous requests have a username of system:anonymous, and a group name of system:unauthenticated. (default true)
+  --help: --authentication-config string                      File with Authentication Configuration to configure the JWT Token authenticator or the anonymous authenticator. This flag is mutually exclusive with the --oidc-* flags if the file configures the JWT Token authenticator. This flag is mutually exclusive with --anonymous-auth if the file configures the Anonymous authenticator.
+  --enable-admission-plugins 설명 앞부분:
+    --enable-admission-plugins strings             admission plugins that should be enabled in addition to default enabled ones (NamespaceLifecy
+
+## 3. kubelet(10250) 에 자격 없이 (worker1 → worker1)
+  curl -sk https://192.168.104.3:10250/pods → HTTP 401
+  kubelet 설정 authentication.anonymous.enabled: enabled:false
+
+## 4. kubernetes Service: 파드·노드 안 프로그램이 API 서버를 찾는 주소
+  Service kubernetes 10.96.0.1 443/TCP
+  EndpointSlice → 192.168.104.1:6443
+
+## 5. 6443 대신 10.96.0.1:443 으로 붙는 것들 (established, 프로세스별)
+[k8s-worker1 호스트 네트워크: calico-node]
+  10.96.0.1:443 ← pid 2513 calico component felix 
+  10.96.0.1:443 ← pid 2517 calico component confd 
+  10.96.0.1:443 ← pid 9100 calico component node node-services 
+[k8s-worker2 의 CoreDNS 파드 네트워크 네임스페이스 안]
+  10.244.126.30:45532 → 10.96.0.1:443  users:(("coredns",pid=2907,fd=11))
+  [::ffff:10.244.126.30]:9153 → [::ffff:10.244.126.32]:46428  users:(("coredns",pid=2907,fd=12))
+[k8s-worker3 의 CoreDNS 파드 네트워크 네임스페이스 안]
+  10.244.100.221:51674 → 10.96.0.1:443  users:(("coredns",pid=2744,fd=13))
+  [::ffff:10.244.100.221]:9153 → [::ffff:10.244.126.32]:46288  users:(("coredns",pid=2744,fd=10))
+[calico-kube-controllers 파드 네트워크 네임스페이스 안]
+  10.244.100.220:60320 → 10.96.0.1:443  users:(("calico",pid=2479,fd=24))
+  (calico-kube-controllers 가 뜬 노드: k8s-worker3)

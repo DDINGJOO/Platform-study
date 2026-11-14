@@ -1,0 +1,52 @@
+# E13 노드 객체와 하트비트 (2026-11-14 15:40:39 KST)
+
+## 1. Node 객체의 status.conditions (k8s-worker1)
+NetworkUnavailable  False  CalicoIsUp                  hb=2026-11-14T05:55:56Z
+MemoryPressure      False  KubeletHasSufficientMemory  hb=2026-11-14T06:33:24Z
+DiskPressure        False  KubeletHasNoDiskPressure    hb=2026-11-14T06:33:24Z
+PIDPressure         False  KubeletHasSufficientPID     hb=2026-11-14T06:33:24Z
+Ready               True   KubeletReady                hb=2026-11-14T06:33:24Z
+
+## 2. Node 객체의 그 밖의 필드
+capacity:    cpu=2 memory=3998420Ki pods=110
+allocatable: cpu=2 memory=3896020Ki pods=110
+addresses:   192.168.104.3 k8s-worker1
+nodeInfo:    kubelet=v1.37.2 runtime=containerd://2.4.1 os=Ubuntu 24.04.5 LTS kernel=6.8.0-147-generic
+spec:        podCIDR=10.244.2.0/24 unschedulable= taints=
+
+## 3. 하트비트 ① Lease (kube-node-lease 네임스페이스, 노드마다 하나)
+NAME          HOLDER        DURATION   RENEW
+k8s-master    k8s-master    40         2026-11-14T06:40:34.740937Z
+k8s-worker1   k8s-worker1   40         2026-11-14T06:40:33.035257Z
+k8s-worker2   k8s-worker2   40         2026-11-14T06:40:37.839825Z
+k8s-worker3   k8s-worker3   40         2026-11-14T06:40:37.638262Z
+k8s-worker1 Lease renewTime 을 4초마다:
+  15:40:39 renewTime=2026-11-14T06:40:33.035257Z | Node Ready lastHeartbeatTime=2026-11-14T06:33:24Z
+  15:40:43 renewTime=2026-11-14T06:40:43.222728Z | Node Ready lastHeartbeatTime=2026-11-14T06:40:43Z
+  15:40:47 renewTime=2026-11-14T06:40:43.222728Z | Node Ready lastHeartbeatTime=2026-11-14T06:40:43Z
+  15:40:51 renewTime=2026-11-14T06:40:43.222728Z | Node Ready lastHeartbeatTime=2026-11-14T06:40:43Z
+  15:40:55 renewTime=2026-11-14T06:40:53.590658Z | Node Ready lastHeartbeatTime=2026-11-14T06:40:43Z
+  15:40:59 renewTime=2026-11-14T06:40:53.590658Z | Node Ready lastHeartbeatTime=2026-11-14T06:40:43Z
+  15:41:04 renewTime=2026-11-14T06:41:03.820651Z | Node Ready lastHeartbeatTime=2026-11-14T06:40:43Z
+
+## 4. kubelet 쪽 주기 (실행 중인 kubelet 설정, /configz)
+  nodeStatusUpdateFrequency = 10s
+  nodeStatusReportFrequency = 5m0s
+  nodeLeaseDurationSeconds = 40
+  maxPods = 110
+  evictionHard = {'imagefs.available': '15%', 'imagefs.inodesFree': '5%', 'memory.available': '100Mi', 'nodefs.available': '10%', 'nodefs.inodesFree': '5%'}
+
+## 5. 판단하는 쪽: KCM node-lifecycle-controller 기본값 (kube-controller-manager --help)
+--node-eviction-rate float32             Number of nodes per second on which pods are deleted in case of node failure when a zone is healthy (see --unhealthy-zone-threshold for definition of healthy/unhealthy). Zone refers to entire cluster in non-multizone clusters. (default 0.1)
+--node-monitor-grace-period duration     Amount of time which we allow running Node to be unresponsive before marking it unhealthy. Must be N times more than kubelet's nodeStatusUpdateFrequency, where N means number of retries allowed for kubelet to post node status. This value should also be greater than the sum of HTTP2_PING_TIMEOUT_SECONDS and HTTP2_READ_IDLE_TIMEOUT_SECONDS (default 50s)
+--node-monitor-period duration           The period for syncing NodeStatus in NodeLifecycleController. (default 5s)
+--node-startup-grace-period duration     Amount of time which we allow starting Node to be unresponsive before marking it unhealthy. (default 1m0s)
+--secondary-node-eviction-rate float32   Number of nodes per second on which pods are deleted in case of node failure when a zone is unhealthy (see --unhealthy-zone-threshold for definition of healthy/unhealthy). Zone refers to entire cluster in non-multizone clusters. This value is implicitly overridden to 0 if the cluster size is smaller than --large-cluster-size-threshold. (default 0.01)
+우리 KCM 에 이 플래그를 따로 준 것: 0개 (= 기본값 사용)
+
+## 6. 노드 객체를 고쳐서 관리하기: cordon (spec.unschedulable)
+15:41:08 mac$ kubectl cordon k8s-worker3
+  spec.unschedulable=true taints=node.kubernetes.io/unschedulable:NoSchedule
+  k8s-worker3 Ready,SchedulingDisabled
+15:41:08 mac$ kubectl uncordon k8s-worker3
+  spec.unschedulable= taints=

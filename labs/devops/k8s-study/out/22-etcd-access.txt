@@ -1,0 +1,40 @@
+# 22편 보충: etcd 접근 조건과 데이터 파일 (2026-11-14 16:54:01 KST)
+
+## 1. etcd 플래그 (정적 파드 매니페스트의 command 에서 접속·인증·용량 관련만)
+  --cert-file=/etc/kubernetes/pki/etcd/server.crt
+  --client-cert-auth=true
+  --data-dir=/var/lib/etcd
+  --key-file=/etc/kubernetes/pki/etcd/server.key
+  --listen-client-urls=https://127.0.0.1:2379,https://192.168.104.1:2379
+  --trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+  --quota-backend-bytes 플래그 수: 0
+
+## 2. API 서버가 etcd 에 붙을 때 쓰는 플래그
+  --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+  --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+  --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+  --etcd-servers=https://127.0.0.1:2379
+  --encryption-provider-config 플래그 수: 0
+
+## 3. 두 인증서 비교 (마스터에서 openssl)
+  /etc/kubernetes/pki/apiserver-etcd-client.crt
+    subject=CN = kube-apiserver-etcd-client
+    issuer=CN = etcd-ca
+    TLS Web Client Authentication
+  /etc/kubernetes/pki/etcd/server.crt
+    subject=CN = k8s-master
+    issuer=CN = etcd-ca
+    TLS Web Server Authentication, TLS Web Client Authentication
+
+## 4. 클라이언트 인증서 없이 worker1 에서 etcd(192.168.104.1:2379) 에 붙어 보기
+  worker1$ curl -k https://192.168.104.1:2379/version
+  → curl 종료 코드 56
+  TLS: alert certificate required
+  worker1$ ls /etc/kubernetes/pki/
+    ca.crt
+
+## 5. 마스터의 etcd 데이터 파일 권한
+  drwx------ root:root /var/lib/etcd
+  drwx------ root:root /var/lib/etcd/member
+  drwx------ root:root /var/lib/etcd/member/snap
+  -rw------- root:root /var/lib/etcd/member/snap/db

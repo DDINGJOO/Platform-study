@@ -1,0 +1,101 @@
+# E23 스케줄러 스코어: 통과한 노드 중 어디로 가나 (2026-11-14 17:15:48 KST, Mac 에서 ./lab kubectl 로, 네임스페이스 w23)
+
+## 0. 지금 돌고 있는 스케줄러의 프로필 (kube-scheduler /configz, 마스터 127.0.0.1:10259)
+profile: default-scheduler | podInitialBackoffSeconds: 1 | podMaxBackoffSeconds: 10
+multiPoint 로 켜진 플러그인(이름:점수 가중치, 0 = 점수를 매기지 않거나 가중치 없음):
+  SchedulingGates:0 PrioritySort:0 NodeName:0 NodeUnschedulable:0 TaintToleration:3 NodeAffinity:2 NodePorts:0 NodeResourcesFit:1 VolumeRestrictions:0 NodeVolumeLimits:0 VolumeBinding:0 VolumeZone:0 PodTopologySpread:2 InterPodAffinity:2 DynamicResources:2 DefaultPreemption:0 NodeResourcesBalancedAllocation:1 ImageLocality:1 DefaultBinder:0 NodeDeclaredFeatures:0
+NodeResourcesBalancedAllocation resources: [{"name": "cpu", "weight": 1}, {"name": "memory", "weight": 1}]
+NodeResourcesFit scoringStrategy: {"type": "LeastAllocated", "resources": [{"name": "cpu", "weight": 1}, {"name": "memory", "weight": 1}]}
+
+## 1. 선호(preferred): worker3 를 weight 100 으로 선호하는 파드(CPU 500m) 4개를 하나씩
+# | affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution: [{weight: 100, preference: kubernetes.io/hostname In [k8s-worker3]}]
+17:15:48 pref-1 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    250m/   0Mi        950m/1600Mi       통과   42        69               0  111
+    k8s-worker2    350m/  70Mi        950m/1470Mi       통과   43        69               0  112
+    k8s-worker3    350m/  70Mi        950m/1470Mi       통과   43        69             200  312  ← 최고점
+17:15:48 pref-1 → k8s-worker3
+17:15:49 pref-2 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    250m/   0Mi        950m/1600Mi       통과   42        69               0  111
+    k8s-worker2    350m/  70Mi        950m/1470Mi       통과   43        69               0  112
+    k8s-worker3    850m/ 102Mi       1450m/1502Mi       통과   30        69             200  299  ← 최고점
+17:15:49 pref-2 → k8s-worker3
+17:15:49 pref-3 만들기 직전 계산:
+==> Mac 용 kubectl v1.37.2 내려받는 중 (.lab/bin/kubectl)
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    250m/   0Mi        950m/1600Mi       통과   42        69               0  111
+    k8s-worker2    350m/  70Mi        950m/1470Mi       통과   43        69               0  112
+    k8s-worker3   1350m/ 134Mi       1950m/1534Mi       통과   29        68             200  297  ← 최고점
+17:16:06 pref-3 → k8s-worker3
+17:16:06 pref-4 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    250m/   0Mi        950m/1600Mi       통과   42        69               0  111
+    k8s-worker2    350m/  70Mi        950m/1470Mi       통과   43        69               0  112  ← 최고점
+    k8s-worker3   1850m/ 166Mi       2450m/1566Mi       탈락   28        73             200    -
+17:16:07 pref-4 → k8s-worker2
+  pref-1 Running k8s-worker3
+  pref-2 Running k8s-worker3
+  pref-3 ContainerCreating k8s-worker3
+  pref-4 ContainerCreating k8s-worker2
+17:16:07 pref 파드 삭제
+
+## 2. 필수(required): 같은 조건을 requiredDuringSchedulingIgnoredDuringExecution 으로 바꾼 파드 4개
+17:16:07 req-1 → k8s-worker3
+17:16:07 req-2 → k8s-worker3
+17:16:07 req-3 → k8s-worker3
+17:16:07 req-4 → <none>
+  req-1 Running k8s-worker3
+  req-2 Running k8s-worker3
+  req-3 Running k8s-worker3
+  req-4 Pending <none>
+17:16:32 req-4 이벤트:
+FailedScheduling   0/4 nodes are available: 1 Insufficient cpu, 1 node(s) had untolerated taint(s), 2 node(s) didn't match Pod's node affinity/selector. preemption: 0/4 nodes are available: 1 No preemption victims found for incoming pod, 3 Preemption is not helpful for scheduling.
+17:16:32 req 파드 삭제
+
+## 3. 조건 없음: CPU 300m·메모리 64Mi 를 요청하는 파드 6개를 하나씩 (LeastAllocated + BalancedAllocation)
+17:16:32 spread-1 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    250m/   0Mi        950m/1600Mi       통과   46        72               0  118
+    k8s-worker2    350m/  70Mi        950m/1470Mi       통과   48        71               0  119  ← 최고점
+    k8s-worker3    350m/  70Mi        950m/1470Mi       통과   48        71               0  119  ← 최고점
+17:16:32 spread-1 → k8s-worker2
+17:16:32 spread-2 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    250m/   0Mi        950m/1600Mi       통과   46        72               0  118
+    k8s-worker2    650m/ 134Mi       1250m/1534Mi       통과   39        71               0  110
+    k8s-worker3    350m/  70Mi        950m/1470Mi       통과   48        71               0  119  ← 최고점
+17:16:32 spread-2 → k8s-worker3
+17:16:33 spread-3 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    250m/   0Mi        950m/1600Mi       통과   46        72               0  118  ← 최고점
+    k8s-worker2    650m/ 134Mi       1250m/1534Mi       통과   39        71               0  110
+    k8s-worker3    650m/ 134Mi       1250m/1534Mi       통과   39        71               0  110
+17:16:33 spread-3 → k8s-worker1
+17:16:33 spread-4 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    550m/  64Mi       1250m/1664Mi       통과   38        71               0  109
+    k8s-worker2    650m/ 134Mi       1250m/1534Mi       통과   39        71               0  110  ← 최고점
+    k8s-worker3    650m/ 134Mi       1250m/1534Mi       통과   39        71               0  110  ← 최고점
+17:16:33 spread-4 → k8s-worker2
+17:16:33 spread-5 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    550m/  64Mi       1250m/1664Mi       통과   38        71               0  109
+    k8s-worker2    950m/ 198Mi       1550m/1598Mi       통과   31        72               0  103
+    k8s-worker3    650m/ 134Mi       1250m/1534Mi       통과   39        71               0  110  ← 최고점
+17:16:33 spread-5 → k8s-worker3
+17:16:33 spread-6 만들기 직전 계산:
+    노드          requests(cpu/mem)  점수용(cpu/mem)    필터  Fit  Balanced  NodeAffinity×2  합
+    k8s-worker1    550m/  64Mi       1250m/1664Mi       통과   38        71               0  109  ← 최고점
+    k8s-worker2    950m/ 198Mi       1550m/1598Mi       통과   31        72               0  103
+    k8s-worker3    950m/ 198Mi       1550m/1598Mi       통과   31        72               0  103
+17:16:34 spread-6 → k8s-worker1
+  spread-1 Running k8s-worker2
+  spread-2 Running k8s-worker3
+  spread-3 Running k8s-worker1
+  spread-4 Running k8s-worker2
+  spread-5 ContainerCreating k8s-worker3
+  spread-6 ContainerCreating k8s-worker1
+
+## 4. 정리
+17:16:39 네임스페이스 w23 삭제

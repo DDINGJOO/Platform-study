@@ -1,0 +1,285 @@
+<!-- ============================================================
+  k8s 스터디 33편: API 서버의 어드미션은 요청을 어떻게 고치고 거절할까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 이름과 이미지만 적은 파드를 --dry-run=server로 보냈더니 serviceAccountName, 토큰 볼륨, 300초 toleration이 붙어 돌아왔어요. 어드미션 플러그인이 요청을 고치고 거절하는 순서와 403·404가 나는 경우를 확인했어요. -->
+<!-- tags: 어드미션 컨트롤러, mutating validating, ResourceQuota LimitRange, PodSecurity admission, dry-run=server, DefaultTolerationSeconds -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 33편</div>
+  30편. Calico에서 BIRD를 멈춰도 파드 통신이 끊기지 않는 이유<br>
+  31편. 노드의 podCIDR과 실제 파드 IP 대역이 다른 이유와 Calico IPAM<br>
+  32편. kubectl 요청이 401과 403을 받는 곳, API 서버의 인증과 인가<br>
+  <b>33편. API 서버의 어드미션은 요청을 어떻게 고치고 거절할까</b> &larr; 지금 이 글<br>
+  34편. 파드 IP는 언제 반납되고 노드가 죽으면 왜 남을까
+</div>
+
+<p>containers 항목에 이름과 이미지만 적은 파드를 실험용 네임스페이스 w32에 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=server</code>로 보냈어요. 돌아온 spec에는 제가 쓰지 않은 칸이 여럿 생겨 있었어요. 그 가운데 어드미션 플러그인이 붙이는 칸만 골라 보면 <code style="font-family:Menlo,monospace;font-size:14px;">serviceAccountName: default</code>, kube-api-access라는 볼륨과 그 마운트, 300초짜리 toleration 두 개, 그리고 <code style="font-family:Menlo,monospace;font-size:14px;">priority: 0</code>이었어요. 그다음 메모리 한도를 건 ResourceQuota를 만들고 같은 파드를 실제로 만들자 403 Forbidden으로 거절됐어요. 그런데 LimitRange 하나를 더 만들고 <b>똑같은 YAML</b>을 다시 보내자 이번에는 저장됐어요.</p>
+<p>앞 편과 이번 편의 출발점은 아키텍처 그림 한 장이었어요. 그림 왼쪽에는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply -f pod.yaml</code> 요청이 0) TLS, 1) Authentication check, 2) Authorization check, 3) Admission controller를 지나 API 서버로 들어간다고 적혀 있었고 저는 이 그림을 두고 "해석 좀"이라고 물었어요. 32편에서는 앞의 세 칸을 따라가며 401과 403이 어디서 나오는지 봤고 403이 인가와 어드미션 두 곳에서 나온다는 것까지 확인했어요. 이번 편에서는 남은 마지막 칸인 어드미션을 풀어요. 어드미션이 요청의 무엇을 고치고 무엇을 거절하는지, 고치는 일과 거절하는 일의 순서가 왜 결과를 바꾸는지 확인해요.</p>
+<p>클러스터는 1~7편에서 만든 실습 환경(Lima VM 4대, kubeadm으로 설치한 쿠버네티스 v1.37.2)이에요. 실험은 32편과 같은 날 전용 네임스페이스 w32에서 했고 끝난 뒤 네임스페이스째 지웠어요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 인가를 통과한 요청을 어드미션이 한 번 더 보는 이유는 무엇일까?<br>
+&middot; 우리 클러스터에서는 어떤 어드미션 플러그인이 돌까? 문서의 목록과 바이너리의 목록은 같을까?<br>
+&middot; 이름과 이미지만 적은 파드에 serviceAccountName과 300초 toleration은 누가 붙일까?<br>
+&middot; 어드미션이 거절하면 늘 403일까?<br>
+&middot; ResourceQuota에 막히던 파드가 LimitRange 하나로 통과한 이유는 무엇일까?</p>
+
+<h2>1. 인가가 보지 못하는 객체 내용은 어드미션이 본다</h2>
+
+<p>인가가 볼 수 있는 것은 누가, 어떤 리소스에, 어떤 동작을 하려는가까지예요. 파드에 메모리 한도를 적었는지, 보안 설정을 했는지는 볼 수 없어요. 32편의 kubelet 실험이 좋은 예였어요. worker1의 kubelet 자격으로 물은 <code style="font-family:Menlo,monospace;font-size:14px;">can-i delete pods</code>는 yes였는데 worker2에 배정된 파드를 실제로 지우려 하자 <code style="font-family:Menlo,monospace;font-size:14px;">node "k8s-worker1" can only delete pods with spec.nodeName set to itself</code>로 막혔어요. 지우려는 파드의 spec.nodeName은 객체를 열어 봐야 알 수 있고 그 확인을 한 것이 NodeRestriction이라는 어드미션 플러그인이었어요.</p>
+<p><a href="https://kubernetes.io/docs/reference/access-authn-authz/authorization/">Authorization 문서</a>에도 특정 객체의 특정 칸에 따라 달라지는 정책은 어드미션 컨트롤러가 맡고 어드미션은 인가가 허락한 요청에만 일어난다고 적혀 있어요. <a href="https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/">Admission Control 문서</a>에 따르면 어드미션 컨트롤러는 API 서버 바이너리 안에 들어 있는 코드이고 객체를 만들고 고치고 지우는 요청에 적용돼요. API 서버 프록시를 거쳐 파드에 접속하는 것과 같은 별도 동작도 막을 수 있어요. 읽기 요청(get, watch, list)은 어드미션 단계를 아예 거치지 않으므로 어드미션으로 막을 수도 없어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 어드미션 플러그인 (mutating, validating)</div>
+  어드미션 컨트롤러 하나하나를 API 서버에서는 플러그인이라고 불러요. mutating 플러그인은 요청에 담긴 객체를 고칠 수 있고 validating 플러그인은 고치지 못하고 통과 여부만 정해요. 두 역할을 모두 하는 플러그인도 있어요. 문서에 따르면 처리는 두 단계로 나뉘어서 mutating 플러그인이 모두 먼저 돌고 그다음에 validating 플러그인이 돌아요. 어느 단계에서든 하나가 거절하면 요청 전체가 그 자리에서 거절돼요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 472" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k33a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k33a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">인가를 통과한 쓰기 요청 하나가 어드미션에서 겪는 일 (v1.37.2 소스 기준)</text>
+<path d="M20 190 C 57 188.5, 93 191, 130 189.5 C 131.5 220, 129 250, 130.5 280 C 93 281.5, 57 279, 20 280.5 C 18.5 250, 21 220, 20 190 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="75" y="218" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">POST pods</text>
+<text x="75" y="242" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">✓ 인가 통과</text>
+<text x="75" y="264" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">(32편)</text>
+<path d="M134 235 C 142 234, 151 236, 160 235" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33a1)"/>
+<path d="M165 50 C 253 48.5, 342 51, 430 49.5 C 431.5 175, 429 301, 430.5 426 C 342 427.5, 253 425, 165 426.5 C 163.5 301, 166 175, 165 50 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="297" y="78" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">① mutating 단계 (Admit)</text>
+<text x="182" y="106" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="start">ServiceAccount</text>
+<text x="182" y="124" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#3d3a34" text-anchor="start">+ serviceAccountName · 토큰 볼륨</text>
+<text x="182" y="142" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#b3502f" text-anchor="start">✗ 없는 ServiceAccount → 403</text>
+<text x="182" y="172" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="start">NamespaceLifecycle</text>
+<text x="182" y="190" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#b3502f" text-anchor="start">✗ 없는 네임스페이스 → 404</text>
+<text x="182" y="220" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="start">LimitRanger</text>
+<text x="182" y="238" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#3d3a34" text-anchor="start">+ 메모리 기본값 (LimitRange가 있으면)</text>
+<text x="182" y="268" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="start">DefaultTolerationSeconds</text>
+<text x="182" y="286" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#3d3a34" text-anchor="start">+ toleration 300초 두 개 (25편)</text>
+<text x="182" y="316" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="start">Priority</text>
+<text x="182" y="334" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#3d3a34" text-anchor="start">+ priority 0</text>
+<text x="182" y="364" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="start">NodeRestriction</text>
+<text x="182" y="382" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#b3502f" text-anchor="start">✗ 남의 노드 파드 → 403 (32편)</text>
+<text x="297" y="414" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">모두 끝난 객체가 다음 단계로 간다</text>
+<path d="M434 175 C 442 174, 451 176, 460 175" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33a1)"/>
+<path d="M465 50 C 537 48.5, 608 51, 680 49.5 C 681.5 132, 679 214, 680.5 296 C 608 297.5, 537 295, 465 296.5 C 463.5 214, 466 132, 465 50 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="572" y="78" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="middle">② validating 단계 (Validate)</text>
+<text x="481" y="110" font-family="Menlo, monospace" font-size="11" fill="#c07f18" text-anchor="start">LimitRanger</text>
+<text x="481" y="128" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#b3502f" text-anchor="start">컨테이너 최대값 초과 → 403</text>
+<text x="481" y="162" font-family="Menlo, monospace" font-size="11" fill="#c07f18" text-anchor="start">ResourceQuota</text>
+<text x="481" y="180" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#b3502f" text-anchor="start">빈 칸 · 쿼터 초과 → 403</text>
+<text x="481" y="214" font-family="Menlo, monospace" font-size="11" fill="#c07f18" text-anchor="start">PodSecurity</text>
+<text x="481" y="232" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#b3502f" text-anchor="start">네임스페이스 기준 위반 → 403</text>
+<text x="572" y="272" font-family="'Nanum Pen Script', cursive" font-size="14.5" fill="#8a8272" text-anchor="middle">고치지 못하고 통과 여부만 정한다</text>
+<path d="M572 299 C 573 304, 571 309, 572 314" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33a2)"/>
+<path d="M465 318 C 537 316.5, 608 319, 680 317.5 C 681.5 329, 679 341, 680.5 352 C 608 353.5, 537 351, 465 352.5 C 463.5 341, 466 329, 465 318 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="572" y="341" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">객체 검증 → etcd에 저장</text>
+<text x="572" y="386" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">읽기(get · list · watch)는</text>
+<text x="572" y="406" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">두 단계를 모두 건너뛴다</text>
+<text x="350" y="458" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">하나라도 거절하면 요청 전체가 그 자리에서 끝난다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 이번 실험에서 작동한 플러그인을 v1.37.2 소스에서 실제로 거절하는 단계에 놓은 모습. 고치는 단계의 플러그인도 거절할 수 있다</div>
+
+<p>그림 1은 이번 실험에서 결과를 직접 본 플러그인을 v1.37.2 소스에서 실제로 불리는 단계에 놓은 거예요. API 서버는 mutating 단계에서 각 플러그인의 Admit 함수를, validating 단계에서 Validate 함수를 호출하는데(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/admission/chain.go">chain.go</a>) Admit 함수도 요청을 거절할 수 있어요. 없는 ServiceAccount(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/plugin/pkg/admission/serviceaccount/admission.go">serviceaccount/admission.go</a>), 없는 네임스페이스(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle/admission.go">lifecycle/admission.go</a>), 남의 노드 파드(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/plugin/pkg/admission/noderestriction/admission.go">noderestriction/admission.go</a>)에 대한 거절은 모두 Admit 함수에서 나요. LimitRanger의 최댓값 검사, ResourceQuota, PodSecurity는 Validate 함수에서 거절해요. Admission Control 문서에는 NamespaceLifecycle과 NodeRestriction의 Type이 Validating으로 적혀 있어서 이 부분은 문서의 Type 표기와 소스 동작이 달라요. <span class="obsv-mark">인가는 요청의 겉모습으로 판단하고 어드미션은 저장될 객체의 내용으로 판단해요.</span></p>
+
+<h2>2. 우리 클러스터에서 도는 어드미션은 바이너리 기본 25개와 NodeRestriction이다</h2>
+
+<p>어드미션 플러그인이 바이너리에 든 것만 있는 건 아니에요. Admission Control 문서의 extension points 절에서는 특별한 플러그인 네 개를 따로 소개해요. MutatingAdmissionWebhook과 ValidatingAdmissionWebhook은 API에 등록한 웹훅(외부 HTTP 서버)에 판단을 맡기고 MutatingAdmissionPolicy와 ValidatingAdmissionPolicy는 외부 호출 없이 고칠 내용이나 검사할 조건을 API 객체에 적게 해요. 그래서 먼저 우리 클러스터에 그런 객체가 있는지 봤어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/33/01-plugins.png" alt="mutatingwebhookconfigurations, validatingwebhookconfigurations, mutatingadmissionpolicies, validatingadmissionpolicies가 모두 0개다. kube-apiserver v1.37.2 바이너리의 --help는 기본 어드미션 플러그인 25개를 NamespaceLifecycle, LimitRanger, ServiceAccount부터 ResourceQuota까지 나열하고 문서 목록은 20개다. 바이너리에만 있는 것은 ClusterTrustBundleAttest, NodeDeclaredFeatureValidator, PodGroupProtection, PodResizeValidator, PodTopologyLabels이고 플래그 설명 끝에는 The order of plugins in this flag does not matter가 있으며 kubeadm은 --enable-admission-plugins=NodeRestriction을 더 켰다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. 웹훅과 정책 객체는 하나도 없었고 기본 플러그인은 바이너리 기준 25개였다</div>
+
+<p>웹훅 설정과 정책 객체는 네 종류 모두 0개였어요. 우리 클러스터에서 요청을 고치거나 거절하는 것은 API 서버 바이너리에 든 플러그인 코드뿐이라는 뜻이에요. 어떤 플러그인이 기본으로 켜지는지는 두 곳에서 확인했어요. 우리 v1.37.2 바이너리의 <code style="font-family:Menlo,monospace;font-size:14px;">kube-apiserver --help</code>에는 기본 목록에 25개가 적혀 있었고 Admission Control 문서의 <a href="https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#which-plugins-are-enabled-by-default">1.37 기본 목록</a>은 20개였어요.</p>
+
+<div class="obsv-code"># kube-apiserver --help 의 기본 목록 (v1.37.2 바이너리, 25개, 적힌 순서)
+NamespaceLifecycle LimitRanger ServiceAccount TaintNodesByCondition PodSecurity Priority DefaultTolerationSeconds
+DefaultStorageClass StorageObjectInUseProtection PodGroupProtection PersistentVolumeClaimResize RuntimeClass
+CertificateApproval CertificateSigning ClusterTrustBundleAttest CertificateSubjectRestriction DefaultIngressClass
+PodTopologyLabels NodeDeclaredFeatureValidator PodResizeValidator MutatingAdmissionPolicy MutatingAdmissionWebhook
+ValidatingAdmissionPolicy ValidatingAdmissionWebhook ResourceQuota
+
+# Admission Control 문서의 Kubernetes 1.37 기본 목록 (20개, 문서에 적힌 순서)
+CertificateApproval, CertificateSigning, CertificateSubjectRestriction, DefaultIngressClass, DefaultStorageClass,
+DefaultTolerationSeconds, LimitRanger, MutatingAdmissionPolicy, MutatingAdmissionWebhook, NamespaceLifecycle,
+PersistentVolumeClaimResize, PodSecurity, Priority, ResourceQuota, RuntimeClass, ServiceAccount,
+StorageObjectInUseProtection, TaintNodesByCondition, ValidatingAdmissionPolicy, ValidatingAdmissionWebhook
+
+  바이너리에만 있는 것: ClusterTrustBundleAttest NodeDeclaredFeatureValidator PodGroupProtection PodResizeValidator PodTopologyLabels
+  문서에만 있는 것: (없음)</div>
+<p>&rarr; 문서 목록 20개는 모두 바이너리 목록에 있었고 바이너리에만 있는 것이 다섯 개였다는 뜻이에요.</p>
+<p>다섯 개 가운데 PodTopologyLabels와 NodeDeclaredFeatureValidator는 같은 문서의 플러그인 설명 절에 기능 게이트가 켜지면 쓰인다고 적혀 있어요. 나머지 셋(PodGroupProtection, ClusterTrustBundleAttest, PodResizeValidator)은 이 문서에서 찾지 못했어요. 문서도 켜진 플러그인은 <code style="font-family:Menlo,monospace;font-size:14px;">kube-apiserver -h</code>로 직접 확인하라고 안내하니 우리 클러스터에서는 바이너리 쪽 25개를 기준으로 삼았어요. 여기에 kubeadm이 API 서버 매니페스트에 <code style="font-family:Menlo,monospace;font-size:14px;">--enable-admission-plugins=NodeRestriction</code>을 넣어 하나를 더 켜요. 이 플래그는 --help 설명대로 기본 목록에 "더해" 켜는 플러그인을 적는 곳이에요.</p>
+<p>--help의 플래그 설명 끝에는 "The order of plugins in this flag does not matter"라고 적혀 있어요. 플래그에 적는 순서로 실행 순서를 바꿀 수는 없다는 뜻이고 실행은 문서에 적힌 대로 mutating 단계부터 해요. <span class="obsv-mark">우리 클러스터의 어드미션은 웹훅 없이 바이너리 기본 25개와 NodeRestriction 하나로 돌고 있었어요.</span></p>
+
+<h2>3. mutating 플러그인은 보내지 않은 칸을 채운다</h2>
+
+<p>mutating 플러그인이 무엇을 고치는지 보려면 저장되기 직전의 객체를 받아 봐야 해요. 실제로 만들면 그 뒤에 스케줄러와 kubelet이 칸을 더 채우니 어드미션이 한 일만 따로 보기 어려워요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: --dry-run=server</div>
+  요청을 API 서버까지 보내서 인증, 인가, 어드미션, 검증을 모두 거치게 하되 저장만 하지 않게 하는 kubectl 옵션이에요. 어드미션이 고친 결과를 돌려받을 수 있어서 저장될 모습을 미리 보는 데 써요. 클라이언트 쪽에서만 처리하는 --dry-run=client와는 달라요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/33/02-mutating-dry-run.png" alt="containers에 이름 c와 이미지 nginx:1.25.1-alpine만 적은 bare.yaml을 kubectl apply --dry-run=server -o json으로 보내면 serviceAccountName default, 볼륨 kube-api-access-t874s와 /var/run/secrets/kubernetes.io/serviceaccount 마운트, node.kubernetes.io/not-ready와 unreachable에 NoExecute 300초 toleration 두 개, priority 0이 붙고 resources는 비어 있다. 아래에는 serviceAccountName nobody인 파드가 error looking up service account w32/nobody로 Forbidden, 없는 네임스페이스 w32-none의 파드가 NotFound로 거절된 결과가 이어진다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 이름과 이미지만 보낸 파드에 ServiceAccount, 300초 toleration, priority가 채워졌다</div>
+
+<p>그림 위쪽이 mutating 결과예요. 어드미션이 붙이는 칸만 골라 보니 보내지 않은 칸이 다섯 개 생겼고 맨 아래 resources가 비어 있는 것은 이 네임스페이스에 아직 LimitRange가 없었기 때문이에요(5절). 플러그인별로 나누면 이래요.</p>
+<p><b>ServiceAccount.</b> serviceAccountName을 default로 정하고 API 토큰을 담은 kube-api-access 볼륨을 붙인 뒤 컨테이너의 <code style="font-family:Menlo,monospace;font-size:14px;">/var/run/secrets/kubernetes.io/serviceaccount</code>에 마운트했어요. <a href="https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/#serviceaccount-admission-controller">ServiceAccount 관리 문서</a>에 적힌 동작 그대로이고 순서는 이래요. 파드에 serviceAccountName이 없으면 default로 정해요. 그다음 파드가 가리키는 ServiceAccount가 있는지 확인해요. ServiceAccount와 파드 어느 쪽도 automountServiceAccountToken을 false로 두지 않았다면 토큰 볼륨과 마운트를 더해요. 32편에서 본 CoreDNS 같은 파드가 10.96.0.1:443으로 API 서버에 붙을 때 쓰는 토큰이 이렇게 들어가요. 그 토큰의 수명이 어떻게 정해지는지는 10편에서 봤어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: taint와 toleration</div>
+  taint는 노드에 붙이는 표시로 "이 표시를 견디지 못하는 파드는 받지 않는다(NoSchedule)" 또는 "이미 있는 파드도 내보낸다(NoExecute)"를 뜻해요. toleration은 파드 쪽에 적는 "이 taint는 견딘다"는 선언이고 NoExecute taint에는 tolerationSeconds로 몇 초 동안 견딜지 적을 수 있어요.
+</div>
+
+<p><b>DefaultTolerationSeconds.</b> node.kubernetes.io/not-ready와 node.kubernetes.io/unreachable taint를 NoExecute로 300초 견디는 toleration 두 개를 붙였어요. 문서에 따르면 이 값은 API 서버 플래그 <code style="font-family:Menlo,monospace;font-size:14px;">default-not-ready-toleration-seconds</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">default-unreachable-toleration-seconds</code>에서 가져오고 기본값은 5분이며 파드에 이미 그런 toleration이 있으면 붙이지 않아요. 25편에서 worker3의 kubelet을 멈췄을 때 노드에 unreachable taint가 붙고도 파드가 바로 쫓겨나지 않은 것도 이 칸 때문이에요. 노드 장애를 알아채는 시간과 이 300초를 합친 이야기는 25편에 있어요.</p>
+<p><b>Priority.</b> priorityClassName을 보고 priority 숫자를 채우는 플러그인이에요. priorityClassName을 적지 않은 이 파드에는 0이 채워졌어요. 문서에는 적은 클래스를 찾지 못하면 파드를 거절한다는 내용도 있어요.</p>
+<p>dry-run 결과에는 이 밖에도 imagePullPolicy: IfNotPresent 같은 값이 들어 있었어요(19편 원자료). 이런 값은 어드미션이 아니라 API가 객체를 만들 때 기본값을 채우는 과정에서 들어가요. <span class="obsv-mark">스케줄러와 kubelet이 손대기 전에 이미 API 서버 안에서 파드의 모양이 바뀌어 있었어요.</span></p>
+
+<h2>4. 어드미션 플러그인의 거절은 대개 403이지만 404도 있다</h2>
+
+<p>그림 3 아래쪽은 거절된 요청 두 개예요. 없는 ServiceAccount nobody를 적은 파드는 <code style="font-family:Menlo,monospace;font-size:14px;">pods "sa-missing" is forbidden: error looking up service account w32/nobody: serviceaccount "nobody" not found</code>로 거절됐어요. ServiceAccount 관리 문서에 따르면 이 플러그인은 파드가 가리키는 ServiceAccount가 없으면 파드를 거절하고 default ServiceAccount에도 같은 확인을 해요.</p>
+<p>없는 네임스페이스 w32-none에 만들려던 파드는 <code style="font-family:Menlo,monospace;font-size:14px;">Error from server (NotFound): ... namespaces "w32-none" not found</code>로 거절됐어요. 이 일은 NamespaceLifecycle 플러그인이 맡아요. 문서에 따르면 이 플러그인은 지우는 중인 네임스페이스에 새 객체를 만들지 못하게 하고 없는 네임스페이스로 온 요청을 거절해요. v1.37.2 소스(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle/admission.go">lifecycle/admission.go</a>)를 보면 네임스페이스를 저장소에서 찾지 못했을 때 그 NotFound 오류를 그대로 돌려주고 지우는 중인 네임스페이스에는 Forbidden을 돌려줘요. 어드미션이 거절해도 404가 나올 수 있다는 뜻이에요.</p>
+<p>세 번째는 네임스페이스 라벨 하나로 거절 기준을 바꾸는 PodSecurity예요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/33/04-podsecurity.png" alt="kubectl label ns w32 pod-security.kubernetes.io/enforce=restricted를 실행하자 existing pods in namespace w32 violate the new PodSecurity enforce level restricted:latest 경고와 bare 파드의 allowPrivilegeEscalation, unrestricted capabilities, runAsNonRoot, seccompProfile 경고가 나오고 라벨은 붙었다. 이어서 bare2 파드를 dry-run으로 보내면 violates PodSecurity restricted:latest로 Forbidden이고 POST /api/v1/namespaces/w32/pods의 응답은 403 Forbidden이다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. restricted 라벨을 붙이자 있던 파드에는 경고만 나왔고 새 파드는 403으로 거절됐다</div>
+
+<p><a href="https://kubernetes.io/docs/concepts/security/pod-security-admission/">Pod Security Admission 문서</a>에 따르면 PodSecurity 플러그인은 네임스페이스 라벨 <code style="font-family:Menlo,monospace;font-size:14px;">pod-security.kubernetes.io/&lt;모드&gt;: &lt;수준&gt;</code>에 적힌 Pod Security Standards 수준(privileged, baseline, restricted)으로 파드를 검사하고 enforce 모드에서는 위반한 파드를 거절해요. w32에 enforce=restricted를 붙이자 새 파드 bare2는 allowPrivilegeEscalation, capabilities, runAsNonRoot, seccompProfile 네 칸을 restricted 기준대로 적지 않아서 403을 받았어요. 라벨을 붙이기 전에는 이름만 다른 같은 YAML(bare)이 통과했어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: Pod Security 라벨은 새로 만드는 파드부터 막아요</div>
+  &bull; 문서에 따르면 Pod Security 제한은 파드를 만들 때 네임스페이스 단위로 적용돼요. 실험에서도 라벨을 붙이는 요청은 성공했고 이미 있던 bare 파드에는 경고만 나왔어요<br>
+  &bull; 그래서 enforce를 걸고 나서 한참 뒤 Deployment를 고치거나 파드가 다시 만들어지는 순간에야 처음으로 거절이 나올 수 있어요<br>
+  &bull; 문서의 모드 표에는 위반해도 허용하면서 사용자에게 경고만 보내는 warn과 감사 로그에만 남기는 audit 모드가 있어요. enforce 전에 warn으로 먼저 걸어 두면 어떤 파드가 걸릴지 미리 볼 수 있어요
+</div>
+
+<p>거절 메시지를 32편의 인가 거절과 나란히 놓으면 차이가 보여요. 인가에서 막힌 403에는 사용자 이름과 동작이 찍혔어요(<code style="font-family:Menlo,monospace;font-size:14px;">User "..." cannot list resource "pods"</code>). <span class="obsv-mark">이번에 본 어드미션의 거절 메시지에는 사용자 이름 대신 플러그인이 적은 이유가 붙었어요.</span> 메시지만 보고도 어느 관문에서 막혔는지 가를 수 있어요.</p>
+
+<h2>5. LimitRange가 채운 값을 ResourceQuota가 센다</h2>
+
+<p>mutating 단계가 먼저 돈다는 순서가 결과를 바꾸는 장면을 직접 보고 싶었어요. 17편에서 Portainer로 메모리 한도를 건 네임스페이스에 배포했을 때 메모리를 적지 않은 Deployment는 파드를 하나도 만들지 못했어요. 그 상황을 w32에서 kubectl로 다시 만들고 LimitRange를 하나 더해 봤어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: LimitRange와 ResourceQuota</div>
+  둘 다 네임스페이스에 두는 객체예요. ResourceQuota는 네임스페이스 전체가 쓸 수 있는 자원의 합계 한도를 정하고 ResourceQuota 플러그인(validating)이 그 한도를 넘는 요청을 거절해요. LimitRange는 컨테이너 하나의 기본값과 최솟값·최댓값을 정하고 LimitRanger 플러그인(mutating이면서 validating)이 비어 있는 칸을 기본값으로 채우고 범위를 벗어난 요청을 거절해요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/33/03-quota-limitrange.png" alt="w32에 ResourceQuota mem(requests.memory와 limits.memory 각각 256Mi)을 만들고 메모리를 적지 않은 bare 파드를 만들면 failed quota: mem: must specify limits.memory for: c; requests.memory for: c로 POST가 403 Forbidden이다. LimitRange mem-default(기본 limits 128Mi, requests 64Mi, 최대 192Mi)를 만든 뒤 같은 파드는 created이고 resources가 limits 128Mi, requests 64Mi로 채워졌으며 annotation kubernetes.io/limit-ranger에 LimitRanger plugin set: memory request for container c; memory limit for container c가 남았다. 쿼터 사용량은 requests 64Mi/256Mi, limits 128Mi/256Mi다. 160Mi 파드는 exceeded quota: mem, requested limits.memory=160Mi, used 128Mi, limited 256Mi로 403이고 300Mi 파드는 maximum memory usage per Container is 192Mi, but limit is 300Mi로 거절된다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 같은 bare 파드가 LimitRange를 만들기 전에는 must specify로 403, 만든 뒤에는 기본값이 채워져 저장됐다</div>
+
+<p>ResourceQuota mem은 requests.memory와 limits.memory를 각각 256Mi로 제한해요. 이렇게 메모리 한도를 건 쿼터가 있으면 메모리를 적지 않은 파드는 셀 값이 없어서 <code style="font-family:Menlo,monospace;font-size:14px;">failed quota: mem: must specify limits.memory for: c; requests.memory for: c</code>로 거절돼요. kubectl의 -v=6 로그를 보면 이 POST 요청의 응답은 403 Forbidden이었어요.</p>
+<p>LimitRange mem-default를 만든 뒤 <b>똑같은 파드</b>를 다시 보냈더니 이번에는 저장됐어요. 저장된 파드에는 limits 128Mi, requests 64Mi가 들어 있었고 annotation <code style="font-family:Menlo,monospace;font-size:14px;">kubernetes.io/limit-ranger</code>에 "LimitRanger plugin set: memory request for container c; memory limit for container c"라는 기록이 남았어요. 쿼터 사용량도 64Mi/256Mi, 128Mi/256Mi로 올라갔어요. <span class="obsv-mark">LimitRanger가 mutating 단계에서 빈 칸을 채운 뒤에 ResourceQuota가 validating 단계에서 그 값을 셌기 때문에 같은 파드가 통과했어요.</span></p>
+<p>그다음 160Mi를 적은 파드는 LimitRange 최댓값 192Mi 안쪽이었지만 쿼터에 남은 128Mi를 넘어서 <code style="font-family:Menlo,monospace;font-size:14px;">exceeded quota: mem, requested: limits.memory=160Mi, used: limits.memory=128Mi, limited: limits.memory=256Mi</code>로 403을 받았어요. 300Mi를 적은 파드는 쿼터를 따지기 전에 LimitRanger의 검사에 걸려 <code style="font-family:Menlo,monospace;font-size:14px;">maximum memory usage per Container is 192Mi, but limit is 300Mi</code>로 거절됐어요. LimitRanger는 칸을 채우기도 하고 범위를 검사하기도 하는 플러그인이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 385" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k33b1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k33b2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k33b3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">LimitRange 하나로 같은 파드가 통과한 이유</text>
+<text x="280" y="58" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">① mutating 단계</text>
+<text x="505" y="58" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="middle">② validating 단계</text>
+<text x="20" y="80" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">LimitRange 없을 때</text>
+<path d="M20 90 C 60 88.5, 100 91, 140 89.5 C 141.5 110, 139 140, 140.5 165 C 100 166.5, 60 164, 20 165.5 C 18.5 140, 21 110, 20 90 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="80" y="122" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">bare 파드</text>
+<text x="80" y="144" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">메모리 칸 없음</text>
+<path d="M144 127 C 157 126, 168 128, 181 127" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33b1)"/>
+<path d="M185 90 C 250 88.5, 315 91, 375 89.5 C 376.5 110, 374 140, 375.5 165 C 315 166.5, 250 164, 185 165.5 C 183.5 140, 186 110, 185 90 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="280" y="112" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">ServiceAccount · Priority</text>
+<text x="280" y="128" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">DefaultTolerationSeconds</text>
+<text x="280" y="152" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">LimitRanger: 채울 기본값 없음</text>
+<path d="M379 127 C 392 126, 403 128, 416 127" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33b1)"/>
+<path d="M420 90 C 477 88.5, 533 91, 590 89.5 C 591.5 110, 589 140, 590.5 165 C 533 166.5, 477 164, 420 165.5 C 418.5 140, 421 110, 420 90 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="505" y="113" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">ResourceQuota</text>
+<text x="505" y="133" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">must specify</text>
+<text x="505" y="149" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">limits.memory</text>
+<path d="M594 127 C 603 126, 612 128, 621 127" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33b2)"/>
+<text x="655" y="125" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#b3502f" text-anchor="middle">403</text>
+<text x="655" y="147" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">거절</text>
+<path d="M20 186 C 200 184, 450 188, 680 186" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="20" y="210" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">LimitRange 있을 때 (default 128Mi · defaultRequest 64Mi)</text>
+<path d="M20 220 C 60 218.5, 100 221, 140 219.5 C 141.5 240, 139 270, 140.5 295 C 100 296.5, 60 294, 20 295.5 C 18.5 270, 21 240, 20 220 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="80" y="252" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">bare 파드</text>
+<text x="80" y="274" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">똑같은 YAML</text>
+<path d="M144 257 C 157 256, 168 258, 181 257" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33b1)"/>
+<path d="M185 220 C 250 218.5, 315 221, 375 219.5 C 376.5 240, 374 270, 375.5 295 C 315 296.5, 250 294, 185 295.5 C 183.5 270, 186 240, 185 220 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="280" y="242" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="middle">LimitRanger</text>
+<text x="280" y="260" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">+ requests.memory 64Mi</text>
+<text x="280" y="276" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">+ limits.memory 128Mi</text>
+<text x="280" y="290" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">나머지 플러그인은 위와 같다</text>
+<path d="M379 257 C 392 256, 403 258, 416 257" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33b1)"/>
+<path d="M420 220 C 477 218.5, 533 221, 590 219.5 C 591.5 240, 589 270, 590.5 295 C 533 296.5, 477 294, 420 295.5 C 418.5 270, 421 240, 420 220 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="505" y="243" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="middle">ResourceQuota</text>
+<text x="505" y="263" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">requests 64Mi/256Mi</text>
+<text x="505" y="279" font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle">limits 128Mi/256Mi ✓</text>
+<path d="M594 257 C 603 256, 612 258, 621 257" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k33b3)"/>
+<text x="655" y="255" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41" text-anchor="middle">저장</text>
+<text x="655" y="275" font-family="Menlo, monospace" font-size="10" fill="#2e6b41" text-anchor="middle">created</text>
+<text x="350" y="338" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">고치는 플러그인이 모두 끝난 뒤에 거절하는 플러그인이 값을 센다</text>
+<text x="350" y="364" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">w32 실험: ResourceQuota mem은 requests·limits 메모리 각 256Mi</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. ResourceQuota가 보는 것은 내가 보낸 YAML이 아니라 mutating 단계를 거친 뒤의 객체다</div>
+
+<p>17편 원자료와 나란히 놓으면 그때 왜 그랬는지 알 수 있어요. Portainer가 만든 pt-lab 네임스페이스에는 ResourceQuota만 있고 LimitRange는 없었어요. 그래서 메모리를 적지 않은 no-limit의 파드는 <code style="font-family:Menlo,monospace;font-size:14px;">pods "no-limit-c85f9544-xd5qx" is forbidden: failed quota: portainer-rq-pt-lab: must specify limits.memory for: nginx; requests.memory for: nginx</code>로 거절됐고 128Mi를 적은 with-limit은 파드가 세 개까지만 만들어지고 그다음 파드부터 <code style="font-family:Menlo,monospace;font-size:14px;">is forbidden: exceeded quota: portainer-rq-pt-lab</code>으로 거절됐어요. w32에서 본 순서를 따르면 그 네임스페이스에 기본값을 채워 주는 LimitRange만 있었어도 must specify 거절은 나지 않았을 거예요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: Deployment의 파드가 어드미션에 막혀도 배포 요청은 성공으로 끝나요</div>
+  &bull; 17편에서 no-limit은 0/2, with-limit은 3/5에서 멈췄는데 Deployment를 만든 요청 자체는 성공했어요. 어드미션에 거절된 것은 제 요청이 아니라 ReplicaSet 컨트롤러가 보낸 파드 생성 요청이었어요<br>
+  &bull; 그래서 Forbidden 메시지는 배포 요청의 응답이 아니라 ReplicaSet의 FailedCreate 이벤트에 남았고 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pods</code>에는 실패한 파드가 한 줄도 없었어요<br>
+  &bull; READY 숫자가 모자라면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl describe rs</code>나 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get events</code>에서 "is forbidden"을 찾아요
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 어드미션에서 막혔을 때 보는 순서</div>
+  &bull; 파드를 직접 만드는 요청이라면 같은 매니페스트를 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=server</code>로 다시 보내 거절 메시지와 채워질 칸을 저장 없이 확인해요<br>
+  &bull; 메시지에 quota가 보이면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl -n &lt;네임스페이스&gt; get resourcequota,limitrange</code>로 한도와 기본값이 있는지, PodSecurity가 보이면 네임스페이스의 pod-security 라벨을 봐요<br>
+  &bull; ResourceQuota만 걸고 LimitRange를 두지 않으면 자원을 적지 않은 매니페스트는 모두 must specify로 막혀요. 쿼터를 걸 때 기본값을 채울 LimitRange를 같이 두면 예상하지 못한 거절이 줄어요
+</div>
+
+<p>어드미션까지 모두 통과한 요청은 객체 종류별 검증을 거쳐 etcd에 기록돼요. 그 기록이 etcd 키로 어떻게 남는지는 22편에서 봤어요.</p>
+
+<p style="font-size:14.5px;color:#8a8272;">📎 이 글에서 확인한 문서와 소스<br>
+&middot; kubernetes.io: <a href="https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/">Admission Control in Kubernetes</a>, <a href="https://kubernetes.io/docs/reference/access-authn-authz/authorization/">Authorization</a>, <a href="https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/">Managing Service Accounts</a>, <a href="https://kubernetes.io/docs/concepts/security/pod-security-admission/">Pod Security Admission</a>, 기능 게이트 PodTopologyLabelsAdmission·NodeDeclaredFeatures<br>
+&middot; 쿠버네티스 소스(v1.37.2): staging/src/k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle/admission.go, plugin/pkg/admission/noderestriction/admission.go, plugin/pkg/admission/serviceaccount/admission.go (본문 링크)</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>어드미션은 저장될 객체의 내용을 보고 먼저 고친 다음에 거절할지 정해요.</b><br><br>
+  인가는 누가 어떤 리소스에 어떤 동작을 하려는지만 보고 메모리 칸이나 보안 설정, 파드가 어느 노드에 배정됐는지는 어드미션이 봐요. 우리 클러스터에는 웹훅도 정책 객체도 없었고 바이너리 기본 플러그인 25개(문서 목록은 20개)에 kubeadm이 켠 NodeRestriction이 작동했어요. 이름과 이미지만 보낸 파드에는 ServiceAccount 플러그인이 serviceAccountName과 토큰 볼륨을, DefaultTolerationSeconds가 300초 toleration 두 개를, Priority가 priority 0을 채웠어요. 거절은 대개 403이었지만 없는 네임스페이스에 대한 거절은 NotFound였고 메시지에는 사용자 이름 대신 플러그인이 적은 이유가 붙었어요. 메모리 쿼터에 must specify로 막히던 파드는 LimitRange 하나로 통과했어요. ResourceQuota가 세는 것은 내가 보낸 YAML이 아니라 mutating 단계를 거친 객체예요.
+</div>
+
+</div>

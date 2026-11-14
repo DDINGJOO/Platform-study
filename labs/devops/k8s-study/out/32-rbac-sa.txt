@@ -1,0 +1,69 @@
+# 32편: ServiceAccount 토큰과 RBAC (2026-11-14 16:56:01 KST, Mac 에서 실습 저장소 루트로 bash 32-rbac-sa.sh 실행, w32 네임스페이스만 쓰고 지움)
+
+## 1. 준비: 네임스페이스 w32 와 ServiceAccount reader (권한은 아직 주지 않음)
+mac$ kubectl create namespace w32; kubectl -n w32 create serviceaccount reader
+namespace/w32 created
+serviceaccount/reader created
+mac$ TOKEN=$(kubectl -n w32 create token reader --duration=10m)   # 토큰 원문은 출력하지 않음
+
+## 2. 토큰만 실어 보낸다 (worker1 에서, 클라이언트 인증서 없음)
+worker1$ kubectl --kubeconfig=/dev/null --server=https://192.168.104.1:6443 --certificate-authority=/etc/kubernetes/pki/ca.crt --token=$TOKEN auth whoami
+Username system:serviceaccount:w32:reader
+Groups   ["system:serviceaccounts","system:serviceaccounts:w32","system:authenticated"]
+worker1$ curl --cacert /etc/kubernetes/pki/ca.crt -H "Authorization: Bearer $TOKEN" https://192.168.104.1:6443/api/v1/namespaces/w32/pods
+403 Forbidden | pods is forbidden: User "system:serviceaccount:w32:reader" cannot list resource "pods" in API group "" in the namespace "w32"
+worker1$ curl ... -H "Authorization: Bearer $BADSIG" ...   # 같은 토큰에서 서명 부분만 뒤집은 것
+401 Unauthorized | Unauthorized
+
+## 3. 관리자가 reader 로 가장해서 묻기 (kubectl auth can-i --as)
+mac$ kubectl auth can-i list pods -n w32 --as=system:serviceaccount:w32:reader → no
+mac$ kubectl auth can-i get pods -n w32 --as=system:serviceaccount:w32:reader → no
+mac$ kubectl auth can-i delete pods -n w32 --as=system:serviceaccount:w32:reader → no
+mac$ kubectl auth can-i --list -n w32 --as=system:serviceaccount:w32:reader   (권한을 주기 전, 기본으로 받은 것)
+Resources                                       Non-Resource URLs                      Resource Names   Verbs
+selfsubjectreviews.authentication.k8s.io        []                                     []               [create]
+selfsubjectaccessreviews.authorization.k8s.io   []                                     []               [create]
+selfsubjectrulesreviews.authorization.k8s.io    []                                     []               [create]
+clustertrustbundles.certificates.k8s.io         []                                     []               [get list watch]
+                                                [/.well-known/openid-configuration/]   []               [get]
+                                                [/.well-known/openid-configuration]    []               [get]
+                                                [/api/*]                               []               [get]
+                                                [/api]                                 []               [get]
+                                                [/apis/*]                              []               [get]
+                                                [/apis]                                []               [get]
+                                                [/healthz]                             []               [get]
+                                                [/healthz]                             []               [get]
+                                                [/livez]                               []               [get]
+                                                [/livez]                               []               [get]
+                                                [/openapi/*]                           []               [get]
+                                                [/openapi]                             []               [get]
+                                                [/openid/v1/jwks/]                     []               [get]
+                                                [/openid/v1/jwks]                      []               [get]
+                                                [/readyz]                              []               [get]
+                                                [/readyz]                              []               [get]
+                                                [/version/]                            []               [get]
+                                                [/version/]                            []               [get]
+                                                [/version]                             []               [get]
+                                                [/version]                             []               [get]
+
+## 4. Role 과 RoleBinding 을 w32 안에만 만든다
+mac$ kubectl -n w32 create role pod-reader --verb=get,list,watch --resource=pods
+role.rbac.authorization.k8s.io/pod-reader created
+mac$ kubectl -n w32 create rolebinding reader-can-read-pods --role=pod-reader --serviceaccount=w32:reader
+rolebinding.rbac.authorization.k8s.io/reader-can-read-pods created
+NAME                   ROLE              AGE   USERS   GROUPS   SERVICEACCOUNTS
+reader-can-read-pods   Role/pod-reader   0s                     w32/reader
+
+## 5. 같은 질문을 다시
+mac$ kubectl auth can-i list pods -n w32 --as=system:serviceaccount:w32:reader → yes
+mac$ kubectl auth can-i delete pods -n w32 --as=system:serviceaccount:w32:reader → no
+mac$ kubectl auth can-i list secrets -n w32 --as=system:serviceaccount:w32:reader → no
+mac$ kubectl auth can-i list pods -n default --as=system:serviceaccount:w32:reader → no
+worker1$ curl --cacert /etc/kubernetes/pki/ca.crt -H "Authorization: Bearer $TOKEN" https://192.168.104.1:6443/api/v1/namespaces/w32/pods
+200 PodList | items 0
+worker1$ curl --cacert /etc/kubernetes/pki/ca.crt -H "Authorization: Bearer $TOKEN" https://192.168.104.1:6443/api/v1/namespaces/default/pods
+403 Forbidden | pods is forbidden: User "system:serviceaccount:w32:reader" cannot list resource "pods" in API group "" in the namespace "default"
+
+## 6. 정리
+mac$ kubectl delete namespace w32
+namespace "w32" deleted

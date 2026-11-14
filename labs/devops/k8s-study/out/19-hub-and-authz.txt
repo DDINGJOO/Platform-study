@@ -1,0 +1,43 @@
+# E20 허브 구조와 인증·인가·어드미션 (2026-11-14 16:05:14 KST)
+
+## 1. 누가 누구에게 TCP 로 붙어 있나 (마스터·worker1 의 ss, 프로세스별 상대 포트)
+[k8s-master]
+  etcd                     :2379 ← 받는 쪽       연결 92개
+  kube-apiserver           :6443 ← 받는 쪽       연결 35개
+  kube-apiserver           → :10250           연결 4개
+  kube-apiserver           → :2379            연결 92개
+  kube-apiserver           → :6443            연결 1개
+  kube-controller          → :6443            연결 2개
+  kube-proxy               → :6443            연결 1개
+  kube-scheduler           → :6443            연결 2개
+  kubectl                  → :6443            연결 1개
+  kubelet                  :10250 ← 받는 쪽      연결 1개
+  kubelet                  → :6443            연결 1개
+[k8s-worker1]
+  kube-proxy               → :6443            연결 1개
+  kubelet                  :10250 ← 받는 쪽      연결 1개
+  kubelet                  → :6443            연결 1개
+
+## 2. 인증(Authentication): 인증서 없이 API 서버에 요청
+  curl -k https://192.168.104.1:6443/api/v1/namespaces/default/pods → 403 (anonymous 로 들어가 인가에서 막힘이면 403, 인증 실패면 401)
+  응답 본문: 403 Forbidden | pods is forbidden: User "system:anonymous" cannot list resource "pods" in API group "" in the namespace "default"
+  API 서버 플래그: --authorization-mode=Node,RBAC --client-ca-file=/etc/kubernetes/pki/ca.crt --enable-admission-plugins=NodeRestriction --service-account-key-file=/etc/kubernetes/pki/sa.pub
+
+## 3. 인가(Authorization, RBAC): 인증은 됐지만 권한이 없는 사용자
+  kubectl auth can-i list pods --as=system:serviceaccount:default:default → no
+  kubectl get pods --as=system:serviceaccount:default:default → Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:default:default" cannot list resource "pods" in API group "" in the name
+  kubectl auth can-i list pods (관리자 kubeconfig) → yes
+  관리자 kubeconfig 의 사용자: kubernetes-admin groups=["kubeadm:cluster-admins","system:authenticated"]
+
+## 4. 어드미션(Admission): 저장 전에 API 서버가 요청을 고치고(mutating) 검사함 (--dry-run=server)
+  내가 보낸 spec: containers 하나(name, image)만
+  저장될 spec 에 붙은 것 (어드미션 플러그인이 붙인 것):
+   [ServiceAccount]           serviceAccountName = default | volumes = ['kube-api-access-cqg7p']
+   [DefaultTolerationSeconds] tolerations = [('not-ready', 'NoExecute', 300), ('unreachable', 'NoExecute', 300)]
+   [Priority]                 priority = 0
+  (그 밖에 API 기본값으로 채워진 것: imagePullPolicy = IfNotPresent , enableServiceLinks = True , preemptionPolicy = PreemptLowerPriority )
+  API 서버 기본 어드미션 플러그인 목록 (kube-apiserver --help 의 --enable-admission-plugins 설명):
+   NamespaceLifecycle LimitRanger ServiceAccount TaintNodesByCondition PodSecurity Priority DefaultTolerationSeconds DefaultStorageClass 
+   StorageObjectInUseProtection PodGroupProtection PersistentVolumeClaimResize RuntimeClass CertificateApproval CertificateSigning 
+   ClusterTrustBundleAttest CertificateSubjectRestriction DefaultIngressClass PodTopologyLabels NodeDeclaredFeatureValidator 
+   PodResizeValidator MutatingAdmissionPolicy MutatingAdmissionWebhook ValidatingAdmissionPolicy ValidatingAdmissionWebhook ResourceQuota

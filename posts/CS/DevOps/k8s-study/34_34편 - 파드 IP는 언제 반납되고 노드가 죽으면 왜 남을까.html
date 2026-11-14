@@ -1,0 +1,485 @@
+<!-- ============================================================
+  k8s 스터디 34편: 파드 IP는 언제 반납되고 노드가 죽으면 왜 남을까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: worker3의 kubelet을 멈춘 동안 강제로 지운 파드의 IP 2개가 20분 넘게 Calico IPAM에 남았어요. CNI ADD·DEL로 파드 IP가 할당·반납되는 흐름과 노드가 죽은 동안 누수 정리가 돌지 않은 이유를 정리했어요. -->
+<!-- tags: CNI DEL, IP 누수, calico-kube-controllers, leakGracePeriod, calicoctl ipam check, StopPodSandbox, 파드 강제 삭제 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 34편</div>
+  30편. Calico에서 BIRD를 멈춰도 파드 통신이 끊기지 않는 이유<br>
+  31편. 노드의 podCIDR과 실제 파드 IP 대역이 다른 이유와 Calico IPAM<br>
+  32편. kubectl 요청이 401과 403을 받는 곳, API 서버의 인증과 인가<br>
+  33편. API 서버의 어드미션은 요청을 어떻게 고치고 거절할까<br>
+  <b>34편. 파드 IP는 언제 반납되고 노드가 죽으면 왜 남을까</b> &larr; 지금 이 글
+</div>
+
+<p>17:30:49부터 17:50:57까지 약 1분마다 <code style="font-family:Menlo,monospace;font-size:14px;">calicoctl ipam check</code>를 돌렸어요. 스무 번 모두 <code style="font-family:Menlo,monospace;font-size:14px;">Found 2 IPs that are allocated in IPAM but not actually in use</code>라는 같은 줄이 나왔어요. worker3의 kubelet을 멈춰 둔 채 그 노드에 있던 myweb 파드 두 개를 강제로 지운 뒤였어요. Calico 문서와 소스의 규칙대로라면 이런 IP는 15분(leakGracePeriod)이 지나면 calico-kube-controllers가 치워야 하는데 20분이 지나도 그대로였어요.</p>
+<p>그러다 17:51:57에 worker3의 kubelet을 다시 켜자 1초 뒤 worker3의 CNI 로그에 <code style="font-family:Menlo,monospace;font-size:14px;">Released address using handleID</code>가 찍혔고 그 뒤 ipam check 결과는 <code style="font-family:Menlo,monospace;font-size:14px;">found 0 problems</code>였어요. IP를 돌려준 것은 누수를 치우는 컨트롤러가 아니라 돌아온 노드였어요.</p>
+<p>쿠버네티스 아키텍처를 공부하던 날 제가 남긴 메모 중에 "IP 할당하고 해제하고 이런 흐름도 중요할 듯"이 있어요. 31편에서는 노드의 podCIDR과 Calico IPAM 블록을 비교했고 이번 글에서는 그 블록에서 파드 IP가 할당되고 반납되는 흐름을 노드 안에서 따라가요. 마지막에는 위 장면으로 돌아와 노드가 죽은 동안 IP가 왜 남았는지 로그와 소스로 확인해요. 클러스터는 Lima VM 4대에 kubeadm v1.37.2, containerd 2.4.1, Calico v3.33.0(매니페스트 설치)을 올린 실습 환경이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 파드 IP는 어느 단계에서 누가 정하고 어디에 기록할까?<br>
+&middot; 파드를 지우면 IP는 언제 반납되고 같은 IP를 바로 다시 받을까?<br>
+&middot; 파드 객체가 사라진 순간 IP도 돌아와 있을까?<br>
+&middot; 빈 블록과 반납되지 않은 IP는 누가 언제 치울까?<br>
+&middot; 노드가 죽은 동안 강제로 지운 파드의 IP는 왜 20분 넘게 남았을까?</p>
+
+<h2>1. 파드 IP는 RunPodSandbox 안의 CNI ADD에서 정해진다</h2>
+
+<p>IP가 정해지는 순간을 잡으려고 worker1에 pause 이미지 파드 ipam-demo를 하나 띄웠어요(nodeSelector로 worker1 고정). 파드를 만들기 전 worker1의 블록 10.244.194.64/26은 64칸 중 8칸을 쓰고 있었고 IPAM 핸들(IP가 누구 몫인지 적어 둔 기록)은 23개, worker1의 cali 인터페이스(파드마다 노드 쪽에 생기는 veth)는 7개였어요. 파드 7개가 7칸을 쓰고 남은 한 칸은 노드의 tunl0 주소(10.244.194.64)로 보여요. 4절의 ipam check도 파드 IP와 별도로 노드 터널 IP를 세요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: IPAM 블록과 빈칸 목록</div>
+  Calico IPAM은 IP 풀(이 클러스터는 10.244.0.0/16)을 64칸(/26)짜리 블록으로 잘라 노드마다 붙여 두고 파드가 뜰 때 그 노드 블록의 빈칸에서 IP를 하나씩 꺼내요. 블록마다 어느 칸을 누가 쓰는지와 아직 비어 있는 칸의 목록(unallocated)이 함께 기록돼요. 이 블록이 노드의 podCIDR과 상관없다는 점은 31편에서 봤어요.
+</div>
+<p>그다음 containerd 로그와 Calico CNI 로그(<code style="font-family:Menlo,monospace;font-size:14px;">/var/log/calico/cni/cni.log</code>)에서 이 파드의 줄만 골라 시간순으로 합쳤어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/34/01-cri-cni-timeline.png" alt="31-containerd-cni-timeline.sh 실행 화면 앞부분. 15:26:37.160 containerd RunPodSandbox for ipam-demo, .222 calico-cni Calico CNI IPAM request count IPv4=1, .225 Looking up existing affinities for host k8s-worker1, .229 Attempting to assign 1 addresses from block 10.244.194.64/26, .230 Creating new handle k8s-pod-network.347b3b3ed2f4, .232 Writing block in order to claim IPs, .234 Successfully claimed IPs 10.244.194.103/26와 Auto-assigned 1 out of 1, .235 Populated endpoint, .236 Setting the host side interface name to cali38cdd514d42, .237 Adding IPv4 route (inside container), .242 Wrote updated endpoint to datastore, .283 RunPodSandbox returns sandbox id 347b3b3ed2f4, .284 CreateContainer, .291 returns container id 6200a7ce1f7a, .310 StartContainer returns successfully" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. IP 할당과 veth 설정(.222~.242)은 모두 RunPodSandbox(.160~.283) 안에서 끝났고 앱 컨테이너는 그다음에 만들어졌다</div>
+
+<p>순서대로 읽으면 이래요.</p>
+<p>&middot; <b>.160</b> kubelet이 CRI로 containerd에 RunPodSandbox를 보냈어요. 27편에서 본 첫 번째 호출이에요.<br>
+&middot; <b>.222</b> calico-ipam이 "IPv4 하나를 달라"는 요청을 받았어요. containerd가 CNI 설정의 첫 플러그인 calico를 ADD 명령으로 실행했고 calico가 IP 고르기를 ipam.type에 적힌 calico-ipam에 맡긴 거예요.<br>
+&middot; <b>.225~.234</b> calico-ipam이 worker1에 붙은 블록을 찾고(Looking up existing affinities) 10.244.194.64/26에서 한 칸을 골랐어요. 이어서 핸들 <code style="font-family:Menlo,monospace;font-size:14px;">k8s-pod-network.347b3b3ed2f4…</code>를 새로 만들고(Creating new handle) 블록 기록을 다시 써서(Writing block in order to claim IPs) 10.244.194.103을 차지했어요(Successfully claimed IPs).<br>
+&middot; <b>.235~.237</b> calico가 그 IP로 엔드포인트 정보를 채우고 노드 쪽 veth 이름을 cali38cdd514d42로 정한 뒤 파드 안에 기본 경로(0.0.0.0/0)를 넣었어요.<br>
+&middot; <b>.242</b> 결과를 데이터스토어에 썼어요(Wrote updated endpoint to datastore).<br>
+&middot; <b>.283</b> RunPodSandbox가 끝나며 sandbox id <code style="font-family:Menlo,monospace;font-size:14px;">347b3b3ed2f4…</code>를 반환했어요. CNI 로그의 ContainerID와 같은 값이에요.<br>
+&middot; <b>.284~.310</b> 그제야 앱 컨테이너를 만들고(CreateContainer) 시작했어요(StartContainer).</p>
+<p>IPAM 요청부터 기록까지는 약 20ms가, RunPodSandbox 전체는 123ms가 걸렸어요. <span class="obsv-mark">파드 IP는 앱 컨테이너를 만들기도 전에 RunPodSandbox 안에서 정해져요.</span> 또 IPAM 핸들 이름에 들어가는 ID는 앱 컨테이너 ID(<code style="font-family:Menlo,monospace;font-size:14px;">6200a7ce1f7a…</code>)가 아니라 sandbox ID예요. 27편에서 본 대로 파드 IP는 컨테이너가 아니라 파드 안 컨테이너들이 함께 쓰는 샌드박스에 붙기 때문이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: CNI ADD와 DEL</div>
+  <a href="https://github.com/containernetworking/cni/blob/main/SPEC.md">CNI 스펙</a>이 정한 명령이에요. 컨테이너 런타임이 플러그인 실행 파일을 ADD로 부르면 플러그인은 컨테이너 네트워크 네임스페이스에 인터페이스를 만들고 결과(IP 등)를 반환해요. DEL로 부르면 ADD가 한 일을 되돌려요. 스펙에는 "IPAM 플러그인을 알맞은 순간에 부르는 것은 런타임이 아니라 CNI 플러그인의 책임"이라고 적혀 있어요.
+</div>
+<p>CNI를 부르는 쪽이 kubelet이 아니라 containerd인 것도 쿠버네티스 버전에 따라 달라진 부분이에요. <a href="https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/">쿠버네티스 네트워크 플러그인 문서</a>에 따르면 예전 버전에는 kubelet이 <code style="font-family:Menlo,monospace;font-size:14px;">cni-bin-dir</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">network-plugin</code> 플래그로 CNI 플러그인을 관리할 수 있었고 이 플래그들은 1.24에서 빠졌어요. 지금은 컨테이너 런타임이 CNI 플러그인을 불러요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 452" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">파드 IP 하나가 정해지는 123ms (worker1, ipam-demo)</text>
+<defs>
+<marker id="k34b1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k34b2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k34b3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k34b4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#c07f18" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<path d="M17 52 C 55 50, 94 53, 133 51 C 135 64, 132 78, 134 92 C 94 94, 55 91, 18 93 C 16 78, 18 64, 17 52 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="75" y="78" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<path d="M75 96 C 74 200, 76 300, 75 412" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+<path d="M152 52 C 190 50, 229 53, 268 51 C 270 64, 267 78, 269 92 C 229 94, 190 91, 153 93 C 151 78, 153 64, 152 52 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="210" y="78" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">containerd</text>
+<path d="M210 96 C 209 200, 211 300, 210 412" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+<path d="M287 52 C 325 50, 364 53, 403 51 C 405 64, 402 78, 404 92 C 364 94, 325 91, 288 93 C 286 78, 288 64, 287 52 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="73" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">calico</text>
+<text x="345" y="88" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">CNI 플러그인</text>
+<path d="M345 96 C 344 200, 346 300, 345 412" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+<path d="M422 52 C 460 50, 499 53, 538 51 C 540 64, 537 78, 539 92 C 499 94, 460 91, 423 93 C 421 78, 423 64, 422 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="480" y="73" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">calico-ipam</text>
+<text x="480" y="88" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">IPAM 플러그인</text>
+<path d="M480 96 C 479 200, 481 300, 480 412" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+<path d="M560 52 C 598 50, 637 53, 676 51 C 678 64, 675 78, 677 92 C 637 94, 598 91, 561 93 C 559 78, 561 64, 560 52 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="618" y="73" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">데이터스토어</text>
+<text x="618" y="88" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">API 서버(CRD)</text>
+<path d="M618 96 C 617 200, 619 300, 618 412" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="6 6" stroke-linecap="round"/>
+<text x="10" y="110" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start">15:26:37</text>
+<path d="M79 128 C 121 126, 164 130, 206 128" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k34b1)"/>
+<text x="142" y="121" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">RunPodSandbox (CRI)</text>
+<text x="10" y="132" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start">.160</text>
+<path d="M214 166 C 256 164, 299 168, 341 166" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k34b1)"/>
+<text x="277" y="159" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">CNI ADD 실행</text>
+<text x="10" y="170" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start"></text>
+<path d="M349 204 C 391 202, 434 206, 476 204" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k34b3)"/>
+<text x="412" y="197" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#5a9e6f" text-anchor="middle">IPAM 위임</text>
+<text x="10" y="208" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start">.222</text>
+<path d="M484 242 C 527 240, 571 244, 614 242" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k34b3)"/>
+<text x="549" y="235" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#5a9e6f" text-anchor="middle">빈칸 39번 기록 + 핸들</text>
+<text x="10" y="246" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start">.234</text>
+<path d="M476 280 C 434 278, 391 282, 349 280" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="6 4" marker-end="url(#k34b3)"/>
+<text x="412" y="273" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#5a9e6f" text-anchor="middle">10.244.194.103/26</text>
+<text x="10" y="284" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start"></text>
+<path d="M250 294 C 313 292, 375 295, 440 293 C 442 305, 439 317, 441 330 C 375 332, 313 329, 251 331 C 249 317, 251 305, 250 294 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="345" y="309" font-family="Menlo, monospace" font-size="11.5" fill="#c07f18" text-anchor="middle">veth cali38cdd514d42</text>
+<text x="345" y="324" font-family="Menlo, monospace" font-size="11.5" fill="#c07f18" text-anchor="middle">+ /32 경로</text>
+<path d="M349 352 C 437 350, 526 354, 614 352" fill="none" stroke="#c07f18" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k34b4)"/>
+<text x="481" y="345" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="middle">파드 annotation에 IP 기록</text>
+<text x="10" y="356" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start">.242</text>
+<path d="M206 388 C 164 386, 121 390, 79 388" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="6 4" marker-end="url(#k34b1)"/>
+<text x="142" y="381" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">sandbox id 347b3b3ed2f4…</text>
+<text x="10" y="392" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start">.283</text>
+<text x="350" y="438" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">IP는 앱 컨테이너를 만들기 전에(.284 CreateContainer) 이미 정해져 있다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. kubelet은 CRI만 부르고 CNI와 IPAM은 containerd 아래에서 돈다. 시각 표시는 15:26:37 뒤에 붙는 밀리초다</div>
+
+<p>할당된 흔적은 세 군데에 남았어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/34/02-ip-allocated.png" alt="31-ip-lifecycle.sh 실행 화면 일부. 만들기 전 15:26:36 블록 10.244.194.64/26 사용 8/64, 미할당 56, IPAM 핸들 23개, worker1 cali 인터페이스 7개. 15:26:37 파드 IP 10.244.194.103과 annotation cni.projectcalico.org/containerID, podIP 10.244.194.103/32, podIPs. 할당 뒤 블록 사용 9/64, 핸들 24개, cali 8개. 핸들 k8s-pod-network.347b3b3ed2f4는 10.244.194.64/26에 1개. 블록의 39번 칸은 attributes[8]이고 secondary에 namespace default, node k8s-worker1, pod ipam-demo, timestamp가 있다. worker1에는 10.244.194.103 dev cali38cdd514d42 scope link 경로와 cali38cdd514d42 인터페이스가 생겼고 ping 1 received" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 블록의 칸 하나, 핸들 하나, 노드의 veth와 /32 경로 하나가 같이 생겼다</div>
+
+<p><b>Calico 데이터스토어에는</b> 블록의 사용 칸이 8에서 9로, 핸들이 23개에서 24개로 늘었어요. 10.244.194.103은 블록 시작 주소(.64)에서 39칸 떨어져 있어서 블록의 39번 칸에 기록됐고 그 칸에는 네임스페이스, 노드, 파드 이름, 시각이 함께 적혔어요. 핸들 <code style="font-family:Menlo,monospace;font-size:14px;">k8s-pod-network.347b3b3ed2f4…</code>에는 "이 블록에서 1개"라는 기록이 들어 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: IPAM 핸들(IPAMHandle)</div>
+  Calico IPAM이 "이 IP들은 누구 몫인가"를 적는 기록이에요. Calico CNI는 핸들 이름을 <code style="font-family:Menlo,monospace;font-size:14px;">k8s-pod-network.&lt;sandbox ID&gt;</code>로 짓고 반납할 때 이 이름으로 IP를 찾아 돌려줘요(DEL 로그의 "Releasing address using handleID"). 블록(IPAMBlock)은 칸마다 누가 쓰는지 적고 핸들은 주인마다 어떤 IP를 쓰는지 적어요.
+</div>
+<p><b>파드 객체에는</b> <code style="font-family:Menlo,monospace;font-size:14px;">cni.projectcalico.org/containerID</code>, <code style="font-family:Menlo,monospace;font-size:14px;">podIP</code>, <code style="font-family:Menlo,monospace;font-size:14px;">podIPs</code> annotation이 붙었어요. 로그의 "Wrote updated endpoint to datastore"가 바로 이 annotation을 붙인 기록이에요. Calico가 쿠버네티스 API를 데이터스토어로 쓸 때 WorkloadEndpoint를 저장하는 동작은 파드에 annotation을 PATCH하는 거예요. v3.33.0 소스(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/libcalico-go/lib/backend/k8s/resources/workloadendpoint.go">workloadendpoint.go</a>) 주석에는 PodStatus를 직접 고치면 kubelet의 변경과 경합하기 때문에 annotation에 둔다고 적혀 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">pod.status.podIP</code>는 kubelet이 채워요. kubelet v1.37.2 소스(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kuberuntime/kuberuntime_sandbox.go">kuberuntime_sandbox.go</a>의 determinePodSandboxIPs)를 보면 kubelet은 CRI의 PodSandboxStatus에 담긴 네트워크 정보에서 파드 IP를 읽어요.</p>
+<p><b>worker1 노드에는</b> veth <code style="font-family:Menlo,monospace;font-size:14px;">cali38cdd514d42</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">10.244.194.103 dev cali38cdd514d42 scope link</code> 경로가 생겼어요. 이 /32 경로는 6편과 30편에서 본 blackhole 10.244.194.64/26보다 범위가 좁아 먼저 선택되기 때문에 노드에서 보낸 ping이 파드에 닿았어요(1 received).</p>
+
+<h3>veth 이름은 네임스페이스와 파드 이름으로 정해진다</h3>
+<p>cali 뒤의 11글자는 무작위가 아니에요. v3.33.0 소스(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go">workload_endpoint_default.go</a>의 VethNameForWorkload)를 보면 이래요.</p>
+<div class="obsv-code">h := sha1.New()
+h.Write(fmt.Appendf(nil, "%s.%s", namespace, podname))
+prefix := os.Getenv("FELIX_INTERFACEPREFIX")
+if prefix == "" {
+    // Prefix is not set. Default to "cali"
+    prefix = "cali"
+} ...
+return fmt.Sprintf("%s%s", prefix, hex.EncodeToString(h.Sum(nil))[:11])</div>
+<p>&rarr; "네임스페이스.파드이름"의 SHA-1 해시를 16진수로 바꿔 앞 11자를 잘라 내고 그 앞에 cali를 붙인다는 뜻이에요. 그래서 이름은 cali 4자와 해시 11자를 합쳐 15자예요. 직접 계산해 보면 실제 이름과 같아요.</p>
+<div class="obsv-code">$ python3 -c "import hashlib; print('cali' + hashlib.sha1(b'default.ipam-demo').hexdigest()[:11])"
+cali38cdd514d42                      # worker1 의 실제 veth 이름도 cali38cdd514d42
+$ python3 -c "import hashlib; print('cali' + hashlib.sha1(b'default.myweb-859c4764d4-scshl').hexdigest()[:11])"
+calicd0b7984a6e                      # worker1 의 실제 veth 이름도 calicd0b7984a6e</div>
+<p>해시를 만들 때 노드나 시각은 들어가지 않으니 같은 네임스페이스에서 같은 이름으로 다시 만든 파드는 같은 veth 이름을 받아요. 실제로 default/ipam-demo를 두 번 만들었더니 IP는 처음에 .102, 두 번째에 .103으로 달랐지만 veth는 두 번 다 cali38cdd514d42였어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 파드 이름으로 노드의 cali 인터페이스를 찾아요</div>
+  &bull; 노드에서 특정 파드의 패킷만 tcpdump로 보고 싶을 때 위 계산으로 인터페이스 이름을 바로 얻을 수 있어요. FELIX_INTERFACEPREFIX를 바꾼 클러스터라면 그 값의 첫 항목이 접두어예요<br>
+  &bull; 직접 계산하기 번거롭다면 <code style="font-family:Menlo,monospace;font-size:14px;">calicoctl get workloadendpoints -n &lt;네임스페이스&gt; -o wide</code>의 INTERFACE 열에 같은 이름이 나와요<br>
+  &bull; 노드에서 <code style="font-family:Menlo,monospace;font-size:14px;">ip route get &lt;파드 IP&gt;</code>를 실행해도 그 파드로 가는 cali 장치가 나와요
+</div>
+
+<h2>2. 파드를 지우면 StopPodSandbox 안의 CNI DEL이 IP를 돌려준다</h2>
+
+<p>15:26:38에 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl delete pod ipam-demo</code>를 실행했어요. 같은 방법으로 모은 삭제 과정의 로그는 이래요.</p>
+<div class="obsv-code">15:26:39.250 [containerd] "StopContainer for "6200a7ce1f7a…" with timeout 30 (s)"
+15:26:39.284 [containerd] "StopContainer for "6200a7ce1f7a…" returns successfully"
+15:26:39.284 [containerd] "StopPodSandbox for "347b3b3ed2f4…""
+15:26:39.343 [calico-cni] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="347b3b3ed2f4…"
+15:26:39.382 [calico-cni] ipam/ipam_plugin.go 942: Released address using handleID ContainerID="347b3b3ed2f4…" HandleID="k8s-pod-network.347b3b3ed2f4…
+15:26:39.386 [containerd] "StopPodSandbox for "347b3b3ed2f4…" returns successfully"
+15:26:39.386 [containerd] "TearDown network for sandbox "347b3b3ed2f4…" successfully"</div>
+<p>&middot; <b>15:26:39.250</b> StopContainer로 앱 컨테이너를 멈췄어요.<br>
+&middot; <b>.284</b> StopPodSandbox가 시작됐어요.<br>
+&middot; <b>.343~.382</b> calico가 DEL을 받아 "Releasing IP address(es)"를 찍었고 calico-ipam이 핸들 이름으로 IP를 반납했어요(Released address using handleID).<br>
+&middot; <b>.386</b> containerd가 "TearDown network for sandbox ... successfully"를 찍고 StopPodSandbox를 마쳤어요.</p>
+<p>15:26:40에 다시 보니 블록은 8/64, 핸들은 23개, cali 인터페이스는 7개로 돌아와 있었어요. 핸들을 조회하자 NotFound가 나왔고 10.244.194.103으로 가는 경로도 사라졌어요. 삭제 명령부터 원래 상태로 돌아오기까지 2초가 채 걸리지 않았어요. <span class="obsv-mark">IP가 반납되는 시점은 파드 객체가 지워질 때가 아니라 노드에서 StopPodSandbox가 CNI DEL을 실행할 때예요.</span></p>
+<p>IP를 반납하는 시점이 StopPodSandbox라는 점은 CRI 정의에도 나와 있어요. <a href="https://github.com/kubernetes/cri-api/blob/v0.37.2/pkg/apis/runtime/v1/api.proto">cri-api의 api.proto</a>에는 StopPodSandbox가 이렇게 설명돼 있어요.</p>
+<div class="obsv-code">// StopPodSandbox stops any running process that is part of the sandbox and
+// reclaims network resources (e.g., IP addresses) allocated to the sandbox.
+// ...
+// kubelet will call StopPodSandbox
+// at least once before calling RemovePodSandbox. It will also attempt to
+// reclaim resources eagerly, as soon as a sandbox is not needed. Hence,
+// multiple StopPodSandbox calls are expected.</div>
+<p>&rarr; StopPodSandbox가 샌드박스의 프로세스를 멈추고 IP 같은 네트워크 자원을 거둬들인다는 뜻이에요. kubelet은 RemovePodSandbox 전에 이 호출을 적어도 한 번 하고 여러 번 할 수도 있어요.</p>
+<p>실제로 DEL은 한 번으로 끝나지 않았어요. 약 43초 뒤 kubelet이 샌드박스를 정리하면서 StopPodSandbox와 RemovePodSandbox를 다시 불렀고 그때마다 CNI DEL이 또 돌았어요.</p>
+<div class="obsv-code">15:27:21.886 [containerd] "StopPodSandbox for "347b3b3ed2f4…""
+15:27:21.921 [calico-cni] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="347b3b3ed2f4…"
+15:27:21.950 [calico-cni] ipam/ipam_plugin.go 940: Asked to release address but it doesn't exist. Ignoring ...
+15:27:21.954 [containerd] "RemovePodSandbox for "347b3b3ed2f4…""
+15:27:21.982 [calico-cni] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="347b3b3ed2f4…"
+15:27:22.012 [calico-cni] ipam/ipam_plugin.go 940: Asked to release address but it doesn't exist. Ignoring ...
+15:27:22.017 [containerd] "RemovePodSandbox "347b3b3ed2f4…" returns successfully"</div>
+<p>&rarr; 이미 반납한 IP를 또 반납하라는 요청을 받았지만 없는 주소라 무시하고 성공으로 끝냈다는 뜻이에요. CNI 스펙도 플러그인이 같은 컨테이너에 대한 DEL을 여러 번 받아들이고 지울 것이 이미 없으면 성공으로 응답해야 한다고 정해요. 스펙에는 DEL이 "할 수 있는 만큼 하는(best-effort)" 명령이라서 IPAM 플러그인은 네트워크 네임스페이스가 이미 없어도 IP를 반납하고 성공으로 끝내야 한다는 설명도 있어요.</p>
+
+<h3>반납한 칸은 빈칸 목록 맨 뒤로 간다</h3>
+<p>삭제 뒤 15:26:49에 블록의 빈칸 목록(unallocated) 앞뒤를 봤어요. 앞 다섯 칸은 40번(.104)부터 44번(.108)까지였고 뒤 다섯 칸은 24번(.88), 25번(.89), 34번(.98), 38번(.102), 39번(.103)이었어요. 방금 반납한 39번은 맨 끝에 있었어요.</p>
+<p>이유는 v3.33.0 소스(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/libcalico-go/lib/ipam/ipam_block.go">libcalico-go/lib/ipam/ipam_block.go</a>)에 있어요. 블록을 새로 만들 때 빈칸 목록에 0번부터 63번까지 차례로 넣어 두고 할당(autoAssign)할 때는 목록 앞에서부터 꺼내요. 반납한 칸은 garbageCollect가 목록 끝에 붙이는데 소스 주석에는 이곳이 "칸이 빈칸 목록에 들어가는 유일한 곳"이라고 적혀 있어요. 그래서 ipam-demo를 같은 이름으로 두 번 만들었을 때 처음에는 .102를, 두 번째에는 .102가 아니라 .103을 받았어요. 다음 차례는 목록 맨 앞의 .104예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">worker1 블록의 빈칸 목록 (15:26:49): 앞에서 꺼내고 반납한 칸은 맨 뒤에 붙인다</text>
+<defs>
+<marker id="k34c1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k34c2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#c07f18" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<path d="M40 122 C 58 120, 76 123, 94 121 C 96 138, 93 157, 95 176 C 76 178, 58 175, 41 177 C 39 157, 41 138, 40 122 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="67" y="142" font-family="Menlo, monospace" font-size="12" fill="#5a9e6f" text-anchor="middle">40번</text>
+<text x="67" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.104</text>
+<path d="M100 122 C 118 120, 136 123, 154 121 C 156 138, 153 157, 155 176 C 136 178, 118 175, 101 177 C 99 157, 101 138, 100 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="127" y="142" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">41번</text>
+<text x="127" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.105</text>
+<path d="M160 122 C 178 120, 196 123, 214 121 C 216 138, 213 157, 215 176 C 196 178, 178 175, 161 177 C 159 157, 161 138, 160 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="187" y="142" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">42번</text>
+<text x="187" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.106</text>
+<path d="M220 122 C 238 120, 256 123, 274 121 C 276 138, 273 157, 275 176 C 256 178, 238 175, 221 177 C 219 157, 221 138, 220 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="247" y="142" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">43번</text>
+<text x="247" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.107</text>
+<path d="M280 122 C 298 120, 316 123, 334 121 C 336 138, 333 157, 335 176 C 316 178, 298 175, 281 177 C 279 157, 281 138, 280 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="307" y="142" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">44번</text>
+<text x="307" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.108</text>
+<text x="372" y="155" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">… 46칸 …</text>
+<path d="M403 122 C 419 120, 436 123, 453 121 C 455 138, 452 157, 454 176 C 436 178, 419 175, 404 177 C 402 157, 404 138, 403 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="428" y="142" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">24번</text>
+<text x="428" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.88</text>
+<path d="M458 122 C 474 120, 491 123, 508 121 C 510 138, 507 157, 509 176 C 491 178, 474 175, 459 177 C 457 157, 459 138, 458 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="483" y="142" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">25번</text>
+<text x="483" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.89</text>
+<path d="M513 122 C 529 120, 546 123, 563 121 C 565 138, 562 157, 564 176 C 546 178, 529 175, 514 177 C 512 157, 514 138, 513 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="538" y="142" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">34번</text>
+<text x="538" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.98</text>
+<path d="M568 122 C 584 120, 601 123, 618 121 C 620 138, 617 157, 619 176 C 601 178, 584 175, 569 177 C 567 157, 569 138, 568 122 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="593" y="142" font-family="Menlo, monospace" font-size="12" fill="#c07f18" text-anchor="middle">38번</text>
+<text x="593" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.102</text>
+<path d="M623 122 C 639 120, 656 123, 673 121 C 675 138, 672 157, 674 176 C 656 178, 639 175, 624 177 C 622 157, 624 138, 623 122 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="648" y="142" font-family="Menlo, monospace" font-size="12" fill="#c07f18" text-anchor="middle">39번</text>
+<text x="648" y="163" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">.103</text>
+<text x="67" y="104" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">앞</text>
+<text x="648" y="104" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18" text-anchor="middle">뒤</text>
+<path d="M67 180 C 65 196, 69 212, 67 228" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" marker-end="url(#k34c1)"/>
+<text x="80" y="250" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="start">다음 할당은 여기서 꺼낸다</text>
+<text x="80" y="270" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="start">다음 차례 10.244.194.104</text>
+<path d="M690 232 C 683 215, 683 199, 676 182" fill="none" stroke="#c07f18" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k34c2)"/>
+<text x="680" y="250" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18" text-anchor="end">CNI DEL로 반납한 칸은 맨 뒤에 붙는다</text>
+<text x="680" y="270" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="end">같은 이름 ipam-demo를 두 번: .102 → .103</text>
+<text x="350" y="314" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">방금 돌려준 IP는 목록에서 그 앞에 있는 빈칸이 모두 나간 뒤에야 다시 나간다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 할당은 목록 앞에서 꺼내고 반납은 목록 뒤에 붙이니 방금 돌려준 IP는 한동안 다시 나가지 않는다</div>
+
+<p>다만 이 순서는 재사용을 막는 장치가 아니에요. <a href="https://docs.tigera.io/calico/latest/reference/resources/ipamconfig">IPAMConfiguration 문서</a>의 ipCooldownSeconds는 "반납된 IP를 다시 쓰기 전까지의 최소 시간"이고 기본값 0은 "바로 다시 쓸 수 있다"는 뜻이에요. 블록에 빈칸이 몇 개 남지 않았다면 방금 돌려준 IP도 금방 다시 나가요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 지운 파드의 IP가 곧 다른 파드의 IP가 될 수 있어요</div>
+  &bull; 반납한 IP가 목록 뒤로 가서 한동안 다시 나가지 않는 것은 관찰한 순서일 뿐이고 기본 설정(ipCooldownSeconds 0)은 재사용을 막지 않아요<br>
+  &bull; 파드 IP를 방화벽 허용 목록이나 다른 시스템 설정에 그대로 적어 두면 그 IP를 나중에 받은 엉뚱한 파드가 같은 권한을 얻을 수 있어요. 파드 IP 대신 Service나 라벨 기반 정책으로 묶어요<br>
+  &bull; 반납 뒤 일정 시간 재사용을 막아야 한다면 IPAMConfiguration의 ipCooldownSeconds(0~1200초)를 검토해요
+</div>
+
+<h2>3. 파드 객체가 사라져도 IP는 몇 초 뒤에 돌아온다</h2>
+
+<p>파드 하나가 아니라 여러 개를 한꺼번에 지우면 순서가 더 잘 보여요. 31편에서 worker2의 블록 10.244.126.0/26(64칸 중 6칸 사용)을 채우려고 pause 파드 62개를 Deployment ipam-fill로 만들었어요. terminationGracePeriodSeconds를 0으로 준 Deployment예요. 다 뜬 뒤 첫 블록은 64/64, 새로 붙은 두 번째 블록 10.244.126.64/26은 4/64를 쓰고 있었어요. 이 Deployment를 지울 때의 기록은 이래요.</p>
+<div class="obsv-code"># 31-ipam-blocks.txt 발췌 (블록 표는 worker2 의 두 블록만)
+15:29:49 kubectl delete deploy ipam-fill
+15:29:54 ipam-fill 파드 0개 | worker2 블록: 10.244.126.0/26 10.244.126.64/26
+| Block    | 10.244.126.0/26   |        64 |   30 (47%) |       0 (0%) |     34 (53%) |
+| Block    | 10.244.126.64/26  |        64 |     1 (2%) |       0 (0%) |     63 (98%) |
+15:30:03 worker2 블록: 10.244.126.0/26 10.244.126.64/26 |  10.244.126.0/26 사용 6 (9%) , 10.244.126.64/26 사용 0 (0%)  | …</div>
+<p>15:29:49에 Deployment를 지웠어요. 15:29:54에는 ipam-fill 파드가 0개였는데 IPAM은 그 순간에도 첫 블록 30칸, 두 번째 블록 1칸을 쓰고 있었어요. 15:30:03에 확인했을 때에야 6칸과 0칸으로 돌아왔어요. 지운 지 약 14초 뒤예요.</p>
+<p>그사이 Calico 데이터를 정리하는 calico-kube-controllers의 로그에도 흔적이 남았어요. 15:29:50.869부터 15:29:53.886까지 ipam-fill 파드 62개의 IP마다 <code style="font-family:Menlo,monospace;font-size:14px;">Candidate IP leak</code>(누수 후보) 로그가 한 줄씩 찍혔어요. 컨트롤러가 "이 IP의 주인 파드가 API에 없다"고 판단했다는 뜻이에요. 그 뒤 노드의 CNI DEL이 IP를 반납하면서 후보는 저절로 사라졌고 로그 전체에서 <code style="font-family:Menlo,monospace;font-size:14px;">Confirmed IP leak</code>(누수 확정)은 0줄이었어요.</p>
+<p>terminationGracePeriodSeconds를 기본값(30초)으로 두고 지운 ipam-demo는 DEL을 마친 뒤에 삭제 명령이 끝났는데 이 값을 0으로 준 ipam-fill에서는 순서가 반대였어요. 파드 객체가 먼저 사라지고 IP는 노드가 샌드박스를 정리하는 속도대로 뒤따라 돌아왔어요. <span class="obsv-mark">파드 객체가 사라졌다고 IP 반납까지 끝난 것은 아니에요.</span> 지우자마자 IPAM 사용량이나 IP 수를 세면 실제보다 많게 나와요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">worker2가 쓰는 IP 수 (두 블록 합계)</text>
+<defs>
+<marker id="k34d1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<path d="M70 320 C 250 319, 450 321, 670 320" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M70 320 C 69 250, 71 150, 70 80" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<text x="62" y="141" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="end">64</text>
+<text x="62" y="307" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="end">6</text>
+<path d="M70 137 C 250 136, 450 138, 660 137" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="660" y="129" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="end">블록 하나 = 64칸</text>
+<path d="M110 303 C 170 303, 190 126, 230 126 C 255 126, 275 231, 300 231 C 330 231, 350 303, 380 303 C 420 302, 450 304, 470 303" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M470 303 C 520 302, 560 304, 600 303" fill="none" stroke="#4a7fb5" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round"/>
+<path d="M482 328 L 490 312 M 494 328 L 502 312" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M105 303 C 105 297, 115 297, 115 303 C 115 309, 105 309, 105 303 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1.5"/>
+<text x="110" y="340" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">15:29:37</text>
+<path d="M225 126 C 225 120, 235 120, 235 126 C 235 132, 225 132, 225 126 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1.5"/>
+<text x="230" y="340" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">15:29:49</text>
+<path d="M295 231 C 295 225, 305 225, 305 231 C 305 237, 295 237, 295 231 Z" fill="#e5533c" stroke="#e5533c" stroke-width="1.5"/>
+<text x="300" y="340" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">15:29:54</text>
+<path d="M375 303 C 375 297, 385 297, 385 303 C 385 309, 375 309, 375 303 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1.5"/>
+<text x="380" y="340" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">15:30:03</text>
+<path d="M595 303 C 595 297, 605 297, 605 303 C 605 309, 595 309, 595 303 Z" fill="#4a7fb5" stroke="#4a7fb5" stroke-width="1.5"/>
+<text x="600" y="340" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">15:45:25</text>
+<text x="110" y="289" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">6 (블록 1개)</text>
+<text x="230" y="112" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5" text-anchor="middle">68 = 64 + 4 (블록 2개)</text>
+<text x="300" y="205" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="start">31 = 30 + 1</text>
+<text x="300" y="223" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="start">파드 객체는 이미 0개</text>
+<text x="392" y="289" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="start">6 + 0</text>
+<text x="600" y="265" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">빈 블록 반납</text>
+<text x="600" y="285" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">다시 블록 1개</text>
+<text x="170" y="364" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">파드 62개 생성 12초</text>
+<text x="305" y="364" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">삭제 뒤 IP 반납 약 14초</text>
+<text x="540" y="364" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">빈 블록 반납까지 약 15분 22초</text>
+<text x="350" y="392" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">파드가 사라지는 시점, IP가 돌아오는 시점, 블록이 돌아가는 시점이 모두 다르다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 점은 측정한 시각에 본 값이다. 반납된 IP가 모두 돌아와도 비어 버린 두 번째 블록은 15분 넘게 worker2에 붙어 있었다</div>
+
+<h2>4. 빈 블록과 새는 IP는 calico-kube-controllers가 치운다</h2>
+
+<p>IP가 다 돌아온 뒤에도 비어 버린 두 번째 블록 10.244.126.64/26은 worker2에 붙어 있었어요(15:31:56 확인까지). 이 블록이 반납된 것은 15:45:25였고 calico-kube-controllers 로그에 그 순간이 남아 있어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/34/03-kube-controllers-ipam.png" alt="31-kube-controllers-ipam-log.sh 실행 화면. KubeControllersConfiguration default의 leakGracePeriod=15m0s. 05:41:58 Will run periodic IPAM sync every 7m30s, 전체 점검 시각 06:26:58, 06:34:28, 06:41:58, 06:49:28. ipam-fill을 지운 직후 06:29~06:31 UTC의 Candidate IP leak 줄 수 62(첫 줄 06:29:50.869, 끝 줄 06:29:53.886), 모두 default/ipam-fill 파드, Confirmed IP leak 0줄. 06:45:25.373 Releasing affinity for empty block (node has 2 total blocks) blockCIDR 10.244.126.64/26 node k8s-worker2, 06:45:26.396 Received block delete" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 로그 시각은 UTC다. 06:45:25 UTC는 한국 시각 15:45:25이고 빈 블록이 된 지 약 15분 22초 뒤다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: calico-kube-controllers의 node 컨트롤러와 leakGracePeriod</div>
+  calico-kube-controllers는 쿠버네티스 API를 지켜보며 Calico 쪽 데이터를 정리하는 Deployment예요. <a href="https://docs.tigera.io/calico/latest/reference/kube-controllers/configuration">kube-controllers 문서</a>에 따르면 그 안의 node 컨트롤러가 IP 주소의 가비지 컬렉션(쓰지 않는 IP를 찾아 정리하는 일)을 맡아요. <a href="https://docs.tigera.io/calico/latest/reference/resources/kubecontrollersconfig">KubeControllersConfiguration 문서</a>의 leakGracePeriod는 "누수로 의심되는 IP를 치울 때 쓰는 유예 시간"이고 기본값은 15m이에요.
+</div>
+<p>빈 블록을 언제 반납하는지는 v3.33.0 소스(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/kube-controllers/pkg/controllers/node/ipam.go">kube-controllers/pkg/controllers/node/ipam.go</a>의 releaseUnusedBlocks)에 조건으로 적혀 있어요.</p>
+<p>&middot; 블록이 비어 있어야 해요.<br>
+&middot; 그 노드에 다른 블록이 적어도 하나 더 있어야 해요. 그래서 노드의 마지막 블록은 비어도 반납하지 않아요.<br>
+&middot; 그 노드가 Flannel에서 옮겨 오는 중이 아니어야 해요.<br>
+&middot; 이 상태가 유예 시간(기본 15분)보다 오래 이어져야 해요. 주석에는 IP를 할당하는 동안 잠깐 빈 블록이 생길 수 있어서 바로 지우지 않는다고 적혀 있어요.</p>
+<p>점검 주기는 leakGracePeriod의 절반이에요. 로그 첫머리의 <code style="font-family:Menlo,monospace;font-size:14px;">Will run periodic IPAM sync every 7m30s</code>가 그 값이고 실제로 전체 점검이 7분 30초 간격으로 찍혔어요. 그런데 반납 시각 15:45:25는 전체 점검 시각(15:41:58, 15:49:28)과 겹치지 않아요. 소스를 보면 releaseUnusedBlocks는 주기 점검 때만이 아니라 데이터스토어 변화 등으로 IPAM 동기화가 돌 때마다 불려요. 15분이 지난 뒤 처음 돈 동기화에서 반납된 것으로 보여요. worker2의 원래 블록 10.244.126.0/26은 노드의 마지막 블록이라 그대로 남았어요. <span class="obsv-mark">기본 설정에서 살아 있는 노드의 빈 블록은 15분 넘게 그대로 남고 그 노드에 다른 블록이 있을 때만 반납돼요.</span></p>
+
+<h3>노드가 갑자기 죽으면 DEL이 불리지 않는다</h3>
+<p>지금까지 본 반납은 모두 노드의 containerd가 CNI DEL을 실행해서 이뤄졌어요. 노드 전원이 갑자기 꺼지면 그 노드의 파드를 지워도 DEL을 실행할 주체가 없어서 IPAM에는 할당 기록이 남아요. 이렇게 남은 IP도 node 컨트롤러가 치워요. 같은 ipam.go의 checkAllocations 주석에 정리된 규칙은 이래요.</p>
+<p>&middot; 할당 기록이 가리키는 파드가 쿠버네티스 API에 없거나 파드의 IP가 다르면 누수 후보가 돼요.<br>
+&middot; 후보 상태가 유예 시간(leakGracePeriod) 이상 이어지거나 그 노드가 API에서 지워졌으면 누수로 확정하고 IP를 반납해요.<br>
+&middot; 노드가 API에서 지워졌고 그 노드에 유효한 할당이 남지 않았으면 노드의 블록 연결(affinity)도 풀어요.<br>
+&middot; leakGracePeriod를 0으로 두면 유예 시간이 지나도 누수를 확정하지 않고 빈 블록도 반납하지 않아요. ipam_allocation.go의 주석에서는 이 설정을 "사용자가 IPAM GC를 끈 것"으로 봐요. 다만 API에서 지워진 노드의 IP는 그래도 확정 대상이에요.</p>
+<p>3절의 62줄짜리 누수 후보 로그가 이 규칙의 첫 단계였어요. 그때는 DEL이 곧 와서 후보 단계에서 끝났어요. 위 규칙은 소스와 문서로 확인한 동작이에요. 노드를 실제로 멈춰 보니 이 규칙이 아예 돌지 않은 경우가 있었는데 그 이야기는 5절에서 이어 가요.</p>
+
+<h3>누수가 있는지는 calicoctl ipam check로 본다</h3>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/34/04-ipam-check.png" alt="마스터에서 calicoctl ipam check를 실행한 화면. Found 4 IPAM blocks, 블록마다 affinity host:k8s-worker3, worker2, worker1, master. IPAM blocks record 23 allocations. Found 1 active IP pools. Found 4 node tunnel IPs. Found 0 service load balancer(s). Found 19 workload IPs. Workloads and nodes are using 23 IPs. 노드별 할당 worker1 8, worker3 7, worker2 6, master 2. allocated but not in use 0, in-use but not allocated 0, handles with no matching IPs 0, invalid IPAMBlocks 0, Check complete; found 0 problems" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. IPAM에 기록된 할당 23개가 노드 터널 IP 4개와 파드 IP 19개를 더한 값과 같았고 문제는 0개였다</div>
+
+<p><a href="https://docs.tigera.io/calico/latest/reference/calicoctl/ipam/check">ipam check 레퍼런스</a>에서는 이 명령을 "Calico IPAM 자료 구조의 무결성을 확인하고 새거나 잘못 할당된 IP를 보고한다"라고 설명해요. 이 클러스터에서는 블록 4개에 기록된 할당이 23개였고 실제로 쓰는 IP도 노드 터널 IP 4개와 파드(workload) IP 19개를 더한 23개였어요. IPAM에 기록됐지만 쓰지 않는 IP, 쓰고 있지만 기록이 없는 IP, IP 없이 남은 핸들은 모두 0개였어요. 같은 시각 <code style="font-family:Menlo,monospace;font-size:14px;">calicoctl ipam show</code>로 보니 풀의 IP 65,536개 중 23개를 쓰고 있었어요.</p>
+<p>누수가 나왔을 때 정리하는 절차도 레퍼런스에 있어요. 데이터스토어를 잠그고(<code style="font-family:Menlo,monospace;font-size:14px;">calicoctl datastore migrate lock</code>) <code style="font-family:Menlo,monospace;font-size:14px;">calicoctl ipam check -o report.json</code>으로 보고서를 만든 뒤 <code style="font-family:Menlo,monospace;font-size:14px;">calicoctl ipam release --from-report report.json</code>으로 IP를 반납한 다음 잠금을 풀어요(<code style="font-family:Menlo,monospace;font-size:14px;">calicoctl datastore migrate unlock</code>). 문서에는 잠근 동안 새 파드를 띄울 수 없다는 주의가 붙어 있어요.</p>
+<h2>5. 노드가 죽은 동안에는 20분이 지나도 누수가 정리되지 않았다</h2>
+<p>4절의 규칙대로라면 노드가 죽어 DEL이 오지 않아도 새는 IP는 leakGracePeriod(15분)가 지난 뒤 정리돼야 해요. 25편의 축출 실험과 같은 시간대에 이 장면을 직접 기록했어요. 17:22:41에 worker3의 kubelet을 멈췄고 17:23:26 확인부터 worker3은 Ready=Unknown이었어요. 파드의 toleration 300초가 지나자 17:28:26에 다른 노드에 myweb 파드 두 개가 새로 만들어졌어요. worker3에 있던 옛 파드 두 개(bn4k8의 10.244.100.228, zjdrs의 10.244.100.251)는 지울 kubelet이 없어서 Terminating으로 남았어요. 17:30:49에 이 둘을 <code style="font-family:Menlo,monospace;font-size:14px;">--grace-period=0 --force</code>로 강제 삭제했어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 파드 강제 삭제 (--grace-period=0 --force)</div>
+  kubelet이 노드에서 파드를 멈췄다는 확인을 기다리지 않고 API에서 파드 객체를 바로 지우는 방법이에요. <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination-forced">쿠버네티스 파드 수명 주기 문서</a>에 따르면 강제로 삭제하면 API 서버는 kubelet의 종료 확인을 기다리지 않고 파드를 API에서 바로 지워요. 이때 실제로 돌던 리소스는 클러스터에서 계속 돌 수도 있어요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/34/05-leak-20min.png" alt="25-eviction.sh 실행 화면의 IP 누수 관찰 부분. 17:30:49 Terminating 파드 myweb-859c4764d4-bn4k8 10.244.100.228과 myweb-859c4764d4-zjdrs 10.244.100.251을 kubectl delete --grace-period=0 --force로 강제 삭제. k8s-worker3에서는 nginx 컨테이너 2개가 아직 돈다. 강제 삭제 +0s부터 +1207s(17:50:57)까지 약 1분마다 IPAM에서 10.244.100.228은 할당됨이고 ipam check는 매번 Found 2 IPs that are allocated in IPAM but not actually in use, Check complete; found 2 problems" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 8. 강제 삭제부터 17:50:57까지 약 20분 동안 ipam check는 매번 "쓰지 않는데 할당된 IP 2개"를 보고했다</div>
+
+<p>강제 삭제로 파드 객체는 API에서 바로 사라졌지만 worker3에서는 그 IP를 쓰던 nginx 컨테이너 2개가 아직 돌고 있었어요. DEL을 실행할 kubelet이 없으니 IPAM 기록도 그대로였어요. ipam check는 강제 삭제 직후부터 약 1분 간격으로 17:50:57(+1207초)까지 매번 <code style="font-family:Menlo,monospace;font-size:14px;">Found 2 IPs that are allocated in IPAM but not actually in use</code>를 보고했어요. leakGracePeriod 15분을 넘긴 뒤에도 두 IP는 정리되지 않았어요.</p>
+<p>원인은 calico-kube-controllers 쪽에 있었어요. 실험을 시작할 때 calico-kube-controllers 파드도 worker3에 있었고 myweb과 함께 쫓겨나 17:28:27에 마스터에서 새로 떴어요. 새 인스턴스의 로그는 이래요(시각은 UTC라서 9시간을 더하면 한국 시각이에요).</p>
+<div class="obsv-code"># calico-kube-controllers 로그 발췌 (날짜와 [INFO][24] 생략)
+08:28:27.762 kube-controllers/run.go 565: Starting controller ControllerType="NetworkPolicyMigrator"
+08:28:27.762 kube-controllers/syncer.go 116: Node controller syncer status updated: wait-for-ready
+08:28:27.862 kube-controllers/ipam.go 385: Will run periodic IPAM sync every 7m30s
+08:28:32.767 kube-controllers/policy_name_migrator.go 270: Waiting for all calico-node pods to be available numberUnavailable=1
+  … (같은 Waiting 줄이 5초마다 반복)
+08:35:57.864 kube-controllers/ipam.go 371: Marking IPAM for full resync reason="periodic sync"
+  … (같은 Waiting 줄이 5초마다 반복)
+08:51:57.104 kube-controllers/policy_name_migrator.go 270: Waiting for all calico-node pods to be available numberUnavailable=1
+08:52:02.108 kube-controllers/policy_name_migrator.go 151: Syncer status updated: wait-for-ready
+08:52:02.109 kube-controllers/syncer.go 116: Node controller syncer status updated: resync
+08:52:02.112 kube-controllers/syncer.go 116: Node controller syncer status updated: in-sync
+08:52:03.109 kube-controllers/ipam.go 452: Syncer is InSync, kicking sync channel status=in-sync
+08:52:03.109 kube-controllers/ipam.go 917: Performing a full scan of IPAM allocations to check for leaks and redundant affinities</div>
+<p>&rarr; 시작하자마자 상태가 wait-for-ready로 한 번 바뀐 뒤 24분 가까이 다음 상태(resync, in-sync)가 찍히지 않았고 그동안 정책 이름 마이그레이터가 5초마다 "calico-node 파드가 모두 available이 되기를 기다린다(numberUnavailable=1)"를 찍었다는 뜻이에요. 08:35:57에 IPAM 주기 점검 시각이 왔지만 "Marking IPAM for full resync"만 남았어요. 평소라면 주기 점검마다 찍히던 "Performing a full scan"(그림 6)은 08:52:03에야 처음 나왔어요.</p>
+<p>v3.33.0 소스를 따라가면 세 단계가 이어져요.</p>
+<p>&middot; kube-controllers는 데이터스토어의 상태 변화를 DataFeed 하나로 받아 등록된 컨트롤러들에 넘겨요. <a href="https://github.com/projectcalico/calico/blob/v3.33.0/kube-controllers/pkg/controllers/utils/syncer.go">syncer.go</a>의 OnStatusUpdated는 등록된 함수를 for 문으로 하나씩 호출하고 앞의 호출이 끝나야 다음 호출로 넘어가요. IPAM 정리를 맡은 node 컨트롤러, LoadBalancer 컨트롤러, 정책 이름 마이그레이터가 이 피드 하나를 함께 써요(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/kube-controllers/pkg/kubecontrollers/run.go">run.go</a>).<br>
+&middot; 정책 이름 마이그레이터는 상태를 버퍼 없는 채널로 받아요. 그런데 <a href="https://github.com/projectcalico/calico/blob/v3.33.0/kube-controllers/pkg/controllers/networkpolicy/policy_name_migrator.go">policy_name_migrator.go</a>의 run은 calico-node DaemonSet의 NumberUnavailable이 0이 될 때까지 5초마다 확인만 하고 그 채널을 읽지 않아요. 버퍼 없는 채널은 받는 쪽이 읽어야 보내는 쪽이 다음으로 넘어가니 OnStatusUpdated가 첫 상태를 넘기다 멈췄어요.<br>
+&middot; IPAM 컨트롤러는 in-sync를 받지 못했어요. <a href="https://github.com/projectcalico/calico/blob/v3.33.0/kube-controllers/pkg/controllers/node/ipam.go#L1266">ipam.go</a>의 syncIPAM은 상태가 InSync가 아니면 아무 일도 하지 않고 바로 끝나요. 4절에서 본 누수 확정과 빈 블록 반납은 모두 이 함수 안에서 돌아요.</p>
+<div class="obsv-code">// syncer.go: 상태 알림을 등록된 컨트롤러에 차례로, 동기로 넘긴다
+func (d *DataFeed) OnStatusUpdated(status bapi.SyncStatus) {
+    logrus.Infof("Node controller syncer status updated: %s", status)
+    for _, f := range d.statusRegistrations {
+        f(status)
+    }
+}
+// policy_name_migrator.go: 버퍼 없는 채널로 보낸다 (statusUpdates: make(chan bapi.SyncStatus))
+func (c *policyMigrator) onStatusUpdate(status bapi.SyncStatus) {
+    c.statusUpdates &lt;- status
+}
+// ipam.go: InSync가 아니면 IPAM 정리를 건너뛴다
+if c.syncStatus != bapi.InSync {
+    log.WithField("status", c.syncStatus).Debug("Syncer not currently InSync, skipping IPAM sync.")
+    return nil
+}</div>
+<p>&rarr; 마이그레이터가 채널을 읽지 않는 동안 DataFeed는 그 자리에서 기다리고 IPAM 컨트롤러는 InSync를 받지 못해 정리를 건너뛴다는 뜻이에요. worker3의 calico-node가 unavailable인 동안 이 상태가 17:28:27부터 17:52:02까지 약 23분 35초 이어졌어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 452" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">worker3이 죽은 동안 IPAM 정리가 시작되지 못한 길 (새로 뜬 kube-controllers 안)</text>
+<defs>
+<marker id="k34e1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k34e2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k34e3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<path d="M20 72 C 91 70, 162 73, 235 71 C 237 146, 234 222, 236 300 C 162 302, 91 299, 21 301 C 19 222, 21 146, 20 72 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="127" y="100" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">DataFeed</text>
+<text x="127" y="122" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">OnStatusUpdated()</text>
+<text x="127" y="152" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">등록된 컨트롤러에</text>
+<text x="127" y="174" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">상태를 차례로, 동기로</text>
+<text x="127" y="196" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">넘긴다</text>
+<text x="127" y="236" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">넘길 상태</text>
+<text x="127" y="256" font-family="Menlo, monospace" font-size="11.5" fill="#b3502f" text-anchor="middle">wait-for-ready</text>
+<text x="127" y="273" font-family="Menlo, monospace" font-size="11.5" fill="#8a8272" text-anchor="middle">→ resync → in-sync</text>
+<text x="127" y="290" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">(17:28:27 시작)</text>
+<path d="M330 62 C 446 60, 562 63, 682 61 C 684 93, 681 126, 683 160 C 562 162, 446 159, 331 161 C 329 126, 331 93, 330 62 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="506" y="86" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">정책 이름 마이그레이터</text>
+<text x="506" y="107" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">statusUpdates: make(chan bapi.SyncStatus)</text>
+<text x="506" y="131" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">calico-node가 모두 available일 때까지 채널을 읽지 않음</text>
+<text x="506" y="150" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">numberUnavailable=1 (5초마다 확인)</text>
+<path d="M330 192 C 446 190, 562 193, 682 191 C 684 216, 681 241, 683 268 C 562 270, 446 267, 331 269 C 329 241, 331 216, 330 192 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="506" y="215" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">IPAM 컨트롤러 (node 컨트롤러 안)</text>
+<text x="506" y="237" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">syncStatus != InSync → skipping IPAM sync</text>
+<text x="506" y="259" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">누수 확정과 빈 블록 반납이 한 번도 돌지 않음</text>
+<path d="M330 294 C 446 292, 562 295, 682 293 C 684 309, 681 326, 683 344 C 562 346, 446 343, 331 345 C 329 326, 331 309, 330 294 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="506" y="315" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">LoadBalancer · HostEndpoint 컨트롤러</text>
+<text x="506" y="336" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">같은 피드라 in-sync를 받지 못함</text>
+<path d="M239 110 C 268 108, 297 112, 326 110" fill="none" stroke="#e5533c" stroke-width="3.2" stroke-linecap="round" marker-end="url(#k34e1)"/>
+<path d="M275 102 C 281 109, 285 111, 291 118" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/><path d="M291 102 C 285 107, 281 113, 275 118" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+<text x="283" y="96" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">여기서 멈춤</text>
+<path d="M239 228 C 268 226, 297 230, 326 228" fill="none" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k34e2)"/>
+<text x="283" y="220" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">in-sync 안 옴</text>
+<path d="M239 280 C 268 290, 297 306, 326 316" fill="none" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k34e2)"/>
+<text x="350" y="382" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#2e6b41" text-anchor="middle">17:51:57 worker3 kubelet 재시작 → calico-node available → 17:52:02 in-sync → 17:52:03 IPAM 전체 점검</text>
+<text x="350" y="410" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">막힌 시간 약 23분 35초 (17:28:27 ~ 17:52:02)</text>
+<text x="350" y="440" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">그사이 새던 IP 2개를 돌려준 것은 kubelet이 다시 뜨며 부른 CNI DEL(17:51:58~59)이었다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 9. 첫 상태(wait-for-ready)가 마이그레이터에서 막히자 같은 피드를 쓰는 IPAM 컨트롤러에는 in-sync가 오지 않았다</div>
+
+<p>그럼 두 IP는 누가 돌려줬을까요? 17:51:57에 worker3의 kubelet을 다시 켜자 1초 뒤부터 worker3의 CNI 로그에 DEL이 찍혔어요.</p>
+<div class="obsv-code"># worker3 /var/log/calico/cni/cni.log 발췌 (KST, ContainerID 는 앞 12자)
+17:51:58.477 cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="d3de25b89cca…"
+17:51:58.542 ipam/ipam_plugin.go 942: Released address using handleID ContainerID="566f80d33a6c…"
+17:51:58.643 ipam/ipam_plugin.go 942: Released address using handleID ContainerID="d3de25b89cca…"
+17:51:59.469 ipam/ipam_plugin.go 942: Released address using handleID ContainerID="d471e622a915…"
+17:51:59.570 ipam/ipam_plugin.go 942: Released address using handleID ContainerID="3f3d64dd4e0a…"</div>
+<p>&rarr; 다시 뜬 kubelet이 남아 있던 샌드박스를 정리했고 그때 2절에서 본 CNI DEL이 돌아 IP를 반납했다는 뜻이에요. 같은 CNI 로그에서 10.244.100.228은 15:48:44에 샌드박스 3f3d64dd4e0a…가 받은 IP였고 17:51:59.570에 반납됐어요. kube-controllers의 전체 점검은 그 뒤인 17:52:03에 시작됐고 누수나 반납 로그를 남기지 않았어요. 그 뒤 worker3의 nginx 컨테이너는 0개였고 10.244.100.228로 가는 경로도 없었으며 ipam check 결과는 <code style="font-family:Menlo,monospace;font-size:14px;">found 0 problems</code>였어요. <span class="obsv-mark">이번에 새던 IP를 돌려준 것은 kube-controllers의 누수 정리가 아니라 노드가 돌아온 뒤 kubelet이 부른 CNI DEL이었어요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 노드 장애 직후에는 누수 정리가 시작되지 않을 수 있어요</div>
+  &bull; 이 클러스터(Calico v3.33.0, 정책 이름 마이그레이터가 켜진 매니페스트 설치)에서는 죽은 노드에 있던 calico-kube-controllers가 다른 노드에서 새로 뜨자 죽은 노드의 calico-node가 돌아올 때까지 IPAM 정리가 한 번도 돌지 않았어요. 4절의 빈 블록 반납(15분 22초)은 kube-controllers가 정상일 때 본 동작이고 15분 누수 규칙도 IPAM 동기화가 in-sync일 때만 돌아요<br>
+  &bull; Node 객체를 지워 DaemonSet의 unavailable이 0이 되면 풀리는지는 확인하지 않았어요. 기본 브랜치(master)의 세 소스 파일도 2026-11-14 기준 구조가 같았고 IPAM 정리가 멈춘다는 GitHub 이슈는 찾지 못했어요. 마이그레이터의 기다림이 끝나지 않는다는 보고로는 canal 매니페스트에서 DaemonSet 이름이 달라 생긴 이슈(<a href="https://github.com/projectcalico/calico/issues/13912">#13912</a>)가 있었어요<br>
+  &bull; 노드 장애 뒤에는 kube-controllers 로그에 "Waiting for all calico-node pods to be available"이 계속 찍히는지, ipam check에 "allocated in IPAM but not actually in use"가 남는지 직접 봐요<br>
+  &bull; 죽은 노드의 파드를 강제로 지우면 API에서만 사라져요. 이번에도 그 노드에서는 nginx 컨테이너가 계속 돌았고 IP는 kubelet이 돌아와 DEL을 부른 뒤에야 반납됐어요
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: IP 누수는 이렇게 점검해요</div>
+  &bull; 평소에는 <code style="font-family:Menlo,monospace;font-size:14px;">calicoctl ipam check</code>만 돌려 "found 0 problems"인지 봐요. 이 명령은 잠그지 않고 읽기만 해요<br>
+  &bull; 노드를 아예 없앴다면 Node 객체도 지워야 해요. 노드가 API에 남아 있는 동안에는 그 노드의 누수 후보가 leakGracePeriod(기본 15분)를 기다린 뒤에야 확정되고 노드의 마지막 블록도 그 노드에 남아요<br>
+  &bull; 문제가 나왔다면 레퍼런스의 lock, check -o, release --from-report, unlock 순서를 지켜요. 잠근 동안 파드 생성이 막히니 작업 시간을 잡고 해요<br>
+  &bull; KubeControllersConfiguration의 leakGracePeriod를 0으로 두면 살아 있는 노드의 누수 확정과 빈 블록 반납이 꺼져요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>파드 IP는 RunPodSandbox 안의 CNI ADD에서 정해지고 StopPodSandbox 안의 CNI DEL에서 반납돼요. DEL을 부를 노드가 죽으면 IP는 남아요.</b><br><br>
+  containerd가 실행한 calico 플러그인이 calico-ipam에 IP 고르기를 맡겼고 calico-ipam은 노드 블록의 빈칸 하나와 핸들 하나로 그 IP를 기록했어요. IP는 앱 컨테이너보다 먼저 정해졌고 veth 이름은 네임스페이스와 파드 이름의 해시라서 같은 이름이면 같았어요. 파드를 지우자 StopPodSandbox 안의 CNI DEL이 핸들 이름으로 IP를 반납했고 DEL은 여러 번 와도 성공으로 끝났어요. 반납한 칸은 빈칸 목록 맨 뒤로 갔지만 기본 설정이 재사용을 막지는 않아요. 파드 객체가 먼저 사라져도 IP는 약 14초 뒤에 돌아왔고 비어 버린 블록은 약 15분 22초 뒤에 calico-kube-controllers가 반납했어요. 노드가 죽어 DEL이 오지 않는 IP는 규칙상 같은 컨트롤러가 leakGracePeriod를 기준으로 치워요. 다만 이 클러스터에서는 죽은 노드에 있던 kube-controllers가 다른 노드에서 다시 뜬 뒤 정책 이름 마이그레이터에 막혀 그 정리가 시작되지 않았고 IP 2개는 노드가 돌아와 kubelet이 부른 CNI DEL로 반납됐어요. 노드 장애 뒤에는 calicoctl ipam check로 누수를 직접 확인해요.
+</div>
+
+</div>

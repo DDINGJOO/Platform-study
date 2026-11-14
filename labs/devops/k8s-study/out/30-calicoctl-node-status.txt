@@ -1,0 +1,18 @@
+# E21 글 쓰기 전에 확인 못 한 세 가지를 확인 (2026-11-14 16:07:14 KST)
+
+## 3. calicoctl node status 가 'Calico process is not running' 인 이유
+  $ sudo calicoctl(v3.33.0) node status
+  Calico process is not running.
+  
+  
+  felix 프로세스의 argv: calico component felix 
+  calicoctl v3.33.0 소스(calicoctl/calicoctl/commands/node/status.go)가 찾는 argv:
+    	// For older versions of calico/node, the process was called `calico-felix`. Newer ones use `calico-node -felix`.
+    	if !psContains([]string{"calico-felix"}, processes) && !psContains([]string{"calico-node", "-felix"}, processes) {
+  main 브랜치에는 한 줄이 더 있음 (커밋 a7d2026b7e 'fix: calico node status (#14135)', 2026-10-02):
+    	if !psContains([]string{"calico-felix"}, processes) &&
+    		!psContains([]string{"calico-node", "-felix"}, processes) &&
+    		!psContains([]string{"calico", "component", "felix"}, processes) {
+  → calico-node 3.33 의 felix 프로세스 argv 는 'calico component felix' 인데 calicoctl v3.33.0 은 'calico-felix' 나 'calico-node -felix' 만 찾음
+  → 수정은 v3.33.1 태그에 들어 있으나 2026-11-14 현재 GitHub 릴리스는 v3.33.0 이 Latest (v3.33.1 릴리스·바이너리 없음, 다운로드 404)
+  → 그동안은 calico-node 안의 birdcl -s /var/run/calico/bird.ctl show protocols 로 BGP 상태 확인 (e8-calico-bird.txt 4번)

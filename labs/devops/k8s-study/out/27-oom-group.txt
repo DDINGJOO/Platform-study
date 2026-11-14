@@ -1,0 +1,26 @@
+# 27편 보강 memory.oom.group (2026-11-14 16:30:58 KST)
+16:30:59 w27/oom-demo Ready (worker1, busybox:1.36.1, cpu 200m / memory 64Mi, requests = limits)
+
+## 1. kubelet 설정의 singleProcessOOMKill (/configz, 값이 없으면 기본값)
+  singleProcessOOMKill = None
+
+## 2. 컨테이너 cgroup 파일 (worker1)
+  /sys/fs/cgroup 파일시스템 = cgroup2fs
+  memory.oom.group = 1
+  memory.max       = 67108864
+  컨테이너 안 프로세스: PID COMMAND| 1 sh| 7 ps
+
+## 3. 한도를 넘기면 (kubectl exec 로 100MB 를 메모리에 쌓는 tail 을 띄움)
+16:30:59 mac$ kubectl -n w27 exec oom-demo -- sh -c 'head -c 100m /dev/zero | tail'
+16:31:03 restarts=1 lastState=OOMKilled exitCode=137
+worker1 dmesg 새 줄 가운데 OOM 관련:
+[ 6566.565464] oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=<컨테이너>,mems_allowed=0,oom_memcg=<cgroup>,task_memcg=<cgroup>,task=tail,pid=52111,uid=0
+[ 6566.565470] Memory cgroup out of memory: Killed process 52111 (tail) total-vm:68140kB, anon-rss:64128kB, file-rss:1280kB, shmem-rss:0kB, UID:0 pgtables:176kB oom_score_adj:-997
+[ 6566.565504] Tasks in <컨테이너 cgroup> are going to be killed due to memory.oom.group set
+[ 6566.565508] Memory cgroup out of memory: Killed process 52023 (sh) total-vm:4104kB, anon-rss:0kB, file-rss:1664kB, shmem-rss:0kB, UID:0 pgtables:44kB oom_score_adj:-997
+[ 6566.565514] Memory cgroup out of memory: Killed process 52104 (sh) total-vm:4104kB, anon-rss:0kB, file-rss:1664kB, shmem-rss:0kB, UID:0 pgtables:48kB oom_score_adj:-997
+[ 6566.565518] Memory cgroup out of memory: Killed process 52110 (head) total-vm:4104kB, anon-rss:128kB, file-rss:1536kB, shmem-rss:0kB, UID:0 pgtables:56kB oom_score_adj:-997
+[ 6566.565522] Memory cgroup out of memory: Killed process 52111 (tail) total-vm:68140kB, anon-rss:64128kB, file-rss:1280kB, shmem-rss:0kB, UID:0 pgtables:176kB oom_score_adj:-997
+
+## 4. 정리
+16:31:19 네임스페이스 w27 삭제

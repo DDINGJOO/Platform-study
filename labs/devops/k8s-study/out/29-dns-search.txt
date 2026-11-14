@@ -1,0 +1,85 @@
+# w29 DNS search·ndots 관찰 (2026-11-14 16:37:36 KST, Mac 에서 ./lab 으로 실행, 네임스페이스 w29)
+
+## 1. 같은 명령으로 Service 와 클라이언트를 만든다 (w29)
+svc/redis-dns-svc ClusterIP 10.96.115.83, pod/dns-client 10.244.126.59 (k8s-worker2)
+dns-client 의 libc: libc.so.6 (busybox:1.36.1)
+
+## 2. resolv.conf 를 만드는 것은 그 노드의 kubelet
+dns-client$ cat /etc/resolv.conf
+  search w29.svc.cluster.local svc.cluster.local cluster.local <router-domain>
+  nameserver 10.96.0.10
+  options ndots:5
+k8s-worker2$ grep -A1 -E 'clusterDNS|clusterDomain|resolvConf' /var/lib/kubelet/config.yaml
+  clusterDNS:
+  - 10.96.0.10
+  clusterDomain: cluster.local
+  containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+  resolvConf: /run/systemd/resolve/resolv.conf
+  rotateCertificates: true
+k8s-worker2$ grep search /run/systemd/resolve/resolv.conf (kubelet resolvConf, 노드의 검색 도메인)
+  # all known uplink DNS servers. This file lists all configured search domains.
+  search <router-domain>
+
+## 3. 이름 풀이: glibc 리졸버(ping 첫 줄) vs busybox nslookup
+  redis-dns-svc                              ping→ 10.96.115.83    nslookup→ 10.96.115.83
+  redis-dns-svc.w29                          ping→ 10.96.115.83    nslookup→ NXDOMAIN
+  redis-dns-svc.w29.svc                      ping→ 10.96.115.83    nslookup→ NXDOMAIN
+  redis-dns-svc.w29.svc.cluster.local        ping→ 10.96.115.83    nslookup→ 10.96.115.83
+  kubernetes                                 ping→ 못 찾음      nslookup→ NXDOMAIN
+  kubernetes.default                         ping→ 10.96.0.1       nslookup→ NXDOMAIN
+  kubernetes.default.svc.cluster.local       ping→ 10.96.0.1       nslookup→ 10.96.0.1
+  (redis-dns-svc ClusterIP 10.96.115.83, kubernetes ClusterIP 10.96.0.1)
+dns-client$ printf 'PING\r\n' | nc -w 2 redis-dns-svc 6379 → +PONG
+
+## 4. ndots:5 가 만드는 질의 (k8s-worker2 에서 dns-client 의 veth 를 tcpdump, udp 53)
+dns-client$ ping -c1 -W1 www.kubernetes.io
+  보낸 질의 10개:
+    A? www.kubernetes.io.w29.svc.cluster.local.
+    AAAA? www.kubernetes.io.w29.svc.cluster.local.
+    A? www.kubernetes.io.svc.cluster.local.
+    AAAA? www.kubernetes.io.svc.cluster.local.
+    A? www.kubernetes.io.cluster.local.
+    AAAA? www.kubernetes.io.cluster.local.
+    A? www.kubernetes.io.<router-domain>.
+    AAAA? www.kubernetes.io.<router-domain>.
+    A? www.kubernetes.io.
+    AAAA? www.kubernetes.io.
+dns-client$ ping -c1 -W1 www.kubernetes.io.
+  보낸 질의 2개:
+    A? www.kubernetes.io.
+    AAAA? www.kubernetes.io.
+dns-client$ ping -c1 -W1 redis-dns-svc
+  보낸 질의 2개:
+    A? redis-dns-svc.w29.svc.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.
+dns-client$ ping -c1 -W1 redis-dns-svc.w29.svc.cluster.local
+  보낸 질의 10개:
+    A? redis-dns-svc.w29.svc.cluster.local.w29.svc.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.w29.svc.cluster.local.
+    A? redis-dns-svc.w29.svc.cluster.local.svc.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.svc.cluster.local.
+    A? redis-dns-svc.w29.svc.cluster.local.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.cluster.local.
+    A? redis-dns-svc.w29.svc.cluster.local.<router-domain>.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.<router-domain>.
+    A? redis-dns-svc.w29.svc.cluster.local.
+    AAAA? redis-dns-svc.w29.svc.cluster.local.
+
+## 5. 환경 변수는 컨테이너가 시작하는 순간의 Service 목록으로 정해진다
+16:38:10 Service late-svc 생성 (ClusterIP 10.105.142.196)
+같은 파드 envcheck, 첫 컨테이너 로그:   16:38:07 컨테이너 시작, LATE_SVC_SERVICE_HOST=없음
+같은 파드 envcheck, 재시작한 컨테이너: 16:38:23 컨테이너 시작, LATE_SVC_SERVICE_HOST=10.105.142.196
+dns-client(late-svc 전에 시작) 의 *_SERVICE_HOST: KUBERNETES_SERVICE_HOST REDIS_DNS_SVC_SERVICE_HOST
+  (default 네임스페이스의 Service: kubernetes myweb)
+
+## 6. pods insecure: 파드가 없어도 IP 모양 이름이면 A 레코드를 돌려준다
+  클러스터에 IP 가 10.244.0.99 인 파드: 0개
+  nslookup 10-244-126-59.w29.pod.cluster.local → 10.244.126.59
+  nslookup 10-244-0-99.w29.pod.cluster.local → 10.244.0.99
+
+## 7. Metrics Server 는 없다
+kubectl get apiservice | grep metrics: 0줄
+kubectl top node: error: Metrics API not available
+
+## 8. 정리
+16:38:24 w29 네임스페이스 삭제

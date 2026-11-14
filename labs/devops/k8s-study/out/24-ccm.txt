@@ -1,0 +1,47 @@
+# E7 컨트롤러 매니저와 클라우드 컨트롤러 매니저 (2026-11-14 15:18:55 KST)
+
+## 1. kube-controller-manager 실행 플래그 (정적 파드)
+--allocate-node-cidrs=true
+--cluster-cidr=10.244.0.0/16
+--controllers=*,bootstrapsigner,tokencleaner
+--leader-elect=true
+
+## 2. KCM 바이너리 하나에 들어 있는 컨트롤러 (kube-controller-manager --help 의 --controllers 설명)
+컨트롤러 이름 수: 49
+bootstrap-signer-controller certificatesigningrequest-approving-controller certificatesigningrequest-cleaner-controller 
+certificatesigningrequest-signing-controller clusterrole-aggregation-controller cronjob-controller daemonset-controller deployment-controller 
+device-taint-eviction-controller disruption-controller endpoints-controller endpointslice-controller endpointslice-mirroring-controller 
+ephemeral-volume-controller garbage-collector-controller horizontal-pod-autoscaler-controller job-controller 
+kube-apiserver-serving-clustertrustbundle-publisher-controller legacy-serviceaccount-token-cleaner-controller namespace-controller 
+node-ipam-controller node-lifecycle-controller persistentvolume-attach-detach-controller persistentvolume-binder-controller 
+persistentvolume-expander-controller persistentvolume-protection-controller persistentvolumeclaim-protection-controller 
+pod-garbage-collector-controller podcertificaterequest-cleaner-controller podgroup-protection-controller replicaset-controller 
+replicationcontroller-controller resourceclaim-controller resourcepoolstatusrequest-controller resourcequota-controller 
+root-ca-certificate-publisher-controller selinux-warning-controller service-cidr-controller serviceaccount-controller serviceaccount-token-controller 
+statefulset-controller storage-version-migrator-controller storageversion-garbage-collector-controller taint-eviction-controller 
+token-cleaner-controller ttl-after-finished-controller ttl-controller validatingadmissionpolicy-status-controller 
+volumeattributesclass-protection-controller
+기본 꺼짐:
+bootstrap-signer-controller selinux-warning-controller token-cleaner-controller (default [*]) 
+
+## 3. 리더 선출: 지금 일하는 KCM / 스케줄러 (Lease)
+NAME                      HOLDER                                                 RENEW
+kube-controller-manager   lima-k8s-master_fe01f63d-2844-4045-b438-b5bb7ebcc3b1   2026-11-14T06:18:55.381963Z
+kube-scheduler            lima-k8s-master_d65a8fcd-c7ac-4c21-bf95-882110a4c80c   2026-11-14T06:18:54.011986Z
+
+## 4. CCM 이 있나?
+cloud-controller-manager 파드: 0개
+NODE          PROVIDER_ID   TAINTS
+k8s-master    <none>        node-role.kubernetes.io/control-plane
+k8s-worker1   <none>        <none>
+k8s-worker2   <none>        <none>
+k8s-worker3   <none>        <none>
+
+## 5. CCM 이 없을 때 type: LoadBalancer 서비스
+15:19:06 ccm-demo LoadBalancer EXTERNAL-IP=<pending> 80:32019/TCP
+15:19:16 ccm-demo LoadBalancer EXTERNAL-IP=<pending> 80:32019/TCP
+15:19:26 ccm-demo LoadBalancer EXTERNAL-IP=<pending> 80:32019/TCP
+15:19:26 이벤트:
+15:19:26 NodePort 로는 바로 접속됨:
+worker1(192.168.104.3):32019 → 200
+15:19:26 ccm-demo 삭제

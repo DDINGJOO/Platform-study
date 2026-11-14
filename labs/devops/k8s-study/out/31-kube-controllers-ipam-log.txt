@@ -1,0 +1,24 @@
+# 31편 보강: calico-kube-controllers IPAM 로그 (2026-11-14 16:32:43 KST), Mac 에서 ./lab 으로 조회, 파드 calico-kube-controllers-846669895c-j4sd8
+
+## 1. KubeControllersConfiguration default 의 node 컨트롤러 설정
+leakGracePeriod=15m0s
+
+## 2. 시작할 때 정한 IPAM 점검 주기와 전체 점검 시각
+2026-11-14 05:41:58.300 [INFO][16] kube-controllers/ipam.go 385: Will run periodic IPAM sync every 7m30s
+2026-11-14 06:26:58.301 [INFO][16] kube-controllers/ipam.go 917: Performing a full scan of IPAM allocations to check for leaks and redundant
+2026-11-14 06:34:28.300 [INFO][16] kube-controllers/ipam.go 917: Performing a full scan of IPAM allocations to check for leaks and redundant
+2026-11-14 06:41:58.300 [INFO][16] kube-controllers/ipam.go 917: Performing a full scan of IPAM allocations to check for leaks and redundant
+2026-11-14 06:49:28.300 [INFO][16] kube-controllers/ipam.go 917: Performing a full scan of IPAM allocations to check for leaks and redundant
+
+## 3. ipam-fill(파드 62개) 을 지운 직후(06:29:49 UTC = 15:29:49 KST): 누수 후보(Candidate IP leak)
+06:29~06:31 UTC 의 Candidate IP leak 줄 수: 62  (첫 줄 06:29:50.869, 끝 줄 06:29:53.886)
+그중 pod="default/ipam-fill-…" 인 줄 수: 62
+2026-11-14 06:29:50.869 [INFO][16] kube-controllers/ipam_allocation.go 184: Candidate IP leak handle="k8s-pod-network.c0e970be6624…" ip="10.244.126.7" node="k8s-worker2" pod="default/ipam-fill-7b95f6b758-tcl44"
+2026-11-14 06:29:50.869 [INFO][16] kube-controllers/ipam_allocation.go 184: Candidate IP leak handle="k8s-pod-network.a544ecacbc0b…" ip="10.244.126.66" node="k8s-worker2" pod="default/ipam-fill-7b95f6b758-krtqv
+2026-11-14 06:29:50.870 [INFO][16] kube-controllers/ipam_allocation.go 184: Candidate IP leak handle="k8s-pod-network.455f077503bd…" ip="10.244.126.45" node="k8s-worker2" pod="default/ipam-fill-7b95f6b758-49k4b
+로그 전체의 Confirmed IP leak 줄 수: 0
+
+## 4. 빈 블록 반납
+2026-11-14 06:45:25.373 [INFO][16] kube-controllers/ipam.go 876: Releasing affinity for empty block (node has 2 total blocks) blockCIDR="10.244.126.64/26" node="k8s-worker2"
+2026-11-14 06:45:26.396 [INFO][16] kube-controllers/ipam.go 672: Received block delete block="10.244.126.64/26"
+2026-11-14 07:08:43.342 [INFO][16] kube-controllers/ipam.go 672: Received block delete block="172.30.0.0/29"

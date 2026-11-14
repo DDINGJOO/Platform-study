@@ -1,0 +1,14 @@
+# 32편 보강: kubeadm 이 익명 사용자에게 열어 둔 cluster-info (2026-11-14 17:33:09 KST, Mac 에서 실습 저장소 루트로 bash 32-anon-cluster-info.sh 실행, 조회만)
+
+## 1. kube-public 네임스페이스의 Role 과 RoleBinding
+mac$ kubectl -n kube-public get rolebinding kubeadm:bootstrap-signer-clusterinfo -o wide
+NAME                                   ROLE                                        AGE   USERS              GROUPS   SERVICEACCOUNTS
+kubeadm:bootstrap-signer-clusterinfo   Role/kubeadm:bootstrap-signer-clusterinfo   9d    system:anonymous            
+mac$ kubectl -n kube-public get role kubeadm:bootstrap-signer-clusterinfo -o jsonpath='{.rules}'
+  [{"apiGroups":[""],"resourceNames":["cluster-info"],"resources":["configmaps"],"verbs":["get"]}]
+
+## 2. worker1 에서 자격 없이 (CA 확인은 함)
+worker1$ curl --cacert /etc/kubernetes/pki/ca.crt https://192.168.104.1:6443/api/v1/namespaces/kube-public/configmaps/cluster-info
+  HTTP 200 | ConfigMap cluster-info data 키: ['kubeconfig']
+worker1$ curl --cacert /etc/kubernetes/pki/ca.crt https://192.168.104.1:6443/api/v1/namespaces/kube-public/configmaps   (같은 네임스페이스의 ConfigMap 목록)
+  HTTP 403 | configmaps is forbidden: User "system:anonymous" cannot list resource "configmaps" in API group "" in the namespace "kube-public"

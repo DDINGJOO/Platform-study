@@ -1,0 +1,409 @@
+<!-- ============================================================
+  k8s 스터디 27편: 파드 하나가 뜰 때 kubelet과 containerd 사이에 어떤 CRI 호출이 오갈까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 파드 하나를 띄우자 containerd 로그에 RunPodSandbox, PullImage, CreateContainer, StartContainer가 차례로 찍혔어요. 파드가 뜨고 메모리 한도에 걸리고 지워질 때까지의 CRI 호출을 시각과 함께 따라갔어요. -->
+<!-- tags: CRI, RunPodSandbox, crictl, containerd 로그, OOMKilled, cgroup memory.max, 이미지 GC -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 27편</div>
+  25편. 노드가 죽으면 쿠버네티스는 몇 초 만에 알아채고 파드를 옮길까<br>
+  26편. kubelet과 containerd를 재시작해도 컨테이너가 죽지 않는 이유<br>
+  <b>27편. 파드 하나가 뜰 때 kubelet과 containerd 사이에 어떤 CRI 호출이 오갈까</b> &larr; 지금 이 글<br>
+  28편. ClusterIP는 ping이 안 되는데 curl은 되는 이유와 kube-proxy 모드<br>
+  29편. 다른 네임스페이스의 Service는 왜 짧은 이름으로 안 찾아질까
+</div>
+
+<p>15시 53분 1초에 busybox 파드 하나(cri-demo)를 worker1에 띄웠어요. 4초 뒤 파드가 Ready가 됐고 그사이 worker1의 containerd 로그에는 <code style="font-family:Menlo,monospace;font-size:14px;">RunPodSandbox</code>, <code style="font-family:Menlo,monospace;font-size:14px;">PullImage</code>, <code style="font-family:Menlo,monospace;font-size:14px;">CreateContainer</code>, <code style="font-family:Menlo,monospace;font-size:14px;">StartContainer</code>가 차례로 찍혔어요. 첫 줄은 15:53:01.540, 마지막 줄은 15:53:05.715였어요. kubectl apply 한 줄을 실행한 뒤 kubelet과 containerd가 주고받은 호출이 바로 이 네 가지예요.</p>
+<p>컨테이너 런타임이 하는 일은 레지스트리에서 이미지 가져오기, 자원 할당과 격리, 수명 주기 관리 세 가지로 정리할 수 있어요. 쿠버네티스는 CRI라는 API 묶음으로 런타임과 상호 작용해요. 이 구조를 상자와 화살표로 그려 보면 kubelet에서 나간 gRPC 화살표가 containerd(또는 CRI-O)로 들어가고 containerd 안에 Image service와 OCI specification 상자가 있으며 맨 끝에 파드가 있어요. 이 세 가지 일과 상자들이 노드에서 실제로 무엇인지 하나씩 맞춰 보려고 이 실험을 했어요.</p>
+<p>26편에서는 containerd 아래의 shim, runc, OCI 번들을 봤어요. 이번 글에서는 그 위층을 다뤄요. kubelet이 containerd에 무엇을 요청하고 containerd는 그 요청을 받아 노드에 무엇을 남기는지 봐요. 클러스터는 1~7편에서 만든 실습 환경(Lima VM 4대, 쿠버네티스 v1.37.2, containerd 2.4.1, 커널 6.8)이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; kubelet은 containerd를 어디서 찾고 어떤 서비스를 부를까?<br>
+&middot; 파드 하나가 뜰 때 CRI 호출은 어떤 순서로 몇 초씩 걸릴까?<br>
+&middot; 받은 이미지는 노드 어디에 어떤 모양으로 쌓일까?<br>
+&middot; requests와 limits는 노드에서 어떤 파일이 되고 한도를 넘기면 누가 죽일까?<br>
+&middot; 컨테이너가 죽을 때와 파드를 지울 때 CRI 호출은 어떻게 다를까?<br>
+&middot; 그래서 limits, 종료 신호, 이미지 디스크는 어떻게 다룰까?</p>
+
+<h2>1. kubelet은 소켓 하나로 containerd의 두 서비스를 부른다</h2>
+
+<p>kubelet이 어느 런타임에 연결할지는 kubelet 설정 파일에 적혀 있어요. worker1에서 설정과 CRI 버전을 확인했어요.</p>
+<div class="obsv-code">worker1$ grep containerRuntimeEndpoint /var/lib/kubelet/config.yaml; crictl version
+containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+Version:  0.1.0
+RuntimeName:  containerd
+RuntimeVersion:  v2.4.1
+RuntimeApiVersion:  v1</div>
+<p>&rarr; kubelet은 유닉스 소켓 <code style="font-family:Menlo,monospace;font-size:14px;">/var/run/containerd/containerd.sock</code>으로 containerd에 붙고 그 소켓 건너편의 런타임은 containerd v2.4.1이며 CRI API 버전 v1을 쓴다는 뜻이에요. worker1에서 <code style="font-family:Menlo,monospace;font-size:14px;">/var/run</code>은 <code style="font-family:Menlo,monospace;font-size:14px;">/run</code>을 가리키는 심볼릭 링크라서 이 소켓은 crictl 설정에 적힌 <code style="font-family:Menlo,monospace;font-size:14px;">/run/containerd/containerd.sock</code>과 같은 파일이에요.</p>
+<p><a href="https://kubernetes.io/docs/concepts/containers/cri/">CRI 문서</a>에 따르면 kubelet은 gRPC 클라이언트로 런타임에 붙고 쿠버네티스 1.26부터는 런타임이 v1 CRI API를 지원하지 않으면 노드를 등록하지 않아요. CRI 자체는 26편에서 정리했어요. 여기서 볼 것은 CRI가 서비스 두 개로 나뉘어 있다는 점이에요.</p>
+<div class="obsv-code">worker1$ cat /etc/crictl.yaml
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint: unix:///run/containerd/containerd.sock
+
+worker1$ kubelet --help | grep -- --image-service-endpoint
+--image-service-endpoint string   The endpoint of container image service. If not specified, it will be
+                                  the same with --container-runtime-endpoint by default. …</div>
+<p>&rarr; crictl 설정에는 런타임 엔드포인트와 이미지 엔드포인트가 따로 있고 지금은 둘 다 같은 소켓이라는 뜻이에요. kubelet에도 이미지 서비스 엔드포인트를 따로 지정하는 옵션이 있고 비워 두면 런타임 엔드포인트를 그대로 써요. 우리 kubelet 설정에는 <code style="font-family:Menlo,monospace;font-size:14px;">imageServiceEndpoint</code>가 없었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: RuntimeService와 ImageService</div>
+  CRI의 gRPC 서비스 두 개예요. RuntimeService는 파드 샌드박스와 컨테이너를 만들고 멈추고 지우는 호출, exec·attach·port-forward 같은 호출을 담아요. ImageService는 이미지를 받고 지우고 목록과 디스크 사용량을 알려 주는 호출을 담아요. 두 서비스를 서로 다른 프로세스가 맡을 수도 있어서 엔드포인트가 둘로 나뉘어 있어요.
+</div>
+<p>호출 목록은 <a href="https://github.com/kubernetes/cri-api/blob/v0.37.2/pkg/apis/runtime/v1/api.proto">cri-api 저장소의 api.proto</a>에 있어요. 쿠버네티스 1.37에 맞춘 v0.37.2 태그에서 세어 보면 RuntimeService에 RPC가 37개, ImageService에 6개 있어요. 이 가운데 이름이 Stream으로 시작하는 것들은 CRIListStreaming 기능 게이트를 켰을 때 쓰는 호출이에요. 우리 노드에서는 그림 1과 같은 모양이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k27aarr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k27aarr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k27aarr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M20 58 C 64 60.3, 107 60.4, 152 57.2 C 151.7 77, 152.8 96, 153.3 116 C 107 118.5, 64 116.8, 19.4 116.6 C 18.0 96, 22.0 77, 20 58 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="86" y="86" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<text x="86" y="106" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">gRPC 클라이언트</text>
+<path d="M20 250 C 64 249.2, 107 250.6, 152 248.7 C 149.7 268, 154.2 286, 151.6 304 C 107 302.1, 64 306.0, 19.4 304.7 C 19.2 286, 19.8 268, 20 250 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 6"/>
+<text x="86" y="276" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#8a8272" text-anchor="middle">crictl</text>
+<text x="86" y="295" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">/etc/crictl.yaml</text>
+<text x="86" y="150" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">imageServiceEndpoint</text>
+<text x="86" y="170" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">비워 두면 같은 소켓</text>
+<path d="M176 150 C 226 152.4, 275 149.4, 326 149.3 C 327.7 173, 325.8 196, 326.4 220 C 275 219.3, 226 221.9, 174.7 219.9 C 175.3 196, 174.0 173, 176 150 Z" fill="#f5efe0" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="251" y="178" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">유닉스 소켓 하나</text>
+<text x="251" y="202" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">containerd.sock</text>
+<path d="M154 92 C 171 106, 187 127, 196 148" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k27aarr1)"/>
+<path d="M154 272 C 173 261, 192 242, 200 222" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 6" marker-end="url(#k27aarr2)"/>
+<path d="M348 18 C 458 15.9, 568 17.7, 682 17.5 C 680.4 141, 683.0 265, 682.4 392 C 568 390.1, 458 390.9, 348.9 392.5 C 348.4 265, 347.6 141, 348 18 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="515" y="46" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">containerd 2.4.1 (CRI 플러그인)</text>
+<path d="M366 62 C 464 62.4, 563 60.3, 664 60.7 C 665.7 108, 665.9 154, 664.4 202 C 563 199.4, 464 201.0, 365.1 201.5 C 367.1 154, 366.1 108, 366 62 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="515" y="88" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">RuntimeService · RPC 37개</text>
+<text x="515" y="110" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">RunPodSandbox   StopPodSandbox</text>
+<text x="515" y="128" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">RemovePodSandbox  CreateContainer</text>
+<text x="515" y="146" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">StartContainer  StopContainer</text>
+<text x="515" y="164" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">RemoveContainer  ContainerStatus</text>
+<text x="515" y="182" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">Exec  Attach  PortForward  …</text>
+<text x="515" y="226" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">↓ shim → runc → 파드 샌드박스와 컨테이너</text>
+<path d="M366 244 C 464 242.4, 563 245.3, 664 245.2 C 662.7 278, 663.9 313, 663.5 348 C 563 347.9, 464 345.7, 364.7 346.8 C 366.7 313, 363.8 278, 366 244 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="515" y="270" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41" text-anchor="middle">ImageService · RPC 6개</text>
+<text x="515" y="294" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">PullImage  ImageStatus  ListImages</text>
+<text x="515" y="312" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">RemoveImage  ImageFsInfo  StreamImages</text>
+<text x="515" y="336" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">레지스트리 → overlayfs 스냅숏</text>
+<path d="M328 172 C 336 156, 350 139, 364 128" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k27aarr1)"/>
+<path d="M328 200 C 333 229, 347 266, 364 290" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k27aarr3)"/>
+<text x="515" y="378" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">api.proto v0.37.2 기준, Stream*은 기능 게이트</text>
+<text x="176" y="380" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">부르는 쪽은 둘, 받는 쪽은 한 프로세스</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. kubelet과 crictl은 같은 소켓으로 containerd의 RuntimeService와 ImageService를 부른다</div>
+
+<p>도입에서 그려 본 구조의 상자에 맞추면 이래요. kubelet에서 나간 gRPC 화살표가 이 소켓이고 Image service 상자가 ImageService예요. OCI specification 상자는 26편에서 본 runc와 OCI 번들이고 맨 끝의 파드는 다음 절에서 볼 샌드박스와 컨테이너예요. <span class="obsv-mark">kubelet은 이 소켓으로 RPC를 보낼 뿐이고 이미지를 어디에 어떻게 펼칠지, 컨테이너를 무엇으로 실행할지는 containerd 쪽 일이에요.</span></p>
+
+<h2>2. 파드 하나를 띄우는 호출: RunPodSandbox, PullImage, CreateContainer, StartContainer</h2>
+
+<p>띄운 파드의 매니페스트는 이래요. 노드를 worker1로 고정하고 requests와 limits를 같게 줬어요. 시작 전 worker1에는 busybox:1.36.1 이미지가 없었어요.</p>
+<div class="obsv-code">apiVersion: v1
+kind: Pod
+metadata: {name: cri-demo}
+spec:
+  nodeSelector: {kubernetes.io/hostname: k8s-worker1}
+  terminationGracePeriodSeconds: 5
+  containers:
+  - name: box
+    image: docker.io/library/busybox:1.36.1
+    command: ["sh","-c","sleep 3600"]
+    resources:
+      requests: {cpu: 200m, memory: 64Mi}
+      limits:   {cpu: 200m, memory: 64Mi}</div>
+<p>apply한 순간부터 worker1의 containerd 로그를 이 파드의 샌드박스 ID와 컨테이너 ID로 걸러 봤어요. Calico CNI 플러그인이 같은 로그에 남긴 줄도 몇 개 함께 골랐어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/27/01-cri-create.png" alt="worker1 containerd 로그에서 cri-demo 생성 구간을 거른 화면. 15:53:01.540 RunPodSandbox, 01.610 Calico CNI IPAM assigned 10.244.194.105, 01.612 host side interface calibf387450450, 01.639 connecting to shim (ttrpc), 01.670 RunPodSandbox returns sandbox id 4a7f58…, 05.678 CreateContainer, 05.695 returns container id 168f31…, 05.695 StartContainer, 05.715 returns successfully, 07.760 CreateContainer attempt:1, 07.770 container id db22cd…, 07.793 StartContainer returns successfully" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. RunPodSandbox 안에서 Calico가 IP를 붙였고 컨테이너는 그 샌드박스 안에 만들어졌다</div>
+<p>화면의 첫 아홉 줄이 파드 하나가 뜨는 과정이에요. 아래 네 줄(attempt:1)은 4절에서 메모리 한도를 넘긴 뒤 컨테이너가 다시 뜬 흔적이라서 5절에서 다시 봐요. 순서대로 읽으면 이래요.</p>
+<p><b>① RunPodSandbox (15:53:01.540 &rarr; 01.670, 0.13초)</b>. api.proto의 설명은 "파드 수준의 샌드박스를 만들고 시작한다. 성공하면 샌드박스가 준비된 상태여야 한다"예요. 이 0.13초 안에 Calico CNI가 IP 10.244.194.105를 할당했고 노드 쪽 네트워크 인터페이스 이름을 calibf387450450으로 정했어요. 그다음 containerd가 이 샌드박스의 shim에 ttRPC로 연결했어요. IP를 어떤 블록에서 고르는지는 31편에서 다뤄요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 파드 샌드박스 (pod sandbox)</div>
+  파드 안 컨테이너들이 함께 쓰는 실행 환경이에요. containerd는 pause 컨테이너로 샌드박스를 만들고 이때 파드의 네트워크도 설정해요. 그래서 파드 IP는 샌드박스에 붙어 있고 그 안의 컨테이너가 죽었다가 다시 떠도 IP는 그대로예요. 2편에서 crictl pods로 본 목록이 샌드박스예요.
+</div>
+<p><b>② PullImage (01.671 &rarr; 05.676, 약 4.0초)</b>. ImageService의 호출이에요. 노드에 없던 busybox:1.36.1을 받았고 다 받자 태그, 이미지 ID(sha256:b7c873…), 다이제스트 세 이름으로 각각 ImageCreate 이벤트가 찍혔어요. 2편에서는 약 61MB인 nginx:1.29를 받는 데 13.06초가 걸렸고 이번 busybox는 크기가 1.91MB였어요.</p>
+<p><b>③ CreateContainer (05.678 &rarr; 05.695, 0.017초)와 ④ StartContainer (05.695 &rarr; 05.715, 0.02초)</b>. 이미 만든 샌드박스(4a7f58…) 안에 box 컨테이너를 만들고 시작했어요. 26편에서 본 OCI 번들을 만들고 shim과 runc로 컨테이너 프로세스를 띄우는 일이 이 두 호출 안에서 끝나요. 파드는 15:53:05에 Ready가 됐어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs></defs>
+<text x="200" y="50" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="end">RunPodSandbox</text>
+<path d="M210.0 34 C 215 32.3, 219 33.8, 224.2 34.0 C 226.6 41, 222.1 49, 222.9 56 C 219 58.1, 215 54.8, 208.8 54.7 C 208.4 49, 209.8 41, 210.0 34 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="94" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="end">PullImage</text>
+<path d="M224.3 78 C 369 77.4, 514 79.1, 663.0 77.1 C 662.0 85, 663.6 93, 662.9 100 C 514 100.1, 369 98.2, 223.2 100.5 C 222.7 93, 226.0 85, 224.3 78 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="138" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="end">CreateContainer</text>
+<path d="M663.2 122 C 665 120.4, 666 121.0, 667.2 123.0 C 667.6 129, 665.7 137, 666.8 144 C 666 143.9, 665 146.2, 662.1 145.3 C 663.9 137, 661.1 129, 663.2 122 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="200" y="182" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="end">StartContainer</text>
+<path d="M665.1 166 C 666 163.5, 668 168.1, 669.1 166.7 C 670.8 173, 669.6 181, 668.7 188 C 668 187.0, 666 187.1, 666.5 187.0 C 666.0 181, 665.6 173, 665.1 166 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="232" y="52" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5" text-anchor="start">0.13초 · 이 안에서 Calico CNI가 10.244.194.105를 붙였다</text>
+<text x="444" y="95" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18" text-anchor="middle">4.0초 · busybox:1.36.1 받기</text>
+<text x="650" y="140" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="end">0.017초</text>
+<text x="650" y="184" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="end">0.02초 → 컨테이너 실행</text>
+<path d="M210 222 C 347 222, 532 221, 670 222" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M210 216 C 210 220, 211 225, 210 228" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="210.0" y="244" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">0s</text>
+<path d="M320 216 C 320 219, 319 225, 320 228" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="319.5" y="244" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">1s</text>
+<path d="M429 216 C 429 219, 430 224, 429 228" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="429.0" y="244" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">2s</text>
+<path d="M539 216 C 538 220, 538 224, 539 228" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="538.6" y="244" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">3s</text>
+<path d="M648 216 C 648 220, 649 224, 648 228" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="648.1" y="244" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">4s</text>
+<text x="210" y="262" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="start">15:53:01.540</text>
+<text x="670" y="262" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="end">15:53:05.715</text>
+<text x="350" y="290" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">파드 IP는 이미지를 받기 전에 정해졌다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 약 4.2초 가운데 4.0초가 이미지 받기였고 파드 IP는 그보다 먼저 정해졌다</div>
+<p><span class="obsv-mark">파드가 뜨는 데 걸린 시간은 대부분 이미지를 받는 시간이었고 IP는 이미지를 받기도 전에 샌드박스와 함께 정해졌어요.</span> 이미지가 노드에 이미 있으면 PullImage가 빠지니 같은 파드가 훨씬 빨리 뜰 거예요. 5절의 kill 실험에서는 이벤트에 "already present on machine"이 찍히고 바로 Created, Started로 넘어갔어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: ContainerCreating에서 멈추면 이 순서로 봐요</div>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl describe pod</code>의 이벤트에서 어느 단계까지 왔는지 봐요. 샌드박스 단계에서 막혔다면 CNI 쪽(FailedCreatePodSandBox) 문제이고 이미지 단계에서 막혔다면 레지스트리·인증 쪽 문제예요<br>
+  &bull; 노드에서는 <code style="font-family:Menlo,monospace;font-size:14px;">journalctl -u containerd</code> 출력을 파드 이름이나 샌드박스 ID로 걸러 RunPodSandbox, PullImage, CreateContainer, StartContainer 가운데 어디서 멈췄는지 봐요<br>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">crictl pods</code>(샌드박스)와 <code style="font-family:Menlo,monospace;font-size:14px;">crictl ps -a</code>(컨테이너)로 런타임 쪽에 실제로 무엇이 있는지 API 서버와 별개로 확인할 수 있어요
+</div>
+
+<h2>3. 받은 이미지는 레이어로 쌓이고 컨테이너는 그 위에 쓰기 층 하나를 얹는다</h2>
+
+<p>"레지스트리에서 이미지 가져오기"의 결과는 노드 디스크에 남아요. ImageService의 ListImages와 ImageFsInfo를 부르는 crictl 명령으로 worker1의 이미지를 확인했어요.</p>
+<div class="obsv-code">worker1$ crictl images        # ListImages (19개 가운데 일부)
+docker.io/grafana/grafana:13.3.0-distroless   454MB
+quay.io/calico/node:v3.33.0                   134MB
+ghcr.io/headlamp-k8s/headlamp:v0.46.0         102MB
+docker.io/library/nginx:1.25.1-alpine         16.4MB
+docker.io/library/busybox:1.36.1              1.91MB
+registry.k8s.io/pause:3.10.2                  268kB
+…
+worker1$ crictl imagefsinfo   # ImageFsInfo
+imageFilesystems /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs used 3274 MiB</div>
+<p>&rarr; worker1에는 이미지가 19개 있고 이미지 파일시스템은 containerd의 overlayfs 스냅숏 디렉터리이며 사용량은 약 3.2GiB(3274MiB)라는 뜻이에요. 지난 실습들에서 띄운 Grafana, Headlamp 같은 이미지가 그대로 남아 있었어요.</p>
+<p>그럼 이미지는 컨테이너의 루트 파일시스템이 될 때 어떤 모양일까요? <a href="https://github.com/containerd/containerd/blob/v2.4.1/docs/runtime-v2.md">containerd runtime v2 문서</a>에는 containerd가 이미지 설정과 내용을 레이어로 받아 스냅숏터로 디스크에 펼치고 컨테이너의 rootfs를 준비한다고 적혀 있어요. worker1에 있는 myweb 컨테이너(nginx:1.25.1-alpine)의 rootfs 마운트 정보를 보면 그 모양을 알 수 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: overlayfs와 스냅숏터</div>
+  overlayfs는 읽기 전용 디렉터리 여러 개(lowerdir)를 겹치고 그 위에 쓰기용 디렉터리 하나(upperdir)를 얹어 한 디렉터리로 보여 주는 리눅스 파일시스템이에요. containerd의 overlayfs 스냅숏터는 이미지 레이어 하나를 스냅숏 디렉터리 하나로 풀어 두고 컨테이너를 만들 때 이 디렉터리들을 lowerdir로 겹쳐요.
+</div>
+<p>같은 이미지를 쓰는 컨테이너끼리 무엇을 나눠 쓰는지 보려고 w27 네임스페이스에 nginx:1.25.1-alpine 파드 두 개(share-a, share-b)를 같은 worker1에 띄웠어요. share-a 안에서만 <code style="font-family:Menlo,monospace;font-size:14px;">/only-in-a.txt</code> 파일을 만든 뒤 세 컨테이너의 마운트 정보를 나란히 비교했어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/27/02-overlay-share.png" alt="27-overlay-share.sh 실행 화면. worker1의 myweb-859c4764d4-scshl, w27/share-a, w27/share-b 세 컨테이너 모두 lowerdir 스냅숏이 236 235 234 233 232 231 230 229로 같고 upperdir만 281, 324, 326으로 다르다. share-a의 upperdir에만 only-in-a.txt가 있고 셋 다 etc run var 디렉터리가 있다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 세 컨테이너가 읽기 전용 레이어 8개를 같이 쓰고 쓰기 층만 하나씩 따로 가졌다</div>
+<p>세 컨테이너 모두 lowerdir가 스냅숏 236부터 229까지 8개로 같았어요. nginx:1.25.1-alpine 이미지의 레이어가 노드에 한 번만 풀려 있고 그 이미지를 쓰는 컨테이너들이 같이 읽는다는 뜻이에요. upperdir만 281, 324, 326으로 달랐고 share-a에서 만든 파일은 share-a의 upperdir(324)에만 생겼어요. 세 upperdir에 공통으로 있는 etc, run, var 디렉터리는 nginx가 시작하면서 고친 설정과 PID 파일 같은 것이 쓰기 층으로 올라온 흔적으로 보여요.</p>
+<p><span class="obsv-mark">같은 노드에 같은 이미지로 파드를 여러 개 띄워도 디스크에는 레이어가 한 번만 저장되고 컨테이너마다 늘어나는 것은 쓰기 층뿐이에요.</span> 반대로 컨테이너가 rootfs에 쓴 내용은 그 컨테이너의 upperdir에만 있으니 컨테이너가 지워지면 같이 사라져요.</p>
+
+<h3>이미지는 언제 지워질까</h3>
+<p>쓰지 않는 이미지는 kubelet이 지워요. worker1 kubelet의 실제 설정을 <code style="font-family:Menlo,monospace;font-size:14px;">/configz</code> 엔드포인트로 읽었어요.</p>
+<div class="obsv-code">imageGCHighThresholdPercent = 85
+imageGCLowThresholdPercent = 80
+imageMinimumGCAge = 2m0s
+imageMaximumGCAge = 0s
+serializeImagePulls = True</div>
+<p>&rarr; 다섯 값 모두 <a href="https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/">kubelet 설정 레퍼런스</a>의 기본값 그대로예요. <a href="https://kubernetes.io/docs/concepts/architecture/garbage-collection/#containers-images">가비지 컬렉션 문서</a>에 따르면 kubelet은 쓰지 않는 이미지를 5분마다 정리해요. 디스크 사용률이 85%를 넘으면 마지막으로 쓴 지 오래된 이미지부터 지워서 80%까지 낮춰요. 쓰지 않게 된 지 2분이 안 된 이미지는 지우지 않아요. imageMaximumGCAge가 0s라서 오래 안 썼다는 이유만으로 지우는 규칙은 꺼져 있어요. serializeImagePulls가 true라서 이 노드는 이미지를 한 번에 하나씩 받아요.</p>
+
+<h2>4. requests와 limits는 cgroup 파일이 되고 한도는 커널이 지킨다</h2>
+
+<p>다음은 "자원 할당과 격리"예요. cri-demo는 CPU와 메모리 모두 requests와 limits가 같아서 QoS 클래스가 Guaranteed로 정해졌어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: QoS 클래스</div>
+  파드의 requests와 limits를 어떻게 정했는지 보고 쿠버네티스가 붙이는 등급이에요. <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/">QoS 문서</a>에 따르면 모든 컨테이너가 CPU와 메모리의 requests와 limits를 같은 값으로 정하면 Guaranteed, requests나 limits가 하나라도 있으면 Burstable, 아무것도 없으면 BestEffort예요. 노드에서는 이 등급에 따라 cgroup이 놓이는 자리가 달라져요.
+</div>
+<p>worker1에서 이 컨테이너 프로세스의 cgroup과 그 안의 파일 두 개를 읽었어요.</p>
+<div class="obsv-code">컨테이너 pid=35685
+cgroup 경로: /kubepods.slice/kubepods-pod78d32b4d_5025_4f1a_afeb_53d9d892c80c.slice/cri-containerd-168f3141….scope
+cpu.max    = 20000 100000
+memory.max = 67108864
+컨테이너 안에서 본 프로세스: PID COMMAND| 1 sh| 7 ps
+컨테이너 hostname(uts) = cri-demo, 노드 hostname = lima-k8s-worker1</div>
+<p>&rarr; CPU는 100,000마이크로초(100ms)마다 20,000마이크로초(20ms)까지만 쓸 수 있고 메모리는 67108864바이트(64Mi)까지 쓸 수 있다는 뜻이에요. 200m은 CPU 0.2개라서 100ms 가운데 20ms에 해당해요.</p>
+<p>cgroup이 놓인 자리도 QoS 클래스를 따랐어요. Guaranteed인 cri-demo의 파드 slice는 <code style="font-family:Menlo,monospace;font-size:14px;">kubepods.slice</code> 바로 아래에 있었어요. 26편에서 본 BestEffort인 myweb은 <code style="font-family:Menlo,monospace;font-size:14px;">kubepods-besteffort.slice</code> 아래, Burstable인 etcd는 <code style="font-family:Menlo,monospace;font-size:14px;">kubepods-burstable.slice</code> 아래였어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 350" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs></defs>
+<path d="M260 18 C 319 17.6, 379 17.8, 440 16.7 C 440.3 32, 442.5 46, 441.1 60 C 379 60.6, 319 58.0, 261.0 61.4 C 257.8 46, 261.7 32, 260 18 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="44" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">kubepods.slice</text>
+<path d="M350 62 C 282 74, 192 92, 125 104" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M20 106 C 89 103.6, 159 104.2, 230 107.4 C 230.1 124, 230.7 143, 230.1 162 C 159 163.3, 89 161.0, 18.9 163.1 C 18.0 143, 18.3 124, 20 106 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="125" y="128" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">kubepods-pod&lt;uid&gt;.slice</text>
+<text x="125" y="152" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">Guaranteed: cri-demo</text>
+<path d="M350 62 C 349 75, 349 91, 350 104" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M245 106 C 314 105.5, 384 107.8, 455 104.6 C 453.2 124, 452.4 143, 453.6 162 C 384 162.9, 314 162.6, 244.3 163.5 C 246.7 143, 244.4 124, 245 106 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="128" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">kubepods-burstable.slice</text>
+<text x="350" y="152" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">Burstable: etcd</text>
+<path d="M350 62 C 417 75, 507 91, 575 104" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M470 106 C 539 104.9, 609 104.2, 680 107.1 C 681.8 124, 680.0 143, 678.7 162 C 609 163.3, 539 163.1, 469.4 162.6 C 468.0 143, 471.6 124, 470 106 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="575" y="128" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">kubepods-besteffort.slice</text>
+<text x="575" y="152" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">BestEffort: myweb</text>
+<path d="M125 164 C 124 173, 124 187, 125 196" fill="none" stroke="#4a7fb5" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M20 198 C 89 200.3, 159 199.8, 230 197.4 C 229.9 232, 230.3 267, 231.0 302 C 159 303.5, 89 300.9, 20.8 300.6 C 22.5 267, 18.2 232, 20 198 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="125" y="220" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">cri-containerd-&lt;id&gt;.scope</text>
+<text x="125" y="244" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">cpu.max    20000 100000</text>
+<text x="125" y="264" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">memory.max 67108864</text>
+<text x="125" y="290" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">200m · 64Mi, requests = limits</text>
+<path d="M350 164 C 351 173, 349 186, 350 196" fill="none" stroke="#e5a33c" stroke-width="1.8" stroke-linecap="round"/>
+<text x="350" y="220" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">pod&lt;uid&gt;.slice</text>
+<text x="350" y="242" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">→ cri-containerd-&lt;id&gt;.scope</text>
+<text x="350" y="270" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">26편: 마스터의 etcd</text>
+<path d="M575 164 C 575 174, 576 187, 575 196" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round"/>
+<text x="575" y="220" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">pod&lt;uid&gt;.slice</text>
+<text x="575" y="242" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">→ cri-containerd-&lt;id&gt;.scope</text>
+<text x="575" y="270" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">26편: requests 없음, shares 2</text>
+<text x="350" y="334" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">QoS 클래스가 cgroup의 자리를, limits가 파일 값을 정한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. QoS 클래스가 cgroup의 자리를 정하고 limits가 cpu.max·memory.max 값이 된다</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: cgroup (cpu.max, memory.max)</div>
+  프로세스를 묶어 CPU·메모리 같은 자원의 한도를 거는 리눅스 커널 기능이에요. 이 노드는 cgroup v2를 쓰고 묶음마다 <code style="font-family:Menlo,monospace;font-size:14px;">/sys/fs/cgroup</code> 아래 디렉터리가 하나씩 있어요. 그 안의 cpu.max에는 "한 주기 동안 쓸 수 있는 시간"과 "주기 길이"가 마이크로초 단위로 적히고 memory.max에는 바이트 단위의 메모리 한도가 적혀요.
+</div>
+<p>같은 출력의 아래 두 줄에서는 격리를 확인할 수 있어요. 노드에서는 PID 35685인 sh가 컨테이너 안에서는 PID 1이었고 컨테이너 안에서는 sh 자신과 방금 띄운 ps만 보였어요. hostname도 노드에서는 lima-k8s-worker1인데 컨테이너 안에서는 파드 이름인 cri-demo였어요. 26편의 config.json에 적혀 있던 pid, uts 네임스페이스가 실제로 나뉘어 있다는 뜻이에요.</p>
+<p><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#requests-and-limits">자원 관리 문서</a>에 따르면 CPU와 메모리의 limits를 거는 것은 kubelet과 컨테이너 런타임이고 실제로 지키는 것은 커널이에요. CPU는 한도에 다가가면 커널이 CPU 시간을 덜 주는 방식(스로틀링)으로 지키고 메모리는 한도를 넘긴 컨테이너를 커널이 OOM으로 죽이는 방식으로 지켜요. 메모리 한도를 직접 넘겨 봤어요.</p>
+<div class="obsv-code">mac$ kubectl exec cri-demo -- sh -c 'head -c 100m /dev/zero | tail'
+15:53:10 restarts=1 lastState=OOMKilled exitCode=137
+worker1 dmesg: [ 4292.782800] Memory cgroup out of memory: Killed process 35746 (tail) total-vm:68124kB, anon-rss:64128kB, …</div>
+<p>&rarr; tail이 0으로 채운 100MB를 한 줄로 메모리에 쌓다가 64Mi 한도에 걸리자 커널이 tail을 죽였고 컨테이너는 OOMKilled(종료 코드 137)로 기록된 뒤 한 번 다시 시작됐다는 뜻이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 종료 코드 137</div>
+  셸 관례로 신호를 받아 끝난 프로세스의 종료 코드는 128에 신호 번호를 더한 값이에요. 137은 128 + 9(SIGKILL)예요. OOM으로 죽은 컨테이너도 kill -9로 죽인 컨테이너도 종료 코드는 137이라서 이유(reason) 칸이 OOMKilled인지 Error인지로 구별해요.
+</div>
+
+<h3>tail 하나가 한도를 넘겼는데 컨테이너 전체가 다시 뜬 이유</h3>
+<p>그런데 이상한 점이 있어요. 위에서 옮긴 dmesg 한 줄에는 tail이 죽었다고만 찍혀 있었고 컨테이너의 PID 1인 sh는 한도를 넘기지 않았어요. 자원 관리 문서에서도 메모리 한도를 넘기면 커널이 보통 메모리를 할당하려던 프로세스 하나를 멈추고 그 프로세스가 PID 1이면 쿠버네티스가 컨테이너를 다시 띄운다고 설명해요. 그럼 왜 컨테이너가 OOMKilled로 다시 떴을까요?</p>
+<p>w27 네임스페이스에 같은 설정의 파드(oom-demo)를 띄우고 이번에는 cgroup 파일 하나를 더 읽은 뒤 dmesg에 새로 찍힌 OOM 관련 줄을 모두 봤어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/27/03-oom-group.png" alt="27-oom-group.sh 실행 화면. /sys/fs/cgroup 파일시스템 cgroup2fs, memory.oom.group = 1, memory.max = 67108864, 컨테이너 안 프로세스 1 sh, 7 ps. exec로 100MB를 쌓자 restarts=1 lastState=OOMKilled exitCode=137. dmesg에는 task=tail로 oom-kill, Killed process 52111 (tail), 'Tasks in &lt;컨테이너 cgroup&gt; are going to be killed due to memory.oom.group set', 이어서 sh 52023, sh 52104, head 52110, tail 52111이 모두 Killed, oom_score_adj -997" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. memory.oom.group이 1이라서 커널은 tail을 고른 뒤 같은 cgroup의 프로세스를 모두 죽였다</div>
+<p>컨테이너 cgroup의 <code style="font-family:Menlo,monospace;font-size:14px;">memory.oom.group</code>이 1이었어요. 커널은 먼저 tail(52111)을 골랐고 바로 다음 줄에 "Tasks in &lt;컨테이너 cgroup&gt; are going to be killed due to memory.oom.group set"을 남긴 뒤 그 cgroup의 프로세스를 모두 죽였어요. sh 두 개(컨테이너의 PID 1과 exec로 띄운 셸), head, tail이 차례로 Killed로 찍혔어요. PID 1까지 죽었으니 컨테이너가 끝났고 kubelet이 이 컨테이너를 다시 띄웠어요.</p>
+<p>memory.oom.group 값은 kubelet이 정해요. 설정 레퍼런스의 <code style="font-family:Menlo,monospace;font-size:14px;">singleProcessOOMKill</code> 설명에 따르면 이 설정이 true이면 kubelet이 cgroup v2에서 컨테이너 cgroup에 memory.oom.group을 걸지 않아서 프로세스가 하나씩 OOM으로 죽어요. cgroup v2 리눅스에서 이 설정의 기본값은 false예요. 우리 kubelet의 <code style="font-family:Menlo,monospace;font-size:14px;">/configz</code>에는 이 설정 값이 비어 있었으니 기본값 false가 적용돼 memory.oom.group이 1로 걸렸어요. 같은 dmesg의 <code style="font-family:Menlo,monospace;font-size:14px;">oom_score_adj:-997</code>은 <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/#node-out-of-memory-behavior">노드 압박 퇴거 문서</a>의 표에 나온 대로 kubelet이 Guaranteed 파드의 컨테이너에 주는 값이에요.</p>
+<p><span class="obsv-mark">메모리 한도를 넘긴 프로세스를 죽이는 것은 kubelet이 아니라 커널이고 cgroup v2 노드의 기본 설정에서는 그 프로세스만이 아니라 컨테이너 전체가 함께 죽어요.</span> kubelet과 containerd는 그 결과를 OOMKilled로 보고하고 restartPolicy에 따라 컨테이너를 다시 띄워요.</p>
+
+<h2>5. 컨테이너가 죽을 때와 파드를 지울 때 오가는 호출</h2>
+
+<p>남은 하나는 "수명 주기 관리"예요. 수명 주기에서 자주 헷갈리는 두 경우를 나눠 봤어요. 컨테이너가 죽는 경우와 파드를 지우는 경우예요.</p>
+<h3>컨테이너가 죽으면 같은 샌드박스에서 다시</h3>
+<p>myweb 파드 하나의 nginx 마스터 프로세스를 노드에서 직접 <code style="font-family:Menlo,monospace;font-size:14px;">kill -9</code>로 죽였어요.</p>
+<div class="obsv-code">15:42:28 myweb-859c4764d4-9jb4l uid=265764f4 ip=10.244.194.101 restarts=0 컨테이너 pid=10492
+15:42:28 worker1# kill -9 10492   (nginx master)
+15:42:31 restarts=1 state={"running":{"startedAt":"2026-11-14T06:42:29Z"}} uid=265764f4 ip=10.244.194.101
+lastState: Error exitCode=137
+ Normal Pulled  … Container image "nginx:1.25.1-alpine" already present on machine and can be accessed by the pod
+ Normal Created … Container created
+ Normal Started … Container started</div>
+<p>&rarr; 죽인 지 약 1초 만(06:42:29Z, 한국 시각 15:42:29)에 컨테이너가 다시 시작됐고 파드의 uid와 IP는 그대로이며 RESTARTS만 1이 됐다는 뜻이에요. 이전 컨테이너는 SIGKILL로 끝나서 상태는 Error, 종료 코드는 137로 남았어요.</p>
+<p>2절 화면의 아래 네 줄은 같은 일을 런타임 쪽에서 본 기록이에요. cri-demo가 OOM으로 죽은 뒤 15:53:07.760에 원래 샌드박스(4a7f58…)를 대상으로 <code style="font-family:Menlo,monospace;font-size:14px;">CreateContainer … attempt:1</code>이 들어왔고 새 컨테이너 ID(db22cd…)로 StartContainer가 이어졌어요. RunPodSandbox는 다시 부르지 않았어요. 샌드박스가 그대로이니 IP도 그대로예요.</p>
+<p><a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#restart-policy">파드 수명 주기 문서</a>에 따르면 이 재시작은 kubelet이 restartPolicy에 따라 하는 일이고 같은 노드, 같은 파드 안에서 컨테이너를 새로 만드는 것에만 해당해요. 문서에는 컨테이너가 계속 종료되면 kubelet이 10초, 20초, 40초 순으로 두 배씩 늘린 지연(최대 300초)을 두고 다시 띄우며 10분 동안 문제없이 돌면 지연을 초기화한다고 적혀 있어요. 같은 문서에는 처음 종료됐을 때는 restartPolicy에 따라 바로 다시 띄우고 이 지연은 그다음 재시작부터 붙는다는 설명도 있어요. 이번에 한 번 죽인 컨테이너가 약 1초 만에 다시 뜬 것은 이 첫 재시작에 해당해요. 여러 번 죽였을 때 간격이 어떻게 늘어나는지는 재 보지 않았어요.</p>
+<p>파드를 지우는 것은 다른 일이에요. 20편에서 컨트롤러 매니저를 멈춘 상태로 myweb 파드 하나를 지웠더니 파드 수가 줄어든 채 그대로였어요. 컨트롤러 매니저를 되돌린 뒤에야 ReplicaSet 컨트롤러가 새 파드를 만들어 개수를 채웠어요. <span class="obsv-mark">컨테이너를 다시 띄우는 것은 노드의 kubelet이고 지운 파드를 대신할 새 파드를 만드는 것은 컨트롤 플레인의 컨트롤러예요.</span></p>
+
+<h3>파드를 지우면 StopContainer부터 RemovePodSandbox까지</h3>
+<p>마지막으로 cri-demo를 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl delete</code>로 지웠어요. 종료 유예 시간(terminationGracePeriodSeconds)은 5초로 정해 두었어요. kubectl delete는 15:53:10에 시작해 15:53:15에 끝났어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/27/04-cri-delete.png" alt="worker1 containerd 로그에서 cri-demo 삭제 구간을 거른 화면. 15:53:10.361 StopContainer db22cd… with timeout 5 (s), 15:53:15.392 returns successfully, 15:53:15.392 StopPodSandbox 4a7f58…, 15.409 shim disconnected, 15.448 Calico Releasing IP address, 15.485 TearDown network successfully, 15.775 RemoveContainer db22cd…, 15.781 RemoveContainer 168f31…, 15:53:25.007 StopPodSandbox 다시, 25.063 RemovePodSandbox, 25.125 RemovePodSandbox returns successfully" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. StopContainer가 유예 시간 5초를 꽉 채웠고 샌드박스를 지우는 RemovePodSandbox는 약 10초 뒤에 따로 왔다</div>
+<p><b>StopContainer (15:53:10.361 &rarr; 15:53:15.392, 5.03초)</b>. 요청에 timeout 5가 붙어 있었고 정확히 그만큼 걸렸어요. api.proto는 StopContainer를 "유예 시간을 두고 실행 중인 컨테이너를 멈춘다. 유예 시간이 지나면 런타임은 컨테이너를 강제로 죽여야 한다"고 설명해요. 파드 수명 주기 문서에 따르면 kubelet은 런타임에게 컨테이너 안의 PID 1에 TERM 신호를 보내게 하고 유예 시간이 지나면 남은 프로세스에 KILL을 보내요.</p>
+<p>5초를 꽉 채운 이유는 PID 1이 <code style="font-family:Menlo,monospace;font-size:14px;">sh</code>였기 때문이에요. <a href="https://man7.org/linux/man-pages/man7/pid_namespaces.7.html">pid_namespaces(7)</a>에 따르면 PID 네임스페이스의 init 프로세스(PID 1)에는 그 프로세스가 핸들러를 등록한 신호만 전달되고 예외로 강제 전달되는 것은 바깥 네임스페이스에서 보낸 SIGKILL과 SIGSTOP뿐이에요. sleep이 끝나기만 기다리던 sh는 SIGTERM 핸들러가 없어서 TERM을 무시했고 5초 뒤에 온 KILL로 끝났어요.</p>
+<p><b>StopPodSandbox (15:53:15.392 &rarr; 15.485)</b>. 샌드박스의 shim 연결이 끊긴 뒤 Calico가 IP를 반납했고 네트워크 정리(TearDown)가 끝났어요. api.proto의 설명에 따르면 이 호출은 샌드박스의 프로세스를 멈추고 IP 같은 네트워크 자원을 회수해요.</p>
+<p><b>RemoveContainer (15.775, 15.781)</b>. 두 번 호출됐어요. db22cd…는 마지막까지 돌던 컨테이너이고 168f31…는 4절에서 OOM으로 끝난 첫 컨테이너예요. 끝난 컨테이너도 파드가 지워질 때까지 노드에 남아 있었다는 뜻이에요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs --previous</code>로 직전 컨테이너의 로그를 볼 수 있는 것도 끝난 컨테이너가 이렇게 남아 있기 때문이에요.</p>
+<p><b>RemovePodSandbox (15:53:25.063 &rarr; 25.125)</b>. 약 10초 뒤 StopPodSandbox가 한 번 더 온 다음 샌드박스가 지워졌어요. api.proto에도 kubelet이 RemovePodSandbox를 부르기 전에 StopPodSandbox를 적어도 한 번 부르고 여러 번 부르는 것도 정상이라고 적혀 있어요. 파드를 지운 뒤에도 노드에는 busybox:1.36.1(1.91MB) 이미지가 남았어요. 이미지를 지우는 것은 3절의 이미지 GC 몫이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k27darr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="20" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41" text-anchor="start">컨테이너가 죽을 때 (kill -9, 메모리 한도 초과)</text>
+<path d="M20 46 C 61 46.4, 102 46.3, 144 45.5 C 143.5 65, 141.8 84, 145.0 104 C 102 105.4, 61 102.1, 19.4 104.9 C 22.4 84, 20.2 65, 20 46 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="82.0" y="72" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">컨테이너 종료</text>
+<text x="82.0" y="94" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">exitCode 137</text>
+<path d="M147 75 C 154 78, 162 76, 168 75" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k27darr1)"/>
+<path d="M172 46 C 219 43.7, 266 48.4, 314 45.1 C 312.1 65, 312.4 84, 312.7 104 C 266 106.4, 219 102.8, 170.9 104.9 C 171.0 84, 172.0 65, 172 46 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="243.0" y="72" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<text x="243.0" y="94" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">restartPolicy: Always</text>
+<path d="M317 75 C 323 78, 332 78, 338 75" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k27darr1)"/>
+<path d="M342 46 C 405 47.0, 469 43.4, 534 44.7 C 534.6 65, 532.8 84, 533.7 104 C 469 102.2, 405 103.1, 341.8 105.5 C 343.2 84, 341.2 65, 342 46 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="438.0" y="72" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">CreateContainer</text>
+<text x="438.0" y="92" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">attempt:1 → StartContainer</text>
+<path d="M537 75 C 543 77, 550 78, 556 75" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k27darr1)"/>
+<path d="M560 46 C 600 46.9, 641 47.3, 682 46.1 C 684.5 65, 681.7 84, 681.8 104 C 641 102.5, 600 106.0, 560.9 103.6 C 557.8 84, 559.7 65, 560 46 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="621.0" y="72" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">같은 uid · 같은 IP</text>
+<text x="621.0" y="94" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">RESTARTS +1</text>
+<text x="350" y="128" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">RunPodSandbox는 다시 부르지 않는다: 샌드박스와 IP가 그대로</text>
+<path d="M20 148 C 218 148, 483 148, 680 148" fill="none" stroke="#d8cfba" stroke-width="2" stroke-linecap="round" stroke-dasharray="8 8"/>
+<text x="20" y="178" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="start">파드를 지울 때 (kubectl delete, terminationGracePeriodSeconds 5)</text>
+<path d="M20 194 C 66 191.9, 112 192.3, 160 194.1 C 161.3 214, 162.4 234, 158.8 254 C 112 255.3, 66 252.8, 20.1 253.9 C 18.5 234, 20.9 214, 20 194 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="90.0" y="220" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">StopContainer</text>
+<text x="90.0" y="243" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">timeout 5 (s)</text>
+<text x="90.0" y="272" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">15:53:10.361</text>
+<path d="M163 224 C 169 226, 177 226, 182 224" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k27darr1)"/>
+<path d="M186 194 C 236 191.6, 285 193.3, 336 193.6 C 334.8 214, 333.4 234, 335.3 254 C 285 255.1, 236 254.7, 184.8 254.2 C 187.3 234, 184.2 214, 186 194 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="261.0" y="220" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">SIGTERM을 무시</text>
+<text x="261.0" y="243" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">5초 뒤 강제 종료</text>
+<text x="261.0" y="272" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">PID 1 = sh</text>
+<path d="M339 224 C 344 226, 353 227, 358 224" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k27darr1)"/>
+<path d="M362 194 C 412 192.7, 461 191.6, 512 195.4 C 513.9 214, 509.8 234, 512.2 254 C 461 253.2, 412 252.9, 362.1 254.4 C 362.2 234, 362.2 214, 362 194 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="437.0" y="220" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">StopPodSandbox</text>
+<text x="437.0" y="243" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">CNI DEL · IP 반납</text>
+<text x="437.0" y="272" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">15:53:15.392</text>
+<path d="M515 224 C 520 226, 528 227, 534 224" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k27darr1)"/>
+<path d="M538 194 C 586 194.3, 633 193.7, 682 192.9 C 680.6 214, 682.0 234, 683.3 254 C 633 254.2, 586 253.5, 536.9 254.4 C 538.6 234, 538.3 214, 538 194 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="610.0" y="220" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">RemoveContainer</text>
+<text x="610.0" y="243" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">× 2 (OOM 전 것까지)</text>
+<text x="610.0" y="272" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">15:53:15.775</text>
+<path d="M610 278 C 597 290, 578 303, 560 310" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k27darr1)"/>
+<path d="M330 312 C 412 310.0, 495 312.8, 580 313.4 C 580.4 330, 580.7 349, 578.8 368 C 495 370.1, 412 369.5, 328.6 368.3 C 331.2 349, 332.6 330, 330 312 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="455" y="336" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">RemovePodSandbox</text>
+<text x="455" y="358" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">약 10초 뒤, 15:53:25.063</text>
+<path d="M20 312 C 96 314.1, 172 312.8, 250 313.4 C 248.0 330, 251.0 349, 250.5 368 C 172 370.1, 96 366.3, 21.0 367.0 C 22.3 349, 22.0 330, 20 312 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 6"/>
+<text x="135" y="337" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272" text-anchor="middle">이미지는 노드에 남는다</text>
+<text x="135" y="358" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">busybox:1.36.1 1.91MB</text>
+<text x="350" y="410" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">컨테이너는 kubelet이 같은 샌드박스에 다시 띄우고</text>
+<text x="350" y="432" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">지운 파드를 대신할 새 파드는 컨트롤러가 만든다 (20편)</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 8. 컨테이너가 죽으면 같은 샌드박스에 CreateContainer가 다시 오고 파드를 지우면 Stop과 Remove가 컨테이너, 샌드박스 순으로 온다</div>
+
+<h2>6. 읽고 나서 손볼 것: limits, 종료 신호, 이미지 디스크</h2>
+
+<p>이번에 본 호출과 파일을 바탕으로 매니페스트나 노드 설정에서 손볼 것이 세 가지 있어요.</p>
+<p><b>메모리 limits</b>. 4절에서 본 대로 cgroup v2 노드의 기본 설정에서는 컨테이너 안의 프로세스 하나가 한도를 넘겨도 컨테이너 전체가 OOMKilled로 다시 떠요. 한 컨테이너 안에 보조 프로세스를 같이 띄우는 이미지라면 보조 프로세스가 쓰는 메모리까지 limits에 포함해 잡아야 해요. 자원 관리 문서에는 메모리 한도가 사후에 지켜진다는 설명도 있어요. 커널이 메모리 압박을 감지한 시점에 프로세스를 죽이기 때문에 한도를 넘긴 순간 바로 죽지 않을 수도 있어요.</p>
+<p><b>종료 신호</b>. 5절의 cri-demo는 지울 때 유예 시간 전체를 기다렸어요. <span class="obsv-mark">기본 유예 시간은 30초라서 PID 1이 SIGTERM을 처리하지 않는 이미지는 롤링 업데이트와 스케일 다운 때 파드 하나당 30초를 다 기다린 뒤 SIGKILL로 끝나요.</span></p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: PID 1이 셸이면 SIGTERM이 사라질 수 있어요</div>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">command: ["sh","-c","…"]</code>나 셸 스크립트를 엔트리포인트로 쓰면 PID 1이 셸이 돼요. 셸이 신호 핸들러를 등록하지 않으면 TERM이 앱까지 가지 않아요<br>
+  &bull; 스크립트 마지막 줄을 <code style="font-family:Menlo,monospace;font-size:14px;">exec 앱</code>으로 바꿔 앱이 PID 1이 되게 해요. 그리고 앱이 SIGTERM을 받으면 정리 작업을 마치고 끝나도록 만들어요<br>
+  &bull; 정리에 시간이 더 필요하면 <code style="font-family:Menlo,monospace;font-size:14px;">terminationGracePeriodSeconds</code>를 늘리고 종료 전에 할 일이 있으면 preStop 훅을 써요. 이미지에 STOPSIGNAL을 정하면 많은 런타임이 TERM 대신 그 신호를 보내요
+</div>
+<p><b>이미지 디스크</b>. worker1에서 이미지가 차지한 공간은 약 3.2GiB였고 지난 실습들의 이미지가 쓰이지 않은 채 남아 있었어요. kubelet은 디스크 사용률이 85%를 넘어야 지우기 시작하고 imageMaximumGCAge가 꺼져 있으니 그 전까지는 오래된 이미지도 그대로 둬요. serializeImagePulls가 true인 노드에서는 454MB짜리 grafana 같은 큰 이미지를 받는 동안 다른 파드의 이미지는 차례를 기다려요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 이미지 정리는 kubelet 설정으로 맡겨요</div>
+  &bull; 노드 디스크가 작다면 <code style="font-family:Menlo,monospace;font-size:14px;">imageGCHighThresholdPercent</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">imageGCLowThresholdPercent</code>를 낮추거나 <code style="font-family:Menlo,monospace;font-size:14px;">imageMaximumGCAge</code>를 켜서 오래 안 쓴 이미지를 지우게 해요<br>
+  &bull; 가비지 컬렉션 문서에서는 외부 정리 도구를 쓰지 말라고 해요. 그런 도구가 kubelet의 동작을 망가뜨리고 남아 있어야 할 컨테이너까지 지울 수 있다고 적혀 있어요<br>
+  &bull; 이미지를 하나씩 받느라 기다리는 것이 문제라면 <code style="font-family:Menlo,monospace;font-size:14px;">serializeImagePulls: false</code>로 바꾸고 <code style="font-family:Menlo,monospace;font-size:14px;">maxParallelImagePulls</code>로 동시에 받을 개수를 정해요. serializeImagePulls가 true인 동안에는 maxParallelImagePulls를 정할 수 없어요<br>
+  &bull; 이미지가 노드에서 쓰는 디스크 양은 <code style="font-family:Menlo,monospace;font-size:14px;">crictl imagefsinfo</code>, 이미지 목록은 <code style="font-family:Menlo,monospace;font-size:14px;">crictl images</code>로 봐요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>kubelet은 containerd.sock 하나로 CRI의 RuntimeService와 ImageService를 부르고 샌드박스, 이미지 레이어, 컨테이너 cgroup 같은 실제 자원은 containerd와 커널이 만들어요.</b><br><br>
+  cri-demo 파드 하나를 띄우자 RunPodSandbox(0.13초, 이 안에서 Calico가 10.244.194.105를 붙임), PullImage(약 4.0초), CreateContainer, StartContainer가 차례로 호출됐어요. 이미지는 overlayfs 레이어로 노드에 한 번만 풀리고 같은 이미지를 쓰는 컨테이너들이 그 레이어를 같이 읽으며 컨테이너마다 쓰기 층만 따로 가져요. limits는 cpu.max "20000 100000"과 memory.max 67108864가 됐어요. 메모리 한도를 넘기자 커널이 memory.oom.group 설정에 따라 컨테이너 전체를 죽였고 OOMKilled, 137이 기록됐어요. 컨테이너가 죽었을 때는 kubelet이 같은 샌드박스에 CreateContainer를 다시 보내서 uid와 IP가 그대로였어요. 파드를 지웠을 때는 StopContainer가 5초 유예를 꽉 채운 뒤 StopPodSandbox, RemoveContainer, RemovePodSandbox가 이어졌어요. 런타임이 하는 세 가지 일은 결국 RPC 몇 개와 노드의 파일 몇 개로 확인할 수 있어요.
+</div>
+
+</div>

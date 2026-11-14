@@ -1,0 +1,19 @@
+# E1 API 서버를 멈추면: kubectl 은? 돌던 파드는? (2026-11-14 14:55:49 KST)
+14:55:49 대상 파드 IP 10.244.194.98 (k8s-worker1)
+14:55:49 멈추기 전: curl http://10.244.194.98/ → 200
+14:55:49 master$ sudo mv /etc/kubernetes/manifests/kube-apiserver.yaml /root/arch-exp-backup/
+14:56:19 master$ sudo crictl ps --name kube-apiserver → 0개
+14:56:19 master$ kubectl get nodes
+The connection to the server 192.168.104.1:6443 was refused - did you specify the right host or port?
+14:56:19 API 서버 없이: curl http://10.244.194.98/ → 200
+14:56:19 master$ sudo crictl ps --name 'etcd|kube-scheduler|kube-controller' 로 남은 컨테이너
+    kube-controller-manager CONTAINER_RUNNING
+    kube-scheduler CONTAINER_RUNNING
+    etcd CONTAINER_RUNNING
+14:56:19 되돌리기: sudo mv /root/arch-exp-backup/kube-apiserver.yaml /etc/kubernetes/manifests/
+14:56:24 kubectl get --raw /readyz → ok
+NAME          STATUS   ROLES           AGE   VERSION
+k8s-master    Ready    control-plane   9d    v1.37.2
+k8s-worker1   Ready    worker          9d    v1.37.2
+k8s-worker2   Ready    worker          9d    v1.37.2
+k8s-worker3   Ready    worker          9d    v1.37.2

@@ -1,0 +1,9 @@
+# worker1 nat 표의 kube-proxy 입구·출구 규칙 (2026-11-14 16:39:31 KST, Mac 에서 ./lab ssh 1 로 조회)
+worker1$ sudo iptables-save -t nat | grep -E '^-A (KUBE-MARK-MASQ|KUBE-POSTROUTING)|^-A POSTROUTING .*KUBE|^-A (OUTPUT|PREROUTING) .*KUBE-SERVICES'
+-A PREROUTING -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+-A OUTPUT -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+-A POSTROUTING -m comment --comment "kubernetes postrouting rules" -j KUBE-POSTROUTING
+-A KUBE-MARK-MASQ -j MARK --set-xmark 0x4000/0x4000
+-A KUBE-POSTROUTING -m mark ! --mark 0x4000/0x4000 -j RETURN
+-A KUBE-POSTROUTING -j MARK --set-xmark 0x4000/0x0
+-A KUBE-POSTROUTING -m comment --comment "kubernetes service traffic requiring SNAT" -j MASQUERADE --random-fully

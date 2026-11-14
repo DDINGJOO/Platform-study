@@ -1,0 +1,72 @@
+# E26 etcd 백업과 Secret 암호화 (2026-11-14 17:20:17 KST)
+
+## 1. 암호화 전: Secret 하나 만들기
+17:20:17 kubectl create secret generic enc-before --from-literal=password=plain-before
+  etcd 원본 → 앞 30바이트: b'k8s\x00\n\x0c\n\x02v1\x12\x06Secret\x12\xda\x01\n\xb5\x01\n\nenc-' | 평문 plain-before 포함: True
+
+## 2. etcd 스냅숏(백업) 파일에도 평문으로 들어가나
+Server version 3.7.0
+┌──────────┬──────────┬────────────┬────────────┬─────────┐
+│   HASH   │ REVISION │ TOTAL KEYS │ TOTAL SIZE │ VERSION │
+├──────────┼──────────┼────────────┼────────────┼─────────┤
+│ eabca012 │   120464 │        573 │      22 MB │   3.7.0 │
+└──────────┴──────────┴────────────┴────────────┴─────────┘
+  스냅숏 파일 안에서 'plain-before' 문자열: 1 줄
+  스냅숏 파일 권한: -rw------- root 21807136
+  (스냅숏 파일 지움)
+
+## 3. 암호화 켜기: aescbc 키 + identity, API 서버 매니페스트에 플래그와 볼륨 추가
+  /etc/kubernetes/enc/enc.yaml (키 값은 출력하지 않음):
+    apiVersion: apiserver.config.k8s.io/v1
+    kind: EncryptionConfiguration
+    resources:
+      - resources: [secrets]
+        providers:
+          - aescbc:
+              keys:
+                - name: key1
+                  secret: <32바이트 키, base64>
+          - identity: {}
+  바뀐 줄:
+    14a15
+    >     - --encryption-provider-config=/etc/kubernetes/enc/enc.yaml
+    81a83,85
+    >     - mountPath: /etc/kubernetes/enc
+    >       name: enc
+    >       readOnly: true
+    103a108,111
+    >   - hostPath:
+    >       path: /etc/kubernetes/enc
+    >       type: DirectoryOrCreate
+    >     name: enc
+17:20:18 매니페스트 저장 → kubelet 이 API 서버를 다시 띄움
+17:20:59 API 서버 /readyz ok
+  API 서버가 다시 응답하기까지 약 41초
+  API 서버 플래그: --encryption-provider-config=/etc/kubernetes/enc/enc.yaml
+
+## 4. 암호화를 켠 뒤 만든 Secret
+17:20:59 kubectl create secret generic enc-after --from-literal=password=hello-enc
+  etcd 원본 enc-after  → 앞 30바이트: b'k8s:enc:aescbc:v1:key1:s\x10\x11\xd1;+&' | 평문 hello-enc 포함: False
+  etcd 원본 enc-before → 앞 30바이트: b'k8s\x00\n\x0c\n\x02v1\x12\x06Secret\x12\xda\x01\n\xb5\x01\n\nenc-' | 평문 plain-before 포함: True   (켜기 전에 쓴 것은 그대로)
+  kubectl 로 읽으면: enc-after=hello-enc, enc-before=plain-before
+
+## 5. 켜기 전 Secret 다시 쓰기 (문서의 kubectl get … | kubectl replace -f -)
+17:20:59 kubectl get secret enc-before -o json | kubectl replace -f -
+  etcd 원본 enc-before → 앞 30바이트: b'k8s:enc:aescbc:v1:key1:\x8a\xd2\xdc\x1c< \x9d' | 평문 plain-before 포함: False
+  /registry/secrets 전체 중 k8s:enc: 로 시작하는 값: 2 / 5
+
+## 6. 되돌리기 (문서의 해제 순서: identity 를 맨 앞에 → Secret 전부 다시 쓰기 → 설정 제거)
+17:21:00 실험용 Secret 두 개 삭제
+17:21:00 providers 순서를 identity 먼저로 바꿈 → 설정은 시작할 때 읽으므로 API 서버 컨테이너를 멈춰 kubelet 이 다시 띄우게 함
+17:21:07 API 서버 /readyz ok
+17:21:07 kubectl get secrets -A -o json | kubectl replace -f -  (전부 identity 로 다시 씀)
+  /registry/secrets 전체 중 k8s:enc: 로 시작하는 값: 0 / 3
+17:21:07 매니페스트를 원래대로 복원, 키 파일 삭제
+17:21:53 API 서버 /readyz ok
+  API 서버 플래그에 encryption: 1개
+  노드: k8s-master=Ready k8s-worker1=Ready k8s-worker2=Ready k8s-worker3=Ready
+
+## 7. 복원 확인 (17:22 이후, 위 마지막 줄의 '1개'는 kubelet 이 미러 파드를 바꾸기 전에 읽은 값)
+  매니페스트의 encryption 줄: 0개, /etc/kubernetes/enc: 0개 파일
+  실행 중인 kube-apiserver 프로세스 인자에 encryption-provider-config: 0개
+  미러 파드 spec 의 encryption: 0개, /readyz: ok

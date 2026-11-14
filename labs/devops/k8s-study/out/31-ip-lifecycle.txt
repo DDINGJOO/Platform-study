@@ -1,0 +1,50 @@
+# E9 파드 IP 의 할당과 반납 (2026-11-14 15:26:36 KST), worker1 블록 10.244.194.64/26
+
+## 0. worker1 의 CNI 설정 (/etc/cni/net.d/10-calico.conflist 요약)
+name= k8s-pod-network | plugin type= calico | ipam type= calico-ipam | datastore= kubernetes | 그다음 plugin= portmap
+CNI 바이너리: calico calico-ipam
+
+## 1. 만들기 전
+15:26:36 블록 10.244.194.64/26 사용 8/64, 미할당 56 | IPAM 핸들 23개 | worker1 cali 인터페이스 7개
+
+## 2. 파드 생성 (worker1 고정)
+15:26:36 mac$ kubectl run ipam-demo --image=registry.k8s.io/pause:3.10.2 (nodeSelector hostname=k8s-worker1)
+15:26:37 파드 IP 10.244.194.103
+파드 annotation (Calico CNI 가 붙임):
+   cni.projectcalico.org/containerID = 347b3b3ed2f4d1187c27…
+   cni.projectcalico.org/podIP = 10.244.194.103/32
+   cni.projectcalico.org/podIPs = 10.244.194.103/32
+
+## 3. 할당 기록: IPAM 핸들과 블록
+15:26:37 블록 10.244.194.64/26 사용 9/64, 미할당 55 | IPAM 핸들 24개 | worker1 cali 인터페이스 8개
+핸들 이름: k8s-pod-network.347b3b3ed2f4… → {"10.244.194.64/26":1}
+블록의 39번 칸 → attributes[8] handle=k8s-pod-network.347b3b3ed2f4… secondary={'namespace': 'default', 'node': 'k8s-worker1', 'pod': 'ipam-demo', 'timestamp': '2026-11-14 06:26:37.22283781 +0000 UTC'}
+
+## 4. worker1 노드 안: veth(cali*) 와 /32 경로
+10.244.194.103 dev cali38cdd514d42 scope link metric 1024 
+cali38cdd514d42@if3 UP             ee:ee:ee:ee:ee:ee <BROADCAST,MULTICAST,UP,LOWER_UP> 
+worker1 → 10.244.194.103 ping: 1 received
+
+## 5. CNI 로그 (/var/log/calico/cni/cni.log, ADD)
+2026-11-14 15:26:37.222 [INFO][22608] ipam/ipam_plugin.go 326: Calico CNI IPAM request count IPv4=1 IPv6=0 ContainerID="347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea759451a6af10" HandleID="k8s-
+2026-11-14 15:26:37.234 [INFO][22608] ipam/ipam.go 952: Auto-assigned 1 out of 1 IPv4s: [10.244.194.103/26] handle="k8s-pod-network.347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea759451a6af10" ho
+2026-11-14 15:26:37.234 [INFO][22608] ipam/ipam_plugin.go 422: Calico CNI IPAM assigned addresses IPv4=[10.244.194.103/26] IPv6=[] ContainerID="347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea7594
+2026-11-14 15:26:37.235 [INFO][22596] cni-plugin/k8s.go 413: Populated endpoint ContainerID="347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea759451a6af10" Namespace="default" Pod="ipam-demo" Workl
+2026-11-14 15:26:37.242 [INFO][22596] cni-plugin/k8s.go 542: Wrote updated endpoint to datastore ContainerID="347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea759451a6af10" Namespace="default" Pod=
+
+## 6. 파드 삭제
+15:26:38 mac$ kubectl delete pod ipam-demo
+15:26:40 블록 10.244.194.64/26 사용 8/64, 미할당 56 | IPAM 핸들 23개 | worker1 cali 인터페이스 7개
+핸들 조회: Error from server (NotFound): ipamhandles.crd.projectcalico.org "k8s-pod-network
+worker1 의 10.244.194.103 경로: []
+
+## 7. CNI 로그 (DEL)
+2026-11-14 15:26:39.343 [INFO][22827] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea759451a6af10"
+2026-11-14 15:26:39.370 [INFO][22841] ipam/ipam_plugin.go 774: Releasing address using handleID ContainerID="347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea759451a6af10" HandleID="k8s-pod-network
+2026-11-14 15:26:39.382 [INFO][22841] ipam/ipam_plugin.go 942: Released address using handleID ContainerID="347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea759451a6af10" HandleID="k8s-pod-network.
+2026-11-14 15:26:39.383 [INFO][22841] ipam/ipam_plugin.go 951: Releasing address using workloadID ContainerID="347b3b3ed2f4d1187c2741f411abcd2a6f729f03a1cccb11d6ea759451a6af10" HandleID="k8s-pod-netwo
+
+## 8. 반납한 칸은 어디로 가나: 블록의 unallocated 목록 앞·뒤 (15:26:49)
+앞 5칸: 40(10.244.194.104), 41(10.244.194.105), 42(10.244.194.106), 43(10.244.194.107), 44(10.244.194.108)
+뒤 5칸: 24(10.244.194.88), 25(10.244.194.89), 34(10.244.194.98), 38(10.244.194.102), 39(10.244.194.103)
+같은 이름(default/ipam-demo)으로 두 번 만든 파드의 veth 이름: 두 번 모두 cali38cdd514d42 (첫 실행 .102, 두 번째 실행 .103)

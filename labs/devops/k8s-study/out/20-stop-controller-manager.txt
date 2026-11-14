@@ -1,0 +1,25 @@
+# E3 컨트롤러 매니저를 멈추면: replicas 를 늘리거나 파드를 지우면? (2026-11-14 14:57:24 KST)
+14:57:24 master$ kubectl get deploy,rs -l app=myweb
+NAME    READY   UP-TO-DATE   AVAILABLE   AGE
+myweb   5/5     5            5           2d18h
+NAME               DESIRED   CURRENT   READY   AGE
+myweb-859c4764d4   5         5         5       2d18h
+14:57:24 master$ sudo mv /etc/kubernetes/manifests/kube-controller-manager.yaml /root/arch-exp-backup/
+14:57:26 kube-controller-manager 컨테이너 0개
+14:57:26 master$ kubectl scale deploy myweb --replicas=7
+deployment.apps/myweb scaled
+14:57:26 master$ kubectl delete pod myweb-859c4764d4-4tjzk
+pod "myweb-859c4764d4-4tjzk" deleted from default namespace
+14:57:47 master$ kubectl get deploy myweb; kubectl get rs -l app=myweb; kubectl get pods -l app=myweb --no-headers | wc -l
+NAME    READY   UP-TO-DATE   AVAILABLE   AGE
+myweb   5/7     5            5           2d18h
+NAME               DESIRED   CURRENT   READY   AGE
+myweb-859c4764d4   5         5         5       2d18h
+   myweb 파드 4개
+14:57:47 되돌리기: sudo mv /root/arch-exp-backup/kube-controller-manager.yaml /etc/kubernetes/manifests/
+14:58:07 master$ kubectl get deploy myweb; kubectl get rs -l app=myweb
+NAME    READY   UP-TO-DATE   AVAILABLE   AGE
+myweb   7/7     7            7           2d18h
+NAME               DESIRED   CURRENT   READY   AGE
+myweb-859c4764d4   7         7         7       2d18h
+14:58:07 myweb 을 5개로 되돌림: 5/5

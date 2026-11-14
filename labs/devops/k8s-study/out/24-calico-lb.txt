@@ -1,0 +1,25 @@
+# E22 Calico 의 LoadBalancer IP 할당 (2026-11-14 16:08:27 KST)
+calico-kube-controllers ENABLED_CONTROLLERS=node,loadbalancer
+KubeControllersConfiguration loadBalancer: {"assignIPs":"AllServices"}
+
+## 1. LoadBalancer 용 IPPool 이 없을 때
+16:08:35 lb-demo LoadBalancer EXTERNAL-IP=<pending>
+
+## 2. allowedUses: [LoadBalancer] IPPool 을 만들면 (calicoctl, 172.30.0.0/29, blockSize 29)
+Successfully applied 1 'IPPool' resource(s)
+NAME                  CIDR            NAT     IPIPMODE   VXLANMODE   DISABLED   DISABLEBGPEXPORT   SELECTOR   ASSIGNMENTMODE   
+default-ipv4-ippool   10.244.0.0/16   true    Always     Never       false      false              all()      Automatic        
+lb-demo-pool          172.30.0.0/29   false   Never      Never       false      false              all()      Automatic        
+
+16:08:38 EXTERNAL-IP=172.30.0.0
+서비스 어노테이션/이벤트: 
+마스터 → 172.30.0.0:80 curl: 200
+worker1 → 172.30.0.0:80 curl: 200
+Mac → 172.30.0.0:80 curl: 000
+worker1 iptables 에 172.30.0.0 규칙: 1줄
+
+## 3. 정리
+Successfully deleted 1 'IPPool' resource(s)
+NAME CIDR
+default-ipv4-ippool 10.244.0.0/16
+ 

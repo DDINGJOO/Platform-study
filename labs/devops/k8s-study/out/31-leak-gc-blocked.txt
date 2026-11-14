@@ -1,0 +1,88 @@
+# 31편 IP 누수 정리가 24분 동안 시작되지 않은 이유 (2026-11-14 17:54:16 KST) — 25-eviction.txt 실험과 같은 시간대의 calico-kube-controllers 로그와 Calico v3.33.0 소스
+
+## 1. 상황
+  worker3 의 kubelet 을 17:22:41 KST 에 멈춤 → worker3 에 있던 calico-kube-controllers 도 축출돼 17:28:27 KST(08:28:27 UTC)에 마스터에서 새로 뜸
+  17:30:49 에 쫓겨난 myweb 파드 둘을 강제 삭제 → calicoctl ipam check 가 '2 IPs allocated but not in use' 를 20분 내내 보고(25-eviction.txt)
+  17:51:57 에 worker3 kubelet 을 다시 켬
+
+## 2. 새 calico-kube-controllers 로그 (UTC)
+  2026-11-14 08:28:27.762 [INFO][24] kube-controllers/run.go 565: Starting controller ControllerType="Node"
+  2026-11-14 08:28:27.762 [INFO][24] kube-controllers/run.go 565: Starting controller ControllerType="LoadBalancer"
+  2026-11-14 08:28:27.762 [INFO][24] kube-controllers/run.go 565: Starting controller ControllerType="NetworkPolicyMigrator"
+  2026-11-14 08:28:27.762 [INFO][24] kube-controllers/run.go 565: Starting controller ControllerType="DatastoreMigration"
+  2026-11-14 08:28:27.762 [INFO][24] kube-controllers/syncer.go 116: Node controller syncer status updated: wait-for-ready
+  2026-11-14 08:28:27.762 [INFO][24] kube-controllers/policy_name_migrator.go 126: Starting policy migration controller
+  2026-11-14 08:28:27.862 [INFO][24] kube-controllers/ipam.go 385: Will run periodic IPAM sync every 7m30s
+  2026-11-14 08:28:27.862 [INFO][24] kube-controllers/loadbalancer_controller.go 260: Will run periodic IPAM sync every 5m0s
+  2026-11-14 08:28:32.767 [INFO][24] kube-controllers/policy_name_migrator.go 270: Waiting for all calico-node pods to be available numberUnavailable=1
+    … (같은 Waiting 줄이 5초마다 반복, 여기까지 누적 89줄)
+  2026-11-14 08:35:53.006 [INFO][24] kube-controllers/policy_name_migrator.go 270: Waiting for all calico-node pods to be available numberUnavailable=1
+  2026-11-14 08:35:57.864 [INFO][24] kube-controllers/ipam.go 371: Marking IPAM for full resync reason="periodic sync"
+    … (같은 Waiting 줄이 5초마다 반복, 여기까지 누적 269줄)
+  2026-11-14 08:51:57.104 [INFO][24] kube-controllers/policy_name_migrator.go 270: Waiting for all calico-node pods to be available numberUnavailable=1
+  2026-11-14 08:52:02.108 [INFO][24] kube-controllers/policy_name_migrator.go 151: Syncer status updated: wait-for-ready
+  2026-11-14 08:52:02.109 [INFO][24] kube-controllers/syncer.go 116: Node controller syncer status updated: resync
+  2026-11-14 08:52:02.109 [INFO][24] kube-controllers/policy_name_migrator.go 151: Syncer status updated: resync
+  2026-11-14 08:52:02.112 [INFO][24] kube-controllers/syncer.go 116: Node controller syncer status updated: in-sync
+  2026-11-14 08:52:02.112 [INFO][24] kube-controllers/policy_name_migrator.go 151: Syncer status updated: in-sync
+  2026-11-14 08:52:02.112 [INFO][24] kube-controllers/hostendpoints.go 186: Syncer is InSync, kicking sync channel status=in-sync
+  2026-11-14 08:52:02.112 [INFO][24] kube-controllers/loadbalancer_controller.go 294: Syncer is InSync, kicking sync channel status=in-sync
+  2026-11-14 08:52:03.109 [INFO][24] kube-controllers/ipam.go 452: Syncer is InSync, kicking sync channel status=in-sync
+  2026-11-14 08:52:03.109 [INFO][24] kube-controllers/ipam.go 917: Performing a full scan of IPAM allocations to check for leaks and redundant affinities
+  ipam check (이 파일을 만든 17:54, kubelet 재시작 뒤): Check complete; found 0 problems.
+
+## 3. 소스 (projectcalico/calico v3.33.0)
+  kube-controllers/pkg/controllers/utils/syncer.go — 상태 알림을 등록된 컨트롤러에 차례로, 동기로 넘긴다:
+    func (d *DataFeed) OnStatusUpdated(status bapi.SyncStatus) {
+    	logrus.Infof("Node controller syncer status updated: %s", status)
+    	for _, f := range d.statusRegistrations {
+    		f(status)
+    	}
+    }
+  kube-controllers/pkg/controllers/networkpolicy/policy_name_migrator.go — 버퍼 없는 채널로 보내고, run 은 calico-node 가 모두 available 이 될 때까지 그 채널을 읽지 않는다:
+    func (c *policyMigrator) onStatusUpdate(status bapi.SyncStatus) {
+    	c.statusUpdates <- status
+    }
+    57:		statusUpdates: make(chan bapi.SyncStatus),
+    func (c *policyMigrator) run(stop chan struct{}) {
+    	// Wait for calico-node rollout to complete before starting migration.
+    	err := c.waitForCalicoNodeRollout()
+    	if err != nil {
+    		logrus.Errorf("Error waiting for calico-node rollout: %v", err)
+    	}
+    			if ds.Status.NumberUnavailable > 0 {
+    				logCtx := logrus.WithFields(logrus.Fields{
+    					"numberUnavailable": ds.Status.NumberUnavailable,
+    				})
+    				logCtx.Info("Waiting for all calico-node pods to be available")
+    				continue
+    			}
+  kube-controllers/pkg/controllers/node/ipam.go — IPAM 정리는 InSync 일 때만:
+    	// Skip if not currently InSync.
+    	if c.syncStatus != bapi.InSync {
+    		log.WithField("status", c.syncStatus).Debug("Syncer not currently InSync, skipping IPAM sync.")
+    		return nil
+
+## 4. 정리
+  calico-node 하나라도 unavailable 인 상태에서 kube-controllers 가 새로 뜨면, 정책 이름 마이그레이터가 상태 알림 채널을 막고, 같은 피드를 쓰는 IPAM(누수 정리)·LoadBalancer·HostEndpoint 컨트롤러가 InSync 를 받지 못한다.
+  이번에는 08:28:27 부터 08:52:02 까지(약 23분 35초) 막혔고, worker3 의 calico-node 가 돌아오자 곧바로 in-sync → 08:52:03 IPAM 전체 점검 → 누수 0.
+  master 브랜치(기본 브랜치, 2026-11-14 기준)의 같은 파일도 이 구조는 같다(바뀐 것은 DaemonSet 이름을 환경 변수로 읽는 부분, 커밋 f89f019fb8 #14204). GitHub 이슈 검색("Waiting for all calico-node pods to be available")에서 같은 보고를 찾지 못함.
+
+## 5. 그럼 누가 IP 를 돌려줬나: worker3 의 kubelet 이 돌아오자 남아 있던 샌드박스를 정리하며 CNI DEL (worker3 /var/log/calico/cni/cni.log, KST)
+  2026-11-14 17:51:58.477 [INFO][122512] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="d3de25b89ccad3ad89a0c59aa02d899460a303998597de7eab2ce1d830334e46"
+  2026-11-14 17:51:58.478 [INFO][122512] cni-plugin/utils.go 204: Calico CNI releasing IP address ContainerID="d3de25b89ccad3ad89a0c59aa02d899460a303998597de7eab2ce1d830334
+  2026-11-14 17:51:58.484 [INFO][122550] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="566f80d33a6c433b355260d55dbfc00616883710272bafd7b1e846d8d36155ef"
+  2026-11-14 17:51:58.484 [INFO][122550] cni-plugin/utils.go 204: Calico CNI releasing IP address ContainerID="566f80d33a6c433b355260d55dbfc00616883710272bafd7b1e846d8d3615
+  2026-11-14 17:51:58.542 [INFO][122574] ipam/ipam_plugin.go 942: Released address using handleID ContainerID="566f80d33a6c433b355260d55dbfc00616883710272bafd7b1e846d8d3615
+  2026-11-14 17:51:58.574 [INFO][122599] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="682578668d4d06e6af9c2d0214c85787c02eccfdb3a791ef951c2610ef45fb6e"
+  2026-11-14 17:51:58.574 [INFO][122599] cni-plugin/utils.go 204: Calico CNI releasing IP address ContainerID="682578668d4d06e6af9c2d0214c85787c02eccfdb3a791ef951c2610ef45f
+  2026-11-14 17:51:58.643 [INFO][122568] ipam/ipam_plugin.go 942: Released address using handleID ContainerID="d3de25b89ccad3ad89a0c59aa02d899460a303998597de7eab2ce1d830334
+  2026-11-14 17:51:58.679 [INFO][122621] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="018c6dcd8a80bff3384583254eb5a0f5610692bc3e6526f5220ce22bf16fb0b3"
+  2026-11-14 17:51:58.679 [INFO][122621] cni-plugin/utils.go 204: Calico CNI releasing IP address ContainerID="018c6dcd8a80bff3384583254eb5a0f5610692bc3e6526f5220ce22bf16fb
+  2026-11-14 17:51:59.432 [INFO][122781] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="3f3d64dd4e0a12bbc0abba71c7b082864f6258ba6e6bb55fed5c7615fe3dddef"
+  2026-11-14 17:51:59.432 [INFO][122781] cni-plugin/utils.go 204: Calico CNI releasing IP address ContainerID="3f3d64dd4e0a12bbc0abba71c7b082864f6258ba6e6bb55fed5c7615fe3dd
+  2026-11-14 17:51:59.434 [INFO][122773] cni-plugin/k8s.go 669: Releasing IP address(es) ContainerID="d471e622a915c80789542265ff333f70613c79088f6dad019a82c8914c3038a8"
+  2026-11-14 17:51:59.434 [INFO][122773] cni-plugin/utils.go 204: Calico CNI releasing IP address ContainerID="d471e622a915c80789542265ff333f70613c79088f6dad019a82c8914c303
+  2026-11-14 17:51:59.469 [INFO][122798] ipam/ipam_plugin.go 942: Released address using handleID ContainerID="d471e622a915c80789542265ff333f70613c79088f6dad019a82c8914c303
+  2026-11-14 17:51:59.570 [INFO][122793] ipam/ipam_plugin.go 942: Released address using handleID ContainerID="3f3d64dd4e0a12bbc0abba71c7b082864f6258ba6e6bb55fed5c7615fe3dd
+  kube-controllers 는 08:52:03 UTC(17:52:03 KST)에 전체 점검을 시작했고 누수·반납 로그는 없음 → 회수한 쪽은 kube-controllers 가 아니라 kubelet 이 부른 CNI DEL(17:51:58, kubelet 시작 1초 뒤)

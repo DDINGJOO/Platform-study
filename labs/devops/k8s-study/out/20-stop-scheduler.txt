@@ -1,0 +1,20 @@
+# E2 스케줄러를 멈추면: 새 파드는? (2026-11-14 14:56:34 KST)
+14:56:34 master$ sudo mv /etc/kubernetes/manifests/kube-scheduler.yaml /root/arch-exp-backup/
+14:56:36 kube-scheduler 컨테이너 0개
+14:56:36 master$ kubectl create deployment sched-test --image=nginx:1.25.1-alpine
+deployment.apps/sched-test created
+14:56:56 master$ kubectl get pods -l app=sched-test -o wide
+NAME                          READY   STATUS    RESTARTS   AGE   IP       NODE     NOMINATED NODE   READINESS GATES
+sched-test-78bc7cd6dc-x65xp   0/1     Pending   0          14s   <none>   <none>   <none>           <none>
+14:56:56 master$ kubectl get events --field-selector involvedObject.kind=Pod | grep sched-test
+   (파드 이벤트 없음)
+14:56:56 되돌리기: sudo mv /root/arch-exp-backup/kube-scheduler.yaml /etc/kubernetes/manifests/
+14:57:13 master$ kubectl get pods -l app=sched-test -o wide
+NAME                          READY   STATUS    RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES
+sched-test-78bc7cd6dc-x65xp   1/1     Running   0          31s   10.244.126.35   k8s-worker2   <none>           <none>
+14:57:13 master$ kubectl get events --field-selector involvedObject.kind=Pod --sort-by=.lastTimestamp | grep sched-test
+0s          Normal    Scheduled        pod/sched-test-78bc7cd6dc-x65xp         Successfully assigned default/sched-test-78bc7cd6dc-x65xp to k8s-worker2
+1s          Normal    Pulled           pod/sched-test-78bc7cd6dc-x65xp         Container image "nginx:1.25.1-alpine" already present on machine and can be accessed by the pod
+1s          Normal    Created          pod/sched-test-78bc7cd6dc-x65xp         Container created
+1s          Normal    Started          pod/sched-test-78bc7cd6dc-x65xp         Container started
+14:57:14 sched-test 삭제

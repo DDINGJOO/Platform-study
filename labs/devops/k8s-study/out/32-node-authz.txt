@@ -1,0 +1,53 @@
+# 32편: Node 인가자와 NodeRestriction (2026-11-14 16:56:29 KST, Mac 에서 실습 저장소 루트로 bash 32-node-authz.sh 실행, w32 네임스페이스만 쓰고 지움)
+
+## 1. 준비: Secret 두 개와, 각 Secret 을 쓰는 파드를 worker1·worker2 에 하나씩
+namespace/w32 created
+secret/s-w1 created
+secret/s-w2 created
+pod/p-w1 created
+pod/p-w2 created
+pod/p-w1 condition met
+pod/p-w2 condition met
+NAME  STATUS   NODE
+p-w1  Running  k8s-worker1
+p-w2  Running  k8s-worker2
+
+## 2. worker1 의 kubelet 자격으로 읽기 (Node 인가자)
+worker1$ alias k='kubectl --kubeconfig /etc/kubernetes/kubelet.conf'
+worker1$ k auth whoami
+Username system:node:k8s-worker1
+worker1$ k -n w32 get secret s-w1 -o name
+secret/s-w1
+worker1$ k -n w32 get secret s-w2 -o name
+Error from server (Forbidden): secrets "s-w2" is forbidden: User "system:node:k8s-worker1" cannot get resource "secrets" in API group "" in the namespace "w32": node: no relationship found between node 'k8s-worker1' and this object
+worker1$ k get node k8s-worker1 -o name
+node/k8s-worker1
+worker1$ k get node k8s-worker2 -o name
+Error from server (Forbidden): nodes "k8s-worker2" is forbidden: User "system:node:k8s-worker1" cannot get resource "nodes" in API group "" at the cluster scope: node: node 'k8s-worker1' cannot read 'k8s-worker2', only its own Node object
+worker1$ k -n w32 get pod p-w1 -o name
+pod/p-w1
+worker1$ k -n w32 get pod p-w2 -o name
+Error from server (Forbidden): pods "p-w2" is forbidden: User "system:node:k8s-worker1" cannot get resource "pods" in API group "" in the namespace "w32": node: no relationship found between node 'k8s-worker1' and this object
+worker1$ k -n w32 get pods --field-selector spec.nodeName=k8s-worker1 -o name
+pod/p-w1
+worker1$ k -n w32 get pods -o name
+Error from server (Forbidden): pods is forbidden: User "system:node:k8s-worker1" cannot list resource "pods" in API group "" in the namespace "w32": node: can only list/watch pods with spec.nodeName field selector
+
+## 3. worker1 의 kubelet 자격으로 쓰기 (인가는 통과하는가, 어드미션은 통과하는가). 모두 --dry-run=server
+worker1$ k auth can-i create pods -n w32
+yes
+worker1$ k auth can-i delete pods -n w32
+yes
+worker1$ k -n w32 run hijack --image=nginx:1.25.1-alpine --dry-run=server   # 미러 파드가 아닌 보통 파드를 만들려 하면
+Error from server (Forbidden): pods "hijack" is forbidden: pod does not have "kubernetes.io/config.mirror" annotation, node "k8s-worker1" can only create mirror pods
+worker1$ k -n w32 delete pod p-w2 --dry-run=server   # worker2 에 배정된 파드를 지우려 하면
+Error from server (Forbidden): pods "p-w2" is forbidden: node "k8s-worker1" can only delete pods with spec.nodeName set to itself
+worker1$ k -n w32 delete pod p-w1 --dry-run=server   # 자기 노드(worker1)에 배정된 파드는
+pod "p-w1" deleted from w32 namespace (server dry run)
+
+## 4. 참고: 기본 ClusterRoleBinding system:node 의 subjects (kubelet 권한은 이 바인딩이 아니라 Node 인가자가 준다)
+mac$ kubectl get clusterrolebinding system:node -o jsonpath='{.subjects}'
+  []
+
+## 5. 정리
+namespace "w32" deleted

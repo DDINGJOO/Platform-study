@@ -1,0 +1,43 @@
+# E5 스케줄러 필터: 어떤 노드에도 못 들어가는 파드 (2026-11-14 15:05:33 KST)
+15:05:33 노드마다 할당 가능 CPU: k8s-master=2 k8s-worker1=2 k8s-worker2=2 k8s-worker3=2 
+15:05:34 mac$ kubectl apply -f filter-test.yaml   (filter-cpu3: CPU 3개 요청 / filter-nodeselector: disktype=ssd 라벨이 있는 노드만)
+# | apiVersion: v1
+# | kind: Pod
+# | metadata: {name: filter-cpu3}
+# | spec:
+# |   containers:
+# |   - name: nginx
+# |     image: nginx:1.25.1-alpine
+# |     resources: {requests: {cpu: "3"}}
+# | ---
+# | apiVersion: v1
+# | kind: Pod
+# | metadata: {name: filter-nodeselector}
+# | spec:
+# |   nodeSelector: {disktype: ssd}
+# |   containers:
+# |   - name: nginx
+# |     image: nginx:1.25.1-alpine
+pod/filter-cpu3 created
+pod/filter-nodeselector created
+15:05:46 mac$ kubectl get pods filter-cpu3 filter-nodeselector -o wide
+NAME                  READY   STATUS    RESTARTS   AGE   IP       NODE     NOMINATED NODE   READINESS GATES
+filter-cpu3           0/1     Pending   0          12s   <none>   <none>   <none>           <none>
+filter-nodeselector   0/1     Pending   0          12s   <none>   <none>   <none>           <none>
+15:05:46 mac$ kubectl get events --field-selector involvedObject.name=filter-cpu3 -o custom-columns=REASON:.reason,MESSAGE:.message
+REASON             MESSAGE
+FailedScheduling   0/4 nodes are available: 1 node(s) had untolerated taint(s), 3 Insufficient cpu. preemption: 0/4 nodes are available: 4 Preemption is not helpful for scheduling.
+15:05:46 mac$ kubectl get events --field-selector involvedObject.name=filter-nodeselector -o custom-columns=REASON:.reason,MESSAGE:.message
+REASON             MESSAGE
+FailedScheduling   0/4 nodes are available: 1 node(s) had untolerated taint(s), 3 node(s) didn't match Pod's node affinity/selector. preemption: 0/4 nodes are available: 4 Preemption is not helpful for scheduling.
+15:05:46 mac$ kubectl label node k8s-worker2 disktype=ssd   (조건을 맞춰 주면?)
+node/k8s-worker2 labeled
+15:05:56 mac$ kubectl get pod filter-nodeselector -o wide
+NAME                  READY   STATUS    RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES
+filter-nodeselector   1/1     Running   0          22s   10.244.126.37   k8s-worker2   <none>           <none>
+Created            Container created
+Started            Container started
+15:05:56 정리
+pod "filter-cpu3" deleted from default namespace
+pod "filter-nodeselector" deleted from default namespace
+node/k8s-worker2 unlabeled

@@ -1,0 +1,53 @@
+# E21 글 쓰기 전에 확인 못 한 세 가지를 확인 (2026-11-14 16:07:14 KST)
+
+## 1. veth 이름 규칙: cali + sha1("네임스페이스.파드이름") 앞 11자
+  default.ipam-demo         → cali38cdd514d42   (E9 에서 두 번 모두 본 이름: cali38cdd514d42)
+  default.myweb-859c4764d4-scshl → calicd0b7984a6e   (worker1 실제: calicd0b7984a6e)
+  소스 (projectcalico/calico v3.33.0 libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go 75~93줄):
+    // VethNameForWorkload returns a deterministic veth name
+    // for the given Kubernetes workload (WEP) name and namespace.
+    func (wc defaultWorkloadEndpointConverter) VethNameForWorkload(namespace, podname string) string {
+    	// A SHA1 is always 20 bytes long, and so is sufficient for generating the
+    	// veth name and mac addr.
+    	h := sha1.New()
+    	h.Write(fmt.Appendf(nil, "%s.%s", namespace, podname))
+    	prefix := os.Getenv("FELIX_INTERFACEPREFIX")
+    	if prefix == "" {
+    		// Prefix is not set. Default to "cali"
+    		prefix = "cali"
+    	} else {
+    		// Prefix is set - use the first value in the list.
+    		splits := strings.Split(prefix, ",")
+    		prefix = splits[0]
+    	}
+    	log.WithField("prefix", prefix).Debugf("Using prefix to create a WorkloadEndpoint veth name")
+    	return fmt.Sprintf("%s%s", prefix, hex.EncodeToString(h.Sum(nil))[:11])
+    }
+  → 이름이 파드 이름에서 정해지므로 같은 네임스페이스·같은 이름이면 같은 veth 이름
+
+## 2. 빈 IPAM 블록은 언제 반납되나 (calico-kube-controllers)
+  E11: 15:30:03 에 worker2 두 번째 블록 10.244.126.64/26 이 빈 블록이 됨 (15:31:56 까지 affinity 남아 있음)
+  calico-kube-controllers 로그 (UTC):
+    2026-11-14 06:45:25.373 [INFO][16] kube-controllers/ipam.go 876: Releasing affinity for empty block (node has 2 total blocks) blockCIDR="10.244.126.64/26" node="k8s-worke
+    2026-11-14 06:45:26.396 [INFO][16] kube-controllers/ipam.go 672: Received block delete block="10.244.126.64/26"
+  → 06:45:25 UTC = 15:45:25 KST, 빈 블록이 된 지 약 15분 22초 뒤 반납
+  KubeControllersConfiguration: leakGracePeriod=15m0s reconcilerPeriod=5m0s
+  소스 (projectcalico/calico v3.33.0 kube-controllers/pkg/controllers/node/ipam.go):
+    // releaseUnusedBlocks looks at known empty blocks, and releases their affinity
+    // if appropriate. A block is a candidate for having its affinity released if:
+    //
+    // - The block is empty.
+    // - The block's node has at least one other affine block.
+    // - The node is not currently undergoing a migration from Flannel
+    //
+    // A block will only be released if it has been in this state for longer than the configured
+    // grace period, which defaults to 15m.
+    func (c *IPAMController) releaseUnusedBlocks() error {
+    	period := 5 * time.Minute
+    	if c.config.LeakGracePeriod != nil {
+    		if c.config.LeakGracePeriod.Duration > 0 {
+    			period = c.config.LeakGracePeriod.Duration / 2
+    		}
+    	}
+  → 조건: 비어 있고, 그 노드에 블록이 하나 더 있을 때. 15분(leakGracePeriod) 동안 계속 비어 있어야 반납. 점검 주기는 leakGracePeriod/2 = 7분 30초
+  지금 worker2 블록: 10.244.126.0/26

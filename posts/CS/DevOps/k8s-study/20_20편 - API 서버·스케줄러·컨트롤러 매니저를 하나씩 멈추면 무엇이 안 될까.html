@@ -1,0 +1,356 @@
+<!-- ============================================================
+  k8s 스터디 20편: API 서버·스케줄러·컨트롤러 매니저를 하나씩 멈추면 무엇이 안 될까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: API 서버를 멈추자 kubectl은 6443 연결 거부로 끝났는데 돌던 파드는 계속 200으로 응답했어요. 스케줄러와 컨트롤러 매니저도 하나씩 멈춰 보며 무엇이 안 되고 무엇이 그대로인지, 선언형 구조는 어디서 나오는지 확인했어요. -->
+<!-- tags: kube-apiserver 장애, kube-scheduler Pending, kube-controller-manager, 정적 파드, 선언형 명령형, kubectl api-resources -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 20편</div>
+  18편. k9s로 kubectl 명령 없이 클러스터를 둘러보는 법<br>
+  19편. 쿠버네티스 아키텍처 그림은 어떻게 읽을까<br>
+  <b>20편. API 서버·스케줄러·컨트롤러 매니저를 하나씩 멈추면 무엇이 안 될까</b> &larr; 지금 이 글<br>
+  21편. 컨트롤 플레인은 왜 3대 이상이고 워커 노드 수에는 왜 정답이 없을까<br>
+  22편. etcd를 직접 열어 보면 쿠버네티스 객체와 Secret은 어떻게 저장돼 있을까
+</div>
+
+<p>14시 56분 19초에 마스터에서 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get nodes</code>를 쳤더니 노드 목록 대신 이 한 줄만 돌아왔어요.</p>
+<div class="obsv-code">master$ kubectl get nodes
+The connection to the server 192.168.104.1:6443 was refused - did you specify the right host or port?</div>
+<p>&rarr; 마스터의 6443 포트에서 연결을 받아 주는 프로그램이 없다는 뜻이에요. kubectl이 보내는 요청은 모두 이 포트의 API 서버로 가는데 그 API 서버를 제가 30초 전에 멈췄어요.</p>
+<p>같은 시각에 마스터에서 worker1의 myweb 파드(10.244.194.98)로 curl을 보냈더니 200이 돌아왔어요. 클러스터에는 아무것도 물어볼 수 없는데 파드는 아무 일 없다는 듯 응답하고 있었어요. 1편에서는 컨트롤 플레인 구성 요소가 하나씩 빠지면 무엇이 멈추는지를 문서를 근거로 적었고 19편에서는 아키텍처 그림을 처음부터 끝까지 읽어 봤어요. 이번에는 마스터의 API 서버, 스케줄러, 컨트롤러 매니저를 실제로 하나씩 멈추고 무엇이 안 되고 무엇이 그대로인지 확인했어요.</p>
+<p>셋을 다 멈춰 보고 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl api-resources</code>까지 쳐 본 뒤 제가 남긴 말이 두 개 있어요. 하나는 "kubectl api-resources 이런 것도 있다, 엄청 많네"였고 다른 하나는 "모든 리소스들이 API 서버만 보고 있으니까 선언형/명령어 구조가 되는구나"였어요. 두 번째 말이 어디까지 맞는지는 5절에서 공식 문서와 맞춰 볼게요. 실험에 쓴 클러스터는 1~7편에서 만든 실습 환경(Lima VM 4대, 쿠버네티스 v1.37.2)이고 컨트롤 플레인은 k8s-master 한 대에 모두 떠 있어요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 정적 파드로 뜬 컨트롤 플레인 구성 요소는 어떻게 하나만 멈출까?<br>
+&middot; API 서버가 멈추면 무엇이 안 되고 무엇은 계속될까?<br>
+&middot; 스케줄러가 멈추면 새 파드는 왜 이벤트 하나 없이 Pending일까?<br>
+&middot; 컨트롤러 매니저가 멈추면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl scale</code>은 어디에 남을까?<br>
+&middot; 명령형으로 치든 선언형으로 쓰든 클러스터에서는 무엇이 바뀔까?<br>
+&middot; 장애가 났을 때 "변경이 멈춘 것"과 "서비스가 멈춘 것"은 어떻게 나눌까?</p>
+
+<h2>1. 정적 파드 매니페스트를 폴더 밖으로 옮겨서 하나씩 멈췄다</h2>
+
+<p>구성 요소를 하나만 멈추려면 먼저 각 구성 요소가 어떻게 떠 있는지 알아야 해요. 5편에서 본 대로 kubeadm은 API 서버, 스케줄러, 컨트롤러 매니저, etcd를 직접 실행하지 않아요. 파드 정의 파일 네 개를 마스터의 /etc/kubernetes/manifests에 써 두고 kubelet이 그 파일을 읽어 컨테이너로 띄워요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 정적 파드와 미러 파드</div>
+  정적 파드(static Pod)는 API 서버를 거치지 않고 kubelet이 정해진 폴더(staticPodPath)의 매니페스트 파일을 직접 읽어 띄우는 파드예요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pods -n kube-system</code>에 보이는 kube-apiserver-k8s-master는 kubelet이 API 서버에 올려 둔 미러 파드(mirror Pod)일 뿐 원본이 아니에요. 원본은 마스터 디스크의 파일이에요.
+</div>
+<p><a href="https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/">정적 파드 문서</a>에는 kubelet이 이 폴더를 주기적으로 훑어서 YAML·JSON 파일이 생기면 정적 파드를 만들고 사라지면 지운다고 적혀 있어요. 같은 문서에는 kubectl로 미러 파드를 지워도 kubelet은 정적 파드를 지우지 않는다는 설명도 있어요. <span class="obsv-mark">그래서 하나만 멈추는 가장 확실한 방법은 그 구성 요소의 매니페스트 파일을 폴더 밖으로 옮기는 거예요.</span> 되돌릴 때는 다시 폴더 안으로 옮기면 돼요. 실험 스크립트(20-stop-control-plane.sh)가 구성 요소마다 한 일은 이 세 줄로 줄일 수 있어요.</p>
+<div class="obsv-code">master$ sudo mv /etc/kubernetes/manifests/kube-apiserver.yaml /root/arch-exp-backup/   # 멈추기
+master$ sudo crictl ps --name kube-apiserver -q                                          # 0개가 될 때까지 확인
+master$ sudo mv /root/arch-exp-backup/kube-apiserver.yaml /etc/kubernetes/manifests/   # 되돌리기</div>
+<p>&rarr; 매니페스트를 폴더 밖으로 옮기면 kubelet이 그 컨테이너를 내려요. 컨테이너가 0개가 된 것을 확인하고 나서 실험을 하고 끝나면 파일을 제자리에 돌려놓는다는 뜻이에요. 스크립트에는 중간에 끊겨도 옮긴 파일을 모두 되돌리는 안전장치(<code style="font-family:Menlo,monospace;font-size:14px;">trap restore_all EXIT</code>)를 걸어 두었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: crictl</div>
+  kubelet과 같은 방식(CRI)으로 컨테이너 런타임에 직접 묻는 명령줄 도구예요. API 서버를 거치지 않기 때문에 API 서버가 멈춰서 kubectl이 아무것도 못 할 때도 노드에 어떤 컨테이너가 떠 있는지 볼 수 있어요. 그래서 이번 실험에서 "컨테이너가 사라졌나"는 모두 crictl로 확인했어요.
+</div>
+<p>파일을 옮긴 뒤 컨테이너가 사라지기까지 API 서버는 약 30초(14:55:49 &rarr; 14:56:19)가 걸렸고 스케줄러와 컨트롤러 매니저는 2초 안(14:56:34 &rarr; 14:56:36, 14:57:24 &rarr; 14:57:26)에 사라졌어요. 스크립트가 2초마다 컨테이너 수를 확인해서 잰 값이에요. 실험은 E1 API 서버, E2 스케줄러, E3 컨트롤러 매니저 순서로 했어요. 하나를 되돌리고 10초를 쉰 뒤 다음으로 넘어갔고 셋을 마치기까지 2분 18초(14:55:49~14:58:07)가 걸렸어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 매니페스트 사본을 같은 폴더에 두지 마세요</div>
+  &bull; 정적 파드 문서에는 kubelet이 이 폴더에서 점(.)으로 시작하지 않는 파일을 확장자와 상관없이 모두 읽는다는 주의가 있어요. kube-apiserver.yaml.backup 같은 사본을 같은 폴더에 만들면 kubelet이 두 파일 모두로 정적 파드를 만들려고 해요<br>
+  &bull; 같은 이름의 파드를 정의한 파일이 둘이면 동작이 정해져 있지 않고 옛 사본의 내용이 조용히 적용될 수도 있다고 해요. 이번 실험에서도 사본은 폴더 밖의 /root/arch-exp-backup에 두었어요<br>
+  &bull; 이 실험은 마스터가 한 대뿐인 실습 클러스터에서 했어요. 운영 중인 클러스터의 컨트롤 플레인을 이렇게 멈추면 그동안 아무도 클러스터를 바꿀 수 없어요
+</div>
+
+<h2>2. API 서버를 멈추면 kubectl은 끊기고 돌던 파드는 그대로 응답한다</h2>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/20/01-apiserver-down.png" alt="E1 API 서버 정지 기록. 14:55:49 대상 파드 10.244.194.98(k8s-worker1)에 curl 200, kube-apiserver.yaml을 옮기고 14:56:19 kube-apiserver 컨테이너 0개, kubectl get nodes는 The connection to the server 192.168.104.1:6443 was refused, 같은 시각 curl 200, kube-controller-manager·kube-scheduler·etcd는 CONTAINER_RUNNING, 되돌리고 14:56:24 readyz ok, 노드 네 대 Ready" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. API 서버 컨테이너가 0개인 동안 kubectl은 거절당했고 파드는 200으로 응답했다</div>
+
+<p>E1의 기록을 위에서부터 읽어 볼게요. 멈추기 전에 myweb 파드 하나(10.244.194.98, k8s-worker1)에 curl을 보내 200을 확인했어요. 매니페스트를 옮기고 30초 뒤 kube-apiserver 컨테이너는 0개가 됐고 kubectl get nodes는 도입부의 connection refused로 끝났어요. 인증이나 권한 문제였다면 API 서버가 401이나 403으로 답했을 거예요(19편). refused는 그보다 앞 단계에서 6443 포트에 연결 자체가 안 됐다는 뜻이에요.</p>
+<p>그런데 같은 시각에 보낸 curl은 다시 200이었어요. 마스터에서 파드 IP로 가는 요청은 노드 사이 경로(6편에서 본 Calico의 tunl0)를 지나 worker1의 nginx 컨테이너에 닿아요. 이 길 어디에도 API 서버는 없어요. 파드를 띄운 것은 worker1의 kubelet과 containerd이고 패킷을 넘겨주는 것은 노드의 커널이에요.</p>
+<p>남은 세 컨테이너도 볼 만해요. etcd, kube-scheduler, kube-controller-manager는 모두 CONTAINER_RUNNING이었어요. 살아 있기는 했지만 할 수 있는 일이 없었어요. 19편에서 마스터의 TCP 연결을 프로세스별로 센 표를 다시 보면 이유를 알 수 있어요.</p>
+<div class="obsv-code"># 19-hub-and-authz.txt 에서 마스터 쪽 일부 (16:05, ss 로 센 ESTABLISHED 연결)
+  etcd                     :2379 ← 받는 쪽       연결 92개
+  kube-apiserver           → :2379            연결 92개
+  kube-controller          → :6443            연결 2개
+  kube-scheduler           → :6443            연결 2개
+  kubelet                  → :6443            연결 1개</div>
+<p>&rarr; etcd(2379)에 붙어 있는 것은 kube-apiserver뿐이고 스케줄러, 컨트롤러 매니저, kubelet은 모두 API 서버(6443)에만 붙어 있다는 뜻이에요. kube-controller는 kube-controller-manager의 프로세스 이름이 15자에서 잘린 거예요. API 서버가 사라지면 etcd에는 요청하는 쪽이 없어지고 나머지는 유일한 연결 상대를 잃어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 395" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k20a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k20a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k20a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">API 서버가 멈춘 30초: 끊긴 길과 남은 길</text>
+<text x="20" y="58" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">클러스터를 바꾸고 들여다보는 길</text>
+<path d="M20 70 C 70 68, 120 71, 170 69 C 172 84, 169 98, 171 112 C 120 114, 70 111, 19 113 C 18 98, 21 84, 20 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="96" font-family="Menlo, monospace" font-size="15" fill="#3d3a34" text-anchor="middle">kubectl</text>
+<path d="M20 124 C 70 122, 120 125, 170 123 C 172 140, 169 155, 171 172 C 120 174, 70 171, 19 173 C 18 155, 21 140, 20 124 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="145" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">스케줄러</text>
+<text x="95" y="165" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">컨트롤러 매니저</text>
+<path d="M260 82 C 300 80, 380 83, 420 81 C 422 108, 419 134, 421 160 C 380 162, 300 159, 259 161 C 258 134, 261 108, 260 82 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="340" y="112" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#b3502f" text-anchor="middle">API 서버</text>
+<text x="340" y="132" font-family="Menlo, monospace" font-size="13" fill="#b3502f" text-anchor="middle">:6443</text>
+<text x="340" y="152" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">컨테이너 0개 ✗</text>
+<path d="M510 70 C 560 68, 630 71, 680 69 C 682 84, 679 98, 681 112 C 630 114, 560 111, 509 113 C 508 98, 511 84, 510 70 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="595" y="96" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">kubelet · kube-proxy</text>
+<path d="M510 124 C 560 122, 630 125, 680 123 C 682 140, 679 155, 681 172 C 630 174, 560 171, 509 173 C 508 155, 511 140, 510 124 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="595" y="145" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle">etcd :2379</text>
+<text x="595" y="164" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">Running, 붙는 쪽 없음</text>
+<path d="M173 91 C 200 93, 228 98, 254 104" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#k20a1)"/>
+<text x="214" y="84" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">refused</text>
+<path d="M173 148 C 200 146, 228 141, 254 136" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#k20a1)"/>
+<text x="214" y="168" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">watch ✗</text>
+<path d="M507 91 C 480 93, 452 98, 426 104" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#k20a1)"/>
+<text x="466" y="84" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">watch ✗</text>
+<path d="M424 136 C 450 140, 478 144, 505 148" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round" marker-end="url(#k20a3)"/>
+<text x="466" y="168" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">요청 없음</text>
+<path d="M20 196 C 200 194, 450 198, 680 195" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="20" y="224" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">이미 떠 있는 파드로 가는 길</text>
+<path d="M20 238 C 70 236, 120 239, 170 237 C 172 256, 169 278, 171 298 C 120 300, 70 297, 19 299 C 18 278, 21 256, 20 238 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="95" y="263" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">마스터에서 curl</text>
+<text x="95" y="285" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">10.244.194.98:80</text>
+<path d="M255 238 C 300 236, 380 239, 425 237 C 427 256, 424 278, 426 298 C 380 300, 300 297, 254 299 C 253 278, 256 256, 255 238 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="340" y="263" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">노드 사이 경로</text>
+<text x="340" y="285" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">Calico tunl0 (6편)</text>
+<path d="M510 238 C 560 236, 630 239, 680 237 C 682 256, 679 278, 681 298 C 630 300, 560 297, 509 299 C 508 278, 511 256, 510 238 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="595" y="263" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">worker1 myweb 파드</text>
+<text x="595" y="285" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">nginx :80</text>
+<path d="M173 268 C 195 266, 225 269, 249 268" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k20a2)"/>
+<path d="M428 268 C 452 266, 480 269, 504 268" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k20a2)"/>
+<text x="350" y="328" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">멈추기 전 200 · API 서버가 없는 동안에도 200</text>
+<text x="350" y="372" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 끊긴 것은 바꾸는 길이고 서비스하는 길에는 API 서버가 없다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. API 서버가 멈추면 클러스터를 바꾸고 들여다보는 길만 끊기고 파드로 가는 길은 남는다</div>
+
+<p>매니페스트를 되돌리자 5초 뒤(14:56:24) <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get --raw /readyz</code>에서 ok가 돌아왔고 노드 네 대가 모두 Ready로 보였어요. /readyz는 API 서버가 요청을 받을 준비가 됐는지 알려 주는 주소예요. <a href="https://kubernetes.io/docs/reference/using-api/health-checks/">API 서버 상태 확인 문서</a>에는 API 서버가 아직 초기화 중이거나 etcd를 기다리는 중이면 /readyz가 실패로 응답하니 그동안은 트래픽을 다른 곳으로 보내라고 적혀 있어요. API 서버가 멈춰 있는 동안에도 클러스터의 상태는 etcd에 그대로 남아 있었어요. 다시 뜬 API 서버는 그 상태를 읽어 와 9일 된 노드 넷을 다시 보여 줬어요(etcd 안은 22편에서 열어 봐요).</p>
+<p><span class="obsv-mark">API 서버가 멈추면 끊기는 것은 클러스터를 바꾸고 들여다보는 길이었고 이미 떠 있는 파드로 가는 길은 그대로였어요.</span> 다만 이번에 확인한 것은 API 서버가 없던 30초 남짓 동안 이미 떠 있던 파드가 계속 응답했다는 데까지예요. 그 사이에 파드가 지워지거나 노드가 빠졌다면 새 파드를 만드는 일도, Service의 대상 목록(EndpointSlice)을 고치는 일도 API 서버를 거쳐야 하니 아무도 할 수 없었을 거예요. 노드의 kube-proxy도 API 서버를 지켜보며 규칙을 고치기 때문이에요(19편 표의 worker1 줄에도 kube-proxy &rarr; :6443 연결이 있어요).</p>
+
+<h2>3. 스케줄러를 멈추면 새 파드는 이벤트 하나 없이 Pending에 머문다</h2>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/20/02-scheduler-down.png" alt="E2 스케줄러 정지 기록. 14:56:34 kube-scheduler.yaml을 옮기고 14:56:36 컨테이너 0개, kubectl create deployment sched-test, 14:56:56 파드 sched-test-78bc7cd6dc-x65xp가 0/1 Pending이고 IP와 NODE가 none, 파드 이벤트 없음, 되돌리고 14:57:13 k8s-worker2에서 1/1 Running IP 10.244.126.35, 이벤트 Scheduled, Pulled, Created, Started" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 스케줄러가 없는 동안 새 파드는 노드도 IP도 없었고 파드 이벤트도 남지 않았다</div>
+
+<p>E2에서는 스케줄러를 멈춘 뒤 새 Deployment를 하나 만들었어요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl create deployment sched-test --image=nginx:1.25.1-alpine</code>에는 바로 created가 돌아왔고 20초 뒤에 보니 파드 sched-test-78bc7cd6dc-x65xp가 있었어요. 파드 객체는 만들어졌다는 뜻이에요. 2편에서 본 대로 Deployment를 보고 ReplicaSet을 만드는 일과 ReplicaSet을 보고 파드를 만드는 일은 컨트롤러 매니저가 하고 그 컨트롤러 매니저는 멀쩡했어요.</p>
+<p>그런데 STATUS는 Pending이었고 IP와 NODE가 모두 &lt;none&gt;이었어요. 노드를 고르는 쪽이 없으니 파드의 nodeName 칸이 비어 있고 어느 노드의 kubelet도 이 파드를 자기 것으로 가져가지 않아요. 파드 IP도 노드에서 파드를 준비할 때 붙기 때문에(2편) 비어 있었어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 이벤트 (Event)</div>
+  클러스터 구성 요소가 객체에 일어난 일을 적어 두는 API 객체예요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl describe</code>의 Events 칸이나 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get events</code>로 볼 수 있고 누가 썼는지도 함께 남아요. 2편의 기록(02-pod-flow.txt)에서는 파드의 Scheduled 이벤트를 default-scheduler가, Pulling·Created·Started를 kubelet이 썼어요.
+</div>
+<p>파드 이벤트가 하나도 없었다는 점이 더 눈에 띄었어요. 2편에서 Deployment 하나를 만들 때 남은 이벤트를 쓴 쪽별로 보면 파드에 붙은 이벤트는 default-scheduler의 Scheduled와 kubelet의 Pulling·Pulled·Created·Started뿐이었어요. replicaset 컨트롤러가 남기는 SuccessfulCreate는 파드가 아니라 ReplicaSet에 붙고 kubelet의 Pulling·Created·Started는 노드가 정해진 뒤에야 나와요. 스케줄러가 없으면 이 파드에 이벤트를 쓸 쪽이 아무도 없는 거예요.</p>
+<p>23편에서 볼 FailedScheduling과 갈리는 지점이 여기예요. 스케줄러가 떠 있는데 들어갈 노드가 없으면 파드는 똑같이 Pending이지만 스케줄러가 노드마다 왜 안 되는지를 적은 FailedScheduling 이벤트를 남겨요. <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/">kube-scheduler 문서</a>에도 맞는 노드가 없으면 파드는 스케줄러가 자리를 찾을 때까지 스케줄되지 않은 채로 남는다고 적혀 있어요. <span class="obsv-mark">Pending 파드에 FailedScheduling이 있으면 스케줄러가 보고 거절한 것이고 이벤트가 하나도 없으면 스케줄러가 그 파드를 보지 못한 거예요.</span></p>
+<p>매니페스트를 되돌리자 17초 뒤(14:56:56 &rarr; 14:57:13) 파드는 k8s-worker2에서 Running이었고 IP 10.244.126.35를 받았어요. 이벤트도 Scheduled("Successfully assigned default/sched-test-78bc7cd6dc-x65xp to k8s-worker2")부터 Pulled, Created, Started 순서로 생겼어요. nginx:1.25.1-alpine 이미지가 worker2에 이미 있어서(already present on machine) 내려받는 시간 없이 바로 떴어요. 돌아온 스케줄러가 한 일은 기다리던 파드의 nodeName 칸 하나를 채운 것이고 그 뒤는 worker2의 kubelet이 이어받았어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: Pending 파드를 만나면</div>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl describe pod</code>의 Events부터 봐요. FailedScheduling이 있으면 메시지에 노드별 이유가 있어요(23편)<br>
+  &bull; 이벤트가 하나도 없으면 스케줄러를 의심해요. kubeadm 클러스터라면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl -n kube-system get pod -l component=kube-scheduler</code>로 스케줄러 파드를 보고 API 서버까지 의심스러우면 마스터에서 <code style="font-family:Menlo,monospace;font-size:14px;">sudo crictl ps --name kube-scheduler</code>로 컨테이너를 직접 확인해요<br>
+  &bull; 파드의 spec.schedulerName도 봐요. 기본값은 default-scheduler예요. <a href="https://kubernetes.io/docs/tasks/extend-kubernetes/configure-multiple-schedulers/">여러 스케줄러 설정 문서</a>의 예시에는 아직 띄우지 않은 두 번째 스케줄러 이름을 적은 파드가 그 스케줄러가 뜰 때까지 Pending에 머무는 장면이 나와요
+</div>
+
+<h2>4. 컨트롤러 매니저를 멈추면 scale은 기록되지만 아무도 맞추지 않는다</h2>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/20/03-controller-manager-down.png" alt="E3 컨트롤러 매니저 정지 기록. 14:57:24 myweb Deployment 5/5, ReplicaSet myweb-859c4764d4 DESIRED 5 CURRENT 5 READY 5. kube-controller-manager.yaml을 옮기고 14:57:26 컨테이너 0개, kubectl scale --replicas=7은 scaled, myweb-859c4764d4-4tjzk 삭제. 14:57:47 Deployment 5/7, ReplicaSet 5 5 5, myweb 파드 4개. 되돌리고 14:58:07 Deployment 7/7, ReplicaSet 7 7 7, 다시 5개로 되돌림" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. replicas를 7로 바꾸고 파드 하나를 지웠는데 ReplicaSet은 5에 머물렀고 파드는 4개로 줄었다</div>
+
+<p>E3을 시작할 때 myweb은 Deployment가 5/5였고 ReplicaSet myweb-859c4764d4도 DESIRED·CURRENT·READY가 모두 5였어요. 컨트롤러 매니저를 멈추고 두 가지를 했어요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl scale deploy myweb --replicas=7</code>로 원하는 개수를 7로 올렸고 파드 myweb-859c4764d4-4tjzk 하나를 지웠어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: spec과 status</div>
+  쿠버네티스 객체 대부분이 갖는 두 칸이에요. spec에는 사용자가 원하는 상태(파드 7개)가, status에는 컨트롤러가 관찰해서 적어 둔 현재 상태(준비된 파드 5개)가 들어가요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get deploy</code>의 READY 5/7은 status의 준비된 개수와 spec의 원하는 개수를 나란히 보여 준 거예요.
+</div>
+<p>scale을 치고 21초 뒤(14:57:47)의 결과는 이랬어요. scale 명령에는 바로 "deployment.apps/myweb scaled"가 돌아왔고 Deployment의 READY는 5/7이 됐어요. 원하는 개수 7이 API 서버를 거쳐 저장됐다는 뜻이에요. 그런데 ReplicaSet의 DESIRED는 5 그대로였어요. Deployment의 원하는 개수를 ReplicaSet에 옮겨 적는 일은 컨트롤러 매니저 안의 deployment 컨트롤러가 해요. 그 컨트롤러가 없으니 7이 아래로 내려가지 않았어요.</p>
+<p>지운 파드도 다시 생기지 않았어요. 파드를 세어 보니 4개였어요. ReplicaSet의 원하는 개수는 5이니 하나를 채워야 하는데 그 일을 하는 replicaset 컨트롤러도 같은 프로그램 안에 있어요. 반면 파드를 지우는 일은 컨트롤러 매니저 없이도 끝났어요. <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/">파드 수명 주기 문서</a>에 따르면 삭제 요청을 받은 파드는 그 노드의 kubelet이 컨테이너를 내린 뒤 API 서버에 최종 삭제를 요청하고 API 서버가 객체를 지워요. 이 과정에는 컨트롤러가 끼지 않아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 430" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k20a4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k20a5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">컨트롤러 매니저가 없는 동안: 원하는 상태는 맨 위에서 멈췄다</text>
+<text x="110" y="62" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">kubectl scale --replicas=7</text>
+<path d="M110 70 C 112 79, 109 89, 110 99" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k20a5)"/>
+<text x="590" y="62" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">kubectl delete pod …4tjzk</text>
+<path d="M590 70 C 592 79, 589 89, 590 99" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k20a5)"/>
+<path d="M20 105 C 80 103, 140 106, 200 104 C 202 150, 199 195, 201 238 C 140 240, 80 237, 19 239 C 18 195, 21 150, 20 105 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="131" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">Deployment myweb</text>
+<text x="110" y="157" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">spec.replicas</text>
+<text x="110" y="182" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41" text-anchor="middle">5 → 7 ✓</text>
+<text x="110" y="216" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">READY 5/7</text>
+<path d="M260 105 C 320 103, 380 106, 440 104 C 442 150, 439 195, 441 238 C 380 240, 320 237, 259 239 C 258 195, 261 150, 260 105 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="131" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">ReplicaSet</text>
+<text x="350" y="157" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">spec.replicas</text>
+<text x="350" y="182" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">5 그대로</text>
+<text x="350" y="208" font-family="Menlo, monospace" font-size="12" fill="#c07f18" text-anchor="middle">status CURRENT 5</text>
+<text x="350" y="228" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="middle">READY 5 (실제 파드는 4개)</text>
+<path d="M500 105 C 560 103, 620 106, 680 104 C 682 150, 679 195, 681 238 C 620 240, 560 237, 499 239 C 498 195, 501 150, 500 105 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="590" y="131" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">myweb 파드</text>
+<path d="M519 166 C 519 159, 525 154, 531 155 C 537 156, 542 161, 541 167 C 540 173, 535 177, 529 176 C 523 175, 519 171, 519 166 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-dasharray="3 3"/>
+<path d="M521 157 C 526 162, 533 170, 539 176" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round"/>
+<path d="M539 157 C 534 162, 527 170, 521 176" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round"/>
+<path d="M552 166 C 552 159, 558 154, 564 155 C 570 156, 575 161, 574 167 C 573 173, 568 177, 562 176 C 556 175, 552 171, 552 166 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M585 166 C 585 159, 591 154, 597 155 C 603 156, 608 161, 607 167 C 606 173, 601 177, 595 176 C 589 175, 585 171, 585 166 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M618 166 C 618 159, 624 154, 630 155 C 636 156, 641 161, 640 167 C 639 173, 634 177, 628 176 C 622 175, 618 171, 618 166 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M651 166 C 651 159, 657 154, 663 155 C 669 156, 674 161, 673 167 C 672 173, 667 177, 661 176 C 655 175, 651 171, 651 166 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<text x="590" y="214" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">4개, 지운 하나는 안 채워짐</text>
+<path d="M203 171 C 220 169, 238 172, 255 171" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#k20a4)"/>
+<path d="M443 171 C 460 169, 478 172, 495 171" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#k20a4)"/>
+<text x="230" y="264" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">✗ deployment 컨트롤러</text>
+<text x="230" y="286" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">7을 ReplicaSet에 옮겨 적을 쪽이 없다</text>
+<text x="470" y="264" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">✗ replicaset 컨트롤러</text>
+<text x="470" y="286" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">모자란 파드를 채울 쪽이 없다</text>
+<path d="M20 308 C 200 306, 450 310, 680 307" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="350" y="336" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="middle">매니페스트를 되돌리고 20초 뒤</text>
+<text x="350" y="362" font-family="Menlo, monospace" font-size="13" fill="#2e6b41" text-anchor="middle">Deployment 7/7 · ReplicaSet DESIRED 7 CURRENT 7 READY 7</text>
+<text x="350" y="408" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 원하는 상태는 적혔고 그것을 아래로 내려 보낼 컨트롤러만 없었다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 원하는 개수 7은 Deployment에만 적혔고 ReplicaSet과 파드로 이어 줄 컨트롤러가 없었다</div>
+
+<p>가장 헷갈리는 줄은 ReplicaSet의 CURRENT 5, READY 5예요. 실제 파드는 4개인데 상태 칸은 5를 보여 줬어요. 이 숫자는 kubectl이 그 자리에서 파드를 세어 낸 값이 아니라 ReplicaSet 객체의 status에 적혀 있는 값이에요. <a href="https://kubernetes.io/docs/concepts/architecture/controller/">Controllers 문서</a>에는 컨트롤러가 자기가 맡은 객체도 갱신한다고 적혀 있어요. 문서가 드는 예는 Job 컨트롤러가 일을 마치면 그 Job 객체에 끝났다고 표시하는 경우예요. status를 고쳐 쓰는 쪽이 컨트롤러이니 컨트롤러가 멈추면 status도 마지막으로 쓴 값에서 멈춰요. Deployment의 AVAILABLE 5도 같은 이유로 실제(4개)와 달랐어요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 컨트롤러가 멈춘 동안 status 칸은 실제와 다를 수 있어요</div>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get deploy</code>, <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get rs</code>의 숫자는 컨트롤러가 마지막으로 적어 둔 보고예요. 실제 파드 수는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pods</code>로 따로 세어 봐요<br>
+  &bull; Service의 대상 목록을 고치는 EndpointSlice 컨트롤러도 컨트롤러 매니저 안에 있어요(2편). 지운 파드가 EndpointSlice에 남아 있었을 수 있는데 이번에는 확인하지 않았어요<br>
+  &bull; 컨트롤러 매니저가 살아 있는지는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl -n kube-system get lease kube-controller-manager -o yaml</code>의 renewTime으로도 가늠할 수 있어요. <a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/">kube-controller-manager 문서</a>의 기본값으로는 리더가 2초 간격으로 이 Lease를 갱신하려 하니 살아 있으면 이 시각이 계속 바뀌어요
+</div>
+<p>매니페스트를 되돌리고 20초 뒤(14:58:07) Deployment는 7/7, ReplicaSet은 DESIRED·CURRENT·READY 모두 7이었어요. 돌아온 컨트롤러 매니저는 자기가 멈춰 있던 동안 scale과 delete가 있었다는 사실을 알 길이 없어요. 그때는 떠 있지 않았으니까요. 그래도 지금 Deployment의 spec은 7이고 ReplicaSet은 5, 파드는 4개라는 현재 상태만 보고 차이를 메웠어요. 실험 끝에는 replicas를 5로 되돌려 실험 전 상태(5/5)로 맞췄어요.</p>
+<p><span class="obsv-mark">kubectl scale의 응답인 scaled는 "7개가 됐다"가 아니라 "spec에 7을 적었다"는 뜻이었어요.</span></p>
+
+<h2>5. 명령형으로 치든 선언형으로 쓰든 API 서버의 원하는 상태를 고칠 뿐이다</h2>
+
+<p>E3까지 보고 제가 한 말이 "모든 리소스들이 API 서버만 보고 있으니까 선언형/명령어 구조가 되는구나"였어요. 공식 문서 두 개와 맞춰 보면 이 말은 방향은 맞지만 표현 하나를 고쳐야 해요.</p>
+<p>먼저 <a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/object-management/">Kubernetes Object Management 문서</a>는 kubectl로 객체를 다루는 방법을 셋으로 나눠요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:620px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">방법 (문서의 이름)</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">무엇을 다루나</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">예시 명령</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">문서가 권하는 환경</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">명령형 커맨드 (Imperative commands)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">클러스터에 살아 있는 객체</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">kubectl create deployment</code>, <code style="font-family:Menlo,monospace;font-size:14px;">kubectl scale</code></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">개발 프로젝트</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">명령형 오브젝트 구성 (Imperative object configuration)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">파일 하나하나</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">kubectl create -f</code>, <code style="font-family:Menlo,monospace;font-size:14px;">kubectl replace -f</code></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">운영 프로젝트</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">선언형 오브젝트 구성 (Declarative object configuration)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">파일이 든 폴더</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply -f configs/</code></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">운영 프로젝트</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 명령형과 선언형</div>
+  위 문서에서 둘을 가르는 기준은 사용자가 무엇을 적느냐예요. 명령형에서는 사용자가 할 동작("만들어라", "7로 바꿔라", "이 파일로 바꿔라")을 고르고 선언형에서는 사용자가 "이 폴더의 파일대로 돼 있어야 한다"는 결과만 주면 kubectl이 객체마다 만들지, 고칠지, 지울지를 알아서 정해요.
+</div>
+<p>같은 문서에는 한 객체는 한 가지 방법으로만 관리하라는 경고도 있어요. 섞어 쓰면 동작이 정해지지 않는다고 해요. 이번 실험에서 E2는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl create deployment</code>, E3은 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl scale</code>를 썼고 둘 다 명령형 커맨드였어요. 그런데 클러스터 쪽에서 일어난 일은 "API 서버에 Deployment 객체를 하나 저장했다"와 "spec.replicas 한 칸을 7로 고쳤다"가 전부였어요. 파드를 만들고 노드를 고르는 일은 그 기록을 지켜보던 컨트롤러와 스케줄러가 나중에 했고 그 둘이 멈춰 있는 동안에는 기록만 남아 있었어요. 같은 내용을 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply</code>로 보냈어도 API 서버에 남는 것은 똑같이 바뀐 spec이에요.</p>
+<p><a href="https://kubernetes.io/docs/concepts/architecture/controller/">Controllers 문서</a>가 이 구조를 설명해요. 컨트롤러는 적어도 한 종류의 리소스를 추적하는데 그 객체의 spec이 원하는 상태를 나타내고 컨트롤러는 현재 상태를 그 원하는 상태에 가깝게 만든다고 해요. 쿠버네티스에서는 컨트롤러가 일을 직접 하기보다 API 서버에 요청을 보내는 경우가 더 흔하다는 설명도 있어요. 2편에서 deployment 컨트롤러가 ReplicaSet을, replicaset 컨트롤러가 파드를 API 서버에 "써 넣은" 것이 바로 그 경우예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k20a6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+<marker id="k20a7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">어떤 방식으로 적든 API 서버에는 바뀐 spec 하나가 남는다</text>
+<path d="M20 52 C 90 50, 160 53, 230 51 C 232 72, 229 92, 231 112 C 160 114, 90 111, 19 113 C 18 92, 21 72, 20 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="125" y="77" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">명령형 커맨드</text>
+<text x="125" y="99" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">kubectl create · scale</text>
+<path d="M20 126 C 90 124, 160 127, 230 125 C 232 146, 229 166, 231 186 C 160 188, 90 185, 19 187 C 18 166, 21 146, 20 126 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="125" y="151" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">명령형 오브젝트 구성</text>
+<text x="125" y="173" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="middle">kubectl create -f · replace -f</text>
+<path d="M20 200 C 90 198, 160 201, 230 199 C 232 220, 229 240, 231 260 C 160 262, 90 259, 19 261 C 18 240, 21 220, 20 200 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="125" y="225" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">선언형 오브젝트 구성</text>
+<text x="125" y="247" font-family="Menlo, monospace" font-size="12" fill="#4a7fb5" text-anchor="middle">kubectl apply -f 폴더/</text>
+<path d="M233 82 C 255 95, 275 118, 296 138" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k20a6)"/>
+<path d="M233 156 C 254 155, 276 157, 296 156" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k20a6)"/>
+<path d="M233 230 C 255 217, 275 194, 296 174" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k20a6)"/>
+<path d="M300 110 C 340 108, 380 111, 420 109 C 422 140, 419 172, 421 202 C 380 204, 340 201, 299 203 C 298 172, 301 140, 300 110 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="360" y="142" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#4a7fb5" text-anchor="middle">API 서버</text>
+<text x="360" y="166" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">검증하고 저장</text>
+<text x="360" y="189" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">→ etcd</text>
+<path d="M490 52 C 553 50, 617 53, 680 51 C 682 72, 679 92, 681 112 C 617 114, 553 111, 489 113 C 488 92, 491 72, 490 52 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="585" y="77" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">컨트롤러 매니저</text>
+<text x="585" y="99" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">ReplicaSet·파드 개수 맞추기</text>
+<path d="M490 126 C 553 124, 617 127, 680 125 C 682 146, 679 166, 681 186 C 617 188, 553 185, 489 187 C 488 166, 491 146, 490 126 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="585" y="151" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">스케줄러</text>
+<text x="585" y="173" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">nodeName 칸 채우기</text>
+<path d="M490 200 C 553 198, 617 201, 680 199 C 682 220, 679 240, 681 260 C 617 262, 553 259, 489 261 C 488 240, 491 220, 490 200 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="585" y="225" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<text x="585" y="247" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">컨테이너 띄우기</text>
+<path d="M423 138 C 444 118, 465 95, 485 82" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k20a7)"/>
+<path d="M423 156 C 444 155, 465 157, 485 156" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k20a7)"/>
+<path d="M423 174 C 444 194, 465 217, 485 230" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k20a7)"/>
+<text x="455" y="104" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">watch</text>
+<text x="125" y="296" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">kubectl이 하는 일은 여기까지</text>
+<text x="125" y="318" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">응답: created · scaled · configured</text>
+<text x="585" y="296" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">실제 일은 지켜보는 쪽이 한다</text>
+<text x="585" y="318" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">E2·E3: 멈춰 있으면 기록만 남는다</text>
+<text x="350" y="374" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 차이는 원하는 상태를 어디에 남기고 어떻게 고치느냐에 있다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. 세 가지 관리 방식 모두 API 서버의 객체를 고치는 데서 끝나고 실제 일은 지켜보던 쪽이 이어받는다</div>
+
+<p>그래서 제 말을 고쳐 쓰면 이래요. 선언형 구조는 kubectl을 어떻게 쓰느냐가 아니라 API 쪽에서 나와요. 모든 쓰기가 "원하는 상태"를 기록하는 일이고 그 기록을 지켜보는 컨트롤러가 따로 돌기 때문에 명령형으로 치든 선언형으로 쓰든 사용자가 하는 일은 결국 원하는 상태를 적는 것이에요. 문서가 말하는 명령형과 선언형의 차이는 그 원하는 상태를 어디에 남기고 어떻게 고쳐 나가느냐에 있어요. 문서의 장단점 목록에는 명령형 커맨드가 변경 리뷰 절차와 이어지지 않고 감사 기록을 남기지 않으며 살아 있는 객체 말고는 기록이 없다고 적혀 있어요. 오브젝트 구성 방식에서는 구성 파일을 Git 같은 버전 관리 시스템에 둘 수 있어요.</p>
+<p><span class="obsv-mark">kubectl의 응답 created, scaled, configured는 "기록했다"는 뜻이지 "끝났다"는 뜻이 아니에요.</span> 정말 끝났는지는 status나 실제 파드를 봐야 알 수 있어요. 이번 실험 스크립트도 그래서 매니페스트를 되돌린 뒤 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl wait</code>, <code style="font-family:Menlo,monospace;font-size:14px;">kubectl rollout status</code>로 실제로 그 상태가 될 때까지 기다렸어요.</p>
+
+<h3>kubectl api-resources: 이 API 서버가 받아 주는 객체 종류</h3>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/20/04-api-resources.png" alt="kubectl api-resources 집계. 제목 줄 포함 95줄, namespaced=true 38, namespaced=false 56, API 그룹별 개수 crd.projectcalico.org 22, core(v1) 17, storage.k8s.io 6, admissionregistration.k8s.io 6, resource.k8s.io 5, networking.k8s.io 5, apps 5, rbac.authorization.k8s.io 4 등, kubectl get crd 23개" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. 이 클러스터의 API 서버가 받아 주는 리소스는 94종이었고 가장 많은 그룹은 Calico였다</div>
+
+<p>"kubectl api-resources 이런 것도 있다, 엄청 많네"는 E3 직후(14:58:22)에 친 이 명령의 출력을 보고 한 말이에요. 제목 줄을 빼면 94줄이고 한 줄이 API 서버가 받아 주는 객체 종류 하나예요. NAMESPACED가 true인 것이 38종, false인 것이 56종이었어요. pods, services, configmaps는 네임스페이스 안에 만드는 종류이고 nodes, namespaces, persistentvolumes는 네임스페이스 없이 클러스터 전체에 속하는 종류예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: API 그룹과 CRD</div>
+  APIVERSION 칸의 apps/v1에서 apps가 그룹이고 v1이 버전이에요. 그룹 이름 없이 v1만 적힌 것은 core 그룹이에요. CRD(CustomResourceDefinition)는 쿠버네티스에 없던 객체 종류를 API 서버에 새로 등록하는 객체예요. 등록하고 나면 그 종류도 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get</code>으로 다른 리소스와 똑같이 다룰 수 있어요.
+</div>
+<p>그룹별로 세면 crd.projectcalico.org가 22종으로 가장 많았고 core(v1)가 17종, storage.k8s.io와 admissionregistration.k8s.io가 6종씩, resource.k8s.io·networking.k8s.io·apps가 5종씩이었어요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get crd</code>로 센 CRD는 23개였어요. 22개는 Calico의 것이고 남은 하나는 policy.networking.k8s.io 그룹의 ClusterNetworkPolicy예요. 글을 쓰며 다시 확인해 보니(20-crd-origin.txt) 23개 모두 calico-node DaemonSet(2026-11-04 12:19:30 UTC)과 1초도 차이 나지 않는 시각(12:19:29~30 UTC)에 만들어졌고 <a href="https://github.com/projectcalico/calico/blob/v3.33.0/manifests/calico.yaml">Calico v3.33.0의 calico.yaml</a>에도 CustomResourceDefinition이 23개 들어 있어요. ClusterNetworkPolicy도 이 매니페스트로 함께 설치된 거예요.</p>
+<p>Calico 리소스가 이렇게 많은 이유는 1편에서 봤어요. 설치한 매니페스트가 DATASTORE_TYPE=kubernetes라서 Calico는 IP 풀, BGP 설정, IPAM 블록 같은 자기 데이터를 etcd에 직접 쓰지 않고 쿠버네티스 API의 CRD 객체로 저장해요. 그 객체를 지켜보다가 실제로 경로를 깔고 IP를 나눠 주는 것은 Calico 쪽 프로그램이에요(30·31편). 컨트롤러 매니저 밖의 컨트롤러도 같은 구조를 따르는 거예요.</p>
+<p>그렇다고 94종 모두에 짝이 되는 컨트롤러가 있는 것은 아니에요. ConfigMap과 Secret에는 spec이 아예 없고 그 대신 data가 있어요. 이런 객체는 저장해 두면 파드나 다른 프로그램이 읽어 가요. 반대로 Deployment, ReplicaSet, Node 같은 객체는 spec과 status를 함께 갖고 뒤에서 차이를 메우는 컨트롤러가 있어요. E3에서 멈춘 것이 그런 컨트롤러를 한 프로그램에 모아 둔 컨트롤러 매니저였어요.</p>
+
+<h2>6. 장애 때는 "변경이 멈췄나, 서비스가 멈췄나"부터 나눈다</h2>
+
+<p>세 실험을 한 표로 모으면 이래요. 정지 시간은 매니페스트를 옮긴 시각부터 되돌린 시각까지예요. "이미 떠 있던 파드" 칸은 직접 확인한 것과 구조상 관련이 없는 것을 구분해 적었어요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:680px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">멈춘 구성 요소</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">kubectl</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">새 파드·개수 변경</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">이미 떠 있던 파드</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">먼저 보이는 단서</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">API 서버 (E1, 30초)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">6443 연결 거부</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">기록할 곳이 없다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">curl 200 (직접 확인)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">connection … refused</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">스케줄러 (E2, 22초)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">정상</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">파드 객체는 생기지만 NODE &lt;none&gt;, Pending</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">이미 노드가 정해져 있어 스케줄러를 거치지 않는다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Pending인데 파드 이벤트가 0건</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">컨트롤러 매니저 (E3, 23초)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">정상, scale도 성공</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">spec만 바뀌고 ReplicaSet·파드가 따라오지 않는다. 지운 파드가 다시 안 생긴다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">남은 4개는 그대로 있었다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">READY 5/7에서 멈추고 status가 실제 파드 수와 다르다</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><span class="obsv-mark">세 경우 모두 클러스터를 바꾸는 쪽에서는 무언가 멈췄지만 이미 떠 있던 파드가 응답을 멈추는 것은 보지 못했어요.</span> 파드 응답을 curl로 직접 확인한 것은 E1이에요. 장애를 만났을 때 이 둘을 먼저 나누면 볼 곳이 정해져요.</p>
+<p>&middot; <b>변경이 멈춘 것</b>: 배포가 끝나지 않고 replicas를 바꿔도 파드 수가 그대로이고 새 파드가 Pending에 머물러요. 사용자 요청은 계속 처리돼요. 컨트롤 플레인(API 서버, 스케줄러, 컨트롤러 매니저, etcd)부터 봐요. kubectl이 거절당하면 API 서버를, Pending 파드에 이벤트가 없으면 스케줄러를, spec과 실제 파드 수가 어긋난 채 그대로면 컨트롤러 매니저를 먼저 봐요.<br>
+&middot; <b>서비스가 멈춘 것</b>: 사용자 요청이 실패해요. kubectl로는 멀쩡히 조회되는 경우가 많아요. 파드 자체와 노드, kube-proxy 규칙, CNI 경로 같은 데이터 경로부터 봐요(25·28·30편).</p>
+<p>둘이 한꺼번에 일어나기도 해요. 컨트롤 플레인이 멈춘 상태에서 파드나 노드에 문제가 생기면 고칠 쪽이 없으니 변경이 멈춘 것이 서비스가 멈춘 것으로 번져요. 2절 끝에서 말한 "그 사이 노드가 빠졌다면"이 그런 경우예요.</p>
+<p>마지막으로 이 실습 클러스터의 약점이 하나 보여요. API 서버, 스케줄러, 컨트롤러 매니저, etcd가 모두 k8s-master 한 대에 정적 파드로 떠 있어요. 이번에는 하나씩 멈췄지만 마스터 VM이 꺼지면 E1·E2·E3이 한꺼번에 일어나요. 그동안 워커의 파드가 계속 응답하더라도 클러스터는 아무것도 바꿀 수 없고 고칠 수도 없어요. 이것이 컨트롤 플레인을 여러 대로 두는 이유이고 왜 3대 이상이어야 하는지는 21편에서 봐요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>API 서버·스케줄러·컨트롤러 매니저 가운데 무엇을 멈춰도 멈춘 것은 클러스터를 바꾸는 일이었고 API 서버가 없는 동안에도 이미 떠 있던 파드는 그대로 응답했어요.</b><br><br>
+  정적 파드 매니페스트를 폴더 밖으로 옮겨 하나씩 멈췄어요. API 서버가 없을 때 kubectl은 6443 연결 거부로 끝났지만 파드로 가는 curl은 200이었어요. 스케줄러가 없을 때 새 파드는 노드도 IP도 없이 Pending이었고 파드 이벤트가 0건이었어요. 노드가 정해지기 전의 파드에 이벤트를 쓰는 쪽이 스케줄러이기 때문이에요. 컨트롤러 매니저가 없을 때 scale로 올린 7은 Deployment spec에만 적혔고 ReplicaSet은 5에, 파드는 지운 만큼 줄어든 4개에 머물렀어요. 상태 칸도 갱신되지 않아 실제와 달랐어요. 명령형이든 선언형이든 kubectl은 API 서버의 원하는 상태를 고칠 뿐이고 실제 일은 그 기록을 지켜보는 쪽이 해요. 그래서 장애 때는 변경이 멈췄는지 서비스가 멈췄는지부터 나눠 봐요.
+</div>
+
+</div>

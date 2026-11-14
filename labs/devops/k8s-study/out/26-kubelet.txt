@@ -1,0 +1,54 @@
+# E14 kubelet (2026-11-14 15:42:28 KST)
+
+## 1. kubelet 설정 파일 (worker1 /var/lib/kubelet/config.yaml 에서 골라 봄)
+  anonymous:
+    enabled: false
+  webhook:
+    enabled: true
+  mode: Webhook
+  webhook:
+cgroupDriver: systemd
+clusterDNS:
+- 10.96.0.10
+clusterDomain: cluster.local
+rotateCertificates: true
+staticPodPath: /etc/kubernetes/manifests
+
+## 2. kubelet 이 여는 포트 (worker1)
+Local Peer
+127.0.0.1:10248 users:(("kubelet",pid=26209,fd=19))
+*:10250 users:(("kubelet",pid=26209,fd=16))
+인증서 없이 10250 에 요청: 401
+노드 안에서 healthz(10248): ok
+
+## 3. 컨테이너가 죽으면 kubelet 이 같은 파드 안에서 다시 띄움 (restartPolicy: Always)
+15:42:28 myweb-859c4764d4-9jb4l uid=265764f4 ip=10.244.194.101 restarts=0 컨테이너 pid=10492
+15:42:28 worker1# kill -9 10492   (nginx master)
+15:42:31 restarts=1 state={"running":{"startedAt":"2026-11-14T06:42:29Z"}} uid=265764f4 ip=10.244.194.101
+15:42:35 restarts=1 state={"running":{"startedAt":"2026-11-14T06:42:29Z"}} uid=265764f4 ip=10.244.194.101
+15:42:38 restarts=1 state={"running":{"startedAt":"2026-11-14T06:42:29Z"}} uid=265764f4 ip=10.244.194.101
+15:42:41 restarts=1 state={"running":{"startedAt":"2026-11-14T06:42:29Z"}} uid=265764f4 ip=10.244.194.101
+lastState: Error exitCode=137
+ Normal Pulled pod/myweb-859c4764d4-9jb4l Container image "nginx:1.25.1-alpine" already present on machine and can be accessed by the pod
+ Normal Created pod/myweb-859c4764d4-9jb4l Container created
+ Normal Started pod/myweb-859c4764d4-9jb4l Container started
+
+## 4. 정적 파드: 파일이 원본, API 의 파드는 거울(미러 파드)
+  config.source=file config.mirror=b2ef54c40d77f5f79532d22ad769c30e owner=Node/k8s-master
+  staticPodPath 의 파일: etcd.yaml kube-apiserver.yaml kube-controller-manager.yaml kube-scheduler.yaml
+15:42:42 지우기 전: 파드 uid=71f9eade | kube-scheduler pid=9117
+15:42:42 mac$ kubectl -n kube-system delete pod kube-scheduler-k8s-master
+15:42:45 파드: 1/1 Terminating 45m uid=71f9eade | kube-scheduler pid=9117
+15:42:48 파드: 1/1 Terminating 45m uid=71f9eade | kube-scheduler pid=9117
+15:42:51 파드: 1/1 Terminating 45m uid=71f9eade | kube-scheduler pid=9117
+(이어서 6초마다, uid·deletionTimestamp·grace 함께)
+15:42:57 파드: 1/1 Terminating 46m uid=71f9eade-e360-4842-ba9b-68d9452e6ec4 dts=2026-11-14T06:43:12Z grace=30 | pid=9117
+15:43:03 파드: 0/1 Pending 5s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117
+15:43:09 파드: 1/1 Running 11s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117
+15:43:16 파드: 1/1 Running 18s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117
+15:43:22 파드: 1/1 Running 24s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117
+15:43:28 파드: 1/1 Running 30s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117
+15:43:34 파드: 1/1 Running 36s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117
+15:43:40 파드: 1/1 Running 42s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117
+15:43:47 파드: 1/1 Running 49s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117
+15:43:53 파드: 1/1 Running 55s uid=c4e87283-9e29-4e9a-8950-9c2226b32b53 dts= grace= | pid=9117

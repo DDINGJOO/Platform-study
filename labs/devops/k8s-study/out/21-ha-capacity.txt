@@ -1,0 +1,41 @@
+# E23 HA 여부와 워커 용량 (2026-11-14 16:18:18 KST)
+
+## 1. kubeadm ClusterConfiguration (kube-system/kubeadm-config)
+  14:etcd:
+  15:  local:
+  16:    dataDir: /var/lib/etcd
+  19:kubernetesVersion: v1.37.2
+  22:  podSubnet: 10.244.0.0/16
+  23:  serviceSubnet: 10.96.0.0/12
+  controlPlaneEndpoint 줄 수: 0
+
+## 2. etcd 멤버와 컨트롤 플레인 노드
+┌──────────────────┬─────────┬────────────┬────────────────────────────┬────────────────────────────┬────────────┐
+│        ID        │ STATUS  │    NAME    │         PEER ADDRS         │        CLIENT ADDRS        │ IS LEARNER │
+├──────────────────┼─────────┼────────────┼────────────────────────────┼────────────────────────────┼────────────┤
+│ c960bb57b7d36fea │ started │ k8s-master │ https://192.168.104.1:2380 │ https://192.168.104.1:2379 │      false │
+└──────────────────┴─────────┴────────────┴────────────────────────────┴────────────────────────────┴────────────┘
+  control-plane 노드: k8s-master
+  kubeconfig 의 API 서버 주소: https://192.168.64.2:6443
+
+## 3. 워커별 할당 가능 자원과 requests 합 (kubectl describe node 의 Allocated resources)
+  k8s-worker1: allocatable cpu=2 memory=3896020Ki pods=110 | requests cpu 250m (12%) | memory 0 (0%) | 파드 8개
+  k8s-worker2: allocatable cpu=2 memory=3896020Ki pods=110 | requests cpu 350m (17%) | memory 70Mi (1%) | 파드 9개
+  k8s-worker3: allocatable cpu=2 memory=3896016Ki pods=110 | requests cpu 350m (17%) | memory 70Mi (1%) | 파드 8개
+
+## 4. 노드 토폴로지 라벨 (존·리전)
+  k8s-master zone=<none> region=<none>
+  k8s-worker1 zone=<none> region=<none>
+  k8s-worker2 zone=<none> region=<none>
+  k8s-worker3 zone=<none> region=<none>
+
+## 5. requests 를 안 적은 파드 (스케줄러 계산에는 0 으로 들어감)
+  전체 파드 32 개 중 requests 없는 파드 22 개
+    default/myweb 5
+    kube-system/kube-proxy 4
+    monitoring/node-exporter 4
+    default/hello 1
+    default/loadgen 1
+    headlamp/headlamp 1
+    kube-system/calico-kube-controllers 1
+    kube-system/kube-state-metrics 1

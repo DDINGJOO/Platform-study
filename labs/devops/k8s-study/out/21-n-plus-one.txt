@@ -1,0 +1,45 @@
+# 21편 N+1 확인과 requests·실사용 비교 (2026-11-14 16:40:10 KST)
+
+## 1. 워커별 할당 가능 CPU·메모리와 requests 합 (실험 전, kubectl describe node 의 Allocated resources)
+  k8s-worker1 allocatable cpu=2 memory=3896020Ki | requests cpu=250m memory=0
+  k8s-worker2 allocatable cpu=2 memory=3896020Ki | requests cpu=350m memory=70Mi
+  k8s-worker3 allocatable cpu=2 memory=3896016Ki | requests cpu=350m memory=70Mi
+
+## 2. requests 합과 실제 사용량 (kubelet /stats/summary, metrics-server 없이 API 서버 프록시로 조회)
+  k8s-worker1: 노드 실사용 cpu 47m, memory workingSet 1454Mi | 파드 8개의 memory workingSet 합 533Mi (그중 requests 없는 파드 7개가 253Mi) | memory requests 합 0
+  k8s-worker2: 노드 실사용 cpu 72m, memory workingSet 1762Mi | 파드 8개의 memory workingSet 합 991Mi (그중 requests 없는 파드 6개가 551Mi) | memory requests 합 70Mi
+  k8s-worker3: 노드 실사용 cpu 64m, memory workingSet 1779Mi | 파드 8개의 memory workingSet 합 975Mi (그중 requests 없는 파드 6개가 613Mi) | memory requests 합 70Mi
+
+## 3. 계산: 파드 하나가 cpu 800m 을 요청하면 노드마다 몇 개 들어가나
+  k8s-worker1: 할당 가능 2000m - requests 250m = 남은 1750m → 800m 파드 2개
+  k8s-worker2: 할당 가능 2000m - requests 350m = 남은 1650m → 800m 파드 2개
+  k8s-worker3: 할당 가능 2000m - requests 350m = 남은 1650m → 800m 파드 2개
+  세 대 모두: 6개 | worker3 이 빠지면: 4개
+
+## 4. 워커 세 대를 모두 쓸 수 있을 때: cpu 800m 파드 5개
+16:40:11 mac$ kubectl -n w21 apply (Deployment all3, replicas 5, requests cpu 800m)
+16:40:31 mac$ kubectl -n w21 get pods -o wide
+NAME                    STATUS    NODE
+all3-7fc8978444-4lxv7   Running   k8s-worker3
+all3-7fc8978444-fj8xw   Running   k8s-worker2
+all3-7fc8978444-rnbfl   Running   k8s-worker3
+all3-7fc8978444-s86nt   Running   k8s-worker2
+all3-7fc8978444-w6j5p   Running   k8s-worker1
+  노드별 개수:
+     1 k8s-worker1
+     2 k8s-worker2
+     2 k8s-worker3
+16:40:33 all3 삭제
+
+## 5. worker3 이 빠졌다고 치고(nodeAffinity NotIn k8s-worker3 으로 후보에서 뺀다): 같은 5개
+16:40:33 mac$ kubectl -n w21 apply (Deployment no-w3, replicas 5, requests cpu 800m, worker3 제외)
+16:40:53 mac$ kubectl -n w21 get pods -o wide
+NAME                     STATUS    NODE
+no-w3-6d57d6bc58-2hxbw   Running   k8s-worker2
+no-w3-6d57d6bc58-46blq   Running   k8s-worker1
+no-w3-6d57d6bc58-ck6cl   Running   k8s-worker2
+no-w3-6d57d6bc58-gnqvl   Running   k8s-worker1
+no-w3-6d57d6bc58-vkqnd   Pending   <none>
+16:40:53 Pending 파드 no-w3-6d57d6bc58-vkqnd 의 이벤트:
+  <none>   FailedScheduling   0/4 nodes are available: 1 node(s) didn't match Pod's node affinity/selector, 1 node(s) had untolerated taint(s), 2 Insufficient cpu. preemption: 0/4 nodes are available: 2 No preemption victims found for incoming pod, 2 Preemption is not helpful for scheduling.
+16:40:59 네임스페이스 w21 삭제

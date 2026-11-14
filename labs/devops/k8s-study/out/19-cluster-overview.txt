@@ -1,0 +1,30 @@
+# 2026-11-14 14:44:11 KST 슬라이드 확인용: 노드의 컨테이너 런타임, 서비스 검색(DNS·환경변수)
+mac$ kubectl get nodes -o wide
+NAME         STATUS  ROLES          INTERNAL-IP    OS-IMAGE  CONTAINER-RUNTIME
+k8s-master   Ready   control-plane  192.168.104.1  Ubuntu    containerd://2.4.1
+k8s-worker1  Ready   worker         192.168.104.3  Ubuntu    containerd://2.4.1
+k8s-worker2  Ready   worker         192.168.104.4  Ubuntu    containerd://2.4.1
+k8s-worker3  Ready   worker         192.168.104.5  Ubuntu    containerd://2.4.1
+
+mac$ kubectl exec loadgen -- nslookup myweb   (loadgen 은 curl 이미지라 nslookup 이 없으면 getent 로)
+Server:		10.96.0.10
+Address:	10.96.0.10:53
+
+Name:	myweb.default.svc.cluster.local
+Address: 10.105.164.156
+
+
+
+search default.svc.cluster.local svc.cluster.local cluster.local <공유기가 준 검색 도메인>
+nameserver 10.96.0.10
+options ndots:5
+
+mac$ kubectl exec loadgen -- env | grep MYWEB_SERVICE
+MYWEB_SERVICE_PORT=80
+MYWEB_SERVICE_HOST=10.105.164.156
+
+mac$ kubectl get svc -n kube-system kube-dns; kubectl get endpointslices -l kubernetes.io/service-name=myweb
+NAME       TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)                  AGE
+kube-dns   ClusterIP   10.96.0.10   <none>        53/UDP,53/TCP,9153/TCP   9d
+NAME          ADDRESSTYPE   PORTS   ENDPOINTS                                                AGE
+myweb-tr7zj   IPv4          80      10.244.126.31,10.244.100.222,10.244.126.33 + 2 more...   2d17h

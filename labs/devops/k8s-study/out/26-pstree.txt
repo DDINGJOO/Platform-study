@@ -1,0 +1,69 @@
+# E12 마스터 pstree (2026-11-14 15:33:06 KST)
+
+## 1. 전체 (스레드 숨김, -T)
+master# pstree -T
+systemd-+-ModemManager
+        |-2*[agetty]
+        |-buildkitd
+        |-containerd
+        |-containerd-shim-+-etcd
+        |                 `-pause
+        |-containerd-shim-+-kube-proxy
+        |                 `-pause
+        |-containerd-shim-+-pause
+        |                 `-runsvdir-+-3*[runsv---calico]
+        |                            |-runsv---bird
+        |                            `-runsv---bird6
+        |-containerd-shim-+-node_exporter
+        |                 `-pause
+        |-containerd-shim-+-kube-apiserver
+        |                 `-pause
+        |-containerd-shim-+-kube-scheduler
+        |                 `-pause
+        |-containerd-shim-+-kube-controller
+        |                 `-pause
+        |-containerd-star
+        |-cron
+        |-dbus-daemon
+        |-kubelet
+        |-lima-guestagent---kubectl
+        |-multipathd
+        |-polkitd
+        |-rsyslogd
+        |-sshd---sshd---sshd---sudo---bash---pstree
+        |-systemd---(sd-pam)
+        |-systemd-journal
+        |-systemd-logind
+        |-systemd-network
+        |-systemd-resolve
+        |-systemd-timesyn
+        |-systemd-udevd
+        |-udisksd
+        `-unattended-upgr
+
+## 2. 쿠버네티스 관련 가지만, PID 와 인자 (pstree -T -p -a, 줄임)
+kubelet,1519 --bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf--config=/v
+containerd,808
+
+## 3. shim 하나당 파드 하나: shim 의 자식 = pause + 컨테이너 프로세스
+shim(1589) etcd-k8s-master                      자식: pause(1695) etcd(1801) 
+shim(1906) kube-proxy-xjg9n                     자식: pause(1931) kube-proxy(2014) 
+shim(1947) calico-node-tvx2h                    자식: pause(1977) runsvdir(2402) 
+shim(2966) node-exporter-47twj                  자식: pause(2992) node_exporter(3033) 
+shim(8636) kube-apiserver-k8s-master            자식: pause(8661) kube-apiserver(8689) 
+shim(9068) kube-scheduler-k8s-master            자식: pause(9093) kube-scheduler(9117) 
+shim(9612) kube-controller-manager-k8s-master   자식: pause(9639) kube-controller(9677) 
+
+## 4. 부모 관계 요약 (PPID)
+containerd               pid=808    부모 pid=1      (systemd)
+kubelet                  pid=1519   부모 pid=1      (systemd)
+kube-apiserver           pid=8689   부모 pid=8636   (containerd-shim)
+etcd                     pid=1801   부모 pid=1589   (containerd-shim)
+kube-scheduler           pid=9117   부모 pid=9068   (containerd-shim)
+kube-controller-manager  pid=9677   부모 pid=9612   (containerd-shim)
+kube-proxy               pid=2014   부모 pid=1906   (containerd-shim)
+
+## 5. systemd 서비스로 뜨는 것 (kubelet, containerd)
+active active
+MainPID=1519
+ExecStart={ path=/usr/bin/kubelet ; argv[]=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS ; ignore_err

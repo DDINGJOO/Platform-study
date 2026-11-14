@@ -1,0 +1,56 @@
+# E6 etcd 는 정말 단일 진실 공급원인가 (2026-11-14 15:17:20 KST)
+
+## 1. etcd 상태 (etcd 파드 안의 etcdctl, API 서버와 같은 인증서 사용)
+┌────────────────────────┬──────────────────┬─────────┬─────────────────┬─────────┬────────┬───────────────────────┬────────┬───────────┬────────────┬───────────┬────────────┬────────────────────┬────────┬──────────────────────────┬───────────────────┐
+│        ENDPOINT        │        ID        │ VERSION │ STORAGE VERSION │ DB SIZE │ IN USE │ PERCENTAGE NOT IN USE │ QUOTA  │ IS LEADER │ IS LEARNER │ RAFT TERM │ RAFT INDEX │ RAFT APPLIED INDEX │ ERRORS │ DOWNGRADE TARGET VERSION │ DOWNGRADE ENABLED │
+├────────────────────────┼──────────────────┼─────────┼─────────────────┼─────────┼────────┼───────────────────────┼────────┼───────────┼────────────┼───────────┼────────────┼────────────────────┼────────┼──────────────────────────┼───────────────────┤
+│ https://127.0.0.1:2379 │ c960bb57b7d36fea │   3.7.0 │           3.7.0 │   22 MB │ 3.2 MB │                   86% │ 2.1 GB │      true │      false │         9 │     143152 │             143152 │        │                          │             false │
+└────────────────────────┴──────────────────┴─────────┴─────────────────┴─────────┴────────┴───────────────────────┴────────┴───────────┴────────────┴───────────┴────────────┴────────────────────┴────────┴──────────────────────────┴───────────────────┘
+
+## 2. etcd 에 저장된 키 (/registry 아래)
+키 개수: 856
+종류별 개수 (상위 15):
+ 366 events
+  82 clusterroles
+  72 clusterrolebindings
+  58 serviceaccounts
+  40 crd.projectcalico.org
+  32 pods
+  24 apiregistration.k8s.io
+  23 apiextensions.k8s.io
+  18 services
+  18 configmaps
+  12 roles
+  12 rolebindings
+  11 flowschemas
+   9 replicasets
+   9 endpointslices
+myweb 관련 키 (이벤트 55개는 생략):
+/registry/deployments/default/myweb
+/registry/endpointslices/default/myweb-tr7zj
+/registry/pods/default/myweb-859c4764d4-5xtpv
+/registry/pods/default/myweb-859c4764d4-9jb4l
+/registry/pods/default/myweb-859c4764d4-n9rd8
+/registry/pods/default/myweb-859c4764d4-scshl
+/registry/pods/default/myweb-859c4764d4-v87c6
+/registry/replicasets/default/myweb-859c4764d4
+/registry/services/endpoints/default/myweb
+/registry/services/specs/default/myweb
+
+## 3. kubectl 의 resourceVersion = etcd 의 mod_revision
+15:17:20 kubectl resourceVersion=103241 | etcd mod_revision=103241
+15:17:20 mac$ kubectl scale deploy myweb --replicas=6
+15:17:22 kubectl resourceVersion=103287 | etcd mod_revision=103287
+15:17:22 mac$ kubectl scale deploy myweb --replicas=5
+15:17:24 kubectl resourceVersion=103310 | etcd mod_revision=103310
+
+## 4. 저장 형식: 기본 리소스는 protobuf(k8s\0 접두어), CRD 는 JSON
+Deployment myweb 앞 24바이트: b'k8s\x00\n\x15\n\x07apps/v1\x12\nDeploym'
+/registry/crd.projectcalico.org/ippools/default-ipv4-ippool 앞 80바이트: b'{"apiVersion":"crd.projectcalico.org/v1","kind":"IPPool","metadata":{"annotation'
+
+## 5. Secret 은 etcd 에 어떻게 저장되나 (실습용 가짜 값으로)
+API 서버 암호화 설정 플래그: 0개
+kubectl get secret ssot-demo -o jsonpath='{.data.password}' → aGVsbG8tc3NvdA== (base64)
+etcd 원본에 hello-ssot 평문이 있음 b'\n\x08password\x12\nhello-ssot'
+15:17:25 ssot-demo 삭제
+15:17:25 삭제 뒤 etcd 조회 결과 키 개수: 0

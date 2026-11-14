@@ -1,0 +1,378 @@
+<!-- ============================================================
+  k8s 스터디 21편: 컨트롤 플레인은 왜 3대 이상이고 워커 노드 수에는 왜 정답이 없을까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 컨트롤 플레인을 여러 대로 둘 때 왜 3대, 5대일까요? etcd 과반수와 kubeadm HA 토폴로지로 답했어요. 워커 노드 수는 12개 같은 국룰 대신 N+1과 requests로 세는 법을 실습 클러스터에서 직접 계산해 봤어요. -->
+<!-- tags: 컨트롤 플레인 HA, etcd 과반수, kubeadm control-plane-endpoint, stacked etcd, 워커 노드 수, N+1 용량 계획, topologySpreadConstraints -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 21편</div>
+  19편. 쿠버네티스 아키텍처 그림은 어떻게 읽을까<br>
+  20편. API 서버·스케줄러·컨트롤러 매니저를 하나씩 멈추면 무엇이 안 될까<br>
+  <b>21편. 컨트롤 플레인은 왜 3대 이상이고 워커 노드 수에는 왜 정답이 없을까</b> &larr; 지금 이 글<br>
+  22편. etcd를 직접 열어 보면 쿠버네티스 객체와 Secret은 어떻게 저장돼 있을까<br>
+  23편. 스케줄러는 필터와 스코어로 노드를 어떻게 고를까
+</div>
+
+<p>kubeadm이 클러스터를 만들 때 저장해 둔 설정(kube-system 네임스페이스의 kubeadm-config ConfigMap)에서 controlPlaneEndpoint라는 줄을 찾아봤는데 0줄이었어요. etcd 멤버 목록에도 k8s-master 하나만 있었어요. 20편에서 API 서버를 30초 멈췄을 때 kubectl은 그동안 아무것도 하지 못했는데 이 클러스터는 마스터가 한 대라서 마스터 VM이 꺼지면 그 상태가 다시 켤 때까지 이어져요.</p>
+<p>19편에서 아키텍처 그림을 읽다가 제가 한 말이 "컨트롤 플레인도 여러 대가 될 수 있었구나"였어요. 바로 이어서 워커 쪽도 물었어요. "워커 노드도 12개 국룰 이런 거 통하나? 카프카 파티션 수 대뜸 12개로 하는 것처럼." 이번 글에서는 이 두 질문에 답해요. 컨트롤 플레인 수에는 etcd 때문에 생기는 분명한 규칙이 있고 워커 수에는 그런 규칙이 없어요. 대신 워커 수를 무엇으로 정하는지 실습 클러스터에서 직접 계산해 봤어요. 클러스터는 1~7편에서 만든 실습 환경(Lima VM 4대, 쿠버네티스 v1.37.2)이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 컨트롤 플레인을 여러 대로 두면 무엇이 여러 개가 되고 무엇은 하나만 일할까?<br>
+&middot; 왜 2대가 아니라 3대이고 4대보다 5대일까?<br>
+&middot; kubeadm으로 HA 컨트롤 플레인을 만들 때 처음에 정해야 하는 것은 무엇일까?<br>
+&middot; 지금 이 클러스터를 나중에 HA로 바꿀 수 있을까?<br>
+&middot; 워커 노드 수에는 "12개 국룰" 같은 정답이 있을까?<br>
+&middot; 정답이 없다면 워커 수는 무엇으로 셀까?</p>
+
+<h2>1. 컨트롤 플레인을 여러 대로 두면 무엇이 여러 개가 될까</h2>
+
+<p><a href="https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/ha-topology/">kubeadm의 HA 토폴로지 문서</a>를 보면 컨트롤 플레인 노드마다 kube-apiserver, kube-scheduler, kube-controller-manager가 하나씩 떠요. 세 대로 만들면 이 셋이 세 벌 생기는 거예요. 그런데 세 벌이 모두 같은 방식으로 일하지는 않아요.</p>
+<p>API 서버는 여러 대가 동시에 요청을 받아요. 워커 노드와 kubectl은 API 서버 앞에 둔 로드밸런서 주소로 붙고 로드밸런서가 요청을 살아 있는 API 서버로 나눠 보내요. <a href="https://kubernetes.io/docs/concepts/architecture/leases/">Lease 문서</a>에 따르면 API 서버는 저마다 kube-system에 apiserver-로 시작하는 Lease를 하나씩 만들어 자기가 떠 있다고 알려요. 그래서 이 Lease 개수로 API 서버가 몇 대인지 알 수 있어요.</p>
+<p>컨트롤러 매니저와 스케줄러는 달라요. 같은 문서는 Lease가 kube-controller-manager와 kube-scheduler의 리더 선출에도 쓰인다고 설명해요. <span class="obsv-mark">HA 구성에서는 두 구성 요소 모두 한 번에 인스턴스 하나만 실제로 일하고 나머지는 대기한다고 적혀 있어요.</span> 20편에서 본 대로 컨트롤러는 원하는 상태와 현재 상태의 차이를 메우는 쪽인데 같은 컨트롤러가 둘 이상 동시에 움직이면 같은 차이를 여러 번 메우려 들 수 있어요. 그래서 리더 하나만 움직이게 한다고 저는 이해했어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 리더 선출과 Lease</div>
+  Lease는 "지금 이 자리는 누가 쥐고 있고 언제 갱신했는지"를 적는 작은 API 객체예요(coordination.k8s.io 그룹). 컨트롤러 매니저와 스케줄러에서는 같은 이름의 Lease를 먼저 쥐고 계속 갱신하는 인스턴스가 리더가 되고 리더가 갱신을 멈추면 대기하던 다른 인스턴스가 그 Lease를 가져가요. 이 과정을 리더 선출(leader election)이라고 불러요.
+</div>
+<p>우리 클러스터의 Lease를 보면 이 구조가 한 대짜리로 나타나요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/21/01-leases.png" alt="kube-system의 Lease 조회 결과. kube-controller-manager와 kube-scheduler Lease의 HOLDER는 lima-k8s-master_ 뒤에 UUID가 붙은 값이고 DURATION은 15, API 서버 identity Lease는 apiserver-slupzodazdrbewijviwya35vwq 하나이고 DURATION 3600, 두 매니페스트 모두 leader-elect=true" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 리더 Lease 둘은 모두 마스터가 쥐고 있고 API 서버 Lease는 하나뿐이다</div>
+
+<p>kube-controller-manager와 kube-scheduler Lease의 주인(HOLDER)은 둘 다 lima-k8s-master로 시작해요. 경쟁할 다른 인스턴스가 없으니 마스터가 리더예요. 두 매니페스트 모두 leader-elect=true로 설정돼 있어서 다른 컨트롤 플레인 노드가 생기면 그대로 리더 선출에 들어가요. <a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/">kube-controller-manager 문서</a>에는 --leader-elect의 기본값이 true이고 "고가용성을 위해 구성 요소를 여러 개 띄울 때 켜라"는 설명이 있어요. DURATION 15는 --leader-elect-lease-duration의 기본값 15초예요. 문서는 이 값을 리더가 멈춘 뒤 다른 후보가 리더가 되기까지 걸릴 수 있는 최대 시간이라고 설명해요. API 서버 Lease는 apiserver-slupzodazdrbewijviwya35vwq 하나뿐이었어요. API 서버도 한 대라는 뜻이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="k21a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">컨트롤 플레인 3대(stacked etcd)에서 각자 하는 일</text>
+<path d="M20 46 C 80 44, 140 47, 200 45 C 202 60, 199 76, 201 90 C 140 92, 80 89, 19 91 C 18 76, 21 60, 20 46 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="66" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">워커 노드 · kubectl</text>
+<text x="110" y="84" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">kubelet · kube-proxy</text>
+<path d="M250 46 C 315 44, 385 47, 450 45 C 452 60, 449 76, 451 90 C 385 92, 315 89, 249 91 C 248 76, 251 60, 250 46 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="66" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">로드밸런서</text>
+<text x="350" y="84" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="middle">controlPlaneEndpoint :6443</text>
+<path d="M203 68 C 218 67, 232 69, 245 68" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k21a1)"/>
+<path d="M320 93 C 270 110, 180 125, 125 140" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k21a1)"/>
+<path d="M350 93 C 352 108, 349 122, 350 138" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k21a1)"/>
+<path d="M380 93 C 430 110, 520 125, 575 140" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k21a1)"/>
+<path d="M20 144 C 85 142, 155 145, 220 143 C 222 200, 219 260, 221 318 C 155 320, 85 317, 19 319 C 18 260, 21 200, 20 144 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M250 144 C 315 142, 385 145, 450 143 C 452 200, 449 260, 451 318 C 385 320, 315 317, 249 319 C 248 260, 251 200, 250 144 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M480 144 C 545 142, 615 145, 680 143 C 682 200, 679 260, 681 318 C 615 320, 545 317, 479 319 C 478 260, 481 200, 480 144 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="168" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">컨트롤 플레인 1</text>
+<text x="350" y="168" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">컨트롤 플레인 2</text>
+<text x="580" y="168" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">컨트롤 플레인 3</text>
+<text x="120" y="196" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">API 서버 ✓ 요청 받음</text>
+<text x="350" y="196" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">API 서버 ✓ 요청 받음</text>
+<text x="580" y="196" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">API 서버 ✓ 요청 받음</text>
+<text x="120" y="222" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">컨트롤러 매니저 · 리더</text>
+<text x="350" y="222" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">컨트롤러 매니저 · 대기</text>
+<text x="580" y="222" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">컨트롤러 매니저 · 대기</text>
+<text x="120" y="246" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">스케줄러 · 대기</text>
+<text x="350" y="246" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">스케줄러 · 리더</text>
+<text x="580" y="246" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">스케줄러 · 대기</text>
+<path d="M50 266 C 95 264, 145 267, 190 265 C 192 278, 189 291, 191 304 C 145 306, 95 303, 49 305 C 48 291, 51 278, 50 266 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M280 266 C 325 264, 375 267, 420 265 C 422 278, 419 291, 421 304 C 375 306, 325 303, 279 305 C 278 291, 281 278, 280 266 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M510 266 C 555 264, 605 267, 650 265 C 652 278, 649 291, 651 304 C 605 306, 555 303, 509 305 C 508 291, 511 278, 510 266 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="290" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">etcd 멤버</text>
+<text x="350" y="290" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">etcd 멤버</text>
+<text x="580" y="290" font-family="Menlo, monospace" font-size="13" fill="#c07f18" text-anchor="middle">etcd 멤버</text>
+<path d="M193 285 C 222 283, 250 287, 277 285" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+<path d="M423 285 C 452 283, 480 287, 507 285" fill="none" stroke="#e5a33c" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="350" y="350" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">API 서버: 세 대 모두 요청을 받는다 (로드밸런서가 나눠 보낸다)</text>
+<text x="350" y="376" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">컨트롤러 매니저·스케줄러: Lease를 쥔 리더 하나만 일하고 나머지는 대기</text>
+<text x="350" y="402" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="middle">etcd: 멤버 셋 가운데 과반인 둘이 동의해야 쓰기가 확정된다</text>
+<text x="350" y="430" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">리더는 구성 요소마다 따로 뽑으니 서로 다른 노드에 있을 수 있다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 세 대가 되면 API 서버는 셋이 모두 일하고 컨트롤러 매니저와 스케줄러는 리더 하나만 일한다</div>
+
+<h2>2. 3대인 이유는 etcd가 과반이 동의해야 쓰기 때문이다</h2>
+
+<p>API 서버, 컨트롤러 매니저, 스케줄러만 보면 두 대로도 한 대가 죽었을 때 버틸 수 있을 것 같아요. 그런데 대수는 etcd가 정해요. etcd는 여러 멤버가 같은 데이터를 나눠 갖고 쓰기마다 멤버의 동의를 받아요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 쿼럼 (quorum, 과반수)</div>
+  쓰기를 확정하려면 동의해야 하는 최소 멤버 수예요. <a href="https://etcd.io/docs/v3.7/faq/">etcd FAQ</a>는 멤버가 n개일 때 쿼럼을 (n/2)+1(소수점 아래는 버림)로 적어요. 클러스터 상태를 바꾸는 제안은 키·값 변경이든 멤버 변경이든 이 수만큼 동의를 받아야 반영돼요.
+</div>
+<p>etcd FAQ의 "What is failure tolerance?" 절에는 멤버 수별로 과반과 견딜 수 있는 장애 수를 적은 표가 있어요. 1부터 5까지 옮기면 이래요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">etcd 멤버 수와 견딜 수 있는 장애 (etcd FAQ 표에서)</text>
+<text x="55" y="62" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">멤버 수</text>
+<text x="290" y="62" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">초록 = 과반에 필요한 멤버, 빨강 = 빠져도 되는 멤버</text>
+<text x="560" y="62" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">과반</text>
+<text x="640" y="62" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">견디는 장애</text>
+<path d="M20 74 C 200 72, 450 76, 680 73" fill="none" stroke="#d8cfba" stroke-width="2" stroke-linecap="round"/>
+<text x="55" y="105" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">1</text>
+<path d="M136 100 C 136 92, 143 86, 150 87 C 157 88, 164 94, 163 101 C 162 108, 156 113, 149 112 C 142 111, 136 107, 136 100 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<text x="560" y="105" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">1</text>
+<text x="640" y="105" font-family="Menlo, monospace" font-size="16" fill="#b3502f" text-anchor="middle">0</text>
+<text x="55" y="150" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">2</text>
+<path d="M136 145 C 136 137, 143 131, 150 132 C 157 133, 164 139, 163 146 C 162 153, 156 158, 149 157 C 142 156, 136 152, 136 145 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M181 145 C 181 137, 188 131, 195 132 C 202 133, 209 139, 208 146 C 207 153, 201 158, 194 157 C 187 156, 181 152, 181 145 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<text x="350" y="150" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">둘 다 살아 있어야 쓴다</text>
+<text x="560" y="150" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">2</text>
+<text x="640" y="150" font-family="Menlo, monospace" font-size="16" fill="#b3502f" text-anchor="middle">0</text>
+<text x="55" y="195" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">3</text>
+<path d="M136 190 C 136 182, 143 176, 150 177 C 157 178, 164 184, 163 191 C 162 198, 156 203, 149 202 C 142 201, 136 197, 136 190 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M181 190 C 181 182, 188 176, 195 177 C 202 178, 209 184, 208 191 C 207 198, 201 203, 194 202 C 187 201, 181 197, 181 190 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M226 190 C 226 182, 233 176, 240 177 C 247 178, 254 184, 253 191 C 252 198, 246 203, 239 202 C 232 201, 226 197, 226 190 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="560" y="195" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">2</text>
+<text x="640" y="195" font-family="Menlo, monospace" font-size="16" fill="#2e6b41" text-anchor="middle">1</text>
+<text x="55" y="240" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">4</text>
+<path d="M136 235 C 136 227, 143 221, 150 222 C 157 223, 164 229, 163 236 C 162 243, 156 248, 149 247 C 142 246, 136 242, 136 235 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M181 235 C 181 227, 188 221, 195 222 C 202 223, 209 229, 208 236 C 207 243, 201 248, 194 247 C 187 246, 181 242, 181 235 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M226 235 C 226 227, 233 221, 240 222 C 247 223, 254 229, 253 236 C 252 243, 246 248, 239 247 C 232 246, 226 242, 226 235 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M271 235 C 271 227, 278 221, 285 222 C 292 223, 299 229, 298 236 C 297 243, 291 248, 284 247 C 277 246, 271 242, 271 235 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="420" y="240" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">한 대 늘렸는데 3대와 같다</text>
+<text x="560" y="240" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">3</text>
+<text x="640" y="240" font-family="Menlo, monospace" font-size="16" fill="#2e6b41" text-anchor="middle">1</text>
+<text x="55" y="285" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">5</text>
+<path d="M136 280 C 136 272, 143 266, 150 267 C 157 268, 164 274, 163 281 C 162 288, 156 293, 149 292 C 142 291, 136 287, 136 280 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M181 280 C 181 272, 188 266, 195 267 C 202 268, 209 274, 208 281 C 207 288, 201 293, 194 292 C 187 291, 181 287, 181 280 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M226 280 C 226 272, 233 266, 240 267 C 247 268, 254 274, 253 281 C 252 288, 246 293, 239 292 C 232 291, 226 287, 226 280 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="2"/>
+<path d="M271 280 C 271 272, 278 266, 285 267 C 292 268, 299 274, 298 281 C 297 288, 291 293, 284 292 C 277 291, 271 287, 271 280 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-dasharray="4 3"/>
+<path d="M316 280 C 316 272, 323 266, 330 267 C 337 268, 344 274, 343 281 C 342 288, 336 293, 329 292 C 322 291, 316 287, 316 280 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="560" y="285" font-family="Menlo, monospace" font-size="16" fill="#3d3a34" text-anchor="middle">3</text>
+<text x="640" y="285" font-family="Menlo, monospace" font-size="16" fill="#2e6b41" text-anchor="middle">2</text>
+<text x="350" y="338" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 짝수로 늘려도 견디는 대수는 그대로다. 그래서 3대, 5대로 늘린다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 2대는 1대보다 나을 것이 없고 4대는 3대와 같은 1대까지만 견딘다</div>
+
+<p>2대짜리 etcd는 과반이 2라서 한 대만 죽어도 쓰기를 확정하지 못해요. 견디는 장애는 1대짜리와 같은 0인데 죽을 수 있는 기계만 둘로 늘었어요. 4대는 과반이 3이라 견디는 장애가 3대와 같은 1대예요. FAQ는 멤버 수를 짝수로 맞추려고 하나를 더해도 견디는 장애 수는 늘지 않는다고 적어요. 홀수로 두면 네트워크가 갈라졌을 때도 계속 일할 수 있는 과반 쪽이 반드시 하나 생긴다는 점도 함께 들어요. <span class="obsv-mark">컨트롤 플레인을 2대가 아니라 3대로, 4대가 아니라 5대로 늘리는 이유는 etcd의 과반수 규칙이에요.</span></p>
+<p>kubeadm 문서도 결론이 같아요. HA 토폴로지 문서는 stacked 구성에서 노드 하나가 죽으면 etcd 멤버와 컨트롤 플레인 인스턴스를 함께 잃는다고 설명한 뒤 "HA 클러스터라면 stacked 컨트롤 플레인 노드를 최소 3대 두라"고 적어요. <a href="https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/high-availability/">kubeadm HA 구성 문서</a>의 준비물에는 컨트롤 플레인 노드 수를 홀수로 두면 기계나 존에 장애가 났을 때 리더를 고르는 데 도움이 된다고 적혀 있어요. 더 늘릴 때의 기준은 <a href="https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/">etcd 운영 문서</a>에 있어요. 이 문서는 운영 클러스터라면 멤버 5개로 고정한 etcd를 쓰라고 강하게 권하고 신뢰성을 더 원하면 3개에서 5개로 늘리는 것이 합리적이라고 해요. etcd FAQ는 멤버를 7개보다 많이 두지 않는 편이 좋다고 하고 멤버가 늘수록 쓰기 성능이 떨어진다는 점도 함께 적어요.</p>
+<p>과반을 잃으면 어떻게 될까요? FAQ는 etcd가 과반을 모을 수 있는 동안만 동작한다고 해요. 과반이 깨지면 새 쓰기를 확정할 수 없으니 API 서버를 거치는 변경도 함께 멈춰요. 컨트롤 플레인이 여러 대여도 20편에서 본 "변경이 멈춘 상태"가 생길 수 있다는 뜻이에요.</p>
+
+<h2>3. kubeadm HA는 init 때 정한 공용 주소 하나에서 시작한다</h2>
+
+<p>kubeadm으로 HA 컨트롤 플레인을 만드는 방법은 etcd를 어디에 두느냐에 따라 둘로 나뉘어요. HA 토폴로지 문서의 설명을 표로 옮기면 이래요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:620px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">토폴로지</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">etcd는 어디에</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">좋은 점</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">약점</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">최소 대수</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><b>stacked etcd</b> (kubeadm 기본)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">컨트롤 플레인 노드마다 etcd 멤버가 같이 뜨고 그 노드의 API 서버하고만 통신한다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">만들기 쉽고 복제 관리가 단순하다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">노드 하나가 죽으면 etcd 멤버와 컨트롤 플레인을 함께 잃는다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">컨트롤 플레인 3대</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><b>external etcd</b></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">별도 호스트에 etcd 클러스터를 두고 모든 API 서버가 거기에 붙는다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">컨트롤 플레인 하나나 etcd 멤버 하나를 잃어도 영향이 적다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">호스트가 stacked의 두 배 필요하다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">컨트롤 플레인 3대 + etcd 3대</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><span class="obsv-mark">어느 쪽이든 API 서버 앞에는 로드밸런서를 둬요.</span> kubeadm HA 구성 문서의 첫 단계가 kube-apiserver용 로드밸런서를 만드는 일이에요. 클라우드라면 TCP를 그대로 넘기는 로드밸런서 뒤에 컨트롤 플레인 노드를 두고 상태 확인은 API 서버 포트(기본 6443)에 TCP로 붙어 보는 방식으로 해요. 문서에는 로드밸런서 주소가 kubeadm의 ControlPlaneEndpoint와 늘 같아야 하고 클라우드에서 IP를 바로 쓰는 것은 권하지 않는다고 적혀 있어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: controlPlaneEndpoint</div>
+  모든 컨트롤 플레인 노드가 함께 쓰는 공용 주소예요. kubeadm init의 <code style="font-family:Menlo,monospace;font-size:14px;">--control-plane-endpoint</code> 플래그나 설정 파일의 ClusterConfiguration.controlPlaneEndpoint로 정하고 IP나 DNS 이름 뒤에 포트를 붙여 적어요. 노드 하나의 API 서버 주소를 정하는 <code style="font-family:Menlo,monospace;font-size:14px;">--apiserver-advertise-address</code>와는 다른 값이에요.
+</div>
+<p>첫 컨트롤 플레인은 이 주소를 넣어 init하고 나머지는 <code style="font-family:Menlo,monospace;font-size:14px;">--control-plane</code>을 붙여 join해요. 문서의 명령을 자리표시자를 남긴 채 옮기면 이래요.</p>
+<div class="obsv-code"># 첫 컨트롤 플레인 노드
+sudo kubeadm init --control-plane-endpoint "LOAD_BALANCER_DNS:LOAD_BALANCER_PORT" --upload-certs
+
+# init 출력에 찍히는 명령을 나머지 컨트롤 플레인 노드에서 실행
+sudo kubeadm join LOAD_BALANCER_DNS:LOAD_BALANCER_PORT --token &lt;토큰&gt; \
+    --discovery-token-ca-cert-hash sha256:&lt;CA 공개키 해시&gt; \
+    --control-plane --certificate-key &lt;인증서 키&gt;</div>
+<p>&rarr; init이 공용 주소를 기준으로 클러스터를 만들고 컨트롤 플레인끼리 나눠 써야 하는 인증서를 클러스터에 올려 둬요. join하는 노드는 <code style="font-family:Menlo,monospace;font-size:14px;">--certificate-key</code>로 그 인증서를 받아 컨트롤 플레인으로 들어온다는 뜻이에요. 워커는 <code style="font-family:Menlo,monospace;font-size:14px;">--control-plane</code>과 <code style="font-family:Menlo,monospace;font-size:14px;">--certificate-key</code> 없이 같은 주소로 join해요.</p>
+<p><code style="font-family:Menlo,monospace;font-size:14px;">--upload-certs</code>는 5편에서 본 kubeadm init 출력의 [upload-certs] 단계를 실제로 실행하게 하는 플래그예요. 그때는 이 플래그를 주지 않아서 그 단계를 건너뛰었어요. 문서에 따르면 이 플래그를 주면 첫 컨트롤 플레인의 인증서가 암호화돼 kubeadm-certs Secret에 올라가요. 인증서를 직접 복사해 나눠 주고 싶으면 이 플래그를 빼고 수동 배포 절차를 따르면 돼요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: --certificate-key는 비밀번호만큼 지켜야 해요</div>
+  &bull; kubeadm 출력과 문서 모두 인증서 키가 클러스터의 민감한 데이터에 접근하게 해 준다며 비밀로 지키라고 경고해요. 키는 32바이트 AES 키를 16진수로 적은 문자열이에요<br>
+  &bull; kubeadm-certs Secret과 복호화 키는 2시간 뒤 만료돼요. 2시간이 지나 컨트롤 플레인을 더 붙이려면 이미 들어온 컨트롤 플레인 노드에서 <code style="font-family:Menlo,monospace;font-size:14px;">sudo kubeadm init phase upload-certs --upload-certs</code>로 다시 올리고 새 키를 받아요<br>
+  &bull; join 명령을 공유 문서나 채팅에 그대로 붙여 두지 마세요. 토큰과 키가 함께 들어 있어요
+</div>
+
+<h2>4. 이 클러스터는 단일 컨트롤 플레인이고 kubeadm은 HA 전환을 지원하지 않는다</h2>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/21/02-single-control-plane.png" alt="21-ha-capacity.sh 출력 앞부분. kubeadm-config의 ClusterConfiguration에 etcd local dataDir /var/lib/etcd, kubernetesVersion v1.37.2, podSubnet 10.244.0.0/16, serviceSubnet 10.96.0.0/12가 있고 controlPlaneEndpoint 줄 수는 0, etcd member list는 k8s-master 하나(peer 192.168.104.1:2380, client 192.168.104.1:2379), control-plane 노드는 k8s-master, kubeconfig의 API 서버 주소는 https://192.168.64.2:6443" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. controlPlaneEndpoint는 없고 etcd 멤버와 컨트롤 플레인 노드는 k8s-master 하나다</div>
+
+<p>위 그림은 16시 18분에 우리 클러스터를 확인한 결과예요. kubeadm-config의 ClusterConfiguration에서 etcd 항목 아래에는 local과 dataDir: /var/lib/etcd가 있어요. 마스터 디스크에 etcd를 두는 stacked 구성이라는 뜻이에요. controlPlaneEndpoint는 0줄이었어요. etcdctl member list에는 k8s-master 멤버 하나가 started로 있고 control-plane 라벨이 붙은 노드도 k8s-master 하나예요. 1절 그림에서 컨트롤 플레인 1만 남기고 로드밸런서를 뺀 모양이에요.</p>
+<p>그림의 마지막 줄도 눈여겨볼 만해요. Mac에서 쓰는 kubeconfig의 API 서버 주소는 https://192.168.64.2:6443이에요. 마스터 VM의 vzNAT 쪽 주소예요. 마스터 안의 kubeconfig는 20편의 오류 메시지에 나온 대로 192.168.104.1:6443을 가리켜요. 둘 다 마스터 한 대의 주소예요. 컨트롤 플레인을 한 대 더 붙여도 이 주소를 쓰는 클라이언트는 여전히 마스터 한 대에만 요청을 보내요.</p>
+<p>그럼 지금 이 클러스터에 컨트롤 플레인 두 대를 더 붙여 HA로 만들 수 있을까요? <a href="https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/">kubeadm 클러스터 만들기 문서</a>의 "Considerations about apiserver-advertise-address and ControlPlaneEndpoint" 절 마지막에 답이 있어요.</p>
+<div class="obsv-code">Turning a single control plane cluster created without `--control-plane-endpoint`
+into a highly available cluster is not supported by kubeadm.</div>
+<p>&rarr; <code style="font-family:Menlo,monospace;font-size:14px;">--control-plane-endpoint</code> 없이 만든 단일 컨트롤 플레인 클러스터를 고가용성 클러스터로 바꾸는 것은 kubeadm이 지원하지 않는다는 뜻이에요. 2026-11-14에 v1.37 문서에서 이 문장을 확인했어요.</p>
+<p>같은 문서는 그 앞에서 방법도 알려 줘요. 나중에 HA로 키울 계획이 있다면 처음 init할 때 <code style="font-family:Menlo,monospace;font-size:14px;">--control-plane-endpoint</code>로 모든 컨트롤 플레인 노드가 함께 쓸 주소를 정하라고 권해요. 문서가 든 예시는 첫 컨트롤 플레인 노드의 IP를 cluster-endpoint라는 사용자 정의 DNS 이름에 매핑해 두고 init과 join에 <code style="font-family:Menlo,monospace;font-size:14px;">--control-plane-endpoint=cluster-endpoint</code>를 넘기는 방식이에요. 나중에 HA로 갈 때는 cluster-endpoint가 로드밸런서 주소를 가리키게 바꾸면 된다고 해요. <span class="obsv-mark">처음에는 컨트롤 플레인이 한 대여도 공용 이름 하나를 정해 두면 나중에 그 이름이 가리키는 곳만 바꿔서 HA로 갈 수 있어요.</span> 우리 실습 클러스터는 이 이름 없이 만들었으니 kubeadm이 지원하는 방법으로 HA 실습을 하려면 클러스터를 다시 만들어야 해요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 한 대로 시작해도 공용 주소는 이름으로 정해 둬요</div>
+  &bull; kubeadm init에 <code style="font-family:Menlo,monospace;font-size:14px;">--control-plane-endpoint=&lt;DNS 이름&gt;:6443</code>을 넣고 그 이름이 처음에는 첫 컨트롤 플레인 IP를 가리키게 해요. 문서가 "(Recommended)"로 적어 둔 단계예요<br>
+  &bull; 이미 IP로 만든 클러스터는 kubeadm 문서 기준으로 HA 전환이 지원되지 않아요. 새로 만들 클러스터부터 이름을 정해 두세요<br>
+  &bull; 컨트롤 플레인을 늘릴 때는 3대나 5대로, 홀수를 유지하며 늘려요. etcd 운영 문서는 etcd 클러스터에 오토스케일링 그룹을 걸지 말라고도 적어요
+</div>
+
+<h2>5. 워커 노드 수에는 "12개 국룰"이 없다</h2>
+
+<p>이제 두 번째 질문이에요. "워커 노드도 12개 국룰 이런 거 통하나?" 카프카에서 파티션을 12개로 잡는 관행에는 나름의 이유가 있어요. <a href="https://github.com/apache/kafka/blob/trunk/docs/design/design.md">카프카 설계 문서</a>에는 토픽이 파티션으로 나뉘고 파티션 하나는 구독하는 컨슈머 그룹마다 한 번에 정확히 한 컨슈머가 읽는다고 적혀 있어요. 그래서 파티션 수가 컨슈머 수로 나눠떨어지면 컨슈머마다 같은 수의 파티션을 맡아요. 12는 1, 2, 3, 4, 6, 12로 나눠떨어지니 컨슈머를 몇 개로 바꿔도 고르게 나누기 쉬운 수예요. 다만 제가 읽은 설계 문서에 12라는 숫자가 나오지는 않았어요. 문서의 규칙이 아니라 나눗셈에서 나온 관행이에요.</p>
+<p><span class="obsv-mark">쿠버네티스 워커 노드에는 이런 나눗셈이 없어요.</span> 파드는 파티션과 달리 노드 수로 나눠 담는 단위가 아니에요. 스케줄러가 그때그때 들어갈 수 있는 노드를 골라요(23편). 워커끼리 투표하는 일도 없으니 etcd의 과반수 규칙도 적용되지 않아요. 공식 문서에 노드 수로 적혀 있는 것은 상한이에요. <a href="https://kubernetes.io/docs/setup/best-practices/cluster-large/">대형 클러스터 고려 사항 문서</a>는 v1.37이 노드 5,000대까지의 클러스터를 지원한다고 하고 쿠버네티스가 아래 조건을 모두 만족하는 구성을 수용하도록 설계됐다고 적어요.</p>
+<div class="obsv-code">No more than 110 pods per node        # 노드당 파드 110개 이하
+No more than 5,000 nodes              # 노드 5,000대 이하
+No more than 150,000 total pods       # 전체 파드 150,000개 이하
+No more than 300,000 total containers # 전체 컨테이너 300,000개 이하</div>
+<p>&rarr; 이만큼까지는 버티도록 만들었다는 상한이지 이만큼 두라는 권장 수가 아니라는 뜻이에요. 우리 워커의 allocatable pods 110도 이 상한과 같은 값이에요.</p>
+<p>같은 문서에서 대수 이야기가 나오는 곳은 컨트롤 플레인 쪽이에요. 보통 장애 영역(failure zone)마다 컨트롤 플레인 인스턴스를 하나나 둘 둔다고 하고 장애를 견디려면 장애 영역마다 적어도 하나는 두라고 해요. 워커 노드의 최소 대수나 홀수 규칙은 이 문서에 없어요. kubeadm HA 구성 문서의 준비물 목록에 워커용 기계도 3대 이상이라고 나오지만 그 이유는 적혀 있지 않았어요.</p>
+<p>그렇다면 워커 수는 무엇으로 정할까요? 우리 클러스터의 워커부터 볼게요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/21/03-worker-requests.png" alt="21-ha-capacity.sh 출력 뒷부분. 워커 세 대 모두 allocatable cpu 2, memory 약 3896020Ki, pods 110. requests는 worker1 cpu 250m(12%) memory 0, worker2 cpu 350m(17%) memory 70Mi(1%), worker3 cpu 350m(17%) memory 70Mi(1%), 파드 8·9·8개. 네 노드 모두 zone과 region 라벨이 none. 전체 파드 32개 중 requests 없는 파드 22개(myweb 5, kube-proxy 4, node-exporter 4 등)" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 워커 세 대는 같은 크기이고 requests는 CPU의 12~17%, 메모리는 1% 이하만 잡혀 있다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: allocatable과 requests</div>
+  allocatable은 노드 용량에서 시스템 몫을 떼고 남아 파드에 줄 수 있는 양이에요. <a href="https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/">노드 자원 예약 문서</a>는 스케줄러가 allocatable을 넘겨 배치하지 않는다고 적어요. requests는 파드가 "이만큼은 있어야 한다"고 적어 둔 값이고 스케줄러는 노드마다 이미 놓인 파드의 requests 합을 allocatable에서 빼고 남은 자리에 새 파드를 놓아요.
+</div>
+<p>워커 세 대는 모두 allocatable이 CPU 2개, 메모리 약 3.7GiB(3896020Ki 안팎), 파드 110개예요. 이미 놓인 파드의 requests 합은 CPU 250m(12%), 350m(17%), 350m(17%)이고 메모리는 0, 70Mi, 70Mi(1% 이하)였어요. 네 노드 모두 topology.kubernetes.io/zone과 region 라벨이 없었어요. 노트북 한 대 안의 VM이니 장애 영역도 하나뿐이에요.</p>
+
+<h2>6. 워커 수는 N+1과 장애 영역, 그리고 requests로 센다</h2>
+
+<p>워커 수를 정할 때 제가 쓸 기준은 셋이에요. 한 대가 빠져도 남은 노드에 다 들어가는가(N+1), 장애 영역이 여럿이면 영역 하나가 빠져도 들어가는가, 그 계산의 바탕인 requests가 실제와 맞는가예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: N+1</div>
+  필요한 노드 N대에 한 대를 더 둬서 아무 노드 한 대가 빠져도 남은 노드만으로 일을 감당하게 하는 여유 기준이에요. 쿠버네티스가 정한 규칙이 아니라 용량을 계획할 때 흔히 쓰는 말이에요. 쿠버네티스에서는 "가장 큰 노드 한 대를 빼도 모든 파드의 requests가 남은 노드에 들어가는가"로 따져요.
+</div>
+
+<h3>한 대가 빠지면 남은 노드에 들어가나: w21에서 직접 계산</h3>
+<p>숫자로 확인하려고 w21 네임스페이스에 CPU 800m을 요청하는 파드를 만들어 봤어요. 다른 실습과 클러스터를 같이 쓰고 있어서 노드를 실제로 끄지는 않았어요. 대신 nodeAffinity로 worker3을 후보에서 빼서 "worker3이 빠진 클러스터"를 흉내 냈어요. 실험이 끝난 뒤 네임스페이스째 지웠어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/21/04-requests-vs-usage.png" alt="21-n-plus-one.sh 출력 앞부분. 워커별 allocatable과 requests(250m/0, 350m/70Mi, 350m/70Mi), kubelet stats summary로 본 실사용(worker1 노드 memory workingSet 1454Mi, 파드 8개 합 533Mi 중 requests 없는 파드 7개 253Mi; worker2 1762Mi, 991Mi, 6개 551Mi; worker3 1779Mi, 975Mi, 6개 613Mi), 800m 파드 계산(남은 1750m·1650m·1650m, 노드마다 2개, 세 대 6개, worker3이 빠지면 4개)" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. 800m 파드는 노드마다 2개씩, 세 대면 6자리이고 한 대가 빠지면 4자리다</div>
+
+<p>계산은 그림 6의 3번에 있어요. worker1은 2000m에서 250m을 빼면 1750m이 남으니 800m 파드가 2개 들어가고 150m이 남아요. worker2와 worker3은 1650m이 남아 2개씩 들어가요. 세 대를 다 쓰면 6자리, worker3이 빠지면 4자리예요. 여기에 같은 파드 5개를 조건을 바꿔 두 번 띄웠어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">cpu 800m 파드 5개: 워커 세 대일 때와 worker3이 빠졌을 때</text>
+<text x="20" y="62" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="start">① 세 대 모두 (Deployment all3)</text>
+<text x="20" y="95" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="start">worker1</text>
+<path d="M120 78 C 200 77, 280 80, 360 78 C 362 86, 361 94, 360 102 C 280 104, 200 101, 120 102 C 122 94, 119 86, 120 78 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M120 78 C 130 77, 140 76, 150 78 C 148 86, 151 94, 150 102 C 140 104, 130 100, 120 102 C 119 94, 119 86, 120 78 Z" fill="#e6e1d6" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M152 80 C 183 79, 213 78, 244 80 C 246 87, 246 93, 244 100 C 213 102, 183 98, 152 100 C 153 93, 154 87, 152 80 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="198" y="95" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<text x="370" y="95" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="start">250m + 1×800m · 남음 950m</text>
+<text x="20" y="129" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="start">worker2</text>
+<path d="M120 112 C 200 110, 280 113, 360 112 C 358 120, 359 128, 360 136 C 280 134, 200 134, 120 136 C 118 128, 122 120, 120 112 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M120 112 C 134 111, 148 113, 162 112 C 164 120, 164 128, 162 136 C 148 135, 134 135, 120 136 C 118 128, 122 120, 120 112 Z" fill="#e6e1d6" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M164 114 C 195 113, 225 112, 256 114 C 255 121, 255 127, 256 134 C 225 132, 195 132, 164 134 C 166 127, 166 121, 164 114 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="210" y="129" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<path d="M260 114 C 291 113, 321 115, 352 114 C 351 121, 354 127, 352 134 C 321 135, 291 135, 260 134 C 262 127, 262 121, 260 114 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="129" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<text x="370" y="129" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="start">350m + 2×800m · 남음 50m</text>
+<text x="20" y="163" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="start">worker3</text>
+<path d="M120 146 C 200 147, 280 148, 360 146 C 362 154, 361 162, 360 170 C 280 168, 200 168, 120 170 C 119 162, 122 154, 120 146 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M120 146 C 134 144, 148 148, 162 146 C 160 154, 161 162, 162 170 C 148 171, 134 168, 120 170 C 119 162, 119 154, 120 146 Z" fill="#e6e1d6" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M164 148 C 195 149, 225 149, 256 148 C 257 155, 257 161, 256 168 C 225 167, 195 166, 164 168 C 163 161, 162 155, 164 148 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="210" y="163" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<path d="M260 148 C 291 147, 321 150, 352 148 C 353 155, 351 161, 352 168 C 321 166, 291 167, 260 168 C 262 161, 259 155, 260 148 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="163" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<text x="370" y="163" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="start">350m + 2×800m · 남음 50m</text>
+<text x="350" y="200" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">5개 모두 Running · 빈자리 1개가 worker1에 남는다</text>
+<path d="M20 222 C 200 220, 450 224, 680 221" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="20" y="252" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="start">② worker3이 빠졌다고 치면 (Deployment no-w3)</text>
+<text x="20" y="287" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="start">worker1</text>
+<path d="M120 270 C 200 268, 280 271, 360 270 C 362 278, 362 286, 360 294 C 280 293, 200 293, 120 294 C 119 286, 118 278, 120 270 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M120 270 C 130 272, 140 272, 150 270 C 152 278, 148 286, 150 294 C 140 295, 130 292, 120 294 C 121 286, 121 278, 120 270 Z" fill="#e6e1d6" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M152 272 C 183 270, 213 274, 244 272 C 243 279, 243 285, 244 292 C 213 294, 183 290, 152 292 C 153 285, 151 279, 152 272 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="198" y="287" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<path d="M248 272 C 279 271, 309 274, 340 272 C 338 279, 341 285, 340 292 C 309 291, 279 294, 248 292 C 246 285, 247 279, 248 272 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="294" y="287" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<text x="370" y="287" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="start">250m + 2×800m · 남음 150m</text>
+<text x="20" y="321" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="start">worker2</text>
+<path d="M120 304 C 200 305, 280 303, 360 304 C 361 312, 362 320, 360 328 C 280 330, 200 330, 120 328 C 121 320, 119 312, 120 304 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M120 304 C 134 305, 148 303, 162 304 C 160 312, 164 320, 162 328 C 148 327, 134 326, 120 328 C 121 320, 121 312, 120 304 Z" fill="#e6e1d6" stroke="#8a8272" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M164 306 C 195 305, 225 308, 256 306 C 257 313, 258 319, 256 326 C 225 325, 195 325, 164 326 C 163 319, 162 313, 164 306 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="210" y="321" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<path d="M260 306 C 291 308, 321 304, 352 306 C 351 313, 350 319, 352 326 C 321 328, 291 325, 260 326 C 258 319, 258 313, 260 306 Z" fill="#e8f3eb" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="321" font-family="Menlo, monospace" font-size="12" fill="#2e6b41" text-anchor="middle">800m</text>
+<text x="370" y="321" font-family="Menlo, monospace" font-size="13" fill="#8a8272" text-anchor="start">350m + 2×800m · 남음 50m</text>
+<text x="20" y="355" font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="start">worker3</text>
+<path d="M120 338 C 200 339, 280 337, 360 338 C 361 346, 361 354, 360 362 C 280 364, 200 364, 120 362 C 119 354, 119 346, 120 338 Z" fill="#f3efe6" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="6 6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="240" y="355" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">✗ 후보에서 뺌 (nodeAffinity)</text>
+<path d="M500 338 C 532 337, 564 337, 596 338 C 598 346, 595 354, 596 362 C 564 360, 532 360, 500 362 C 498 354, 502 346, 500 338 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="548" y="355" font-family="Menlo, monospace" font-size="14" fill="#b3502f" text-anchor="middle">Pending</text>
+<text x="548" y="382" font-family="Menlo, monospace" font-size="12" fill="#b3502f" text-anchor="middle">2 Insufficient cpu</text>
+<text x="20" y="420" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="start">= 한 대가 빠져도 다 뜨는 개수는 4개까지: 남은 자리를 노드 하나하나로 센다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 7. 세 대일 때 다 뜨던 5개가 worker3을 빼자 4개만 뜨고 1개는 CPU가 모자라 Pending이었다</div>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/21/05-n-plus-one.png" alt="21-n-plus-one.sh 출력 뒷부분. all3 5개는 worker3 2개, worker2 2개, worker1 1개로 모두 Running. worker3을 뺀 no-w3 5개는 worker1 2개, worker2 2개가 Running이고 no-w3-6d57d6bc58-vkqnd가 Pending, FailedScheduling 0/4 nodes are available: 1 node(s) didn't match Pod's node affinity/selector, 1 node(s) had untolerated taint(s), 2 Insufficient cpu. 16:40:59 네임스페이스 w21 삭제" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 8. 같은 Deployment라도 노드 한 대를 빼면 다섯 번째 파드가 들어갈 자리가 없다</div>
+
+<p>세 대를 모두 쓸 수 있게 만든 all3은 20초 뒤에 보니 5개 모두 Running이었고 worker1에 1개, worker2와 worker3에 2개씩 놓였어요. worker3을 뺀 같은 5개(no-w3)는 worker1과 worker2에 2개씩 놓였고 다섯 번째 파드는 Pending이었어요. 스케줄러가 남긴 이유는 이랬어요.</p>
+<div class="obsv-code">0/4 nodes are available: 1 node(s) didn't match Pod's node affinity/selector,
+1 node(s) had untolerated taint(s), 2 Insufficient cpu. preemption: 0/4 nodes are available:
+2 No preemption victims found for incoming pod, 2 Preemption is not helpful for scheduling.</div>
+<p>&rarr; 노드 넷 가운데 하나(worker3)는 nodeAffinity에 맞지 않고 하나(마스터)에는 이 파드가 견디지 못하는 taint가 있고 남은 둘(worker1·2)은 CPU가 모자라다는 뜻이에요. 뒤의 preemption 줄은 우선순위가 낮은 파드를 밀어내서 자리를 만들 수도 없다는 뜻이고요. 마스터가 빠지는 이유는 5편의 control-plane taint예요.</p>
+<p>이 결과를 N+1로 읽으면 이래요. 이 서비스가 800m짜리 파드를 원한다면 워커 세 대로 띄울 수 있는 것은 6개이고 아무 워커 한 대가 빠져도 모두 다시 뜰 수 있는 것은 4개까지예요. 5개가 꼭 필요하면 워커를 한 대 더 두거나 파드 크기를 줄여야 해요. <span class="obsv-mark">워커 수는 정해진 숫자가 아니라 "한 대를 뺀 나머지에 내 파드가 다 들어가는가"를 계산해서 나오는 값이에요.</span></p>
+<p>이때 남은 CPU를 합쳐서 세면 틀려요. worker1과 worker2에 남은 CPU를 더하면 3400m이라 800m 파드 4.25개가 들어갈 것 같지만 파드 하나는 노드 하나에만 놓이니 실제 자리는 노드별로 내림한 2+2=4개예요. worker1에 남는 150m은 어떤 800m 파드도 쓸 수 없어요. 그리고 실제로 노드가 죽으면 그 노드의 파드가 다른 노드로 옮겨 가기까지 시간이 더 걸려요. 노드가 응답을 멈춘 뒤 파드를 내보내기까지의 흐름은 25편에서 따로 봐요.</p>
+<p>흉내가 아니라 노드가 실제로 멈춘 경우도 한 번 봤어요. 25편의 실험에서 worker3의 kubelet을 멈추고 45초 뒤에 보니 worker3은 Ready=Unknown이었고 unreachable taint가 붙어 있었어요. taint가 붙은 시각은 17:23:26이었어요. 그로부터 300초 뒤인 17:28:26에 worker3에 있던 myweb 파드 2개를 대신할 새 파드가 worker1과 worker2에 하나씩 만들어졌고 곧 Running이 됐어요. 이 300초는 파드에 기본으로 붙는 unreachable toleration이 taint를 견디는 시간이에요. myweb은 requests를 하나도 적지 않은 파드라서 스케줄러 계산에는 0으로 들어가요(아래에서 다시 봐요). 그래서 남은 두 노드에서 자리를 찾는 데 막힐 것이 없었어요. 이번에는 이렇게 다시 떴지만 requests가 큰 파드라면 다시 뜨기 전에 그림 8과 같은 자리 계산을 통과해야 해요.</p>
+
+<h3>장애 영역이 여럿이면 영역 하나를 통째로 뺀다</h3>
+<p>클라우드에서 워커를 여러 가용 영역(zone)에 나눠 두면 N+1의 "한 대"가 "영역 하나"로 커져요. 영역 하나가 통째로 빠져도 남은 영역에 다 들어가야 하니까요. 노드에 topology.kubernetes.io/zone 라벨이 붙어 있으면 파드를 영역마다 고르게 퍼뜨릴 수 있어요. <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/">Pod Topology Spread Constraints 문서</a>는 topologySpreadConstraints로 파드를 region, zone, node 같은 장애 영역에 걸쳐 어떻게 퍼뜨릴지 정할 수 있고 그렇게 하면 고가용성과 자원 활용에 도움이 된다고 설명해요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 장애 영역과 토폴로지 라벨</div>
+  장애 영역(failure zone)은 전원·네트워크 같은 장애가 한꺼번에 영향을 주는 범위예요. 클라우드의 가용 영역이 대표적이에요. 쿠버네티스는 노드에 붙은 topology.kubernetes.io/zone, topology.kubernetes.io/region 라벨로 노드가 어느 영역에 있는지 알고 스케줄러와 topologySpreadConstraints가 이 라벨을 읽어요.
+</div>
+<p>같은 문서에 따르면 클러스터 수준 기본값을 따로 정하지 않아도 스케줄러는 kubernetes.io/hostname 기준 maxSkew 3, topology.kubernetes.io/zone 기준 maxSkew 5를 ScheduleAnyway로 정한 것과 똑같이 동작해요. 다만 이 기본값은 노드에 두 라벨이 모두 있을 때를 전제로 하므로 라벨이 없는 노드는 그 기준으로 점수를 매기지 않는다는 주의가 붙어 있어요. 우리 클러스터에는 zone 라벨이 없으니 영역으로 퍼뜨리는 효과는 기대할 수 없어요.</p>
+<p>영역을 쓴다면 영역마다 워커를 같은 수로 두는 편이 계산이 쉬워요. 파드가 영역마다 고르게 퍼지는데 영역마다 노드 수가 다르면 작은 영역이 먼저 차요. 워커 수를 "영역 수의 배수"로 맞추는 것은 공식 규칙이 아니라 이 계산을 단순하게 하려는 선택이에요. 카프카의 12도 이런 나눗셈에서 나온 관행이었어요.</p>
+
+<h3>requests를 적지 않은 파드는 자리 계산에서 0이다</h3>
+<p>N+1 계산은 모두 requests를 바탕으로 해요. <a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">컨테이너 자원 관리 문서</a>에는 스케줄러가 자원 종류마다 노드에 놓인 컨테이너의 requests 합이 노드 용량보다 작게 유지되도록 한다고 적혀 있어요. 같은 문서는 실제 사용량이 아무리 낮아도 이 용량 확인을 통과하지 못하면 스케줄러가 파드를 놓지 않는다고 해요. 반대로 말하면 requests를 적지 않은 파드는 실제로 얼마를 쓰든 스케줄러의 자원 필터(CPU·메모리 검사)에서는 0으로 계산되고 노드에 점수를 매길 때만 컨테이너마다 CPU 100m·메모리 200Mi를 요청한 것으로 쳐요.</p>
+<p>우리 클러스터에서 requests와 실제 사용량이 얼마나 다른지 봤어요. 16시 18분 기준으로 파드 32개 가운데 requests가 하나도 없는 파드가 22개였어요(myweb 5, kube-proxy 4, node-exporter 4 등). 16시 40분에 kubelet의 /stats/summary를 API 서버 프록시로 읽어 실제 메모리 사용량을 봤어요. metrics-server가 없어도 kubelet이 직접 내놓는 값이에요.</p>
+<div class="obsv-code">  워커        memory requests 합   파드 memory workingSet 합   (그중 requests 없는 파드)   노드 전체 workingSet
+  worker1     0                   533Mi (8개)                 253Mi (7개)                1454Mi
+  worker2     70Mi                991Mi (8개)                 551Mi (6개)                1762Mi
+  worker3     70Mi                975Mi (8개)                 613Mi (6개)                1779Mi</div>
+<p>&rarr; 스케줄러가 자리를 셀 때 보는 메모리 requests 합은 노드마다 0~70Mi인데 파드가 실제로 쓰는 메모리는 533~991Mi였다는 뜻이에요. requests를 안 적은 파드만 모아도 253~613Mi예요. 노드 전체 값은 운영체제와 kubelet·containerd까지 포함한 거예요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: requests 기준 N+1은 requests가 실제와 맞을 때만 맞아요</div>
+  &bull; 위 숫자로 메모리 N+1을 계산하면 "worker2가 빠져도 70Mi만 옮기면 된다"는 결론이 나와요. 하지만 그 노드의 파드가 실제로 쓰는 메모리는 991Mi로 열 배가 넘어요. 이 값에는 노드마다 떠서 옮겨 가지 않는 DaemonSet 파드도 들어 있어요<br>
+  &bull; 스케줄러는 실제 사용량을 보지 않아요. 남은 노드에 requests 기준으로 자리가 있으면 놓고 그 노드의 메모리가 실제로 모자라면 그때 가서 노드 쪽에서 문제가 나요<br>
+  &bull; 그래서 N+1을 계산하기 전에 자주 쓰는 파드부터 requests를 실제 사용량에 가깝게 적어 둬요
+</div>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 워커 수를 정하는 순서</div>
+  &bull; 파드마다 requests를 실제 사용량에 맞게 적어요. 안 적힌 파드가 많으면 아래 계산이 모두 낮게 나와요<br>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl describe node</code>의 Allocated resources로 노드별 requests 합을 보고 가장 큰 노드 한 대를 뺀 나머지에 모든 파드가 들어가는지 노드별로 내림해서 세요<br>
+  &bull; 장애 영역을 여럿 쓰면 영역 하나를 통째로 빼고 같은 계산을 하고 영역마다 노드 수도 맞춰요<br>
+  &bull; 노드당 파드 상한(기본 110)과 클러스터 상한(노드 5,000대)은 마지막에 확인해요. 이 값에 닿는 경우는 드물어요
+</div>
+<p>그래서 "12개 국룰"에 대한 제 답은 이래요. 컨트롤 플레인에는 etcd 과반수 때문에 3, 5 같은 홀수 규칙이 있지만 워커에는 그런 규칙이 없어요. 워커 수는 내 파드의 requests 합과 한 대(또는 한 영역)를 잃었을 때 남는 자리에서 거꾸로 계산해요. 이 클러스터의 800m 파드라면 그 답이 "세 대로 4개까지"였어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>컨트롤 플레인 수는 etcd 과반수 규칙으로 정해지고 워커 수는 한 대를 뺀 나머지에 requests가 들어가는지로 계산해요.</b><br><br>
+  컨트롤 플레인을 여러 대로 두면 API 서버는 로드밸런서 뒤에서 모두 요청을 받고 컨트롤러 매니저와 스케줄러는 Lease를 쥔 리더 하나만 일해요. etcd는 과반이 동의해야 쓰기를 확정해서 2대는 1대보다 나을 것이 없고 4대는 3대와 같은 1대만 견뎌요. 그래서 3대, 5대로 늘려요. kubeadm HA는 init 때 --control-plane-endpoint로 정한 공용 주소에서 시작하고 이 주소 없이 만든 단일 컨트롤 플레인을 HA로 바꾸는 것은 kubeadm이 지원하지 않아요. 우리 클러스터가 그 경우예요. 워커 수에는 카프카의 12 같은 나눗셈 규칙도 공식 권장 수도 없고 문서에는 상한만 있어요. CPU 800m 파드로 계산하니 워커 세 대에서 한 대가 빠져도 다 뜨는 것은 4개까지였고 worker3을 후보에서 빼서 흉내 낸 실험에서 5개를 띄우자 1개가 Pending이었어요. 그 계산은 requests를 제대로 적은 만큼만 맞아요.
+</div>
+
+</div>

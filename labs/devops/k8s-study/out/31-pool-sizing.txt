@@ -1,0 +1,18 @@
+# 31편 보강: IP 풀 크기 계산에 쓰는 값 (2026-11-14 16:37:52 KST), Mac 에서 ./lab 으로 조회
+
+## 1. kube-controller-manager 의 노드 CIDR 관련 플래그 (master /etc/kubernetes/manifests/kube-controller-manager.yaml)
+    - --allocate-node-cidrs=true
+    - --cluster-cidr=10.244.0.0/16
+(--node-cidr-mask-size 줄이 없으면 기본값을 쓴다)
+
+## 2. 노드별 podCIDR 과 파드 수 상한(capacity.pods)
+NODE          PODCIDR         CAPACITY_PODS   ALLOCATABLE_PODS
+k8s-master    10.244.0.0/24   110             110
+k8s-worker1   10.244.2.0/24   110             110
+k8s-worker2   10.244.1.0/24   110             110
+k8s-worker3   10.244.4.0/24   110             110
+worker2 /var/lib/kubelet/config.yaml 의 maxPods 줄: [] (비어 있으면 기본값)
+
+## 3. IPPool
+POOL                  CIDR            BLOCKSIZE
+default-ipv4-ippool   10.244.0.0/16   26

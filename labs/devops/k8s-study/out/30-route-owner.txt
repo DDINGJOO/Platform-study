@@ -1,0 +1,23 @@
+# 30편 보강: cluster route 의 주인 (2026-11-14 16:32:29 KST), Mac 에서 ./lab 으로 조회, 대상 calico-node 파드: calico-node-lj6rx (k8s-worker1)
+
+## 1. FelixConfiguration default 와 BGPConfiguration default 의 programClusterRoutes
+FelixConfiguration default: programClusterRoutes=EnabledIPIPOnly routeRefreshInterval=(비어 있으면 기본값)
+BGPConfiguration default:   programClusterRoutes=EnabledNoEncapOnly
+
+## 2. BIRD 설정(confd 가 만든 bird_ipam.cfg): BGP 상대에게 내보내는 필터와 커널에 넣는 필터
+12:function calico_export_to_bgp_peers(bool internal_peer) {
+30:  if (net ~ 10.244.0.0/16) then { accept; }
+33:filter calico_kernel_programming {
+43:  if (net ~ 10.244.0.0/16) then { reject; } # Cluster routes are handled by Felix.
+
+## 3. worker1 라우팅 표: proto 80(Felix 가 넣은 경로) 과 proto bird(BIRD 가 넣은 경로)
+--- ip route show proto 80
+10.244.100.192/26 via 192.168.104.5 dev tunl0 onlink mtu 1480 
+10.244.126.0/26 via 192.168.104.4 dev tunl0 onlink mtu 1480 
+blackhole 10.244.194.64/26 
+10.244.235.192/26 via 192.168.104.1 dev tunl0 onlink mtu 1480 
+--- ip route show proto bird (0줄)
+
+## 4. calico-node 의 준비·생존 검사 주기
+readiness: {"exec":{"command":["calico","component","node","health","--felix-ready","--bird-ready"]},"failureThreshold":3,"periodSeconds":10,"successThreshold":1,"timeoutSeconds":10}
+liveness:  {"exec":{"command":["calico","component","node","health","--felix-live","--bird-live"]},"failureThreshold":6,"initialDelaySeconds":10,"periodSeconds":10,"successThreshold":1,"timeoutSeconds":10}

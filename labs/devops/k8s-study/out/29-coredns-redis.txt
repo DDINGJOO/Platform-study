@@ -1,0 +1,51 @@
+# E19 CoreDNS 를 이용한 DNS 검증 (2026-11-14 15:59:35 KST)
+
+## 1. 검증용 Deployment 와 Service
+$ kubectl create deployment redis-dns --image=redis --replicas=1
+deployment.apps/redis-dns created
+$ kubectl expose deployment redis-dns --name=redis-dns-svc --port=6379 --target-port=6379
+service/redis-dns-svc exposed
+$ kubectl get deploy,po,svc -o wide | grep redis-dns
+deployment.apps/redis-dns   1/1     1            1           13s     redis        redis                 app=redis-dns
+pod/redis-dns-7f8bbd9f9c-m686w   1/1     Running     0             13s     10.244.126.36    k8s-worker2   <none>           <none>
+service/redis-dns-svc   ClusterIP   10.97.144.205    <none>        6379/TCP   13s     app=redis-dns
+redis 버전: Redis server v=8.10.3 sha=00000000:1 mal
+
+## 2. 클라이언트 파드 (Service 를 만든 뒤에 생성)
+dns-client 노드: k8s-worker3
+resolv.conf: search default.svc.cluster.local svc.cluster.local cluster.local|nameserver 10.96.0.10|options ndots:5
+같은 네임스페이스(default)에서:
+  redis-dns-svc → 10.97.144.205
+  redis-dns-svc.default → 10.97.144.205
+  redis-dns-svc.default.svc → 10.97.144.205
+  redis-dns-svc.default.svc.cluster.local → 10.97.144.205
+  (Service ClusterIP = 10.97.144.205)
+
+## 3. 다른 네임스페이스에서는 짧은 이름이 안 됨
+dns-test/dns-client2 의 search: dns-test.svc.cluster.local svc.cluster.local cluster.local
+  redis-dns-svc → 못 찾음
+  redis-dns-svc.default → 10.97.144.205
+
+## 4. 이름으로 redis 에 접속
+dns-client$ printf 'PING\r\n' | nc -w 2 redis-dns-svc 6379 → +PONG
+dns-test/dns-client2$ … nc redis-dns-svc.default 6379 → +PONG
+
+## 5. DNS 말고 환경 변수로도 알려 줌 (컨테이너 시작 시점에 이미 있던 Service 만)
+  REDIS_DNS_SVC_SERVICE_PORT=6379
+  REDIS_DNS_SVC_SERVICE_HOST=10.97.144.205
+  svc 생성 2026-11-14T06:59:36Z / redis-dns 컨테이너 시작 2026-11-14T06:59:49Z → redis-dns 파드에도 1개 (kubelet 은 컨테이너를 시작할 때 그 순간의 Service 목록으로 변수를 만듦)
+
+## 6. 파드 IP 도 이름이 있음 (Corefile 'pods insecure')
+  10-244-126-36.default.pod.cluster.local → 10.244.126.36
+  (redis-dns 파드 IP = 10.244.126.36)
+
+## 7. DNS 질의가 가는 곳: 10.96.0.10 → CoreDNS 파드 (kube-proxy 규칙)
+  coredns-559f6c778d-bt7zz   10.244.126.30    k8s-worker2
+  coredns-559f6c778d-sqvxb   10.244.100.221   k8s-worker3
+  -A KUBE-SERVICES -d 10.96.0.10/32 -p udp "kube-system/kube-dns:dns cluster IP" -m udp --dport 53 -j KUBE-SVC-TCOU7JCQXEZGVUNU
+  -A KUBE-SVC-TCOU7JCQXEZGVUNU "kube-system/kube-dns:dns -> 10.244.100.221:53" -m statistic --mode random --probability 0.50000000000 -j KUBE-SEP-RGAAHJ
+  -A KUBE-SVC-TCOU7JCQXEZGVUNU "kube-system/kube-dns:dns -> 10.244.126.30:53" -j KUBE-SEP-L2K2T5DGSSGU7P7L
+  (섹션 7 의 iptables 줄은 스크립트를 고친 뒤 16:00:23 에 다시 뽑음)
+
+## 8. 정리 (클라이언트만 지우고 redis-dns 는 남김)
+16:00:04 dns-client, dns-test 네임스페이스 삭제
