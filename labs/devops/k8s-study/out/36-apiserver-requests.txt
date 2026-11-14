@@ -1,0 +1,46 @@
+# kube-apiserver 가 받는 요청 (2026-11-14 19:39:29 KST)
+
+## 1. kubectl get pod 한 번이 보내는 HTTP 요청 (-v=6)
+"Response" verb="GET" url="https://<API서버>:6443/api/v1/namespaces/default/pods?labelSelector=app%3Dmyweb&limit=500" status="200 OK" milliseconds=4
+
+## 2. kubectl scale 은 PATCH 한 번 (-v=6)
+"Response" verb="GET" url="https://<API서버>:6443/apis/apps/v1/namespaces/default/deployments/myweb" status="200 OK" milliseconds=3
+"Response" verb="PATCH" url="https://<API서버>:6443/apis/apps/v1/namespaces/default/deployments/myweb/scale" status="200 OK" milliseconds=1
+
+## 3. watch: 컨트롤러·kubelet 이 쓰는 방식. 파드를 하나 만들고 지우는 동안 이벤트가 흘러옴
+   watch 이벤트: ADDED watch-demo phase=Pending node=None rv=134415
+   watch 이벤트: MODIFIED watch-demo phase=Pending node=k8s-worker3 rv=134416
+   watch 이벤트: MODIFIED watch-demo phase=Pending node=k8s-worker3 rv=134418
+   watch 이벤트: MODIFIED watch-demo phase=Pending node=k8s-worker3 rv=134421
+   watch 이벤트: MODIFIED watch-demo phase=Pending node=k8s-worker3 rv=134423
+   watch 이벤트: MODIFIED watch-demo phase=Running node=k8s-worker3 rv=134426
+   watch 이벤트: MODIFIED watch-demo phase=Running node=k8s-worker3 rv=134435
+   watch 이벤트: MODIFIED watch-demo phase=Running node=k8s-worker3 rv=134437
+   watch 이벤트: MODIFIED watch-demo phase=Running node=k8s-worker3 rv=134440
+   watch 이벤트: MODIFIED watch-demo phase=Succeeded node=k8s-worker3 rv=134444
+   watch 이벤트: MODIFIED watch-demo phase=Succeeded node=k8s-worker3 rv=134445
+   watch 이벤트: DELETED watch-demo phase=Succeeded node=k8s-worker3 rv=134446
+
+## 4. 요청 공정 분배 (API Priority and Fairness): 누가 어떤 줄에 서나
+NAME                           PRIORITYLEVEL     PRECEDENCE
+catch-all                      catch-all         10000
+exempt                         exempt            1
+global-default                 global-default    9900
+kube-controller-manager        workload-high     800
+kube-scheduler                 workload-high     800
+kube-system-service-accounts   workload-high     900
+probes                         exempt            2
+service-accounts               workload-low      9000
+system-leader-election         leader-election   100
+system-node-high               node-high         400
+system-nodes                   system            500
+
+## 5. 지금까지 API 서버가 받은 요청 수 (verb 별, /metrics 의 apiserver_request_total 합)
+   GET      18995
+   CONNECT  12844
+   PUT      11898
+   LIST     8542
+   WATCH    4847
+   POST     2766
+   PATCH    227
+   DELETE   24

@@ -1,0 +1,19 @@
+# etcd compaction 과 defrag (2026-11-14 20:20:44 KST)
+
+## 1. API 서버가 하는 자동 compaction 설정
+  kube-apiserver --etcd-compaction-interval: 매니페스트에 0개(= 기본값 5m0s, 22편에서 --help 로 확인)
+
+## 2. defrag 전
+20:20:44 revision=138928 dbSize=21.8MB inUse=2.9MB 빈 페이지=87% | 파일 크기 34.7MB
+
+## 3. defrag (단일 멤버라 잠깐 읽기·쓰기가 멈춤)
+Finished defragmenting etcd member[https://127.0.0.1:2379]. took 20.966905ms
+  걸린 시간 약 0.1초 (kubectl exec 왕복 포함)
+
+## 4. defrag 뒤
+20:20:45 revision=138928 dbSize=2.7MB inUse=2.7MB 빈 페이지=0% | 파일 크기 4.2MB
+  API 서버 /readyz: ok
+
+## 5. etcd 자체는 저장 데이터를 암호화하지 않음: 파일 안에서 평범한 객체 이름이 그대로 보임
+  db 파일 안의 "myweb" 문자열 수: 85
+  etcd 플래그 중 저장 암호화 관련: 0개 (TLS 관련은 --cert-file·--client-cert-auth 등 전송 구간 설정)

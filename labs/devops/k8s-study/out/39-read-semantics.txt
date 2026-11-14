@@ -1,0 +1,32 @@
+# 39편 조회 전용 실험: Mac 에서 실습 저장소 루트로 39-read-semantics.sh 를 실행한 출력 (2026-11-14 22:04~22:05 KST, 클러스터에 쓰기 없음)
+# 읽기 방식에 따라 달라지는 resourceVersion, 캐시 동기화 대기 (2026-11-14 22:04:55 KST)
+  (etcd 는 21:57 복원 리허설에서 리비전을 10억 올린 상태: shared/components/21-etcd-restore-rehearsal.txt)
+
+## 1. 차례로 읽기: ① LIST ?resourceVersion=0 (Any)  ② etcd 리비전  ③ LIST (resourceVersion 비움, Most recent)  ④ ① 다시  ⑤ watch 캐시 위치(pods 메트릭)
+  [1] ① 1000180926 파드 34 (22:04:55.201) | ② etcd 1000180928 (22:04:55.307) | ③ 1000180928 파드 34 (22:04:55.386) | ④ 1000180928 파드 34 (22:04:55.466) | ⑤ 1000180928
+  [2] ① 1000180934 파드 34 (22:04:58.648) | ② etcd 1000180934 (22:04:58.769) | ③ 1000180934 파드 34 (22:04:58.853) | ④ 1000180934 파드 34 (22:04:58.931) | ⑤ 1000180934
+  [3] ① 1000180938 파드 34 (22:05:02.110) | ② etcd 1000180938 (22:05:02.217) | ③ 1000180938 파드 34 (22:05:02.298) | ④ 1000180938 파드 34 (22:05:02.384) | ⑤ 1000180938
+  [4] ① 1000180942 파드 34 (22:05:05.561) | ② etcd 1000180945 (22:05:05.661) | ③ 1000180945 파드 34 (22:05:05.743) | ④ 1000180945 파드 34 (22:05:05.823) | ⑤ 1000180945
+  [5] ① 1000180950 파드 34 (22:05:09.003) | ② etcd 1000180951 (22:05:09.121) | ③ 1000180951 파드 34 (22:05:09.206) | ④ 1000180951 파드 34 (22:05:09.289) | ⑤ 1000180951
+
+## 2. 컨트롤러 매니저: 재시작 뒤 리더가 되고 캐시를 다 채운 다음에 컨트롤러를 돌린다 (로그 시각은 UTC)
+I1114 12:58:22.959179       1 controllermanager.go:204] "Starting" version="v1.37.2"
+I1114 12:59:04.248276       1 leaderelection.go:272] "Successfully acquired lease" lock="kube-system/kube-controller-man
+I1114 12:59:05.755094       1 shared_informer.go:524] "Waiting for caches to sync"
+I1114 12:59:05.961436       1 shared_informer.go:531] "Caches are synced"
+  "Waiting for caches to sync" 줄 수: 50, "Caches are synced" 줄 수: 50
+
+## 3. 스케줄러도 같은 기록
+I1114 12:57:18.002432       1 shared_informer.go:524] "Waiting for caches to sync"
+I1114 12:59:03.802543       1 shared_informer.go:531] "Caches are synced"
+I1114 12:59:22.660222       1 leaderelection.go:272] "Successfully acquired lease" lock="kube-system/kube-scheduler"
+  "Waiting for caches to sync" 줄 수: 1, "Caches are synced" 줄 수: 1
+
+## 4. API 서버 /readyz?verbose 에서 캐시·informer 관련 항목
+  [+]informer-sync ok
+  [+]poststarthook/generic-apiserver-start-informers ok
+  [+]poststarthook/storage-object-count-tracker-hook ok
+  [+]poststarthook/start-apiextensions-informers ok
+  [+]poststarthook/crd-informer-synced ok
+  [+]poststarthook/storage-readiness ok
+  [+]poststarthook/start-kube-aggregator-informers ok

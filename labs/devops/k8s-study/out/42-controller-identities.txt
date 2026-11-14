@@ -1,0 +1,55 @@
+# 컨트롤러 매니저가 쓰는 신원과 Service IP 기록 (2026-11-14 22:16:00 KST, Mac 에서 ./lab 으로 조회만)
+
+## 1. 인포머와 리더 선출에 쓰는 신원: controller-manager.conf 의 클라이언트 인증서
+  subject=CN = system:kube-controller-manager
+  issuer=CN = kubernetes
+
+## 2. kube-system 의 ServiceAccount
+  전체 47개, 이름이 -controller 로 끝나는 것 30개
+  -controller 로 끝나지 않는 것:
+    bootstrap-signer calico-cni-plugin calico-kube-controllers calico-node coredns default generic-garbage-collector horizontal-pod-autoscaler 
+    kube-apiserver-serving-clustertrustbundle-publisher kube-proxy kube-state-metrics legacy-service-account-token-cleaner persistent-volume-binder 
+    pod-garbage-collector podcertificaterequestcleaner root-ca-cert-publisher token-cleaner
+
+## 3. system:controller: 로 시작하는 ClusterRole
+  41개
+    attachdetach-controller certificate-controller clusterrole-aggregation-controller cronjob-controller daemon-set-controller deployment-controller 
+    device-taint-eviction-controller disruption-controller endpoint-controller endpointslice-controller endpointslicemirroring-controller 
+    ephemeral-volume-controller expand-controller generic-garbage-collector horizontal-pod-autoscaler job-controller 
+    kube-apiserver-serving-clustertrustbundle-publisher legacy-service-account-token-cleaner namespace-controller node-controller 
+    persistent-volume-binder pod-garbage-collector podcertificaterequestcleaner pv-protection-controller pvc-protection-controller replicaset-controller 
+    replication-controller resource-claim-controller resourcequota-controller root-ca-cert-publisher route-controller selinux-warning-controller 
+    service-account-controller service-cidrs-controller service-controller statefulset-controller storage-version-migrator-controller 
+    ttl-after-finished-controller ttl-controller validatingadmissionpolicy-status-controller volumeattributesclass-protection-controller
+
+## 4. deployment-controller 와 replicaset-controller 의 규칙 (파드·ReplicaSet 관련만)
+  [system:controller:deployment-controller]
+    deployments                                   get,list,update,watch
+    deployments/status                            update
+    deployments/finalizers                        update
+    replicasets                                   create,delete,get,list,patch,update,watch
+    pods                                          get,list,update,watch
+  [system:controller:replicaset-controller]
+    replicasets                                   get,list,update,watch
+    replicasets/status                            update
+    replicasets/finalizers                        update
+    pods                                          create,delete,list,patch,watch
+
+## 5. kubectl auth can-i 로 본 권한 차이 (--as 로 ServiceAccount 흉내, 읽기 전용 검사)
+  deployment-controller  create pods: no
+  deployment-controller  update replicasets.apps: yes
+  deployment-controller  update deployments.apps: yes
+  replicaset-controller  create pods: yes
+  replicaset-controller  update replicasets.apps: yes
+  replicaset-controller  update deployments.apps: no
+
+## 6. Service 의 ClusterIP 는 어디에 기록되나 (ServiceCIDR, IPAddress)
+  NAME         CIDRS          AGE
+  kubernetes   10.96.0.0/12   10d
+  IPAddress 객체 수: 8, Service 수: 9, 그중 clusterIP None(headless): 1
+  10.96.0.1 → parentRef services/default/kubernetes
+  managedBy 라벨: ipallocator.k8s.io
+
+## 7. default 네임스페이스 EndpointSlice 를 관리하는 쪽 (endpointslice.kubernetes.io/managed-by 라벨)
+  kubernetes  service=kubernetes  managed-by=
+  myweb-tr7zj  service=myweb  managed-by=endpointslice-controller.k8s.io

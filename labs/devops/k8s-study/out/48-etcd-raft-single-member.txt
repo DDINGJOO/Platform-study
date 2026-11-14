@@ -1,0 +1,59 @@
+# 48 멤버 하나짜리 etcd 의 Raft 상태 조회 (2026-11-14 22:09:14 KST)
+
+## 1. 멤버 목록
+┌──────────────────┬─────────┬────────────┬────────────────────────────┬────────────────────────────┬────────────┐
+│        ID        │ STATUS  │    NAME    │         PEER ADDRS         │        CLIENT ADDRS        │ IS LEARNER │
+├──────────────────┼─────────┼────────────┼────────────────────────────┼────────────────────────────┼────────────┤
+│ c960bb57b7d36fea │ started │ k8s-master │ https://192.168.104.1:2380 │ https://192.168.104.1:2379 │      false │
+└──────────────────┴─────────┴────────────┴────────────────────────────┴────────────────────────────┴────────────┘
+
+## 2. endpoint status: 자기 자신이 리더인가, term 과 index
+  member_id=c960bb57b7d36fea leader=c960bb57b7d36fea raftTerm=3 raftIndex=1972 raftAppliedIndex=1972 isLearner=False
+
+## 3. Raft 타이머와 스냅숏 주기: 매니페스트에 적힌 값과 etcd 기본값
+  etcd.yaml 에서 heartbeat-interval / election-timeout 을 적은 줄 수: 0
+  etcd.yaml 의 snapshot-count / initial-cluster / listen-peer-urls:
+    - --initial-cluster=k8s-master=https://192.168.104.1:2380
+    - --listen-peer-urls=https://192.168.104.1:2380
+    - --snapshot-count=10000
+  etcd --help (기본값):
+    --heartbeat-interval '100'
+    Time (in milliseconds) of a heartbeat interval.
+    --election-timeout '1000'
+    Time (in milliseconds) for an election to timeout. See tuning documentation for details.
+
+## 4. 이번 기동에서 선거를 치른 기록 (etcd 로그에서 raft 상태 전환 줄만)
+  2026-11-14T12:58:43.140 c960bb57b7d36fea is starting a new election at term 2
+  2026-11-14T12:58:43.140 c960bb57b7d36fea became pre-candidate at term 2
+  2026-11-14T12:58:43.140 c960bb57b7d36fea became candidate at term 3
+  2026-11-14T12:58:43.141 c960bb57b7d36fea became leader at term 3
+  2026-11-14T12:58:43.141 raft.node: c960bb57b7d36fea elected leader c960bb57b7d36fea at term 3
+
+## 5. 30초 동안 Raft 와 디스크가 처리한 양 (metrics 127.0.0.1:2381)
+  [시작] member_id=c960bb57b7d36fea leader=c960bb57b7d36fea raftTerm=3 raftIndex=1973 raftAppliedIndex=1973 isLearner=False
+  [끝]   member_id=c960bb57b7d36fea leader=c960bb57b7d36fea raftTerm=3 raftIndex=2073 raftAppliedIndex=2073 isLearner=False
+  같은 동안 etcd revision(키·값 변경 번호) 증가: 78
+  경과 30초. 지표별 시작값 → 끝값 (차이):
+    etcd_disk_backend_commit_duration_seconds_count              1098 → 1148 (+50)
+    etcd_disk_wal_fsync_duration_seconds_count                   1752 → 1848 (+96)
+    etcd_mvcc_delete_total                                       52 → 52 (+0)
+    etcd_mvcc_put_total                                          1269 → 1344 (+75)
+    etcd_mvcc_txn_total                                          0 → 0 (+0)
+    etcd_server_has_leader                                       1 → 1 (+0)
+    etcd_server_heartbeat_send_failures_total                    0 → 0 (+0)
+    etcd_server_is_leader                                        1 → 1 (+0)
+    etcd_server_leader_changes_seen_total                        1 → 1 (+0)
+    etcd_server_proposals_applied_total                          1973 → 2069 (+96)
+    etcd_server_proposals_committed_total                        1973 → 2069 (+96)
+    etcd_server_proposals_failed_total                           0 → 0 (+0)
+    etcd_server_proposals_pending                                0 → 0 (+0)
+  peer 로 주고받은 바이트 지표 줄 수(피어가 없으면 0): 0
+
+## 6. 2380(멤버끼리, Raft) 과 2379(클라이언트) 의 연결
+  LISTEN 192.168.104.1:2380
+  2380 에 맺어진 연결 수: 0
+  2379 에 맺어진 연결 수: 93
+
+## 7. API 서버가 고를 수 있는 저장소 (kube-apiserver --help)
+  --storage-backend string                        The storage backend for persistence. Options: 'etcd3' (default).
+  --storage-media-type string                     The media type to use to store objects in storage. Some resources or storage backends may only support a specific media type and will ignore this setting. Supported media types: [application/json, application/yaml, application/vnd.kubernetes.protobuf] (default "application/vnd.kubernetes.protobuf")

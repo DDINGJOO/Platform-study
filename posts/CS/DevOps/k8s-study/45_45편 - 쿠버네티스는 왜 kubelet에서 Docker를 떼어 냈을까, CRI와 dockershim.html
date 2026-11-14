@@ -1,0 +1,481 @@
+<!-- ============================================================
+  k8s 스터디 45편: 쿠버네티스는 왜 kubelet에서 Docker를 떼어 냈을까, CRI와 dockershim
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 우리 노드에는 docker도 docker.sock도 없고 kubelet은 containerd 소켓에 바로 붙어요. 쿠버네티스가 kubelet 안의 dockershim을 1.20에 deprecated로 바꾸고 1.24에서 지운 이유를 KEP와 PR 원문으로 따라갔어요. -->
+<!-- tags: dockershim, CRI, cri-dockerd, 쿠버네티스 Docker 지원 중단, docker.sock, KEP-2221, containerd -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 45편</div>
+  43편. 쿠버네티스는 왜 컨테이너가 아니라 파드를 띄우고 pause 컨테이너는 왜 있을까<br>
+  44편. 노드당 파드 110개는 어디서 나온 숫자일까<br>
+  <b>45편. 쿠버네티스는 왜 kubelet에서 Docker를 떼어 냈을까, CRI와 dockershim</b> &larr; 지금 이 글<br>
+  46편. 쿠버네티스 API는 REST인데 CRI와 etcd는 왜 gRPC일까<br>
+  47편. kube-proxy는 왜 iptables와 IPVS를 거쳐 nftables로 왔을까
+</div>
+
+<p>우리 클러스터의 노드 네 대에서 <code style="font-family:Menlo,monospace;font-size:14px;">docker</code>, <code style="font-family:Menlo,monospace;font-size:14px;">dockerd</code>, <code style="font-family:Menlo,monospace;font-size:14px;">cri-dockerd</code>를 찾아보면 네 대 모두 "(없음)"이 나와요. <code style="font-family:Menlo,monospace;font-size:14px;">/var/run/docker.sock</code>도 없고 docker 서비스는 inactive예요. kubelet 설정의 <code style="font-family:Menlo,monospace;font-size:14px;">containerRuntimeEndpoint</code>는 containerd 소켓을 가리키고 API 서버가 아는 노드 런타임도 네 대 모두 <code style="font-family:Menlo,monospace;font-size:14px;">containerd://2.4.1</code>이에요. 노드 어디에도 Docker라는 이름이 붙은 프로그램이 없어요.</p>
+
+<p>44편에서 본 노드당 파드 110개 중 사용자 파드 100개는 2016년에 kubelet과 docker 데몬의 CPU를 함께 재서 정한 값이었어요. 그 측정에 쓴 노드에는 docker 데몬이 있었고 kubelet은 그 데몬을 직접 불렀어요. 몇 년 사이에 kubelet과 런타임을 잇는 방식이 통째로 바뀐 거예요. 이번에는 쿠버네티스가 왜 kubelet에서 dockershim을 뺐는지 살펴봐요.</p>
+
+<p>26편에서는 "도커 지원이 빠졌다는데 도커로 빌드한 이미지는 어떻게 도나"에 답했어요. 이미지 형식은 OCI 표준이라 어느 런타임에서나 그대로 읽혀요. 이번에는 그 앞의 질문을 따라가요. 쿠버네티스는 왜 kubelet 안에 Docker 전용 코드를 두었고 왜 1.24에서 지웠을까요? 근거는 CRI 설계 문서와 KEP, PR과 이슈 원문이고 마지막에는 우리 노드에 docker.sock을 기대하는 파드를 띄워 무엇이 깨지는지 확인해요. 클러스터는 Lima VM 4대에 kubeadm v1.37.2, containerd 2.4.1을 올린 실습 환경이에요.</p>
+
+<p><b>이 글에서 다룰 것</b><br>
+&middot; CRI가 생기기 전 kubelet은 런타임을 어떻게 불렀고 무엇이 곤란했을까?<br>
+&middot; CRI를 만들었는데 왜 kubelet 안에 dockershim이 5년 넘게 남았을까?<br>
+&middot; kubelet 안에 남은 Docker는 어떤 비용을 만들었을까?<br>
+&middot; 떼어 내는 길로 무엇을 검토했고 경고에서 삭제까지 왜 1년 5개월이 걸렸을까?<br>
+&middot; 지운 뒤에 무엇이 깨졌고 지금 우리 노드에서는 어떻게 보일까?</p>
+
+<h2>1. CRI 전에는 런타임마다 kubelet 안에 코드가 따로 있었다</h2>
+
+<p>초기 쿠버네티스가 지원한 런타임은 Docker Engine 하나였어요. 2022년 1월 쿠버네티스 블로그(<a href="https://kubernetes.io/blog/2022/01/07/kubernetes-is-moving-on-from-dockershim/">Kubernetes is Moving on From Dockershim</a>)는 그 시절을 "Docker support was hardcoded into Kubernetes"라고 적었어요. Docker 지원이 쿠버네티스 코드 안에 직접 들어가 있었다는 뜻이에요. 1.3(2016-07)에서는 rkt를 두 번째 런타임으로 붙였는데(rktnetes) 방식이 같았어요. kubelet 안에 rkt 전용 패키지를 하나 더 만든 거예요.</p>
+
+<p>CRI를 발표한 <a href="https://kubernetes.io/blog/2016/12/container-runtime-interface-cri-in-kubernetes/">2016년 12월 쿠버네티스 블로그</a>는 이 구조를 이렇게 정리해요. "both Docker and rkt were integrated directly and deeply into the kubelet source code through an internal and volatile interface." Docker와 rkt가 둘 다 kubelet 소스에 직접 깊이 통합돼 있었고 둘이 붙은 접점은 내부용이라 자주 바뀌었다는 뜻이에요. 글은 이어서 이런 통합에는 kubelet 내부를 깊이 알아야 하고 그 유지 비용을 쿠버네티스 커뮤니티가 진다고 적었어요.</p>
+
+<p>CRI가 처음 들어간 <a href="https://github.com/kubernetes/kubernetes/tree/v1.5.0/pkg/kubelet">v1.5.0 태그</a>에서 kubelet 패키지의 줄 수를 세어 보면 그 모양이 숫자로 보여요(테스트 파일 제외).</p>
+
+<div class="obsv-code"># v1.5.0 pkg/kubelet 아래 런타임별 패키지 (테스트 제외 줄 수)
+dockertools   5,718줄 (14파일)   옛 Docker 직결 구현 (DockerManager)
+rkt           3,382줄 ( 9파일)   rkt 직결 구현
+kuberuntime   3,944줄 (13파일)   CRI를 부르는 쪽 공통 매니저
+dockershim    2,549줄 (15파일)   CRI용 Docker 어댑터 (1.5에서는 실험)
+
+# 같은 이름의 함수가 세 벌
+dockertools/docker_manager.go:2103   func (dm *DockerManager) SyncPod(...)
+rkt/rkt.go:1709                      func (r *Runtime) SyncPod(...)
+kuberuntime/kuberuntime_manager.go:569  func (m *kubeGenericRuntimeManager) SyncPod(...)</div>
+
+<p>&rarr; 파드를 원하는 상태로 맞추는 SyncPod 함수가 Docker용, rkt용, 새 CRI용으로 한 벌씩 있었다는 뜻이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: SyncPod</div>
+  kubelet이 파드 하나를 원하는 상태에 맞추는 함수예요. 파드 스펙과 지금 상태를 받아 무엇을 새로 띄우고 무엇을 죽일지 정한 뒤 실행해요. CRI 전에는 이 함수 전체를 런타임마다 따로 구현했어요.
+</div>
+
+<p>이 구조가 왜 곤란했는지는 <a href="https://github.com/kubernetes/design-proposals-archive/blob/main/node/container-runtime-interface-v1.md">CRI 설계 문서</a>의 Motivation 절에 셋으로 정리돼 있어요. 첫째, 파드 개념을 기본으로 갖지 않은 런타임은 파드 기능을 모두 받쳐 줄 큰 shim을 따로 짜야 했어요. 둘째, SyncPod 같은 큰 함수가 런타임끼리 코드를 나눠 쓰지 못하게 했어요. 셋째는 파드 스펙이 빠르게 바뀐다는 점이었어요. 문서는 "Any pod-level change or addition requires changing of all container runtime shims."라고 적고 init 컨테이너를 예로 들어요. <span class="obsv-mark">파드 기능 하나를 더할 때마다 런타임 구현을 모두 고쳐야 했다는 뜻이에요.</span></p>
+
+<p>런타임을 kubelet 밖으로 빼자는 이야기는 그보다 한 해 앞서 나왔어요. 2015년 9월 9일에 열린 <a href="https://github.com/kubernetes/kubernetes/issues/13768">이슈 #13768</a>의 첫 문장은 "Currently, any container runtime has to be linked into the kubelet."이에요. 어떤 런타임이든 kubelet 바이너리에 함께 들어가야 해서 새 런타임을 시험하려면 쿠버네티스 본체에 코드를 넣어야 했다는 뜻이에요. 이슈는 런타임 인터페이스를 클라이언트와 서버로 나누면 런타임을 쿠버네티스 소스 트리 밖에서 만들고 유지할 수 있다고 제안했어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 트리 안(in-tree)과 트리 밖(out-of-tree)</div>
+  쿠버네티스 저장소(kubernetes/kubernetes) 안에 있는 코드를 in-tree, 다른 저장소에서 따로 릴리스하는 코드를 out-of-tree라고 불러요. in-tree 코드는 쿠버네티스 릴리스 주기와 리뷰를 따라야 하고 쿠버네티스 메인테이너가 유지해요.
+</div>
+
+<p>1.5의 CRI는 kubelet에 SyncPod를 하나만 두고 런타임에는 샌드박스와 컨테이너를 만들고 멈추고 지우는 작은 호출만 보내는 모양으로 정해졌어요. CRI 블로그의 "Why an imperative container-centric interface?" 절에 따르면 파드 객체를 통째로 런타임에 넘기는 방식도 검토했지만 재시작 백오프 같은 파드 수준 기능을 런타임마다 다시 짜야 하고 파드 스펙이 계속 바뀌어서 고르지 않았어요. 블로그는 CRI를 "a plugin interface which enables kubelet to use a wide variety of container runtimes, without the need to recompile"이라고 소개해요. kubelet을 다시 컴파일하지 않고 여러 런타임을 바꿔 쓸 수 있게 하는 인터페이스라는 뜻이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="m45011" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">CRI 전과 후: 런타임별 코드는 어디에 있었나 (줄 수는 v1.5.0, 테스트 제외)</text>
+<text x="178" y="60" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">1.4까지: 런타임마다 kubelet 안에</text>
+<path d="M28 72 C 127 73.7, 226 73.8, 328 73.1 C 329.6 126, 328.7 180, 328.9 236 C 226 235.6, 127 236.1, 27.5 236.6 C 26.9 180, 26.0 126, 28 72 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="178" y="96" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<path d="M44 108 C 132 107.1, 221 106.7, 312 106.7 C 311.3 125, 310.7 142, 312.0 160 C 221 160.4, 132 162.2, 42.7 159.5 C 44.5 142, 43.2 125, 44 108 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="178" y="130" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">dockertools (Docker 직결)</text>
+<text x="178" y="150" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">DockerManager.SyncPod · 5,718줄</text>
+<path d="M44 172 C 132 170.8, 221 173.1, 312 173.1 C 310.0 189, 310.6 206, 310.9 224 C 221 223.0, 132 222.8, 43.4 224.4 C 46.2 206, 43.9 189, 44 172 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="178" y="194" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">rkt (rkt 직결)</text>
+<text x="178" y="214" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">Runtime.SyncPod · 3,382줄</text>
+<path d="M110 238 C 109.0 252.3, 109.3 269.5, 110 284" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#m45011)"/>
+<path d="M246 238 C 246.4 254.4, 245.3 269.3, 246 284" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#m45011)"/>
+<text x="102" y="266" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="end">Docker API</text>
+<text x="254" y="266" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="start">rkt 명령</text>
+<path d="M40 288 C 86 289.7, 132 289.4, 180 288.0 C 180.5 302, 178.9 316, 181.0 330 C 132 332.2, 86 329.1, 38.6 329.1 C 37.6 316, 38.9 302, 40 288 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="315" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">docker 데몬</text>
+<path d="M196 288 C 236 288.6, 275 286.1, 316 287.7 C 313.8 302, 316.4 316, 315.7 330 C 275 329.3, 236 332.1, 197.4 330.7 C 198.3 316, 196.1 302, 196 288 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="256" y="315" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">rkt</text>
+<text x="178" y="358" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">새 런타임을 붙이려면 kubelet에 패키지를 하나 더</text>
+<text x="178" y="378" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">(이슈 #13768: "has to be linked into the kubelet")</text>
+<text x="522" y="60" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">1.5부터: CRI 경계 하나</text>
+<path d="M374 72 C 472 72.2, 569 73.6, 670 70.9 C 670.0 101, 671.7 130, 669.8 160 C 569 159.7, 472 160.7, 373.2 161.1 C 374.5 130, 372.9 101, 374 72 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="522" y="96" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<path d="M390 106 C 477 103.9, 564 106.9, 654 105.2 C 654.7 121, 651.8 135, 655.2 150 C 564 149.9, 477 148.5, 390.5 148.6 C 391.8 135, 391.1 121, 390 106 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="522" y="126" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">kuberuntime: SyncPod는 여기 하나</text>
+<text x="522" y="143" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">kubeGenericRuntimeManager · 3,944줄</text>
+<path d="M366 186 C 470 186.8, 573 184.9, 680 186.7" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-dasharray="8 7" stroke-linecap="round"/>
+<text x="473" y="180" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">CRI 경계</text>
+<text x="576" y="180" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#4a7fb5" text-anchor="middle">gRPC 소켓</text>
+<path d="M421 162 C 420.4 176.1, 422.4 192.2, 422 206" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45011)"/>
+<path d="M524 162 C 524.8 176.3, 524.0 190.1, 524 206" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45011)"/>
+<path d="M627 162 C 626.8 176.3, 626.5 191.5, 626 206" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45011)"/>
+<path d="M374 210 C 406 212.2, 437 211.8, 470 210.8 C 469.1 227, 468.0 244, 469.3 262 C 437 264.4, 406 264.2, 374.4 261.0 C 375.1 244, 374.4 227, 374 210 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="422" y="232" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">dockershim</text>
+<text x="422" y="252" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#c07f18" text-anchor="middle">(kubelet 안)</text>
+<path d="M478 210 C 509 210.3, 540 212.1, 572 211.5 C 574.2 227, 572.7 244, 573.2 262 C 540 263.7, 509 261.2, 479.1 261.9 C 479.5 244, 479.4 227, 478 210 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="525" y="232" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">containerd</text>
+<text x="525" y="252" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">CRI 플러그인</text>
+<path d="M580 210 C 611 211.8, 642 208.9, 674 211.3 C 676.1 227, 676.3 244, 672.8 262 C 642 260.7, 611 264.5, 581.3 261.5 C 581.6 244, 578.1 227, 580 210 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="627" y="240" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">CRI-O</text>
+<text x="522" y="292" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">런타임은 샌드박스·컨테이너 단위 호출만 구현</text>
+<text x="522" y="312" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">RunPodSandbox · CreateContainer · StartContainer …</text>
+<text x="522" y="340" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#c07f18" text-anchor="middle">dockershim 2,549줄은 1.5에서 실험으로 시작</text>
+<text x="350" y="398" font-family="'Nanum Pen Script', cursive" font-size="17.5" fill="#b3502f" text-anchor="middle">= 파드 로직은 kubelet에 한 번만 두고 런타임은 소켓 건너편 서버로 바꿀 수 있게 했다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. CRI는 런타임마다 따로 있던 SyncPod를 kubelet 쪽 하나로 모으고 런타임은 소켓 건너편에서 작은 호출만 받게 했다</div>
+
+<h2>2. Docker Engine이 CRI를 구현하지 않아서 kubelet 안에 dockershim이 생겼다</h2>
+
+<p>1.5(2016-12-13)에서 CRI v1alpha1이 알파로 들어왔어요. CRI 블로그는 연결 방식을 이렇게 적어요. "Kubelet communicates with the container runtime (or a CRI shim for the runtime) over Unix sockets using the gRPC framework, where kubelet acts as a client and the CRI shim as the server." kubelet은 유닉스 소켓 위에서 gRPC 클라이언트가 되고 런타임이나 런타임 앞의 CRI shim이 서버가 된다는 뜻이에요. 왜 하필 gRPC였는지는 46편에서 따로 봐요.</p>
+
+<p>문제는 그때 노드 대부분이 쓰던 Docker Engine이 CRI 서버가 아니었다는 점이에요. Docker Engine은 CRI보다 먼저 있었고 자기 API(Docker Engine API)만 열었어요. 그래서 쿠버네티스는 CRI 서버 역할을 대신 맡아 Docker API를 부르는 어댑터를 만들었어요. 이 어댑터가 dockershim이고 시작은 2016년 7월 29일에 병합된 <a href="https://github.com/kubernetes/kubernetes/pull/29553">PR #29553</a> "Add a docker-shim package"였어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: dockershim</div>
+  kubelet에서 오는 CRI 호출(RunPodSandbox, CreateContainer 등)을 받아 Docker Engine API 호출로 바꿔 주던 어댑터예요. 쿠버네티스 저장소의 <code style="font-family:Menlo,monospace;font-size:14px;">pkg/kubelet/dockershim</code>에 있었고 kubelet 바이너리 안에 함께 빌드됐어요. 1.20에서 deprecated가 되고 1.24에서 지워졌어요.
+</div>
+
+<p>dockershim은 따로 뜨는 프로세스가 아니었어요. 2020년 초에 나온 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/1547-building-kubelet-without-docker">KEP-1547</a>에는 "the Kubelet starts running the dockershim in a separate go routine within the main kubelet process"라고 적혀 있고 이어서 dockershim을 독립 실행 파일로 돌릴 수는 없다고 해요. <span class="obsv-mark">kubelet 프로세스 안의 고루틴 하나가 CRI gRPC 서버를 띄우고 kubelet이 그 서버에 다시 클라이언트로 붙었던 거예요.</span> CRI 블로그도 1.5의 내장 shim을 "This allows kubelet to start the gRPC server on Docker’s behalf."라고 설명해요. dockershim이 들어 있던 마지막 마이너인 v1.23.0의 kubelet 기본값을 보면 그 모양이 그대로 남아 있어요.</p>
+
+<div class="obsv-code">// cmd/kubelet/app/options/container_runtime.go (v1.23.0) 발췌
+dockerEndpoint = "unix:///var/run/docker.sock"
+ContainerRuntime:  kubetypes.DockerContainerRuntime,
+
+// cmd/kubelet/app/options/options.go (v1.23.0) 발췌
+remoteRuntimeEndpoint = "unix:///var/run/dockershim.sock"
+// --container-runtime-endpoint 설명 중
+"When using docker as container runtime this specifies the dockershim socket location which kubelet itself creates."</div>
+
+<p>&rarr; 1.23까지 kubelet의 기본 런타임은 docker였고 CRI 엔드포인트 기본값은 kubelet이 스스로 여는 <code style="font-family:Menlo,monospace;font-size:14px;">dockershim.sock</code>이었다는 뜻이에요(<a href="https://github.com/kubernetes/kubernetes/blob/v1.23.0/cmd/kubelet/app/options/container_runtime.go">container_runtime.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.23.0/cmd/kubelet/app/options/options.go">options.go</a>). 플래그 설명에 "which kubelet itself creates"가 그대로 적혀 있어요.</p>
+
+<p>그 뒤 CRI는 차례로 기본이 됐어요. 1.6(2017-03)에서 Docker-CRI 연동이 베타가 되면서 기본으로 켜졌고 1.7(2017-06)에서는 <code style="font-family:Menlo,monospace;font-size:14px;">--enable-cri</code> 플래그가 사라졌어요. <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.7.md">CHANGELOG-1.7</a>에는 "CRI is now the default, and the only way to integrate with Kubelet for the container runtimes."라고 적혀 있어요. rkt 직결 코드는 1.10에서 deprecated가 됐고 1.11(2018-06)에서 지워졌어요(<a href="https://github.com/kubernetes/kubernetes/pull/61432">PR #61432</a>, 14,523줄 삭제). 이때부터 kubelet 안에 남은 런타임 예외는 Docker 하나였어요.</p>
+
+<p>Docker 노드에서 컨테이너 하나가 뜨기까지 거치는 단계도 길었어요. Docker 1.11(2016-04-13)부터 Docker Engine 자체가 containerd와 runC 위에서 돌았어요. <a href="https://www.docker.com/blog/docker-engine-1-11-runc/">Docker 블로그</a>는 "Docker Engine is now built on containerd"라고 발표했어요. 그러니 1.23까지의 Docker 노드는 kubelet 안의 dockershim이 docker.sock으로 dockerd를 부르고 dockerd가 다시 containerd를 부르는 구조였어요. 반대로 containerd는 CRI를 직접 받는 쪽으로 움직였어요. <a href="https://kubernetes.io/blog/2018/05/24/kubernetes-containerd-integration-goes-ga/">2018년 5월 쿠버네티스 블로그</a>에 따르면 containerd 1.0 시절에는 cri-containerd라는 데몬이 kubelet과 containerd 사이에 있었고 dockershim과 비교해 "eliminated one extra hop"이었어요. containerd 1.1에서는 그 데몬이 containerd 안의 CRI 플러그인이 되면서 "eliminates another grpc hop"이 됐어요. 우리 노드가 이 마지막 구조예요(26편).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 430" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="m45021" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">파드 하나를 띄울 때 kubelet에서 runc까지 거치는 단계</text>
+<text x="20" y="62" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="start">① 1.23까지 Docker 노드</text>
+<path d="M20 74 C 71 74.1, 123 74.3, 176 73.7 C 176.4 90, 174.5 107, 176.2 124 C 123 125.8, 71 124.3, 18.5 125.0 C 21.1 107, 19.4 90, 20 74 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="98" y="96" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<text x="98" y="115" font-family="'Nanum Pen Script', cursive" font-size="12" fill="#b3502f" text-anchor="middle">+ dockershim (같은 프로세스)</text>
+<path d="M178 99 C 190.1 99.5, 201.7 98.6, 214 99" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<text x="196" y="140" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">docker.sock</text>
+<path d="M218 78 C 245 77.5, 272 76.6, 300 76.8 C 299.0 92, 300.9 106, 300.4 120 C 272 121.2, 245 121.1, 218.2 119.4 C 216.5 106, 215.8 92, 218 78 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="259" y="104" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">dockerd</text>
+<path d="M302 99 C 312.9 98.6, 324.7 99.7, 336 99" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<text x="319" y="90" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">gRPC</text>
+<path d="M340 78 C 373 80.1, 406 75.8, 440 78.7 C 441.5 92, 440.8 106, 438.5 120 C 406 119.0, 373 120.5, 340.3 119.8 C 341.2 106, 338.8 92, 340 78 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="390" y="104" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">containerd</text>
+<path d="M442 99 C 453.1 99.3, 465.5 99.5, 476 99" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<path d="M480 78 C 506 79.8, 533 79.6, 560 78.7 C 559.6 92, 562.1 106, 561.3 120 C 533 121.0, 506 117.7, 480.2 118.8 C 479.4 106, 480.4 92, 480 78 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="104" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">shim</text>
+<path d="M562 99 C 574.4 98.4, 584.2 98.2, 596 99" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<path d="M600 78 C 624 80.2, 648 76.4, 672 76.6 C 669.8 92, 671.2 106, 672.7 120 C 648 120.0, 624 121.7, 599.8 118.6 C 601.0 106, 598.5 92, 600 78 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="636" y="104" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">runc</text>
+<text x="350" y="160" font-family="'Nanum Pen Script', cursive" font-size="14.5" fill="#8a8272" text-anchor="middle">kubelet이 자기가 연 dockershim.sock에 CRI로 붙고 dockershim이 Docker API를 부른다</text>
+<text x="20" y="194" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18" text-anchor="start">② containerd 1.0 + cri-containerd 데몬</text>
+<path d="M20 206 C 50 208.0, 79 207.3, 110 205.9 C 111.0 220, 112.2 234, 109.7 248 C 79 246.3, 50 248.3, 21.0 248.3 C 20.0 234, 20.9 220, 20 206 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="65" y="232" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<path d="M112 227 C 122.4 227.3, 135.3 226.6, 146 227" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<text x="129" y="218" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">CRI</text>
+<path d="M150 206 C 200 207.7, 249 204.3, 300 206.2 C 301.6 220, 300.3 234, 299.2 248 C 249 247.2, 200 246.8, 149.9 247.9 C 148.7 234, 149.7 220, 150 206 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="225" y="232" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">cri-containerd</text>
+<path d="M302 227 C 313.0 228.0, 323.3 226.1, 336 227" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<text x="319" y="218" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">gRPC</text>
+<path d="M340 206 C 373 205.1, 406 206.4, 440 206.5 C 441.7 220, 439.0 234, 438.8 248 C 406 249.2, 373 246.3, 339.9 247.9 C 341.6 234, 338.0 220, 340 206 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="390" y="232" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">containerd</text>
+<path d="M442 227 C 453.5 228.0, 464.2 226.5, 476 227" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<path d="M480 206 C 506 207.8, 533 206.5, 560 207.2 C 560.7 220, 561.7 234, 560.2 248 C 533 246.2, 506 247.6, 481.3 246.6 C 481.2 234, 477.5 220, 480 206 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="232" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">shim</text>
+<path d="M562 227 C 572.6 227.7, 585.1 227.5, 596 227" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<path d="M600 206 C 624 208.5, 648 207.3, 672 205.8 C 669.9 220, 674.4 234, 673.3 248 C 648 246.4, 624 248.3, 601.4 248.5 C 599.6 234, 598.8 220, 600 206 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="636" y="232" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">runc</text>
+<text x="350" y="274" font-family="'Nanum Pen Script', cursive" font-size="14.5" fill="#8a8272" text-anchor="middle">dockershim과 dockerd 자리에 데몬 하나: "eliminated one extra hop"</text>
+<text x="20" y="308" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="start">③ containerd 1.1 이후 (우리 노드: containerd 2.4.1)</text>
+<path d="M20 320 C 50 318.5, 79 318.4, 110 320.2 C 111.2 334, 109.8 348, 109.0 362 C 79 363.3, 50 363.1, 20.0 362.2 C 22.2 348, 21.3 334, 20 320 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="65" y="346" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<path d="M112 341 C 123.2 341.3, 135.6 341.9, 146 341" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<text x="129" y="332" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">CRI</text>
+<path d="M150 320 C 246 320.8, 341 319.7, 440 320.5 C 438.2 334, 437.5 348, 441.4 362 C 341 362.6, 246 363.8, 149.8 363.2 C 148.5 348, 152.2 334, 150 320 Z" fill="#eef6f0" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="295" y="340" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">containerd (CRI 플러그인 내장)</text>
+<text x="295" y="356" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">containerd.sock · 플러그인은 함수 호출</text>
+<path d="M442 341 C 453.0 341.8, 463.2 341.8, 476 341" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<path d="M480 320 C 506 317.7, 533 318.1, 560 320.1 C 561.6 334, 560.1 348, 559.5 362 C 533 363.4, 506 362.8, 479.7 360.7 C 482.3 348, 479.6 334, 480 320 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="346" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">shim</text>
+<path d="M562 341 C 572.1 340.3, 585.2 340.3, 596 341" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45021)"/>
+<path d="M600 320 C 624 321.7, 648 321.6, 672 320.5 C 671.4 334, 672.4 348, 671.1 362 C 648 362.3, 624 361.6, 601.2 360.7 C 600.8 348, 602.2 334, 600 320 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="636" y="346" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">runc</text>
+<text x="350" y="388" font-family="'Nanum Pen Script', cursive" font-size="14.5" fill="#8a8272" text-anchor="middle">"eliminates another grpc hop" (2018-05 쿠버네티스 블로그)</text>
+<text x="350" y="418" font-family="'Nanum Pen Script', cursive" font-size="16.5" fill="#b3502f" text-anchor="middle">같은 글의 측정(파드 105개): ③이 ①보다 kubelet CPU 30.89%, 런타임 CPU 68.13% 낮았다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. Docker 노드에서는 kubelet 안의 dockershim과 dockerd를 거쳐서야 containerd에 닿았다</div>
+
+<p>단계 수 차이는 자원 사용량에도 나타났어요. 같은 2018년 글은 노드에 파드 105개를 띄운 안정 상태에서 containerd 1.1(CRI 플러그인)과 Docker 18.03 CE + dockershim을 비교했어요. containerd 쪽이 kubelet CPU 사용량은 30.89%, 컨테이너 런타임 CPU는 68.13%, kubelet 메모리(RSS)는 11.30%, 런타임 메모리(RSS)는 12.78% 낮았다고 해요. 우리 클러스터에서 dockershim과 containerd를 직접 비교해 재지는 않았어요.</p>
+
+<h2>3. kubelet 안에 남은 Docker가 쌓은 비용</h2>
+
+<p>dockershim은 처음부터 임시 해법이었어요. <a href="https://kubernetes.io/blog/2022/05/03/dockershim-historical-context/">Dockershim: The Historical Context</a>(2022-05)는 "this little software shim was never intended to be a permanent solution"이라고 적었어요. 그런데 이 임시 코드가 2016년부터 2022년까지 남으면서 비용이 쌓였어요. 제거를 결정한 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2221-remove-dockershim">KEP-2221</a>과 그 전의 KEP-1547, PR 본문이 꼽은 이유를 묶으면 넷이에요.</p>
+
+<h3>kubelet의 수명과 Docker가 묶였다</h3>
+
+<p>KEP-2221의 Motivation 첫 문장은 "The design of CRI is to be able to run a CRI implementation as a separate binary."예요. CRI는 런타임 쪽을 별도 실행 파일로 돌리게 설계했다는 뜻이에요. 그런데 Docker용 CRI(dockershim)만 kubelet 코드의 일부로 kubelet과 함께 떴고 KEP는 이것을 "tightly coupled with kubelet's lifecycle"이라고 불렀어요. KEP는 이 결합 때문에 kubelet이 특정 런타임에 의존하게 됐고 runc CVE 같은 런타임 쪽 심각한 문제가 생기면 sig-node 개발자뿐 아니라 클러스터 관리자도 부담을 진다고 적었어요.</p>
+
+<h3>Docker 라이브러리가 kubelet을 무겁게 했다</h3>
+
+<p>KEP-1547은 <code style="font-family:Menlo,monospace;font-size:14px;">docker/docker</code> 클라이언트 라이브러리를 "a particularly painful dependency"라고 불렀어요. 이 라이브러리가 끌고 오는 오픈소스 의존성이 많아 따라가기 어렵고 그 의존성이 "bloat the Kubelet binary", 즉 kubelet 바이너리를 부풀린다고 해요. deprecation을 시작한 <a href="https://github.com/kubernetes/kubernetes/pull/94624">PR #94624</a>(dims, 2020-11 병합)의 본문 첫 줄도 "dockershim has been part of kubelet for far too long."이에요. 이어서 moby/moby에서 많은 코드를 vendor로 들여와야 했다고 적었어요. 실제로 1년 뒤 dockershim을 지운 <a href="https://github.com/kubernetes/kubernetes/pull/97252">PR #97252</a>는 372개 파일에서 53,713줄을 지웠는데 그중 27,391줄(210파일)이 <code style="font-family:Menlo,monospace;font-size:14px;">vendor/github.com/docker</code>, 17,166줄(85파일)이 <code style="font-family:Menlo,monospace;font-size:14px;">pkg/kubelet/dockershim</code>이었어요.</p>
+
+<h3>Docker에만 있는 분기가 생겼다</h3>
+
+<p>KEP-2221의 Pros에는 dockershim이 여러 이유로 "inconsistent integrations"를 누린다는 문장이 있고 예로 legacyLogProvider를 들어요. v1.23.0 소스의 주석은 "LegacyLogProvider gives the ability to use unsupported docker log drivers (e.g. journald)"이에요(<a href="https://github.com/kubernetes/kubernetes/blob/v1.23.0/pkg/kubelet/kuberuntime/kuberuntime_manager.go#L169-L175">kuberuntime_manager.go</a>). Docker가 json-file이 아닌 로그 드라이버를 쓸 때만 kubelet이 다른 길로 로그를 읽었다는 뜻이에요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.23.0/pkg/kubelet/kubelet.go#L300-L330">kubelet.go</a>에도 런타임 종류가 docker일 때만 <code style="font-family:Menlo,monospace;font-size:14px;">runDockershim</code>을 부르는 분기가 있었어요. 같은 kubelet인데 Docker일 때만 다르게 움직이는 코드가 곳곳에 있었던 거예요.</p>
+
+<h3>새 기능이 dockershim에서 막혔다</h3>
+
+<p>2020년 12월 <a href="https://kubernetes.io/blog/2020/12/02/dockershim-faq/">Dockershim Deprecation FAQ</a>는 "features that were largely incompatible with the dockershim, such as cgroups v2 and user namespaces are being implemented in these newer CRI runtimes."라고 적었어요. cgroup v2나 user namespaces 같은 기능은 dockershim과 거의 맞지 않아서 새 CRI 런타임 쪽에서 만들어지고 있다는 뜻이에요. 쿠버네티스의 cgroup v2 지원을 정한 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2254-cgroup-v2">KEP-2254</a>는 Non-Goals에 Dockershim을 넣고 본문에 "The dockershim implementation embedded in the Kubelet won't be supported on cgroup v2."라고 적었어요. 흥미로운 점은 Docker Engine 자체는 20.10.0(2020-12-08)에서 cgroup2를 지원했다는 거예요(<a href="https://docs.docker.com/engine/release-notes/20.10/">Docker Engine 20.10 릴리스 노트</a>). 같은 KEP에 따르면 containerd는 1.4.0부터 cgroup v2를 지원했어요. 막힌 곳은 Docker Engine이 아니라 kubelet 안의 dockershim이었어요. 우리 노드 네 대의 <code style="font-family:Menlo,monospace;font-size:14px;">/sys/fs/cgroup</code>은 모두 <code style="font-family:Menlo,monospace;font-size:14px;">cgroup2fs</code>예요. dockershim이 지원하지 않겠다고 한 바로 그 환경이에요.</p>
+
+<p>KEP 승인자 dchen1107이 <a href="https://github.com/kubernetes/enhancements/pull/1985">원안 리뷰</a>에서 덧붙여 KEP-2221 Pros에 들어간 이유도 있어요. 내장 shim을 그대로 물려받는 편이 편해서 "there is less incentive to move to new container runtimes"라는 내용이에요. kubelet에 Docker가 들어 있는 한 사용자가 containerd나 CRI-O로 옮길 동기가 약했다는 뜻이에요. dims는 <a href="https://github.com/kubernetes/kubernetes/pull/97252">PR #97252</a> 본문에 한 줄로 정리했어요. "dockershim has been a drag on sig-node and a huge technical debt." <span class="obsv-mark">kubelet 안의 Docker 예외는 kubelet의 수명, 의존성, 코드 분기, 새 기능 모두에 걸려 있었어요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: "쿠버네티스가 Docker를 버렸다"의 정확한 범위</div>
+  &bull; 지운 것은 kubelet 안의 Docker 전용 어댑터(dockershim)예요. Docker로 빌드한 이미지는 어느 CRI 런타임에서나 돌아요(26편)<br>
+  &bull; Docker Engine을 노드 런타임으로 계속 쓰려면 Mirantis와 Docker가 밖으로 옮겨 유지하는 cri-dockerd를 kubelet과 Docker Engine 사이에 둬요<br>
+  &bull; 깨지는 것은 노드의 docker 데몬과 docker.sock을 직접 부르던 스크립트, 에이전트, 설정이에요(5절)
+</div>
+
+<h2>4. 떼어 내는 길은 여럿이었고 경고에서 삭제까지 1년 5개월이 걸렸다</h2>
+
+<p>KEP-1547은 길을 둘로 정리했어요. "either Docker must begin implementing the CRI natively or the dockershim must be moved out-of-tree into a standalone component." Docker가 CRI를 직접 구현하거나 dockershim을 트리 밖의 독립 구성 요소로 옮기는 것이에요. 실제 논의에서는 여기에 "누가 유지하나"와 "언제 어떻게 지우나"가 더해졌어요. KEP-2221 자체의 Alternatives 절은 "None."이라서 아래 표는 KEP-1547, KEP 리뷰 댓글, PR 본문, 일정 변경 기록에서 모은 거예요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:640px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">검토한 길</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">근거 원문</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">결과</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Docker Engine이 CRI를 직접 구현</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">KEP-1547이 꼽은 두 길 중 하나</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">일어나지 않았어요. Docker 쪽이 엔진에 CRI를 넣겠다고 한 원문은 찾지 못했어요</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">쿠버네티스가 shim을 트리 밖으로 옮겨 직접 유지</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/94624">PR #94624</a>의 dims: 프로토타입 dims/cri-dockerd를 소개하며 "(NO! i am not maintaining that, nice try)"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">쿠버네티스 프로젝트는 맡지 않았어요</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">다른 쪽이 트리 밖 shim을 유지</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">KEP-2221 Pros: "A cri-dockerd can be maintained independently by folks who are interested in keeping this functionality"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2020-12-04 Mirantis와 Docker가 맡겠다고 발표(<a href="https://www.mirantis.com/blog/mirantis-to-take-over-support-of-kubernetes-dockershim-2/">Mirantis 블로그</a>), 지금의 <a href="https://github.com/Mirantis/cri-dockerd">cri-dockerd</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">기본 빌드에서만 빼고 코드는 남기기 (dockerless 빌드 태그)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/enhancements/pull/1985">KEP 원안 리뷰</a>의 liggitt: "this doesn't match the spirit of the deprecation policy"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">빌드 제외와 코드 삭제를 같은 릴리스(1.24)에서 했어요</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">CRI를 GA로 올린 뒤에 제거</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">원안 리뷰의 제안 문구: "CRI is still technically in alpha, and should graduate to GA before removing dockershim from kubelet."</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">졸업 기준이 "Kubelet switched to use CRI API v1"로 정리됐고 1.23에서 CRI v1이 기본이 됐어요</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">더 오래 들고 가기</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">KEP-2221 Risks: "The worst case scenario is for us to carry on the dockershim for a couple of more releases."</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2021-02-11 목표를 1.22에서 1.24로 미뤘어요</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>dims가 PR #94624에 적은 설명이 이 결정의 방향을 보여 줘요. "The correct split/architecture is to follow the same design as with containerd and cri-o namely a separate process that kubelet talks to via grpc that in turn talks to a runtime." kubelet이 gRPC로 부르는 별도 프로세스가 런타임을 부르는 구조, 즉 containerd·CRI-O와 같은 구조로 나누는 게 맞다는 뜻이에요. 다만 그 별도 프로세스를 쿠버네티스가 유지하지는 않겠다는 거였어요.</p>
+
+<p>기본 빌드에서만 빼자는 원안에 문제를 제기한 liggitt의 댓글은 폐기 정책을 근거로 했어요. 폐기 정책은 deprecated 기간이 끝날 때까지 사용자가 쿠버네티스를 쓰는 방식을 바꾸지 않아도 되게 하려는 것인데 기본 빌드에서 빼 버리면 사용자가 kubelet을 직접 빌드해야 한다는 지적이었어요. 최종 KEP에는 "Deprecation should be for at least a year."라고 적혔고 deprecation이 2020년 12월에 발표됐으니 빌드에서 빼는 릴리스에 코드도 함께 지울 수 있다고 정리됐어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: deprecated와 폐기 정책(deprecation policy)</div>
+  기능을 바로 지우지 않고 "앞으로 지운다"고 먼저 알리는 단계가 deprecated예요. 쿠버네티스는 폐기 정책에 따라 이 기간에는 기능이 그대로 동작하게 두고 사용자가 옮겨 갈 시간을 줘요. dockershim은 1.20부터 kubelet이 시작할 때 경고를 남기기만 하고 그대로 동작했어요.
+</div>
+
+<p>날짜순으로 놓으면 이래요. 릴리스 날짜는 GitHub 릴리스의 게시 시각(UTC) 기준이에요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:680px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">날짜</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">버전</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">일어난 일</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">근거</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-09-09</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">런타임을 클라이언트·서버로 나누자는 이슈</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/issues/13768">이슈 #13768</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2016-04-13</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Docker 1.11</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Docker Engine이 containerd·runC 위에서 돌기 시작</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://www.docker.com/blog/docker-engine-1-11-runc/">Docker 블로그</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2016-07-29</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">(1.5 개발)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">dockershim 패키지 시작</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/29553">PR #29553</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2016-12-13</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.5</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">CRI v1alpha1 알파, Docker-CRI(dockershim) 실험</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.5.md">CHANGELOG-1.5</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2017-03-28</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.6</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Docker-CRI 베타, 기본으로 켜짐</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.6.md">CHANGELOG-1.6</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2017-06-30</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.7</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">--enable-cri 제거, CRI가 유일한 연동 방법</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.7.md">CHANGELOG-1.7</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2018-05-24</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">containerd 1.1</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">containerd CRI 플러그인 GA</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://kubernetes.io/blog/2018/05/24/kubernetes-containerd-integration-goes-ga/">쿠버네티스 블로그</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2018-06-27</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.11</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">rkt 직결 코드 제거, kubelet 안 런타임 예외는 Docker만</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.11.md">CHANGELOG-1.11</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2020-11-12</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">(1.20 개발)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">"Deprecate Dockershim" 병합</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/94624">PR #94624</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2020-12-04</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Mirantis·Docker가 shim을 밖에서 유지하겠다고 발표</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://www.mirantis.com/blog/mirantis-to-take-over-support-of-kubernetes-dockershim-2/">Mirantis 블로그</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2020-12-08</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.20</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">dockershim deprecated (kubelet 시작 시 경고)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.20.md">CHANGELOG-1.20</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2021-02-11</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">제거 목표를 1.22에서 1.24로</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/enhancements/pull/2481">enhancements PR #2481</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2021-12-07</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.23</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">CRI v1이 기본, dockershim이 들어 있는 마지막 마이너</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.23.md">CHANGELOG-1.23</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2021-12-08</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">(1.24 개발)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">dockershim 삭제 병합 (-53,713줄)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/97252">PR #97252</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2022-01-04</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">cri-dockerd 첫 릴리스 v0.2.0</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/Mirantis/cri-dockerd/releases">cri-dockerd 릴리스</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2022-05-03</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.24</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">dockershim 제거 릴리스, kubeadm 기본 criSocket이 containerd 소켓으로</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.24.md">CHANGELOG-1.24</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2022-12-09</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.26</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">CRI v1alpha2 지원 중단</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.26.md">CHANGELOG-1.26</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2022-12-20</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">cri-dockerd v0.3.0, CRI v1 지원</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/Mirantis/cri-dockerd/releases">cri-dockerd 릴리스</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2023-04-11</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.27</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">kubelet --container-runtime 플래그 제거</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.27.md">CHANGELOG-1.27</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>2021년 2월의 연기는 SIG Node 회의에서 정했어요. enhancements PR #2481 본문은 "Postponement of Dockershim removal was discussed at SIG Node meeting today and we had no objections."예요. 그 회의록은 직접 확인하지 못했어요. <span class="obsv-mark">1.20의 경고에서 1.24의 삭제까지 약 1년 5개월 동안 쿠버네티스는 shim을 직접 맡지 않으면서 사용자가 옮겨 갈 시간을 줬어요.</span></p>
+
+<h2>5. 지운 뒤에 깨진 것은 이미지가 아니라 노드의 docker에 기대던 도구였다</h2>
+
+<p>공식 문서 <a href="https://kubernetes.io/docs/tasks/administer-cluster/migrating-from-dockershim/check-if-dockershim-removal-affects-you/">Check whether dockershim removal affects you</a>는 이미지를 Docker로 빌드하는 것은 런타임 의존이 아니라고 먼저 짚어요. <span class="obsv-mark">Docker로 이미지를 만드는 일은 그대로 되고 노드에서 docker 데몬을 부르던 일만 깨진다는 뜻이에요.</span> 문서는 그런 의존을 찾을 곳을 이렇게 꼽아요.</p>
+
+<p>&middot; 특권 파드 안에서 <code style="font-family:Menlo,monospace;font-size:14px;">docker ps</code> 같은 Docker 명령을 실행하거나 docker 서비스를 재시작하거나 <code style="font-family:Menlo,monospace;font-size:14px;">/etc/docker/daemon.json</code>을 고치는 경우<br>
+&middot; <code style="font-family:Menlo,monospace;font-size:14px;">/etc/docker/daemon.json</code>에 적어 둔 사설 레지스트리·이미지 미러 설정(다른 런타임 설정으로 옮겨야 해요)<br>
+&middot; 노드에 SSH로 들어가 하는 문제 해결, 노드 시작 스크립트, 노드에 직접 설치한 모니터링·보안 에이전트<br>
+&middot; 위 일을 하는 서드파티 도구<br>
+&middot; Docker 고유의 메트릭이나 로그 문구에 맞춰 둔 경보 같은 간접 의존</p>
+
+<p>같은 문서는 containerd로 바꾸면 컨테이너가 Docker에 보이지 않으니 <code style="font-family:Menlo,monospace;font-size:14px;">docker ps</code>, <code style="font-family:Menlo,monospace;font-size:14px;">docker inspect</code>, <code style="font-family:Menlo,monospace;font-size:14px;">docker exec</code>를 쓸 수 없다고 해요. docker로 빌드하거나 받은 이미지도 런타임에 보이지 않아서 레지스트리에 올려야 쿠버네티스가 쓸 수 있어요. 알려진 문제로는 kubelet <code style="font-family:Menlo,monospace;font-size:14px;">/metrics/cadvisor</code>의 컨테이너 이름 형식이 Docker 노드의 <code style="font-family:Menlo,monospace;font-size:14px;">k8s_&lt;container-name&gt;_&lt;pod-name&gt;_...</code>에서 containerd 노드의 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;container-id&gt;</code>로 바뀌고 <code style="font-family:Menlo,monospace;font-size:14px;">container_fs_usage_bytes</code> 같은 파일시스템 메트릭 일부가 빠진다는 점이 적혀 있어요.</p>
+
+<p>네트워크를 맡는 주체도 바뀌었어요. dockershim과 함께 kubelet의 <code style="font-family:Menlo,monospace;font-size:14px;">--network-plugin</code>, <code style="font-family:Menlo,monospace;font-size:14px;">--cni-conf-dir</code>, <code style="font-family:Menlo,monospace;font-size:14px;">--cni-bin-dir</code> 같은 플래그가 지워졌어요(<a href="https://github.com/kubernetes/kubernetes/pull/106907">PR #106907</a>). 파드에 CNI를 부르는 일은 런타임 몫이 됐고 우리 노드에서도 CNI 경로는 kubelet이 아니라 containerd 설정에 있어요(6절). 34편에서 본 RunPodSandbox 안의 CNI ADD가 그 결과예요.</p>
+
+<p>프로젝트도 대가를 치렀어요. 1.20에서 deprecation을 알리자 "Docker로 만든 이미지가 이제 안 도나" 하는 혼란이 퍼졌고 Historical Context 글은 "This was our fault"라고 적었어요. 혼란을 줄이려고 2020년 12월 2일에 <a href="https://kubernetes.io/blog/2020/12/02/dont-panic-kubernetes-and-docker/">Don't Panic: Kubernetes and Docker</a>와 FAQ를 냈어요. Don't Panic 글은 "Docker isn’t compliant with CRI"라고 적고 Docker가 CRI를 따랐다면 shim이 필요 없었고 이런 일도 없었을 거라고 이어 가요. 이 일의 요점이 이 두 문장에 있어요.</p>
+
+<p>트리 밖으로 나간 shim은 일정이 늦었어요. PR #97252가 병합된 2021-12-08에는 cri-dockerd 릴리스가 없었고 첫 릴리스 v0.2.0은 2022-01-04에 나왔어요. 1.26(2022-12-09)이 CRI v1alpha2 지원을 끊은 뒤 cri-dockerd가 v1을 지원한 v0.3.0은 11일 뒤인 2022-12-20에 나왔어요. 그 무렵 제거 피드백 이슈(<a href="https://github.com/kubernetes/kubernetes/issues/106917">#106917</a>)에는 "the skeptics were right"라는 댓글이 달렸어요. 회의적이던 쪽이 옳았고 지원되는 런타임으로 옮기는 편이 낫겠다는 말이에요. KEP-2221의 Cons에도 이미 "Deployment pain with a new binary in addition to kubelet."이 적혀 있었어요. cri-dockerd는 지금도 릴리스를 이어 가서 2026-10-30에 v0.4.10이 나왔어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: cri-dockerd</div>
+  dockershim 코드를 쿠버네티스 밖으로 옮겨 독립 데몬으로 만든 CRI 서버예요. kubelet은 <code style="font-family:Menlo,monospace;font-size:14px;">unix:///var/run/cri-dockerd.sock</code> 같은 소켓으로 cri-dockerd에 CRI 호출을 보내고 cri-dockerd가 Docker Engine API를 불러요. Mirantis 저장소에서 따로 릴리스해요.
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 업그레이드 전에 노드의 Docker 의존을 이렇게 찾아요</div>
+  &bull; 공식 문서 <a href="https://kubernetes.io/docs/tasks/administer-cluster/migrating-from-dockershim/migrating-telemetry-and-security-agents/">Migrating telemetry and security agents from dockershim</a>에 docker.sock을 hostPath로 마운트한 파드를 찾는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pods --all-namespaces -o=jsonpath=...</code> 명령이 있어요. 우리 클러스터에서는 범위를 넓혀 docker.sock, dockershim, cri-dockerd, containerd 소켓이나 /var/run 통째를 마운트한 파드를 찾았고 전체 32개 중 0개였어요(hostPath를 쓰는 파드는 12개)<br>
+  &bull; 노드에서 컨테이너를 볼 때는 <code style="font-family:Menlo,monospace;font-size:14px;">docker ps</code> 대신 <code style="font-family:Menlo,monospace;font-size:14px;">crictl ps</code>(CRI로 묻기)나 <code style="font-family:Menlo,monospace;font-size:14px;">nerdctl -n k8s.io ps</code>(containerd에 직접 묻기)를 써요<br>
+  &bull; daemon.json의 레지스트리 미러 같은 설정은 쓰는 런타임의 설정으로 옮기고 노드 스크립트와 에이전트 문서에서 docker 명령을 찾아봐요<br>
+  &bull; Docker Engine을 꼭 노드 런타임으로 써야 한다면 cri-dockerd를 설치하고 kubelet의 containerRuntimeEndpoint를 그 소켓으로 맞춰요
+</div>
+
+<h2>6. 우리 노드에서 확인한 것: Docker가 없는 노드와 docker.sock을 찾는 파드</h2>
+
+<p>노드 네 대를 조회만 하는 스크립트로 런타임 상태를 모았어요(2026-11-14 21:25). 아래는 API 서버가 아는 노드별 런타임과 마스터의 결과예요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/45/01-no-docker-master.png" alt="01-runtime-no-docker.sh 실행 화면 앞부분. 노드 4대 k8s-master, k8s-worker1~3 모두 KUBELET v1.37.2, CONTAINER-RUNTIME containerd://2.4.1, KERNEL 6.8.0-147-generic. master에서 docker, dockerd, cri-dockerd는 (없음), containerd /usr/local/bin/containerd, runc /usr/local/bin/runc, crictl /usr/bin/crictl, nerdctl /usr/local/bin/nerdctl. 소켓 없음 /var/run/docker.sock, /var/run/dockershim.sock, /var/run/cri-dockerd.sock, 소켓 있음 /run/containerd/containerd.sock. systemd docker=inactive containerd=active. kubelet config.yaml containerRuntimeEndpoint unix:///run/containerd/containerd.sock, kubelet 실행 인자 중 runtime·docker 관련 없음, /sys/fs/cgroup 파일시스템 cgroup2fs" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+
+<div class="obsv-figcap">그림 3. 마스터에는 docker 계열 실행 파일과 소켓이 하나도 없고 kubelet은 containerd 소켓만 본다</div>
+
+<p>워커 세 대도 같았어요. 다른 곳은 엔드포인트 경로의 앞부분뿐이었어요. 마스터는 <code style="font-family:Menlo,monospace;font-size:14px;">unix:///run/containerd/containerd.sock</code>이고 워커는 <code style="font-family:Menlo,monospace;font-size:14px;">unix:///var/run/containerd/containerd.sock</code>이에요. 마스터는 실습 저장소의 kubeadm init 설정에 <code style="font-family:Menlo,monospace;font-size:14px;">criSocket</code>을 직접 적었고 워커는 kubeadm 1.24부터 기본값이 된 containerd 소켓(<a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.24.md">CHANGELOG-1.24</a>의 "default the kubeadm configuration to the containerd socket")을 받았어요. <code style="font-family:Menlo,monospace;font-size:14px;">/var/run</code>은 <code style="font-family:Menlo,monospace;font-size:14px;">/run</code>을 가리키는 심볼릭 링크라서 둘은 같은 소켓이에요(27편). kubelet 실행 인자에도 런타임 관련 플래그가 없었어요. 1.27에서 엔드포인트 설정이 플래그에서 kubelet 설정 파일로 옮겨진 것과 맞는 모습이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/45/02-kubelet-flags.png" alt="01-runtime-no-docker.sh 3절 실행 화면. worker1의 kubelet --help에서 Kubernetes v1.37.2, --container-runtime 플래그 없음, --container-runtime-endpoint 있음 default unix:///run/containerd/containerd.sock DEPRECATED, --image-service-endpoint 있음 DEPRECATED, --docker-endpoint 없음, --network-plugin 없음, --cni-bin-dir 없음. docker라는 낱말이 나오는 플래그 수 1, --serialize-image-pulls 설명에 docker daemon with version &lt; 1.9 or an Aufs storage backend" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+
+<div class="obsv-figcap">그림 4. 1.24·1.27에서 지운 플래그는 kubelet v1.37.2에 없고 docker라는 낱말은 도움말 한 줄에만 남았다</div>
+
+<p><code style="font-family:Menlo,monospace;font-size:14px;">--container-runtime</code>은 1.27에서 지워졌고 <code style="font-family:Menlo,monospace;font-size:14px;">--docker-endpoint</code>·<code style="font-family:Menlo,monospace;font-size:14px;">--network-plugin</code>·<code style="font-family:Menlo,monospace;font-size:14px;">--cni-bin-dir</code>은 1.24에서 지워졌어요. 그래서 kubelet v1.37.2에는 넷 다 없어요. <code style="font-family:Menlo,monospace;font-size:14px;">--container-runtime-endpoint</code>는 남아 있지만 DEPRECATED 표시가 붙어 설정 파일로 옮기라고 하고 기본값은 containerd 소켓이에요. docker라는 낱말은 <code style="font-family:Menlo,monospace;font-size:14px;">--serialize-image-pulls</code> 도움말 한 줄에만 남아 있었어요. Docker 1.9 미만이나 Aufs 저장소를 쓰는 노드라면 기본값을 바꾸지 말라는 옛 안내예요.</p>
+
+<p>kubelet이 부르는 CRI 서버는 containerd 안의 플러그인이에요. worker1에서 본 containerd의 플러그인 목록과 네임스페이스는 이래요.</p>
+
+<div class="obsv-code"># 45-runtime-no-docker.txt 4절 발췌 (worker1, containerd v2.4.1)
+--- ctr plugins ls 중 cri
+TYPE                     ID        PLATFORMS        STATUS
+io.containerd.cri.v1     images    -                ok
+io.containerd.cri.v1     runtime   linux/arm64/v8   ok
+io.containerd.grpc.v1    cri       -                ok
+--- containerd namespaces
+NAME    LABELS
+default
+k8s.io
+--- containerd config dump 중 CNI
+  [plugins.'io.containerd.cri.v1.runtime'.cni]
+  bin_dirs = ['/opt/cni/bin', '/usr/local/libexec/cni']
+  conf_dir = '/etc/cni/net.d'
+
+# 6절: worker1 에서 docker CLI 없이 보기
+crictl pods (파드 샌드박스 수) = 14, crictl ps (앱 컨테이너 수) = 9
+nerdctl -n k8s.io ps (pause 포함 전체) = 18
+nerdctl -n default ps = 0</div>
+
+<p>&rarr; kubelet이 부르는 gRPC 서비스(<code style="font-family:Menlo,monospace;font-size:14px;">io.containerd.grpc.v1 cri</code>)가 containerd 프로세스 안의 플러그인이고 CNI 경로(<code style="font-family:Menlo,monospace;font-size:14px;">bin_dirs</code>, <code style="font-family:Menlo,monospace;font-size:14px;">conf_dir</code>)도 이 플러그인 설정에 있다는 뜻이에요. v1.23 kubelet의 기본값에 있던 <code style="font-family:Menlo,monospace;font-size:14px;">/opt/cni/bin</code>과 <code style="font-family:Menlo,monospace;font-size:14px;">/etc/cni/net.d</code>가 지금은 containerd 설정에 있어요. 쿠버네티스가 만든 컨테이너는 containerd의 <code style="font-family:Menlo,monospace;font-size:14px;">k8s.io</code> 네임스페이스에만 있었어요. crictl ps가 앱 컨테이너 9개를 보여 줄 때 nerdctl은 같은 네임스페이스의 pause 컨테이너까지 합쳐 18개를 보여 줬어요.</p>
+
+<h3>docker.sock을 마운트하는 파드를 Docker 없는 노드에 띄우면</h3>
+
+<p>문서가 첫 번째로 꼽은 의존은 노드의 docker.sock을 hostPath로 마운트하는 파드예요. 이런 파드가 Docker가 없는 우리 노드에서 어떻게 되는지 worker2에 두 개를 띄워 봤어요. sock-typed는 hostPath에 type: Socket을 줬고 sock-untyped는 type을 비웠어요. 실험은 전용 네임스페이스에서 하고 바로 지웠어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: hostPath의 type</div>
+  노드의 경로를 파드에 붙일 때 그 경로가 무엇이어야 하는지 정하는 칸이에요. <a href="https://kubernetes.io/docs/concepts/storage/volumes/#hostpath">볼륨 문서</a>에 따르면 Socket은 "A UNIX socket must exist at the given path"이고 빈 값(기본)은 하위 호환을 위한 값이라 마운트 전에 아무것도 확인하지 않아요.
+</div>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/45/03-docker-sock-pods.png" alt="02-docker-sock.sh 실행 화면. worker2에 /var/run/docker.sock은 No such file or directory, /run/containerd/containerd.sock은 소켓. 파드 두 개를 띄우고 12초 뒤 sock-typed는 0/1 ContainerCreating, sock-untyped는 1/1 Running. sock-typed 이벤트는 FailedMount hostPath type check failed /var/run/docker.sock is not a socket file, 처음에는 path does not exist, 다음에는 it's a Directory. sock-untyped 안에서 ls -ld 결과 drwxr-xr-x 디렉터리, [ -S ] 검사는 소켓 아님. worker2에 drwxr-xr-x /var/run/docker.sock 디렉터리가 남았고 정리 단계에서 지움" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+
+<div class="obsv-figcap">그림 5. type: Socket을 준 파드는 FailedMount로 멈췄고 type을 비운 파드는 빈 디렉터리를 받은 채 Running이 됐다</div>
+
+<p>&middot; <b>sock-typed</b>는 12초 뒤에도 ContainerCreating이었고 이벤트에 FailedMount가 찍혔어요. 처음 이유는 경로가 없다는 것이었고 다음 이유는 "it's a Directory"였어요. 그사이 sock-untyped 때문에 같은 경로에 디렉터리가 생겼기 때문이에요.<br>
+&middot; <b>sock-untyped</b>는 Running이 됐어요. 그런데 컨테이너 안의 <code style="font-family:Menlo,monospace;font-size:14px;">/var/run/docker.sock</code>은 소켓이 아니라 빈 디렉터리(drwxr-xr-x)였고 worker2 노드에도 같은 디렉터리가 생겨 있었어요. 이 파드 안에서 Docker 클라이언트를 돌리면 붙을 데몬이 없어요.</p>
+
+<p>빈 디렉터리가 생긴 이유는 containerd의 CRI 코드에 있어요. containerd v2.4.1의 <a href="https://github.com/containerd/containerd/blob/v2.4.1/internal/cri/opts/spec_linux_opts.go#L135-L144">internal/cri/opts/spec_linux_opts.go</a>는 마운트할 호스트 경로가 없으면 디렉터리를 만들어요.</p>
+
+<div class="obsv-code">// Create the host path if it doesn't exist.
+// TODO(random-liu): Add CRI validation test for this case.
+if _, err := osi.Stat(src); err != nil {
+        if !os.IsNotExist(err) {
+                return fmt.Errorf("failed to stat %q: %w", src, err)
+        }
+        if err := osi.MkdirAll(src, 0755); err != nil {
+                return fmt.Errorf("failed to mkdir %q: %w", src, err)
+        }
+}</div>
+
+<p>&rarr; 호스트 경로가 없으면 0755 권한의 디렉터리를 만든 뒤 마운트한다는 뜻이에요. <span class="obsv-mark">type을 비운 hostPath는 kubelet이 아무것도 확인하지 않고 넘기니 containerd가 docker.sock이라는 이름의 빈 디렉터리를 만들었어요.</span> 노드에 남은 디렉터리의 권한(drwxr-xr-x)도 0755와 같아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs>
+<marker id="m45031" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker>
+</defs>
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">Docker가 없는 worker2에서 /var/run/docker.sock을 마운트한 파드 두 개</text>
+<path d="M40 48 C 132 45.5, 225 45.7, 320 46.8 C 322.3 64, 322.4 81, 321.0 98 C 225 96.4, 132 98.7, 41.5 96.9 C 40.9 81, 40.2 64, 40 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="180" y="72" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">sock-typed</text>
+<text x="180" y="90" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">hostPath type: Socket</text>
+<path d="M180 100 C 179.2 107.2, 179.1 116.5, 180 124" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45031)"/>
+<path d="M40 128 C 132 127.5, 225 128.4, 320 127.7 C 318.4 143, 320.2 157, 321.0 172 C 225 173.4, 132 173.0, 39.5 172.5 C 38.5 157, 37.9 143, 40 128 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="180" y="148" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">kubelet이 마운트 전에 경로를 확인</text>
+<text x="180" y="165" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">"A UNIX socket must exist"</text>
+<path d="M180 174 C 178.9 182.8, 180.9 188.8, 180 198" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45031)"/>
+<path d="M40 202 C 132 203.9, 225 199.6, 320 200.6 C 322.0 220, 321.6 238, 321.2 256 C 225 256.2, 132 256.1, 39.4 256.0 C 40.4 238, 37.6 220, 40 202 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="180" y="224" font-family="Menlo, monospace" font-size="12" fill="#b3502f" text-anchor="middle">FailedMount: is not a socket file</text>
+<text x="180" y="246" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">ContainerCreating에 멈춤</text>
+<text x="180" y="284" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">고장이 파드 이벤트에 바로 드러난다</text>
+<path d="M380 48 C 472 46.7, 565 47.1, 660 49.3 C 657.6 64, 659.2 81, 661.5 98 C 565 96.7, 472 99.8, 381.1 99.4 C 382.3 81, 381.7 64, 380 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="72" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">sock-untyped</text>
+<text x="520" y="90" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">hostPath type 없음 ("")</text>
+<path d="M520 100 C 520.5 108.1, 519.2 116.7, 520 124" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45031)"/>
+<path d="M380 128 C 472 130.4, 565 129.9, 660 127.2 C 658.7 143, 657.9 157, 660.3 172 C 565 170.5, 472 170.6, 380.4 172.4 C 380.8 157, 380.0 143, 380 128 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="148" font-family="'Nanum Pen Script', cursive" font-size="15.5" fill="#3d3a34" text-anchor="middle">확인 없이 넘기고 containerd가 경로를 만듦</text>
+<text x="520" y="165" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">MkdirAll(src, 0755)</text>
+<path d="M520 174 C 520.3 181.9, 518.9 188.9, 520 198" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#m45031)"/>
+<path d="M380 202 C 472 200.7, 565 200.7, 660 201.7 C 662.0 220, 658.0 238, 659.2 256 C 565 253.9, 472 254.2, 379.6 256.6 C 378.9 238, 379.8 220, 380 202 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="520" y="224" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18" text-anchor="middle">Running 1/1</text>
+<text x="520" y="246" font-family="Menlo, monospace" font-size="11.5" fill="#3d3a34" text-anchor="middle">docker.sock = 빈 디렉터리 (drwxr-xr-x)</text>
+<text x="520" y="284" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">[ -S ] 소켓 아님: Docker 호출만 조용히 실패</text>
+<path d="M350 300 C 350 299.8, 350 298.7, 350 299.3" fill="none" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round"/>
+<path d="M350 52 C 351.1 133.7, 351.0 215.2, 350 300" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="350" y="330" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">빈 디렉터리가 먼저 생겨서 sock-typed의 두 번째 이벤트는 "it's a Directory"였다</text>
+<text x="350" y="366" font-family="'Nanum Pen Script', cursive" font-size="17.5" fill="#b3502f" text-anchor="middle">= 소켓을 기대하는 마운트에 type: Socket을 주면 Docker가 없는 노드가 바로 드러난다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. 같은 docker.sock 마운트라도 type이 있으면 바로 멈추고 type이 없으면 Running인 채 Docker 호출만 실패한다</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: type을 비운 hostPath는 Docker가 없어도 Running이 돼요</div>
+  &bull; 모니터링·보안 에이전트가 쓸 docker.sock을 마운트하면서 hostPath의 type을 비워 두면 Docker가 없는 노드에서도 파드는 Running이 되고 에이전트 안에서 Docker 호출만 실패해요. 파드 상태만 봐서는 고장을 알아차리기 어려워요<br>
+  &bull; 소켓을 기대하는 마운트에는 type: Socket을 줘요. 노드에 그 소켓이 없으면 FailedMount 이벤트로 바로 드러나요<br>
+  &bull; 런타임을 바꾼 뒤에는 hostPath로 런타임 소켓을 붙인 파드부터 찾아서 쓰는 소켓을 containerd나 CRI 쪽으로 바꿀 수 있는지 확인해요. 이번 실험 뒤에는 worker2에 생긴 빈 디렉터리도 지웠어요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>CRI는 런타임을 kubelet 밖의 gRPC 서버로 빼려고 만든 경계였는데 Docker Engine은 그 서버가 아니었어요. 그래서 kubelet 안에 dockershim이 남았고 1.24에서 지워졌어요.</b><br><br>
+  2016년까지 kubelet 안에는 Docker용과 rkt용 SyncPod가 따로 있었고 파드 기능이 늘 때마다 런타임 구현을 모두 고쳐야 했어요. 1.5의 CRI는 파드 로직을 kubelet에 한 번만 두고 런타임은 유닉스 소켓 건너편에서 샌드박스와 컨테이너 단위의 작은 호출만 받게 했어요. Docker Engine은 CRI를 구현하지 않아서 kubelet이 자기 안에 CRI 서버(dockershim)를 띄워 Docker API로 바꿨어요. 이 예외는 kubelet의 수명을 Docker와 묶었고 docker 라이브러리와 Docker 전용 분기를 kubelet에 남겼으며 cgroup v2 같은 새 기능을 막았어요. 쿠버네티스는 shim을 직접 밖에서 유지하는 길도 기본 빌드에서만 빼는 길도 고르지 않았어요. 1.20에서 경고를 넣고 1년 5개월 뒤 1.24에서 지웠고 Docker Engine을 계속 쓰려는 사용자는 cri-dockerd를 둬요. 깨진 것은 이미지가 아니라 노드의 docker 데몬과 docker.sock에 기대던 도구였어요. 우리 노드에서 type: Socket으로 docker.sock을 요구한 파드는 FailedMount로 멈췄고 type을 비운 파드는 빈 디렉터리를 받은 채 Running이 됐어요. 쿠버네티스가 뺀 것은 Docker가 아니라 kubelet 안에 남아 있던 Docker 전용 예외였어요.
+</div>
+
+</div>

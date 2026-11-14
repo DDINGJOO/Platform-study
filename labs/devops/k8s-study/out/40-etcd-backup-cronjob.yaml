@@ -1,0 +1,31 @@
+# 실습 저장소의 shared/components/16-etcd-backup-cronjob.yaml 을 옮긴 것.
+# etcd 스냅숏을 주기적으로 뜨는 CronJob (실습용). 마스터에서 hostNetwork 로 127.0.0.1:2379 에 붙는다.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: etcd-backup, namespace: kube-system}
+spec:
+  schedule: "0 */6 * * *"          # 6시간마다
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          hostNetwork: true
+          nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+          tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+          containers:
+          - name: snapshot
+            image: registry.k8s.io/etcd:3.7.0-0      # 마스터에 이미 있는 이미지(etcdctl 포함)
+            command: ["etcdctl","--endpoints=https://127.0.0.1:2379",
+                      "--cacert=/pki/ca.crt","--cert=/pki/server.crt","--key=/pki/server.key",
+                      "snapshot","save","/backup/etcd-snapshot.db"]
+            volumeMounts:
+            - {name: pki, mountPath: /pki, readOnly: true}
+            - {name: backup, mountPath: /backup}
+          volumes:
+          - {name: pki, hostPath: {path: /etc/kubernetes/pki/etcd, type: Directory}}
+          - {name: backup, hostPath: {path: /var/backups/etcd, type: DirectoryOrCreate}}

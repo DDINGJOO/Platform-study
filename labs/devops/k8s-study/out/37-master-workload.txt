@@ -1,0 +1,27 @@
+# 마스터에 일반 파드 올리기 (2026-11-14 19:45:57 KST)
+
+## 1. 지금 마스터에 떠 있는 파드와 control-plane taint 를 견디는 toleration
+  kube-system/calico-kube-controllers-846669895c-rgvhh owner=ReplicaSet toleration: node-role.kubernetes.io/control-plane
+  kube-system/calico-node-tvx2h                      owner=DaemonSet  toleration: key 없이 NoSchedule 전부 견딤
+  kube-system/coredns-559f6c778d-r2776               owner=ReplicaSet toleration: node-role.kubernetes.io/control-plane
+  kube-system/etcd-k8s-master                        owner=Node       정적 파드: kubelet 이 파일로 띄움, 스케줄러를 거치지 않음
+  kube-system/kube-apiserver-k8s-master              owner=Node       정적 파드: kubelet 이 파일로 띄움, 스케줄러를 거치지 않음
+  kube-system/kube-controller-manager-k8s-master     owner=Node       정적 파드: kubelet 이 파일로 띄움, 스케줄러를 거치지 않음
+  kube-system/kube-proxy-292qw                       owner=DaemonSet  toleration: key·effect 없이 operator Exists = 모든 taint 견딤
+  kube-system/kube-scheduler-k8s-master              owner=Node       정적 파드: kubelet 이 파일로 띄움, 스케줄러를 거치지 않음
+  monitoring/node-exporter-47twj                     owner=DaemonSet  toleration: node-role.kubernetes.io/control-plane
+  (이 1절은 분류 문구를 고친 스크립트로 19:47 에 다시 뽑음)
+  마스터 taint: node-role.kubernetes.io/control-plane:NoSchedule
+
+## 2. 마스터를 지정만 한 파드 (toleration 없음)
+19:46:02 on-master-no-tol Pending NODE=<none>
+   Warning FailedScheduling pod/on-master-no-tol 0/4 nodes are available: 1 node(s) had untolerated taint(s), 3 node(s) didn't match Pod's node affinity/selector. preemption: 0/4 nodes are available: 
+
+## 3. 같은 파드에 control-plane taint 를 견디는 toleration 을 더함
+19:46:03 on-master-tol Running NODE=k8s-master
+
+## 4. toleration 만 주고 노드를 지정하지 않으면? 같은 파드 6개
+  노드별 개수: k8s-master=1 k8s-worker1=1 k8s-worker2=2 k8s-worker3=2
+
+## 5. 정리
+19:46:14 cp-demo 네임스페이스 삭제

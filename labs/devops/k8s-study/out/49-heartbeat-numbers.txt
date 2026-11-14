@@ -1,0 +1,52 @@
+# 01 노드 하트비트·축출 숫자 확인 (2026-11-14 21:22:35 KST)
+
+## 1. kubelet 쪽 (configz, k8s-worker1)
+  nodeStatusUpdateFrequency = 10s
+  nodeStatusReportFrequency = 5m0s
+  nodeLeaseDurationSeconds = 40
+  /var/lib/kubelet/config.yaml 에 직접 적힌 값(없으면 기본값):
+
+## 2. Lease renewTime 을 2초마다 26초 동안 (k8s-worker1) — 10초(=40 x 0.25)마다 바뀌는지
+  21:22:35 renewTime=2026-11-14T12:22:34.094498Z
+  21:22:37 renewTime=2026-11-14T12:22:34.094498Z
+  21:22:40 renewTime=2026-11-14T12:22:34.094498Z
+  21:22:42 renewTime=2026-11-14T12:22:34.094498Z
+  21:22:44 renewTime=2026-11-14T12:22:34.094498Z
+  21:22:46 renewTime=2026-11-14T12:22:44.431996Z  <- 갱신
+  21:22:48 renewTime=2026-11-14T12:22:44.431996Z
+  21:22:50 renewTime=2026-11-14T12:22:44.431996Z
+  21:22:52 renewTime=2026-11-14T12:22:44.431996Z
+  21:22:54 renewTime=2026-11-14T12:22:44.431996Z
+  21:22:56 renewTime=2026-11-14T12:22:54.666832Z  <- 갱신
+  21:22:58 renewTime=2026-11-14T12:22:54.666832Z
+  21:23:00 renewTime=2026-11-14T12:22:54.666832Z
+  21:23:02 renewTime=2026-11-14T12:22:54.666832Z
+
+## 3. 같은 순간 Node.status 의 Ready lastHeartbeatTime vs Lease renewTime (노드별)
+  k8s-master   NodeStatus 하트비트     87초 전 | Lease 갱신   2.1초 전
+  k8s-worker1  NodeStatus 하트비트    126초 전 | Lease 갱신  -0.9초 전
+  k8s-worker2  NodeStatus 하트비트     76초 전 | Lease 갱신   7.9초 전
+  k8s-worker3  NodeStatus 하트비트    225초 전 | Lease 갱신   8.8초 전
+
+## 4. 판단하는 쪽: KCM 정적 파드 매니페스트의 관련 플래그 (없으면 기본값 사용)
+  22:    - --controllers=*,bootstrapsigner,tokencleaner
+  KCM 이 --pod-eviction-timeout 플래그를 아직 아는가:
+    help 출력에서 찾은 줄 수 = 0
+    feature gate: NodeControllerLeaseCircuitBreaker=true|false (BETA - default=true)
+
+## 5. 기본 toleration 300초를 넣는 쪽: kube-apiserver
+  19:    - --enable-admission-plugins=NodeRestriction
+  (default-not-ready/unreachable-toleration-seconds 플래그가 없으면 300)
+  파드 myweb-859c4764d4-2vkcp 의 tolerations:
+    node.kubernetes.io/not-ready NoExecute 300
+    node.kubernetes.io/unreachable NoExecute 300
+  DaemonSet 파드(calico-node)의 같은 toleration (tolerationSeconds 없음 = 무기한):
+    CriticalAddonsOnly Exists  
+    node.kubernetes.io/not-ready Exists NoExecute 
+    node.kubernetes.io/unreachable Exists NoExecute 
+
+## 6. Lease 객체 한 개 전체 (leaseDurationSeconds 는 KCM 판단에 쓰이지 않는다는 점 확인용)
+  spec:
+    holderIdentity: k8s-worker1
+    leaseDurationSeconds: 40
+    renewTime: "2026-11-14T12:23:04.913359Z"

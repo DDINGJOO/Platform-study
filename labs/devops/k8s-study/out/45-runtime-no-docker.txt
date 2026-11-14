@@ -1,0 +1,142 @@
+# 04 dockershim 제거 뒤 우리 노드 (2026-11-14 21:25:08 KST)
+
+## 1. API 서버가 아는 노드별 런타임 (status.nodeInfo)
+NAME          KUBELET   CONTAINER-RUNTIME    KERNEL
+k8s-master    v1.37.2   containerd://2.4.1   6.8.0-147-generic
+k8s-worker1   v1.37.2   containerd://2.4.1   6.8.0-147-generic
+k8s-worker2   v1.37.2   containerd://2.4.1   6.8.0-147-generic
+k8s-worker3   v1.37.2   containerd://2.4.1   6.8.0-147-generic
+
+## 2. 노드마다: docker 계열 바이너리·소켓, kubelet 이 부르는 엔드포인트, cgroup 버전
+### master
+  docker       (없음)
+  dockerd      (없음)
+  cri-dockerd  (없음)
+  containerd   /usr/local/bin/containerd
+  runc         /usr/local/bin/runc
+  crictl       /usr/bin/crictl
+  nerdctl      /usr/local/bin/nerdctl
+  소켓 없음: /var/run/docker.sock
+  소켓 없음: /var/run/dockershim.sock
+  소켓 없음: /var/run/cri-dockerd.sock
+  소켓 있음: /run/containerd/containerd.sock
+  systemd: docker=inactive containerd=active
+  kubelet config.yaml: containerRuntimeEndpoint: unix:///run/containerd/containerd.sock
+  kubelet 실행 인자 중 runtime·docker 관련: (없음)
+  /sys/fs/cgroup 파일시스템 = cgroup2fs
+### worker1
+  docker       (없음)
+  dockerd      (없음)
+  cri-dockerd  (없음)
+  containerd   /usr/local/bin/containerd
+  runc         /usr/local/bin/runc
+  crictl       /usr/bin/crictl
+  nerdctl      /usr/local/bin/nerdctl
+  소켓 없음: /var/run/docker.sock
+  소켓 없음: /var/run/dockershim.sock
+  소켓 없음: /var/run/cri-dockerd.sock
+  소켓 있음: /run/containerd/containerd.sock
+  systemd: docker=inactive containerd=active
+  kubelet config.yaml: containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+  kubelet 실행 인자 중 runtime·docker 관련: (없음)
+  /sys/fs/cgroup 파일시스템 = cgroup2fs
+### worker2
+  docker       (없음)
+  dockerd      (없음)
+  cri-dockerd  (없음)
+  containerd   /usr/local/bin/containerd
+  runc         /usr/local/bin/runc
+  crictl       /usr/bin/crictl
+  nerdctl      /usr/local/bin/nerdctl
+  소켓 없음: /var/run/docker.sock
+  소켓 없음: /var/run/dockershim.sock
+  소켓 없음: /var/run/cri-dockerd.sock
+  소켓 있음: /run/containerd/containerd.sock
+  systemd: docker=inactive containerd=active
+  kubelet config.yaml: containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+  kubelet 실행 인자 중 runtime·docker 관련: (없음)
+  /sys/fs/cgroup 파일시스템 = cgroup2fs
+### worker3
+  docker       (없음)
+  dockerd      (없음)
+  cri-dockerd  (없음)
+  containerd   /usr/local/bin/containerd
+  runc         /usr/local/bin/runc
+  crictl       /usr/bin/crictl
+  nerdctl      /usr/local/bin/nerdctl
+  소켓 없음: /var/run/docker.sock
+  소켓 없음: /var/run/dockershim.sock
+  소켓 없음: /var/run/cri-dockerd.sock
+  소켓 있음: /run/containerd/containerd.sock
+  systemd: docker=inactive containerd=active
+  kubelet config.yaml: containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+  kubelet 실행 인자 중 runtime·docker 관련: (없음)
+  /sys/fs/cgroup 파일시스템 = cgroup2fs
+
+## 3. kubelet v1.37.2 바이너리에 남은 런타임·docker 관련 플래그 (worker1, kubelet --help)
+Kubernetes v1.37.2
+  --container-runtime : (플래그 없음)
+  --container-runtime-endpoint : 있음 (default "unix:///run/containerd/containerd.sock") (DEPRECATED: config 파일로 옮기라는 표시)
+  --image-service-endpoint : 있음  (DEPRECATED: config 파일로 옮기라는 표시)
+  --docker-endpoint : (플래그 없음)
+  --network-plugin : (플래그 없음)
+  --cni-bin-dir : (플래그 없음)
+docker 라는 낱말이 나오는 플래그 수: 1
+ --serialize-image-pulls Pull images one at a time. We recommend *not* changing the default value on nodes that run docker daemon with version < 1.9 or an Aufs storage backend. Issue #10959 has more d
+
+## 4. containerd 의 CRI 플러그인 (worker1)
+containerd github.com/containerd/containerd/v2 v2.4.1 f2551031d7276a770f65f98c9b52e57e7dad07e8
+--- 설치 때 쓴 설정 파일 (config.toml + conf.d/k8s.toml, 옛 v2 형식: io.containerd.grpc.v1.cri)
+# /etc/containerd/config.toml
+  version = 2
+  # TODO: remove imports after upgrading containerd to v2.2, as
+  # conf.d is set by default since v2.2.
+  imports = ['/etc/containerd/conf.d/*.toml']
+  [plugins."io.containerd.grpc.v1.cri"]
+  enable_cdi = true
+  [proxy_plugins]
+  [proxy_plugins."stargz"]
+  type = "snapshot"
+  address = "/run/containerd-stargz-grpc/containerd-stargz-grpc.sock"
+# /etc/containerd/conf.d/k8s.toml
+version = 2
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "registry.k8s.io/pause:3.10.2"
+  [plugins."io.containerd.grpc.v1.cri".containerd]
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+  runtime_type = "io.containerd.runc.v2"
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+  SystemdCgroup = true
+  [plugins."io.containerd.cri.v1.runtime".cni]
+  bin_dirs = ["/opt/cni/bin", "/usr/local/libexec/cni"]
+--- ctr plugins ls 중 cri
+TYPE                                      ID                       PLATFORMS         STATUS    
+io.containerd.cri.v1                      images                   -                 ok        
+io.containerd.cri.v1                      runtime                  linux/arm64/v8    ok        
+io.containerd.grpc.v1                     cri                      -                 ok        
+--- containerd namespaces (k8s.io = CRI 플러그인이 쓰는 곳, moby = Docker 가 쓰는 곳)
+NAME    LABELS 
+default        
+k8s.io         
+--- containerd config dump 중 CRI 플러그인 핵심 줄 (containerd 2.x 가 v4 형식으로 옮겨 읽은 결과: io.containerd.cri.v1.images / .runtime)
+  [plugins.'io.containerd.cri.v1.images']
+  sandbox = 'registry.k8s.io/pause:3.10.2'
+  [plugins.'io.containerd.cri.v1.runtime']
+  default_runtime_name = 'runc'
+  runtime_type = 'io.containerd.runc.v2'
+  SystemdCgroup = true
+  [plugins.'io.containerd.cri.v1.runtime'.cni]
+  bin_dirs = ['/opt/cni/bin', '/usr/local/libexec/cni']
+  conf_dir = '/etc/cni/net.d'
+
+## 5. 런타임 소켓을 hostPath 로 마운트한 파드 (공식 문서 'Migrating telemetry and security agents' 의 찾기 스크립트를 넓혀 씀)
+전체 파드 수: 32 / hostPath 를 하나라도 쓰는 파드 수: 12
+docker.sock·dockershim·cri-dockerd·containerd 소켓 또는 /var/run 통째 마운트: (없음)
+portainer 파드의 hostPath: (없음)
+
+## 6. docker CLI 없이 노드의 컨테이너 보기: crictl(CRI) 과 nerdctl(containerd 직접, k8s.io 네임스페이스) (worker1)
+crictl pods (파드 샌드박스 수) = 14, crictl ps (앱 컨테이너 수) = 9
+nerdctl -n k8s.io ps (pause 포함 전체) = 18
+nerdctl -n default ps = 0  (k8s 가 만든 컨테이너는 k8s.io 에만 있음)

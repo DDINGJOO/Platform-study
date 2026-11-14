@@ -1,0 +1,21 @@
+# DNS 기록의 출처 (2026-11-14 20:32:38 KST)
+
+## 1. CoreDNS 설정: kubernetes 플러그인 (etcd 플러그인 없음)
+  7:    kubernetes cluster.local in-addr.arpa ip6.arpa {
+  13:    forward . /etc/resolv.conf {
+  16:    cache 30 {
+  10:       ttl 30
+  17:       disable success cluster.local
+  18:       disable denial cluster.local
+  CoreDNS 가 붙는 곳(11-apiserver-clients.txt): 10.96.0.1:443(=API 서버). 2379(etcd)에 붙는 건 kube-apiserver 뿐(09-etcd-clients.txt)
+
+## 2. Service 하나를 만들고 etcd 키와 DNS 응답을 같이 봄
+20:32:39 만들기 전: etcd 키 0개 | DNS → NXDOMAIN
+20:32:39 kubectl create service clusterip dns-src-demo  (ClusterIP 10.97.200.213)
+20:32:39 etcd 키 1개 | DNS → 10.97.200.213
+20:32:40 etcd 키 1개 | DNS → 10.97.200.213
+20:32:41 etcd 키 1개 | DNS → 10.97.200.213
+20:32:43 kubectl delete svc dns-src-demo
+20:32:43 etcd 키 0개 | DNS → NXDOMAIN
+20:32:44 etcd 키 0개 | DNS → NXDOMAIN
+20:32:45 etcd 키 0개 | DNS → NXDOMAIN

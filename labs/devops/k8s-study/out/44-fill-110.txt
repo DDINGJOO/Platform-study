@@ -1,0 +1,23 @@
+# worker3 에 파드 110개 채우기 (2026-11-14 21:43:00 KST)
+
+## 0. 시작 상태
+  allocatable.pods=110, 지금 k8s-worker3 의 파드 4개(DaemonSet 포함) → 이 노드에만 파드 107개를 요청하면 1개가 남아야 함
+  Calico 블록(blockaffinity): 10.244.100.192/26 10.244.101.0/26
+  21:43:31 30초 동안: PLEG relist 30번 평균 1.59ms | kubelet RSS 95MiB | kubelet_running_pods 4
+
+## 1. Deployment fill replicas=107 (nodeSelector k8s-worker3) 생성 21:43:31
+  +0s Running 0 / 107
+  +10s Running 62 / 107
+  +20s Running 106 / 107
+21:43:51 파드 상태별 수:
+      1 Pending
+    106 Running
+21:43:51 남은 파드 fill-64956ff65b-vb2k7 의 FailedScheduling:
+    0/4 nodes are available: 1 Too many pods, 1 node(s) had untolerated taint(s), 2 node(s) didn't match Pod's node affinity/selector. preemption: 0/4 nodes are available: 1 No preemption victims found for incoming pod, 3 Preemption is not helpful for scheduling.
+21:43:51 k8s-worker3 의 파드 수: 110
+21:44:22 30초 동안: PLEG relist 30번 평균 2.19ms | kubelet RSS 143MiB | kubelet_running_pods 110
+21:44:22 Calico 블록: 10.244.100.192/26 10.244.101.0/26
+
+## 2. 정리
+  21:44:28 네임스페이스 w2-fill 삭제 (6초)
+  21:44:28 Calico 블록: 10.244.100.192/26 10.244.101.0/26 (빈 블록은 calico-kube-controllers 가 유예 뒤 반납, 34편)

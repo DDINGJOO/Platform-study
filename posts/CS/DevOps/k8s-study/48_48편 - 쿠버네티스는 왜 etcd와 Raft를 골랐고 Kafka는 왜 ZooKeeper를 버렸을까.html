@@ -1,0 +1,488 @@
+<!-- ============================================================
+  k8s 스터디 48편: 쿠버네티스는 왜 etcd와 Raft를 골랐고 Kafka는 왜 ZooKeeper를 버렸을까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 멤버가 하나뿐인 우리 etcd도 뜰 때마다 혼자 선거를 치르고 쓰기마다 Raft 로그를 커밋했어요. 쿠버네티스가 클러스터 상태를 Raft로 지키는 etcd에 맡긴 이유와 Kafka가 ZooKeeper를 버리고 KRaft로 간 이유를 원문으로 비교했어요. -->
+<!-- tags: Raft, 합의 알고리즘, Paxos, ZooKeeper, KRaft, KIP-500, etcd 리더 선출 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 48편</div>
+  46편. 쿠버네티스 API는 REST인데 CRI와 etcd는 왜 gRPC일까<br>
+  47편. kube-proxy는 왜 iptables와 IPVS를 거쳐 nftables로 왔을까<br>
+  <b>48편. 쿠버네티스는 왜 etcd와 Raft를 골랐고 Kafka는 왜 ZooKeeper를 버렸을까</b> &larr; 지금 이 글<br>
+  49편. 노드 하트비트는 왜 Node 객체에서 Lease로 빠졌을까<br>
+  50편. 노드 장애 판단의 50초와 300초는 왜 그 값일까
+</div>
+
+<p>22:09에 마스터의 etcd에 상태를 물었어요. 멤버 목록에는 k8s-master 하나뿐이었는데 endpoint status는 member_id와 leader가 같은 <code style="font-family:Menlo,monospace;font-size:14px;">c960bb57b7d36fea</code>라고 답했고 raftTerm은 3이었어요. etcd 로그를 거슬러 올라가 보니 이번에 etcd가 뜰 때 12:58:43.140(UTC)에 <code style="font-family:Menlo,monospace;font-size:14px;">starting a new election at term 2</code>를 찍고 같은 밀리초 안에 pre-candidate와 candidate를 거쳐 .141에 <code style="font-family:Menlo,monospace;font-size:14px;">became leader at term 3</code>이 됐어요. 경쟁자도 없는데 혼자 선거를 치르고 리더가 된 거예요.</p>
+<p>47편에서 kube-proxy가 규칙을 만들 때 읽은 Service와 EndpointSlice도, 43~46편에서 본 파드와 노드 정보도 모두 API 서버를 거쳐 이 etcd 한 곳에 저장돼요(22편). 쿠버네티스는 클러스터의 모든 상태를 한 곳에 맡겼고 그 한 곳을 Raft라는 합의 알고리즘으로 지켜요. 혼자인 etcd가 선거를 치른 것도 Raft가 언제나 리더를 세워서 일하기 때문이에요.</p>
+<p>etcd는 Raft로 리더가 기록하고 다른 멤버에 복제한다는 설명을 들었을 때 제가 처음 한 말은 "합의 알고리즘도 엄청 종류 많은데"였어요. Paxos도 있고 ZooKeeper가 쓰는 Zab도 있는데 왜 Raft일까요. 이어서 "그니까 왜 이렇게 갈까"를 파 보기로 했고 제게 더 익숙한 Kafka가 ZooKeeper를 버리고 KRaft로 옮겨 간 이야기를 나란히 놓았어요. 원문을 다 읽고 나서 남은 말은 "결국에 일관성에 대한 문제를 고민했구나"였어요. 클러스터는 Lima VM 4대에 kubeadm v1.37.2와 etcd 3.7.0을 올린 실습 환경이고 etcd 멤버는 하나예요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 상태를 한 곳에 두는데 왜 합의 알고리즘이 필요할까?<br>
+&middot; Paxos, Zab, Raft 가운데 etcd는 왜 Raft를 썼을까?<br>
+&middot; 쿠버네티스는 왜 etcd를 골랐고 왜 API 서버만 etcd에 붙을까?<br>
+&middot; Kafka는 왜 ZooKeeper를 버리고 Raft 방언을 직접 만들었을까?<br>
+&middot; 멤버 하나짜리 우리 etcd에서도 Raft가 돌고 있을까?</p>
+
+<h2>1. 상태를 한 곳에 두면 그곳을 여러 대로 늘려야 하고 여러 대는 쓰기 순서에 합의해야 한다</h2>
+
+<p>모든 상태를 etcd 하나에 두면 구성은 단순해져요. 그 대신 etcd가 죽으면 API 서버가 쓰기를 저장할 곳이 사라져요. 20편에서 API 서버를 멈췄을 때 클러스터가 아무 변경도 받지 못했는데 etcd가 멈춰도 변경은 저장되지 않아요. 그래서 운영 클러스터는 etcd를 세 대나 다섯 대로 늘려요(21편).</p>
+<p>여러 대로 늘리면 새 문제가 생겨요. 두 요청이 같은 키에 거의 동시에 다른 값을 쓴다고 해 볼게요. 멤버 A는 x를 먼저 받고 y를 나중에 받았는데 멤버 B는 y를 먼저 받았다면 두 멤버의 마지막 값이 달라요. 어느 쪽이 맞는지 정할 기준이 없으면 같은 클러스터를 보는 API 서버가 멤버마다 다른 답을 듣게 돼요. 여러 대가 "몇 번째 쓰기가 무엇인가"에 먼저 합의해야 하는 이유예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 합의 알고리즘 (consensus algorithm)</div>
+  <a href="https://raft.github.io/">Raft 사이트</a>는 합의를 "Consensus involves multiple servers agreeing on values. Once they reach a decision on a value, that decision is final."이라고 정의해요. 여러 서버가 값에 동의하고 한 번 정한 값은 바꾸지 않는다는 뜻이에요. 이 글의 Paxos, Zab, Raft는 모두 이 문제를 푸는 방법이에요.
+</div>
+
+<p>Raft 사이트는 이 문제를 복제 상태 기계(replicated state machine)로 설명해요. 서버마다 로그와 상태 기계를 두고 로그에 쌓인 명령을 차례로 적용하는데 합의 알고리즘은 어떤 상태 기계가 <code style="font-family:Menlo,monospace;font-size:14px;">set x to 3</code>을 n번째 명령으로 적용했다면 다른 어느 상태 기계도 n번째에 다른 명령을 적용하지 않게 보장해요. 같은 명령을 같은 순서로 적용하니 모든 서버가 같은 상태에 도착해요. etcd에서는 키·값 변경 하나하나가 이 로그의 한 줄이 돼요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 복제 로그와 커밋</div>
+  멤버마다 같은 순서로 쌓는 명령 목록이 복제 로그예요. 리더가 새 항목을 받아 다른 멤버에 보내고 과반이 받아 적으면 그 항목은 커밋(확정)되고 그때부터 각 멤버가 자기 상태에 적용해요. 한 번 커밋된 항목은 되돌리지 않아요.
+</div>
+
+<p>과반이라는 조건도 여기서 나와요. Raft 사이트는 "a cluster of 5 servers can continue to operate even if 2 servers fail"이라고 적고 그보다 많이 죽으면 "they stop making progress (but will never return an incorrect result)"라고 적어요. 다섯 대 중 두 대가 죽어도 일하고 더 많이 죽으면 멈출지언정 틀린 값을 내놓지는 않는다는 뜻이에요. 멤버 수별로 몇 대까지 견디는지는 21편에서 표로 봤어요.</p>
+
+<h3>"모든 멤버에 즉시 반영된다"를 정확히 말하면</h3>
+<p>etcd를 소개하는 글에서 "한 노드가 업데이트되면 다른 모든 노드에 즉시 업데이트된다"는 문장을 자주 봐요. <a href="https://raft.github.io/raft.pdf">Raft 논문</a>은 커밋 시점을 이렇게 정해요.</p>
+
+<div class="obsv-code">A log entry is committed once the leader that created the entry has
+replicated it on a majority of the servers</div>
+
+<p>&rarr; 리더가 만든 항목이 과반의 서버에 복제되면 커밋된다는 뜻이에요. 나머지 멤버는 어떻게 될까요? 같은 논문에는 "the leader retries AppendEntries RPCs indefinitely (even after it has responded to the client) until all followers eventually store all log entries"라는 문장이 있어요. 리더는 클라이언트에 응답한 뒤에도 느린 팔로워가 모든 항목을 받을 때까지 계속 다시 보낸다는 뜻이에요. 정확히 말하면 "모든 멤버에 즉시"가 아니라 "과반에 먼저, 나머지는 뒤따라"예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">etcd 멤버 3개일 때: 리더가 로그를 보내고 과반이 받으면 커밋한다</text>
+<defs><marker id="k48a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k48a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k48a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#c07f18" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M18 150 C 59 152, 100 150, 142 149 C 144 173, 144 196, 142 220 C 100 222, 59 219, 19 220 C 17 196, 17 173, 18 150 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="80" y="178" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">API 서버</text>
+<text x="80" y="202" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">PUT /registry/…</text>
+<path d="M212 62 C 253 60, 294 63, 336 63 C 335 81, 335 100, 337 120 C 294 122, 253 122, 211 120 C 211 100, 210 81, 212 62 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="274" y="87" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle">멤버 A</text>
+<text x="274" y="109" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">리더 (term 3)</text>
+<path d="M360 71 C 374 69, 388 72, 402 70 C 401 84, 403 97, 403 111 C 388 110, 374 110, 359 112 C 362 97, 360 84, 360 71 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="381" y="97" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">1</text>
+<path d="M410 71 C 424 71, 438 71, 452 70 C 451 84, 452 97, 452 111 C 438 109, 424 113, 410 112 C 409 97, 410 84, 410 71 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="431" y="97" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">2</text>
+<path d="M460 71 C 474 72, 488 70, 502 70 C 503 84, 504 97, 502 111 C 488 109, 474 111, 459 111 C 462 97, 460 84, 460 71 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="481" y="97" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">3</text>
+<path d="M510 71 C 524 73, 538 72, 552 72 C 550 84, 550 97, 551 111 C 538 110, 524 111, 510 112 C 510 97, 511 84, 510 71 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="531" y="97" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">4</text>
+<path d="M560 71 C 574 69, 588 69, 602 71 C 603 84, 603 97, 602 111 C 588 109, 574 113, 561 112 C 561 97, 561 84, 560 71 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="581" y="97" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">5</text>
+<path d="M212 162 C 253 163, 294 164, 336 162 C 335 181, 336 200, 335 220 C 294 221, 253 222, 213 219 C 214 200, 211 181, 212 162 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="274" y="187" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">멤버 B</text>
+<text x="274" y="209" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">팔로워</text>
+<path d="M360 171 C 374 170, 388 170, 402 170 C 402 184, 404 197, 403 211 C 388 212, 374 213, 361 212 C 361 197, 362 184, 360 171 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="381" y="197" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">1</text>
+<path d="M410 171 C 424 172, 438 169, 452 171 C 454 184, 452 197, 451 211 C 438 209, 424 209, 409 212 C 408 197, 410 184, 410 171 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="431" y="197" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">2</text>
+<path d="M460 171 C 474 171, 488 169, 502 172 C 504 184, 503 197, 503 211 C 488 212, 474 209, 460 212 C 458 197, 461 184, 460 171 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="481" y="197" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">3</text>
+<path d="M510 171 C 524 170, 538 170, 552 170 C 554 184, 551 197, 551 211 C 538 211, 524 209, 510 212 C 511 197, 508 184, 510 171 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="531" y="197" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">4</text>
+<path d="M560 171 C 574 171, 588 173, 602 170 C 602 184, 603 197, 603 211 C 588 212, 574 209, 561 210 C 561 197, 560 184, 560 171 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="581" y="197" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">5</text>
+<path d="M212 262 C 253 260, 294 260, 336 261 C 335 281, 335 300, 335 320 C 294 322, 253 318, 211 319 C 212 300, 212 281, 212 262 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="274" y="287" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">멤버 C</text>
+<text x="274" y="309" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">팔로워 (느림)</text>
+<path d="M360 271 C 374 270, 388 270, 402 272 C 403 284, 400 297, 401 311 C 388 313, 374 313, 359 311 C 362 297, 358 284, 360 271 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="381" y="297" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">1</text>
+<path d="M410 271 C 424 271, 438 273, 452 270 C 450 284, 451 297, 451 311 C 438 309, 424 312, 411 312 C 411 297, 412 284, 410 271 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="431" y="297" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">2</text>
+<path d="M460 271 C 474 271, 488 272, 502 271 C 502 284, 502 297, 502 311 C 488 310, 474 310, 459 312 C 461 297, 461 284, 460 271 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="481" y="297" font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle">3</text>
+<path d="M510 271 C 524 270, 538 273, 552 271 C 550 284, 551 297, 551 311 C 538 310, 524 312, 509 311 C 511 297, 508 284, 510 271 Z" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="4 5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="531" y="297" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">4</text>
+<path d="M560 271 C 574 271, 588 273, 602 272 C 604 284, 601 297, 601 311 C 588 311, 574 313, 559 312 C 562 297, 559 284, 560 271 Z" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="4 5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="581" y="297" font-family="Menlo, monospace" font-size="14" fill="#8a8272" text-anchor="middle">5</text>
+<text x="460" y="56" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">로그 index (5번이 방금 들어온 쓰기)</text>
+<path d="M144 165 C 163 141, 188 119, 208 98" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k48a1)"/>
+<text x="160" y="128" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="end">① 쓰기</text>
+<path d="M600 112 C 602 132, 600 147, 600 168" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48a1)"/>
+<text x="560" y="146" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5" text-anchor="end">② 복제</text>
+<path d="M628 128 C 620 180, 614 231, 610 286" fill="none" stroke="#c07f18" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k48a3)"/>
+<path d="M612 66 C 611 118, 612 172, 614 224" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round"/>
+<text x="656" y="82" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">③ 커밋</text>
+<text x="656" y="104" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">A·B = 2/3</text>
+<path d="M210 118 C 187 145, 168 177, 146 205" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="7 5" marker-end="url(#k48a2)"/>
+<text x="80" y="246" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">④ 커밋 뒤 응답</text>
+<text x="470" y="344" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="middle">C에는 리더가 응답한 뒤에도 4·5번을 계속 다시 보내고 C는 나중에 따라잡는다</text>
+<text x="350" y="382" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">모든 멤버에 즉시가 아니라 과반이 받는 순간 확정되고 나머지는 뒤따라 받는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 5번 쓰기는 A와 B 두 대가 받은 순간 커밋되고 C는 응답이 나간 뒤에 따라잡는다</div>
+
+<p>그럼 뒤처진 멤버에 읽기를 보내면 옛 값을 받을까요? <a href="https://etcd.io/docs/v3.7/learning/api_guarantees/">etcd API 보장 문서</a>는 "etcd ensures linearizability for all other operations by default"라고 적어요. watch를 뺀 나머지 요청은 기본으로 linearizability(읽기가 늘 가장 최근에 끝난 쓰기의 값을 돌려주는 성질)를 지킨다는 뜻이에요. 그 대가로 그런 요청은 "must go through the Raft consensus process"라고 해요. 기본 읽기도 Raft를 거쳐 가장 최근 값을 확인한 뒤 답한다는 뜻이에요. <a href="https://github.com/etcd-io/raft/blob/main/README.md">etcd raft 라이브러리 README</a>에도 팔로워가 읽기를 처리하기 전에 리더에게 안전한 읽기 위치(read index)를 묻는다고 적혀 있어요. 그리고 위 문장의 "노드"는 etcd 멤버예요. 쿠버네티스의 워커 노드는 etcd를 직접 보지 않고 API 서버를 watch해요(39편).</p>
+<p>여기까지 정리하고 나서 제가 한 말이 "결국에 일관성에 대한 문제를 고민했구나"였어요. <span class="obsv-mark">합의 알고리즘이 푸는 문제는 속도가 아니라 여러 대가 같은 순서로 같은 값을 갖게 하는 일관성이에요.</span> 그 대가로 쓰기마다 과반의 응답을 기다려요.</p>
+
+<h2>2. 합의 알고리즘은 여럿인데 etcd는 왜 Raft를 썼을까</h2>
+
+<p>"합의 알고리즘도 엄청 종류 많은데"라는 말대로 이 문제를 푸는 방법은 여럿이에요. 이 글에 나오는 것만 Raft 논문의 관련 연구 절과 참고문헌을 따라 정리하면 이래요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:680px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">알고리즘</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">처음 나온 곳</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">쓰는 시스템 (원문에 적힌 것)</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">원문이 말하는 특징</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Paxos</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Lamport, "The Part-Time Parliament" (ACM TOCS, 1998)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Chubby, Spanner (Raft 논문: "both claim to be based on Paxos"), Borg의 저장소</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Raft 논문 기준 지난 10년의 합의 논의를 이끈 알고리즘. 같은 논문은 "quite difficult to understand"라고 평가</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Viewstamped Replication (VR)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Oki·Liskov (PODC 1988)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">이 글에 나오는 시스템은 없음</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">리더 기반. Raft 논문이 가장 닮았다고 밝힌 알고리즘</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Zab</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">ZooKeeper (USENIX ATC 2010), Zab 논문 (DSN 2011)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">ZooKeeper, ZooKeeper를 쓰던 시절의 Kafka</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://zookeeper.apache.org/doc/current/zookeeperInternals.html">ZooKeeper 문서</a>: "At the heart of ZooKeeper is an atomic messaging system that keeps all of the servers in sync." Raft 논문: Paxos와 "quite different"</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Raft</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Ongaro·Ousterhout (USENIX ATC 2014, Best Paper)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">etcd, etcd raft 라이브러리를 쓰는 CockroachDB·TiDB 등, Kafka KRaft(방언)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">이해하기 쉬운 것을 목표로 리더 선출·로그 복제·안전성을 나눠 설명</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>표에 넣지 않은 갈래도 있어요. Raft 논문은 실용적인 합의 알고리즘의 가정으로 "Servers are assumed to fail by stopping"을 적어요. 서버는 멈추는 방식으로만 고장 난다는 뜻이에요. 서버가 틀린 응답을 보내는 경우(비잔틴 장애)까지 견디려는 BFT 계열은 가정 자체가 달라서 이 글에서는 다루지 않아요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: Paxos</div>
+  Leslie Lamport가 1998년 논문으로 발표한 합의 알고리즘이에요. Raft 논문의 설명으로는 값 하나에 합의하는 기본형(single-decree Paxos)을 먼저 정의하고 그것을 여러 번 묶어 로그 같은 연속된 결정을 만들어요(multi-Paxos). Google의 Chubby와 Spanner가 Paxos 기반이라고 밝혔어요.
+</div>
+
+<p>그럼 Raft는 무엇이 달랐을까요? Raft 논문은 서론에서 Paxos의 문제를 두 가지로 꼽아요.</p>
+
+<div class="obsv-code">Unfortunately, Paxos is quite difficult to understand, in spite of numerous
+attempts to make it more approachable. Furthermore, its architecture requires
+complex changes to support practical systems.</div>
+
+<p>&rarr; 쉽게 설명하려는 시도가 많았는데도 이해하기 어렵고 실제 시스템을 만들려면 구조를 크게 바꿔야 한다는 뜻이에요. <span class="obsv-mark">Raft가 바꾼 것은 성능이나 장애 내성이 아니라 이해하기 쉬운 구조예요.</span> Raft 사이트는 "It's equivalent to Paxos in fault-tolerance and performance. The difference is that it's decomposed into relatively independent subproblems"라고 적어요. 장애 내성과 성능은 Paxos와 같고 리더 선출, 로그 복제, 안전성을 비교적 독립된 하위 문제로 나눈 점이 다르다는 뜻이에요.</p>
+<p>논문은 이해하기 쉬운지를 직접 쟀어요. 두 대학의 학생 43명에게 두 알고리즘을 모두 가르친 뒤 문제를 풀게 했더니 33명이 Raft 문제를 더 잘 풀었어요. 구조도 단순해요. Raft에서 로그 항목은 "log entries only flow from the leader to other servers", 즉 리더에서 다른 서버로 한 방향으로만 흘러요. 기본 합의와 멤버 변경에 쓰는 메시지 종류도 VR과 ZooKeeper는 10가지인데 Raft는 4가지라고 해요.</p>
+<p>이해하기 쉬운 것이 왜 그렇게 중요할까요? 합의 알고리즘은 구현이 조금만 틀려도 멤버끼리 값이 갈라질 수 있는 영역이라 설명을 정확히 이해한 구현자가 많을수록 맞는 구현과 검증이 늘어요. 논문 결론도 정확성, 효율, 간결함과 함께 "understandability is just as important"라고 적어요. etcd가 Raft를 고른 이유를 직접 적은 원문은 찾지 못했지만 Raft가 빠르게 퍼진 까닭은 이 점으로 보여요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 리더, term, index</div>
+  Raft에서 쓰기는 리더 한 대가 받아요. term은 선거를 할 때마다 1씩 오르는 번호예요. 논문은 "Terms act as a logical clock"이라고 하며 한 term에 리더는 많아야 하나라고 보장해요. index는 로그에서 몇 번째 항목인지를 가리키는 번호예요. 6절 화면의 raftTerm과 raftIndex가 이 둘이에요.
+</div>
+
+<p>이걸 알고 나면 도입의 장면이 풀려요. Raft에서 쓰기는 언제나 그 term의 리더가 받아요. 멤버가 하나여도 리더 없이 쓰기를 받는 길은 없으니 etcd는 뜰 때마다 선거를 열고 자기에게 투표해 과반(1표 중 1표)을 얻어 리더가 돼요. 그래서 뜰 때마다 term이 하나씩 올라요.</p>
+
+<h3>etcd는 Raft 알고리즘만 라이브러리로 떼어 쓴다</h3>
+<p><a href="https://github.com/etcd-io/etcd/blob/main/README.md">etcd README</a>는 자신을 "etcd is written in Go and uses the Raft consensus algorithm to manage a highly-available replicated log"라고 소개해요. etcd가 쓰는 Raft 구현은 etcd-io/raft 저장소의 라이브러리이고 README에는 "As of 2016, it is the most widely used Raft library in production"이라고 적혀 있어요. 사용처로 etcd, Kubernetes, Docker Swarm, CockroachDB, TiDB 등을 꼽는데 쿠버네티스는 이 라이브러리를 직접 부르지 않고 etcd를 거쳐 써요.</p>
+<p>이 라이브러리는 알고리즘만 구현해요. README에 "both network and disk IO are left to the user"라고 적혀 있어요. 멤버끼리 메시지를 나르는 전송과 로그를 디스크에 남기는 저장은 라이브러리를 쓰는 쪽이 만든다는 뜻이에요. 그래서 etcd는 멤버끼리 쓰는 2380 포트의 전송과 WAL 파일을 직접 구현해요. 2380 전송이 gRPC가 아니라 etcd가 만든 HTTP 전송이라는 이야기는 46편에서 했어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: WAL과 fsync</div>
+  WAL(write-ahead log)은 상태에 반영하기 전에 변경을 먼저 순서대로 적어 두는 파일이에요. etcd는 Raft 로그 항목을 /var/lib/etcd/member/wal 아래 파일에 적어요(38편). fsync는 운영체제 캐시에 머문 쓰기를 디스크에 실제로 내려보내는 시스템 호출이라서 전원이 나가도 남아야 하는 기록은 fsync를 거쳐요.
+</div>
+
+<h2>3. 쿠버네티스는 Borg와 Omega에서 배운 공유 저장소를 etcd로 만들고 API 서버 뒤에 숨겼다</h2>
+
+<p>쿠버네티스가 etcd를 고른 이유를 보려면 그 앞의 두 시스템을 봐야 해요. Google에서 Borg, Omega, Kubernetes를 만든 엔지니어들이 2016년 ACM Queue에 쓴 <a href="https://queue.acm.org/detail.cfm?id=2898444">"Borg, Omega, and Kubernetes"</a>는 세 시스템이 상태를 어디에 두었는지 비교해요.</p>
+<p>&middot; <b>Borg</b>: Borgmaster는 "monolithic component that knows the semantics of every API operation"이고 "it runs the Paxos-based replicated storage system used to record the master’s state"예요. 모든 API 동작의 의미를 아는 한 덩어리가 Paxos 기반 복제 저장소까지 직접 돌렸어요.<br>
+&middot; <b>Omega</b>: "Omega stored the state of the cluster in a centralized Paxos-based transaction-oriented store"였고 스케줄러 같은 구성 요소들이 이 저장소를 직접 읽고 쓰며 "using optimistic concurrency control"로 충돌을 처리했어요.<br>
+&middot; <b>Kubernetes</b>: "Like Omega, Kubernetes has at its core a shared persistent store, with components watching for changes to relevant objects." 다만 "state in Kubernetes is accessed exclusively through a domain-specific REST API that applies higher-level versioning, validation, semantics, and policy"라고 해요.</p>
+<p>쿠버네티스는 Omega에서 "공유 저장소 하나와 그 변경을 watch하는 구성 요소들"이라는 뼈대를 가져오고 저장소 앞에 API 서버를 세웠어요. 논문은 이 선택을 "forcing all store accesses through a centralized API server that hides the details of the store implementation"이라고 설명해요. 22편과 35편에서 본 "etcd에 붙는 것은 API 서버뿐"이 바로 이 설계예요. 22편에서 resourceVersion으로 동시에 고치는 것을 막은 방식도 Omega의 낙관적 동시성 제어를 이어받은 것으로 보여요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 낙관적 동시성 제어 (optimistic concurrency control)</div>
+  쓰기 전에 잠그지 않고 일단 고친 뒤 저장할 때 "내가 읽은 뒤 누가 먼저 고쳤는가"를 확인해서 그랬으면 거절하는 방식이에요. 쿠버네티스에서는 객체의 resourceVersion이 그 확인에 쓰이고 거절되면 409 Conflict가 와요(22편, 39편).
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 392" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">Google의 세 시스템이 클러스터 상태를 둔 곳 (Borg, Omega, Kubernetes 논문)</text>
+<defs><marker id="k48b1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k48b2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k48b3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="118" y="66" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">Borg</text>
+<path d="M22 120 C 87 119, 152 118, 218 119 C 218 185, 216 250, 219 316 C 152 318, 87 315, 22 316 C 22 250, 20 185, 22 120 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="146" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">Borgmaster</text>
+<text x="120" y="170" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">작업·태스크·머신의</text>
+<text x="120" y="190" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">의미를 모두 아는 한 덩어리</text>
+<path d="M44 220 C 94 222, 145 222, 196 220 C 195 243, 195 266, 197 290 C 145 290, 94 291, 44 291 C 46 266, 46 243, 44 220 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="250" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5" text-anchor="middle">Paxos 기반 저장소</text>
+<text x="120" y="272" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">(Borgmaster 안)</text>
+<path d="M60 82 C 100 82, 140 82, 180 82 C 179 90, 182 98, 179 106 C 140 107, 100 108, 59 105 C 62 98, 59 90, 60 82 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="100" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">사용자·도구</text>
+<path d="M120 108 C 120 112, 118 114, 120 118" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k48b1)"/>
+<text x="350" y="66" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">Omega</text>
+<path d="M252 82 C 281 82, 310 84, 340 82 C 341 96, 342 111, 340 126 C 310 127, 281 124, 252 125 C 252 111, 254 96, 252 82 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="296" y="110" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">스케줄러 1</text>
+<path d="M360 82 C 389 82, 418 80, 448 82 C 448 96, 449 111, 447 126 C 418 126, 389 126, 361 127 C 359 111, 362 96, 360 82 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="404" y="110" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">스케줄러 2</text>
+<path d="M262 210 C 320 211, 379 208, 438 211 C 436 236, 440 263, 439 290 C 379 288, 320 288, 263 290 C 263 263, 264 236, 262 210 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="238" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">Paxos 기반 저장소</text>
+<text x="350" y="260" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">트랜잭션 + 낙관적 동시성</text>
+<text x="350" y="280" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">(상태만 들고 의미는 모름)</text>
+<path d="M296 128 C 300 153, 307 180, 312 206" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48b2)"/>
+<path d="M404 128 C 400 153, 393 179, 388 206" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48b2)"/>
+<text x="350" y="170" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#4a7fb5" text-anchor="middle">직접 읽고 씀</text>
+<text x="582" y="66" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">Kubernetes</text>
+<path d="M484 82 C 549 82, 614 82, 680 82 C 678 96, 681 111, 679 126 C 614 128, 549 125, 485 127 C 482 111, 485 96, 484 82 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="582" y="110" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">스케줄러·컨트롤러·kubelet</text>
+<path d="M496 150 C 553 150, 610 152, 668 151 C 670 166, 670 183, 668 200 C 610 201, 553 200, 496 199 C 498 183, 494 166, 496 150 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="582" y="172" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">API 서버</text>
+<text x="582" y="192" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">검증·기본값·버전</text>
+<path d="M510 226 C 558 227, 606 227, 654 227 C 653 247, 655 268, 653 290 C 606 288, 558 291, 509 290 C 509 268, 509 247, 510 226 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="582" y="254" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#4a7fb5" text-anchor="middle">etcd</text>
+<text x="582" y="276" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">Raft</text>
+<path d="M582 128 C 580 135, 582 141, 582 146" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48b1)"/>
+<text x="626" y="142" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">REST·watch</text>
+<path d="M582 202 C 580 210, 584 213, 582 222" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48b2)"/>
+<text x="582" y="312" font-family="'Nanum Pen Script', cursive" font-size="13.5" fill="#8a8272" text-anchor="middle">2014-06 첫 커밋에서는 kubelet·kube-proxy도</text>
+<text x="582" y="330" font-family="'Nanum Pen Script', cursive" font-size="13.5" fill="#8a8272" text-anchor="middle">etcd를 직접 watch했다</text>
+<path d="M222 46 C 237 44, 252 45, 268 46" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k48b3)"/>
+<path d="M436 46 C 454 44, 471 44, 486 46" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k48b3)"/>
+<text x="350" y="372" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">공유 저장소는 Omega에서 가져오고 그 앞에 API 서버를 세워 저장소를 감췄다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 쿠버네티스는 Omega의 공유 저장소를 이어받되 구성 요소가 저장소를 직접 만지지 못하게 API 서버를 앞에 세웠다</div>
+
+<h3>첫 커밋부터 etcd였고 처음에는 노드도 etcd를 직접 봤다</h3>
+<p>쿠버네티스 저장소의 <a href="https://github.com/kubernetes/kubernetes/commit/2c4b3a562ce34cddc3f8218a2c4d11c7310e6d56">첫 커밋</a>(2014-06-06, "First commit")에는 이미 etcd 클라이언트 라이브러리 go-etcd와 <code style="font-family:Menlo,monospace;font-size:14px;">pkg/registry/etcd_registry.go</code>가 들어 있어요. 지금과 다른 점도 있어요. 같은 커밋의 kube-proxy 코드(<a href="https://github.com/kubernetes/kubernetes/blob/2c4b3a562ce34cddc3f8218a2c4d11c7310e6d56/pkg/proxy/config/etcd.go">pkg/proxy/config/etcd.go</a>) 첫 주석은 "Watches etcd and gets the full configuration on preset intervals."이고 서비스 목록을 <code style="font-family:Menlo,monospace;font-size:14px;">http://&lt;etcd server&gt;/v2/keys/registry/services</code>에서 읽는다고 적혀 있어요. kubelet도 etcd 클라이언트를 만들어 직접 watch했어요. 처음에는 노드의 구성 요소들도 etcd를 직접 봤고 나중에 모든 접근이 API 서버로 모였어요. 키 접두사 <code style="font-family:Menlo,monospace;font-size:14px;">/registry</code>는 지금도 같아요(22편).</p>
+<p>쿠버네티스 v1.0(2015-07-13)의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.0.0/docs/design/architecture.md">아키텍처 문서</a>는 etcd를 이렇게 소개해요.</p>
+
+<div class="obsv-code">All persistent master state is stored in an instance of `etcd`.  This provides
+a great way to store configuration data reliably.  With `watch` support,
+coordinating components can be notified very quickly of changes.</div>
+
+<p>&rarr; 마스터의 영구 상태를 모두 etcd에 두고 설정 데이터를 믿을 수 있게 저장하며 watch로 구성 요소들이 변경을 빨리 알 수 있다는 뜻이에요. 문서가 든 이유는 믿을 수 있는 저장과 watch, 두 가지예요.</p>
+<p>ZooKeeper나 다른 저장소 대신 etcd를 고른 이유를 비교해서 적은 원문은 찾지 못했어요. 당시 상황으로 확인할 수 있는 것은 이 정도예요. etcd 저장소는 2013-07-06에 만들어졌고 v0.1.0 태그는 2013-08-11 커밋에 붙어 있어요. etcd는 쿠버네티스와 같은 Go로 쓰였고 첫 커밋의 kube-proxy 주석에서 보듯 HTTP와 JSON으로 키를 읽고 watch할 수 있었어요. Raft 논문이 학회에 실린 것은 2014년 6월이지만 Raft 사이트의 발표 목록에는 2013년 3월 Raft 사용자 연구 발표와 2013년 9월 Strange Loop 발표가 있어서 그 전부터 알려져 있었어요. KIP-500이 ZooKeeper 운영을 두고 "Java services" 배포에 익숙하지 않은 관리자에게 버거운 일이라고 적은 것과 비교하면 Go로 된 작은 HTTP 서버가 붙이기 가벼웠을 것으로 보여요. 이 마지막 문장은 제 추정이에요.</p>
+
+<h3>etcd v2에서 v3으로 옮겨도 저장소는 etcd 하나</h3>
+<p>2016-06-30에 etcd v3.0.0이 나오며 API가 gRPC와 리비전(MVCC) 기반으로 바뀌었고(38편, 46편) 쿠버네티스는 1.6(2017-03-28)에서 etcd v3을 기본으로 바꿨어요. <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.6.md">CHANGELOG-1.6</a>에는 "Kubernetes now supports up to 5,000 nodes via etcd v3, which is enabled by default."라는 줄이 있어요. 1.13(2018-12-03)에서는 <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.13.md">etcd2 저장 백엔드를 아예 지웠어요</a>. 이 전환은 API 서버와 etcd 사이의 일로 끝났을 것으로 보여요. 다른 구성 요소는 API 서버와만 이야기하니까요.</p>
+<p>v1.0 아키텍처 문서에는 API 서버가 "updates the corresponding objects in etcd (and eventually other stores)"라는 문장도 있어요. 언젠가 다른 저장소도 쓰겠다는 뜻이었지만 v1.37.2의 kube-apiserver <code style="font-family:Menlo,monospace;font-size:14px;">--help</code>는 여전히 "The storage backend for persistence. Options: 'etcd3' (default)."라고 답해요(6절 화면, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/server/options/etcd.go">소스</a>). 고를 수 있는 값이 etcd3 하나예요.</p>
+<p>저장소를 바꾸고 싶은 쪽은 반대 방향으로 갔어요. k3s가 쓰는 <a href="https://github.com/k3s-io/kine">kine</a>은 README에서 자기를 "an etcdshim that provides an etcd-compatible API on top of various backend datastores"라고 소개하고 SQLite, MySQL, Postgres 같은 저장소 위에서 "the subset of the etcd V3 API required by the Kubernetes API server"를 구현한다고 적어요. 쿠버네티스를 고치지 않고 etcd API를 흉내 내는 길을 택한 거예요. kine을 여러 인스턴스로 띄우려면 외부 SQL 데이터베이스 같은 저장소를 써야 한다고 README에 적혀 있으니 합의와 복제는 그 저장소에 맡기는 구조로 보여요. <span class="obsv-mark">쿠버네티스가 기대는 것은 Raft 자체가 아니라 리비전, watch, 트랜잭션, 리스를 갖춘 etcd v3 API예요.</span></p>
+
+<h2>4. Kafka는 ZooKeeper를 버리고 메타데이터를 자기 로그에 담았다</h2>
+
+<p>Kafka도 같은 고민을 했는데 결론은 반대쪽이었어요. <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-500%3A+Replace+ZooKeeper+with+a+Self-Managed+Metadata+Quorum">KIP-500</a>의 Motivation은 이렇게 시작해요.</p>
+
+<div class="obsv-code">Currently, Kafka uses ZooKeeper to store its metadata about partitions and
+brokers, and to elect a broker to be the Kafka Controller.  We would like to
+remove this dependency on ZooKeeper.</div>
+
+<p>&rarr; 파티션과 브로커의 메타데이터를 ZooKeeper에 두고 컨트롤러 역할을 맡을 브로커도 ZooKeeper로 뽑아 왔는데 그 의존을 없애고 싶다는 뜻이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ZooKeeper와 Zab</div>
+  분산 시스템이 설정 저장, 리더 선출, 잠금에 쓰는 조정 서비스예요. 서버 여러 대가 Zab이라는 원자적 브로드캐스트 프로토콜로 같은 순서의 변경을 나눠 가져요. 데이터는 znode라는 트리 노드에 두고 클라이언트는 znode에 watch를 걸어 변경 알림을 받아요.
+</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: KIP (Kafka Improvement Proposal)</div>
+  Kafka의 큰 변경을 제안하는 문서예요. 번호가 붙고 동기, 설계, 호환성, 기각한 대안을 함께 적어요. 쿠버네티스의 KEP와 같은 역할을 해요.
+</div>
+
+<p>KIP-500이 꼽은 문제는 셋이에요.</p>
+<p><b>첫째, 컨트롤러가 브로커에게 밀어 넣는 변경이 일부만 도착할 수 있었어요.</b> KIP는 "it is possible for brokers to get some of the changes, but not all. Although the controller retries several times, it eventually give up. This can leave brokers in a divergent state."라고 적어요. 컨트롤러가 몇 번 재시도하다 포기하면 브로커마다 다른 상태로 남는다는 뜻이에요.</p>
+<p><b>둘째, 기록의 원본인 ZooKeeper와 컨트롤러의 메모리 상태가 자주 어긋났어요.</b> 원인으로 ZooKeeper의 watch를 들어요.</p>
+
+<div class="obsv-code">Although the controller can set one-shot watches, the number of watches is
+limited for performance reasons.  When a watch triggers, it doesn't tell the
+controller the current state-- only that the state has changed.  By the time
+the controller re-reads the znode and sets up a new watch, the state may have
+changed from what it was when the watch originally fired.  If there is no
+watch set, the controller may not learn about the change at all.</div>
+
+<p>&rarr; watch는 한 번 울리면 사라지고 "바뀌었다"는 사실만 알려 줘요. 컨트롤러가 znode를 다시 읽고 watch를 다시 거는 사이에 또 바뀔 수 있고 watch를 걸지 않은 곳의 변경은 아예 모를 수 있다는 뜻이에요. KIP는 "In some cases, restarting the controller is the only way to resolve the discrepancy."라고 덧붙여요.</p>
+<p><b>셋째, 시스템이 둘이었어요.</b> ZooKeeper는 설정 문법, 관리 도구, 배포 방식이 따로인 별도 시스템이라 운영자가 분산 시스템 두 개를 익혀야 했어요. KIP는 Kafka에 SASL을 켜고 네트워크가 다 보호됐다고 생각했는데 ZooKeeper 쪽 보안은 따로 설정해야 했던 예를 들어요.</p>
+<p>KIP-500의 답은 "Metadata as an Event Log"라는 절 제목에 있어요.</p>
+
+<div class="obsv-code">A single number, the offset, describes a consumer's position in the stream.
+Multiple consumers can quickly catch up to the latest state simply by
+replaying all the events newer than their current offset.</div>
+
+<p>&rarr; <span class="obsv-mark">offset이라는 숫자 하나가 소비자의 위치를 나타내고 소비자는 자기 offset 뒤의 이벤트만 다시 읽어 최신 상태를 따라잡는다는 뜻이에요.</span> Kafka 사용자들이 누리던 이 장점을 정작 Kafka 자신은 메타데이터에 쓰지 못하고 있었다는 것이 KIP의 지적이에요("Kafka itself has been left out"). 메타데이터를 Kafka 안의 로그에 두면 "metadata changes will always arrive in the same order"이고 브로커는 재시작할 때 "only need to read what has changed"예요. 새 구조에서 브로커는 컨트롤러가 밀어 주기를 기다리지 않고 자기 offset 뒤의 변경을 직접 가져가요. KIP에는 이 요청이 "will double as a heartbeat"라는 문장도 있어요. 49편에서 볼 노드 하트비트 문제를 Kafka는 메타데이터 요청에 얹어 풀었어요.</p>
+<p>기각한 대안 가운데 하나가 이 글에서 특히 눈에 띄어요. "Pluggable Consensus", 즉 메타데이터 저장 계층을 갈아 끼울 수 있게 만들어 etcd나 Consul 같은 시스템에도 둘 수 있게 하자는 안이에요. KIP는 이 안이 두 목표를 모두 이루지 못한다고 봤어요. "Because they have ZooKeeper-like APIs and design goals, these external systems would not let us treat metadata as an event log." 외부 시스템이라 배포와 설정도 여전히 복잡하다는 이유가 이어지고 저장소를 여럿 지원하면 테스트할 조합이 늘고 모든 저장소가 지원하는 기능만 쓰게 된다("least common denominator" APIs)는 이유도 붙어 있어요.</p>
+
+<h3>Raft를 가져오되 Kafka 방식으로 바꿨다: KIP-595</h3>
+<p>메타데이터 쿼럼을 무엇으로 만들지는 <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-595%3A+A+Raft+Protocol+for+the+Metadata+Quorum">KIP-595</a>가 정했어요. Motivation은 Kafka의 복제가 원래 Raft와 많이 닮았다고 말해요. 리더는 한 번에 하나이고 단조 증가하는 epoch로 그걸 지키며 메시지는 offset과 epoch로 구별돼요. 빠진 것은 둘이었어요. 커밋 기준인 ISR(리더를 따라잡고 있는 복제본 목록)은 ZooKeeper에 있었고 리더 선출은 컨트롤러가 해서 ZooKeeper에 썼어요. KIP는 이를 "Essentially we have relied on Zookeeper's consensus protocol up now"라고 정리하고 "a sort of Raft dialect"를 제안해요. Raft의 리더 선출과 과반 커밋을 가져오되 Raft의 push 방식 대신 Kafka의 pull 방식을 쓰고 용어도 index와 term 대신 offset과 epoch를 써요.</p>
+<p>기존 Raft 라이브러리를 쓰자는 안은 이렇게 기각했어요.</p>
+
+<div class="obsv-code">Log replication is at the core of Kafka and the project should own it.
+Dependence on a third-party system or library would defeat one of the central
+motivations for KIP-500.</div>
+
+<p>&rarr; 로그 복제는 Kafka의 핵심이니 프로젝트가 직접 가져야 하고 외부 시스템이나 라이브러리에 기대면 ZooKeeper를 없애려던 이유 자체가 무너진다는 뜻이에요. Raft 라이브러리는 대개 자기만의 RPC와 직렬화 형식, 모니터링, 로깅을 들고 와서 사용자가 이해해야 할 설정이 늘어난다는 이유도 붙어 있어요. pull을 고른 이유도 적혀 있어요. 복제본이 필요한 offset부터 로그를 리더에게서 직접 가져가면 리더는 쿼럼 멤버의 상태만 추적하면 되니 "large numbers of observer replicas"에 맞는다는 거예요.</p>
+<p>그 뒤 실제 릴리스를 보면 이래요. <a href="https://blogsarchive.apache.org/kafka/entry/what-s-new-in-apache5">2.8</a>(2021-04)에서 ZooKeeper 없는 모드를 early access로 내놓았고 <a href="https://blogsarchive.apache.org/kafka/entry/what-rsquo-s-new-in">3.3</a>(2022-10-03 발표)에서 신규 클러스터에 한해 운영에 써도 된다고 표시했으며 <a href="https://kafka.apache.org/blog/2025/03/18/apache-kafka-4.0.0-release-announcement/">4.0</a>(2025-03-18)은 "first major release to operate entirely without Apache ZooKeeper"가 됐어요. 4.0 발표문은 ZooKeeper가 "the backbone of Kafka for more than 10 years"였다며 감사 인사도 남겼어요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: ZooKeeper의 watch가 지금은 모두 일회성인 것은 아니에요</div>
+  &bull; <a href="https://zookeeper.apache.org/doc/current/zookeeperProgrammers.html">ZooKeeper Programmer's Guide</a>는 지금도 "Standard watches are one time triggers"라고 적고 이벤트를 받고 watch를 다시 거는 사이의 변경은 "you cannot reliably see every change"라고 경고해요<br>
+  &bull; 다만 3.6.0부터 울려도 지워지지 않고 하위 znode까지 지켜보는 persistent, recursive watch(addWatch)가 생겼어요. KIP-500이 비판한 것은 기본 watch예요<br>
+  &bull; ZooKeeper를 쓰는 시스템을 다룬다면 그 클라이언트가 어느 watch를 쓰는지, 다시 거는 사이의 변경을 어떻게 메우는지 먼저 확인해요
+</div>
+
+<h2>5. 두 프로젝트는 같은 답에 닿았고 로그를 누가 가질지에서 갈렸다</h2>
+
+<p>KIP-500을 읽다 보면 39편에서 본 쿠버네티스의 watch가 떠올라요. 쿠버네티스의 LIST-WATCH 경로에서는 LIST로 받은 resourceVersion부터 watch를 이어 받고 이벤트에는 바뀐 객체와 새 resourceVersion이 함께 와요. 이어 받을 수 없을 만큼 오래된 번호면 410을 받고 초기 상태를 다시 받아요. client-go v1.37.2의 기본 WatchList 경로는 초기 객체도 WATCH로 받지만 두 방식 모두 resourceVersion으로 이후 변경을 이어 받아요(39편). 이 실습의 etcd 저장소 구현은 etcd의 revision을 resourceVersion으로 사용해요(22편). Kafka가 KIP-500에서 도달한 "상태를 순서 있는 로그로 두고 소비자는 자기 위치부터 따라잡는다"를 쿠버네티스는 etcd의 revision으로 하고 있었던 셈이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="28" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">상태 변경이 소비자에게 가는 길: Kafka 두 시절과 쿠버네티스</text>
+<defs><marker id="k48c1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k48c2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k48c3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k48c4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="118" y="62" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">Kafka + ZooKeeper</text>
+<path d="M40 78 C 92 78, 144 76, 196 79 C 195 96, 197 115, 195 134 C 144 135, 92 134, 39 133 C 41 115, 42 96, 40 78 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="118" y="102" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">ZooKeeper (Zab)</text>
+<text x="118" y="124" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">기록의 원본</text>
+<path d="M40 182 C 92 181, 144 183, 196 183 C 194 198, 196 215, 196 232 C 144 233, 92 234, 40 231 C 39 215, 38 198, 40 182 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="118" y="212" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">컨트롤러 (메모리 상태)</text>
+<path d="M118 136 C 119 149, 118 165, 118 178" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k48c2)"/>
+<text x="124" y="160" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#b3502f" text-anchor="start">일회성 watch: 바뀌었다만</text>
+<path d="M24 290 C 44 288, 64 288, 84 290 C 82 302, 83 314, 85 326 C 64 324, 44 326, 24 327 C 22 314, 26 302, 24 290 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="54" y="314" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">브로커</text>
+<path d="M90 290 C 110 291, 130 288, 150 289 C 149 302, 150 314, 150 326 C 130 325, 110 328, 91 326 C 89 314, 91 302, 90 290 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="120" y="314" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">브로커</text>
+<path d="M156 290 C 176 288, 196 288, 216 291 C 214 302, 214 314, 217 326 C 196 324, 176 328, 157 327 C 156 314, 157 302, 156 290 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="186" y="314" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">브로커</text>
+<path d="M90 234 C 81 250, 65 268, 56 286" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k48c1)"/>
+<path d="M118 234 C 117 251, 119 270, 120 286" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k48c1)"/>
+<path d="M146 234 C 158 249, 169 268, 184 286" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" stroke-dasharray="5 5" marker-end="url(#k48c2)"/>
+<path d="M163 255 C 168 259, 172 265, 177 269" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/><path d="M177 255 C 173 260, 167 264, 163 269" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+<text x="118" y="350" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#b3502f" text-anchor="middle">컨트롤러가 push, 일부만 도착 가능</text>
+<text x="350" y="62" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">Kafka KRaft</text>
+<path d="M256 78 C 318 76, 381 76, 444 79 C 443 113, 445 148, 445 184 C 381 185, 318 183, 255 184 C 255 148, 254 113, 256 78 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="100" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5" text-anchor="middle">컨트롤러 쿼럼</text>
+<text x="350" y="120" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">메타데이터 로그 (Raft 방언)</text>
+<path d="M270 132 C 282 130, 294 133, 306 133 C 305 143, 305 154, 306 166 C 294 168, 282 166, 271 167 C 272 154, 269 143, 270 132 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="288" y="154" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">101</text>
+<path d="M312 132 C 324 133, 336 132, 348 132 C 350 143, 346 154, 349 166 C 336 164, 324 168, 313 167 C 310 154, 313 143, 312 132 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="330" y="154" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">102</text>
+<path d="M354 132 C 366 134, 378 134, 390 132 C 392 143, 392 154, 389 166 C 378 166, 366 166, 355 167 C 353 154, 355 143, 354 132 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="372" y="154" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">103</text>
+<path d="M396 132 C 408 132, 420 132, 432 131 C 434 143, 433 154, 433 166 C 420 165, 408 168, 396 166 C 397 154, 395 143, 396 132 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="414" y="154" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">104</text>
+<path d="M262 290 C 288 290, 315 289, 342 290 C 342 302, 342 314, 342 326 C 315 326, 288 324, 263 326 C 262 314, 263 302, 262 290 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="302" y="314" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">브로커</text>
+<path d="M358 290 C 384 288, 411 290, 438 289 C 439 302, 439 314, 439 326 C 411 325, 384 325, 357 326 C 358 314, 360 302, 358 290 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="398" y="314" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">브로커</text>
+<path d="M282 286 C 286 254, 289 220, 290 190" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48c3)"/>
+<path d="M418 286 C 414 252, 413 224, 410 190" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48c3)"/>
+<text x="350" y="228" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">offset 102부터</text>
+<text x="350" y="248" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">주세요 (fetch)</text>
+<text x="350" y="350" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">브로커가 자기 위치부터 끌어감</text>
+<text x="582" y="62" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">Kubernetes</text>
+<path d="M504 78 C 556 77, 608 76, 660 78 C 659 96, 661 115, 659 134 C 608 133, 556 132, 505 133 C 503 115, 502 96, 504 78 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="582" y="102" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5" text-anchor="middle">etcd (Raft)</text>
+<text x="582" y="124" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">revision 순서</text>
+<path d="M504 172 C 556 173, 608 172, 660 171 C 659 188, 658 205, 661 222 C 608 223, 556 224, 503 223 C 504 205, 502 188, 504 172 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="582" y="202" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">API 서버 watch 캐시</text>
+<path d="M582 136 C 581 145, 583 159, 582 168" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48c4)"/>
+<path d="M488 290 C 518 291, 548 290, 578 291 C 579 302, 579 314, 577 326 C 548 325, 518 328, 487 325 C 490 314, 488 302, 488 290 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="533" y="314" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<path d="M588 290 C 620 290, 652 292, 684 290 C 685 302, 684 314, 684 326 C 652 324, 620 324, 588 326 C 588 314, 589 302, 588 290 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="636" y="314" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#3d3a34" text-anchor="middle">컨트롤러</text>
+<path d="M510 286 C 514 267, 517 247, 518 226" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48c3)"/>
+<path d="M656 286 C 655 265, 653 247, 648 226" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k48c3)"/>
+<text x="582" y="252" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">resourceVersion</text>
+<text x="582" y="270" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">부터 watch</text>
+<text x="582" y="350" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">못 이으면 410 → 다시 LIST (39편)</text>
+<path d="M236 70 C 238 161, 239 248, 238 336" fill="none" stroke="#d8cfba" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 6"/>
+<path d="M466 70 C 467 158, 468 245, 468 336" fill="none" stroke="#d8cfba" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 6"/>
+<text x="350" y="392" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">가운데와 오른쪽은 같은 답: 상태를 순서 있는 로그로 두고 소비자가 자기 위치부터 따라잡는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. ZooKeeper 시절의 Kafka는 push와 일회성 watch에 기댔고 KRaft와 쿠버네티스는 번호가 붙은 로그를 소비자가 따라잡는다</div>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:640px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;"></th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">Kafka + ZooKeeper</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">Kafka KRaft</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">Kubernetes</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">상태의 원본</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">ZooKeeper (Zab)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">컨트롤러 쿼럼의 메타데이터 로그 (Raft 방언)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">etcd (Raft)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">소비자가 변경을 받는 법</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">컨트롤러가 push, 컨트롤러는 ZooKeeper 일회성 watch</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">브로커가 자기 offset부터 fetch</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">클라이언트가 resourceVersion부터 watch (API 서버 경유)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">따로 운영하는 저장 시스템</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">ZooKeeper</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">없음</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">etcd</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">로그를 가진 쪽</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">외부 시스템</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Kafka 자신</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">외부 시스템(etcd)을 API 서버 뒤에 숨김</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><span class="obsv-mark">갈린 곳은 로그를 누가 갖느냐예요.</span> Kafka는 제품 자체가 로그라서 "the project should own it"이라며 메타데이터 로그까지 직접 가졌어요. 쿠버네티스의 중심은 로그가 아니라 API와 그 API를 보는 컨트롤러들이에요. 그래서 로그와 합의는 etcd에 맡기고 API 서버 뒤에 숨겼어요. 두 결정 모두 자기 핵심이 무엇인지에서 나온 것으로 보여요. 이 해석은 제 것이고 쿠버네티스 쪽에서 이렇게 정리한 원문은 찾지 못했어요.</p>
+
+<h3>쿠버네티스가 치른 대가와 남은 논쟁</h3>
+<p>&middot; <b>운영할 시스템이 여전히 둘이에요.</b> Kafka가 4.0에서 없앤 것이 바로 "maintaining a separate ZooKeeper ensemble"의 부담이었어요. 쿠버네티스는 etcd를 따로 백업하고 복원해야 하고(40편) stacked와 external 가운데 배치를 골라야 하며(21편) etcd 전용 인증서도 따로 관리해요(5편).<br>
+&middot; <b>etcd의 한계가 쿠버네티스의 설계를 바꿔요.</b> etcd <code style="font-family:Menlo,monospace;font-size:14px;">--help</code>는 DB가 한도(기본 2GiB)를 넘으면 경보를 내고 읽기 전용이 된다고 적어요(49편 화면). 다만 <a href="https://etcd.io/docs/v3.7/op-guide/maintenance/#space-quota">공식 유지보수 문서</a>는 이때 키 읽기와 삭제는 허용한다고 설명해요. 2018년에 큰 클러스터가 이 한도에 걸리자 노드 하트비트를 Node 객체에서 Lease로 옮겼어요(49편). 그때의 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/589-efficient-node-heartbeats">KEP</a>는 "Replace etcd with other database"라는 대안을 검토하고 "Migration will take us years."라며 버렸어요.<br>
+&middot; <b>Raft 로그를 디스크에 저장할 때 fsync를 기다려요.</b> <a href="https://etcd.io/docs/v3.7/tuning/">etcd 튜닝 문서</a>는 "An etcd cluster is very sensitive to disk latencies. Since etcd must persist proposals to its log, disk activity from other processes may cause long fsync latencies."라고 적고 그 결과 하트비트를 놓쳐 요청이 시간 초과되거나 리더를 잠시 잃을 수 있다고 해요. 6절의 30초 관측에서는 fsync 횟수와 커밋 수가 같았어요.<br>
+&middot; <b>저장소는 아직 하나예요.</b> 2015년 문서의 "eventually other stores"는 v1.37.2까지 이뤄지지 않았고 다른 저장소를 쓰려는 쪽은 kine이 그랬듯 etcd API를 흉내 내요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: etcd의 디스크와 리더 교체를 지표로 봐요</div>
+  &bull; 커밋되려면 과반 멤버가 로그를 디스크에 남겨야 하니 etcd에는 지연이 짧고 다른 프로세스와 겹치지 않는 디스크를 줘요. 튜닝 문서는 리눅스에서 ionice로 etcd의 디스크 우선순위를 올리는 방법도 적어요<br>
+  &bull; 6절에 나오는 <code style="font-family:Menlo,monospace;font-size:14px;">etcd_disk_wal_fsync_duration_seconds</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">etcd_server_leader_changes_seen_total</code>을 모아 두면 디스크가 느려져 리더가 바뀌는 상황을 일찍 볼 수 있어요<br>
+  &bull; heartbeat-interval과 election-timeout은 기본값(100ms, 1000ms)으로 두는 것이 출발점이에요. 튜닝 문서는 heartbeat-interval을 멤버 사이 왕복 시간 근처로 두라고 권해요
+</div>
+
+<p>연대표로 정리하면 이래요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:640px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">시점</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">사건</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">출처</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1988</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Viewstamped Replication (Oki·Liskov, PODC)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Raft 논문 참고문헌</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1998-05</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Paxos 논문 "The Part-Time Parliament" (ACM TOCS)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Raft 논문 참고문헌</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2006</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Chubby (OSDI), Paxos 기반</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Raft 논문 참고문헌</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2010~2011</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">ZooKeeper (USENIX ATC 2010), Zab 논문 (DSN 2011)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Raft 논문 참고문헌</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2013-07-06</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">etcd 저장소 생성, 2013-08-11 커밋에 v0.1.0 태그</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">GitHub etcd-io/etcd</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2014-06-06</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">쿠버네티스 첫 커밋. go-etcd 포함, kubelet·kube-proxy가 etcd를 직접 watch</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/commit/2c4b3a562ce34cddc3f8218a2c4d11c7310e6d56">커밋 2c4b3a5</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2014-06</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Raft 논문, USENIX ATC 2014 Best Paper</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://raft.github.io/">raft.github.io</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-07-13</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">쿠버네티스 v1.0. "All persistent master state is stored in an instance of etcd"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/v1.0.0/docs/design/architecture.md">v1.0 아키텍처 문서</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2016-01~02</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">"Borg, Omega, and Kubernetes" (ACM Queue)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://queue.acm.org/detail.cfm?id=2898444">ACM Queue</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2016-06-30</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">etcd v3.0.0</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">GitHub 릴리스</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2017-03-28</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">쿠버네티스 1.6, etcd v3 기본</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.6.md">CHANGELOG-1.6</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2018-12-03</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">쿠버네티스 1.13, etcd2 저장 백엔드 제거</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.13.md">CHANGELOG-1.13</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2019-10-30</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">KIP-500 작업 이슈 KAFKA-9119 생성</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://issues.apache.org/jira/browse/KAFKA-9119">Apache JIRA</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2021-04</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Kafka 2.8, ZooKeeper 없는 모드 early access</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://blogsarchive.apache.org/kafka/entry/what-s-new-in-apache5">2.8 발표문</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2022-10-03</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Kafka 3.3 발표, 신규 클러스터에 한해 KRaft를 운영용으로 표시</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://blogsarchive.apache.org/kafka/entry/what-rsquo-s-new-in">Apache Kafka 3.3 발표</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2025-03-18</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Kafka 4.0, ZooKeeper 없이 도는 첫 메이저 릴리스</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://kafka.apache.org/blog/2025/03/18/apache-kafka-4.0.0-release-announcement/">4.0 발표문</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2026-11</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">우리 클러스터: etcd 3.7.0 멤버 1개, --storage-backend는 etcd3 하나</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">6절</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>6. 멤버 하나짜리 우리 etcd에서도 Raft는 돌고 있었다</h2>
+
+<p>도입의 장면으로 돌아갈게요. 22:09에 조회만 하는 스크립트(48-etcd-raft-single-member.sh)로 etcd의 멤버, 상태, 타이머, 선거 기록을 모았어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/48/01-raft-single-member.png" alt="48-etcd-raft-single-member.sh 실행 화면 앞부분. 멤버 목록에 c960bb57b7d36fea, started, k8s-master, peer https://192.168.104.1:2380, client https://192.168.104.1:2379, is learner false 한 줄만 있다. endpoint status는 member_id와 leader가 c960bb57b7d36fea로 같고 raftTerm 3, raftIndex 1972다. etcd.yaml에 heartbeat-interval과 election-timeout을 적은 줄은 0개이고 snapshot-count는 10000이다. etcd --help 기본값은 heartbeat-interval 100, election-timeout 1000이다. 로그에는 12:58:43.140에 starting a new election at term 2, became pre-candidate at term 2, became candidate at term 3, 12:58:43.141에 became leader at term 3과 elected leader at term 3이 있다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 멤버는 하나이고 리더도 자기 자신이다. 이번 기동에서 term 2의 선거를 열어 term 3의 리더가 됐다</div>
+
+<p>멤버 목록에는 k8s-master 하나뿐이고 endpoint status의 member_id와 leader가 같아요. raftTerm은 3이었어요. 22편 무렵(15:17)에 같은 etcd를 봤을 때는 term 9, raftIndex 143152였어요(22-etcd-ssot.txt). 이 글을 쓰기 직전 40편의 복원 리허설에서 스냅숏으로 데이터 디렉터리를 새로 만들면서 Raft 로그도 새로 시작됐고 그 뒤 etcd를 두 번 띄웠어요. 화면의 선거 기록은 두 번째 기동 때 남은 거예요. term과 index가 작아진 것은 복원 때문이고 데이터 양과는 관계가 없어요.</p>
+<p>선거 기록은 다섯 줄이에요. term 2에서 새 선거를 시작하고 먼저 pre-candidate가 됐어요. <a href="https://github.com/etcd-io/raft/blob/main/raft.go">etcd raft 라이브러리의 설정 주석</a>은 PreVote를 "This prevents disruption when a node that has been partitioned away rejoins the cluster."라고 설명해요. term을 올리기 전에 이길 수 있는지 먼저 물어서 네트워크에서 떨어져 있던 멤버가 돌아올 때 멀쩡한 리더를 흔들지 않게 하는 단계예요. 혼자이니 바로 통과해 term 3의 candidate가 되고 자기 표 하나로 과반을 채워 1ms 안에 리더가 됐어요. Kafka도 4.0에서 같은 이름의 Pre-Vote(KIP-996)를 KRaft에 넣으며 "reduce unnecessary KRaft leader elections"를 목표로 들었어요.</p>
+<p>etcd.yaml에는 heartbeat-interval과 election-timeout이 없으니 기본값 100ms와 1000ms를 써요. 튜닝 문서는 heartbeat interval을 "the frequency with which the leader will notify followers that it is still the leader"라고 하고 election timeout을 팔로워가 하트비트를 못 듣고 버티는 시간이라고 설명해요. 49편에서 볼 kubelet의 10초 하트비트와는 다른 층이에요. 이쪽은 etcd 멤버끼리 리더가 살아 있는지 확인하는 신호예요.</p>
+<p>이어서 30초 동안 etcd 지표가 얼마나 늘었는지 쟀어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/48/02-raft-30s.png" alt="48-etcd-raft-single-member.sh 실행 화면 뒷부분. 30초 동안 raftTerm은 3 그대로이고 raftIndex는 1973에서 2073으로 늘었다. 같은 동안 etcd revision은 78 늘었다. etcd_disk_backend_commit_duration_seconds_count는 1098에서 1148로 +50, etcd_disk_wal_fsync_duration_seconds_count는 1752에서 1848로 +96, etcd_mvcc_put_total은 +75, etcd_server_has_leader와 is_leader는 1, heartbeat_send_failures_total 0, leader_changes_seen_total 1, proposals_applied_total과 proposals_committed_total은 1973에서 2069로 +96, proposals_failed_total과 proposals_pending은 0이다. peer로 주고받은 바이트 지표는 0줄이다. 2380은 192.168.104.1에서 LISTEN이지만 맺어진 연결은 0개이고 2379에는 93개가 맺어져 있다. kube-apiserver --help의 --storage-backend 설명은 Options: &#x27;etcd3&#x27; (default)이다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 30초 동안 Raft 제안 96개가 커밋됐고 WAL fsync도 96번이었다. 멤버끼리 주고받은 바이트는 없었다</div>
+
+<p>30초 동안 Raft 제안(proposal) 96개가 커밋되고 적용됐어요. 실패와 대기 중인 제안은 0이었어요. 같은 30초 동안 WAL fsync 횟수도 96번 늘어 커밋 수와 같았어요. 멤버가 하나여도 쓰기 요청은 Raft 로그를 거쳐 커밋되고 그 로그는 WAL 파일에 저장돼요. 과반이 1이라 남의 응답을 기다리지 않을 뿐이에요. bbolt 파일(38편)에 반영한 횟수(backend commit)는 50번으로 더 적었는데 etcd가 여러 쓰기를 묶어 반영하기 때문으로 보여요. 키·값 변경 번호인 revision은 78 올랐어요. Raft 로그에는 etcd 리스 발급이나 컴팩션 같은, 키·값 변경이 아닌 요청도 실리기 때문에 커밋 수가 더 많았던 것으로 보여요.</p>
+<p>멤버끼리의 길은 비어 있었어요. 2380 포트는 열려 있지만 맺어진 연결은 0개이고 peer로 주고받은 바이트를 세는 지표는 한 줄도 없었어요. 반대로 클라이언트 포트 2379에는 연결 93개가 맺어져 있었는데 22편과 35편에서 본 대로 모두 API 서버의 연결이에요. <span class="obsv-mark">우리 etcd에서 Raft는 리더 선출과 로그 커밋까지만 돌고 복제는 하지 않아요.</span> 멤버가 둘 이상이면 리더가 2380으로 같은 항목을 보내고 과반의 응답을 기다리는 복제를 볼 수 있어요. 한 대 장애를 견디는 HA 구성은 멤버 셋부터예요(21편). 마지막 줄은 3절에서 본 대로 API 서버가 고를 수 있는 저장소가 etcd3 하나라는 것을 보여 줘요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 멤버 하나짜리 etcd는 Raft를 돌려도 장애를 견디지 못해요</div>
+  &bull; 과반이 1이라 그 한 대가 죽으면 쓰기를 받을 리더가 없어요. Raft가 돈다는 것과 고가용성은 다른 이야기예요<br>
+  &bull; 이 클러스터의 etcd를 지키는 것은 복제가 아니라 백업이에요. 스냅숏을 뜨고 복원하는 방법은 40편에서 봐요<br>
+  &bull; 복원하면 Raft 로그가 새로 시작해서 raftTerm과 raftIndex가 작아져요. 지표나 알림이 raftIndex 감소를 이상으로 잡는다면 복원 직후에는 예외로 둬요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>쿠버네티스는 클러스터 상태를 한 곳에 두려고 etcd를 골랐고 etcd는 그 한 곳을 여러 대로 늘려도 같은 순서를 지키려고 Raft를 써요. Kafka는 같은 문제를 겪고 로그를 직접 갖는 쪽으로 갔어요.</b><br><br>
+  합의 알고리즘이 푸는 문제는 여러 대가 같은 순서로 같은 값을 갖게 하는 일관성이고 Raft는 Paxos와 같은 장애 내성을 더 이해하기 쉬운 구조로 풀었어요. 쓰기는 과반이 받으면 커밋되고 느린 멤버는 뒤따라 받아요. 쿠버네티스는 Borg와 Omega에서 공유 저장소와 watch라는 뼈대를 가져왔고 그 저장소를 API 서버 뒤에 숨겨서 etcd v2에서 v3으로 옮길 때도 다른 구성 요소는 API만 봤어요. Kafka는 ZooKeeper의 일회성 watch와 일부만 도착하는 push 알림, 두 시스템 운영에 부딪혀 메타데이터를 자기 로그에 담았고 Raft를 pull 방식 방언으로 직접 구현했어요. 두 프로젝트는 상태를 순서 있는 로그로 두고 소비자가 자기 위치부터 따라잡는 같은 답에 닿았고 그 로그를 누가 갖느냐에서 갈렸어요. 멤버 하나짜리 우리 etcd도 뜰 때마다 선거를 치르고 쓰기마다 Raft 로그를 커밋했지만 복제가 없으니 장애는 견디지 못해요. 쿠버네티스가 고른 것은 알고리즘 하나가 아니라 순서와 일관성을 지켜 주는 저장소였어요.
+</div>
+
+</div>

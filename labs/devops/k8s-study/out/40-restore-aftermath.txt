@@ -1,0 +1,85 @@
+# etcd 복원 리허설 뒤의 흔적 (2026-11-14 22:11:40 KST, 조회만)
+
+## 1. etcd 이미지(registry.k8s.io/etcd:3.7.0-0)의 층 (마스터 crictl inspecti 의 history)
+  bazel build @bookworm//base-files/arm64:data_statusd
+  bazel build @bookworm//netbase/arm64:data_statusd
+  bazel build @bookworm//tzdata/arm64:data_statusd
+  bazel build @bookworm//media-types/arm64:data_statusd
+  bazel build //common:rootfs
+  bazel build //common:passwd
+  bazel build //common:home
+  bazel build //common:group
+  bazel build //common:tmp
+  bazel build //static:nsswitch
+  bazel build //common:os_release_debian12
+  bazel build //common:cacerts_debian12_arm64
+  ADD etcd /usr/local/bin/ # buildkit
+  ADD etcdctl /usr/local/bin/ # buildkit
+  ADD etcdutl /usr/local/bin/ # buildkit
+  WORKDIR /var/etcd/
+  WORKDIR /var/lib/etcd/
+  EXPOSE [2379/tcp 2380/tcp]
+  CMD ["/usr/local/bin/etcd"]
+  Cmd=['/usr/local/bin/etcd'] WorkingDir=/var/lib/etcd/
+
+## 2. etcd.yaml 에서 복원 명령에 옮겨 쓴 값 (마스터, 지금 파일은 리허설 전 원본과 같다)
+  18:    - --data-dir=/var/lib/etcd
+  20:    - --initial-advertise-peer-urls=https://192.168.104.1:2380
+  21:    - --initial-cluster=k8s-master=https://192.168.104.1:2380
+  26:    - --name=k8s-master
+  91:      path: /var/lib/etcd
+  --initial-cluster-token 줄 수: 0
+  (diff) 리허설 전 원본 etcd.yaml.orig 와 같음
+
+## 3. 멤버 ID: 복원 전 기록 / 지금 / peer URL 과 토큰으로 계산한 값
+  복원 전 (shared/arch-exp/e6-etcd-ssot.txt, 15:17): ID=c960bb57b7d36fea RAFT_TERM=9 RAFT_INDEX=143152
+  지금: member_id=c960bb57b7d36fea cluster_id=3e50550e6ebc5cfd raftTerm=3 raftIndex=2436 revision=1000181854
+  계산: sha1(peer URL + 토큰 etcd-cluster) 앞 8바이트 = c960bb57b7d36fea, sha1(멤버 ID) 앞 8바이트 = 3e50550e6ebc5cfd
+
+## 4. etcd 로그: 복원본 data-dir 로 마지막에 다시 뜬 때 (지금 etcd 컨테이너, 시각은 UTC)
+  12:58:42.738 restarting local member {"cluster-id": "3e50550e6ebc5cfd", "local-member-id": "c960bb57b7d36fea"}
+  12:58:42.740 restored last compact revision {"restored-compact-revision": 1000180003}
+  12:58:42.743 kvstore restored {"current-rev": 1000180176}
+  12:58:43.141 c960bb57b7d36fea became leader at term 3 {}
+
+## 5. containerd 기록: etcd.yaml 의 hostPath 를 바꾸고 kubelet 을 재시작한 21:57:35~21:57:48 (마스터, KST, ID 는 앞 12자)
+  21:57:35.648 StopContainer for ee65cf7ef789 with timeout 30 (s)
+  21:57:35.677 StopContainer for ee65cf7ef789 failed" error="rpc error: code = Canceled desc = context canceled
+  21:57:36.168 RunPodSandbox for name:etcd-k8s-master  uid:54e1abdacf0184196253587241c13bd5  namespace:kube-system returns sandbox id 689de7d0ca40
+  21:57:36.169 CreateContainer within sandbox 689de7d0ca40 for container name:etcd
+  21:57:36.201 StartContainer for 06f24a742b52 returns successfully
+  21:57:36.205 received container exit event container_id:06f24a742b52  pid:246923  exit_status:1  
+  21:57:36.762 CreateContainer within sandbox 689de7d0ca40 for container name:etcd  attempt:1
+  21:57:36.768 CreateContainer within sandbox 689de7d0ca40 for name:etcd  attempt:1 returns container id e30eb998fc86
+  21:57:36.793 StartContainer for e30eb998fc86 returns successfully
+  21:57:36.801 received container exit event container_id:e30eb998fc86  pid:246992  exit_status:1  
+  21:57:42.663 received container exit event container_id:ee65cf7ef789  pid:1801  
+  21:57:47.724 CreateContainer within sandbox 689de7d0ca40 for container name:etcd  attempt:2
+  21:57:47.740 CreateContainer within sandbox 689de7d0ca40 for name:etcd  attempt:2 returns container id a5c090702bdc
+  21:57:47.771 StartContainer for a5c090702bdc returns successfully
+  (ee65cf7ef789 = 리허설 전부터 돌던 etcd 컨테이너, 06f24a742b52·e30eb998fc86·a5c090702bdc = 새 hostPath 의 etcd 컨테이너 attempt 0·1·2)
+
+## 6. 스케줄러·컨트롤러 매니저: API 서버가 멈춘 동안 리더 Lease 를 갱신하지 못하고 재시작 (마스터 /var/log/pods, 시각은 KST)
+  [kube-scheduler 1.log 끝]
+    21:57:17.140 leaderelection.go:304] "Failed to renew lease" lock="kube-system/kube-scheduler" err="context deadline exceeded"
+    21:57:17.141 server.go:337] "Leaderelection lost"
+  [kube-scheduler 2.log 처음]
+    21:57:17.990 serving.go:411] Generated self-signed cert in-memory
+  [kube-controller-manager 2.log: 21:57:17 에 새로 시작한 컨테이너]
+    21:57:17.938 controllermanager.go:204] "Starting" version="v1.37.2"
+    21:57:17.941 leaderelection.go:258] "Attempting to acquire leader lease..." lock="kube-system/kube-controller-manager"
+    21:58:08.567 leaderelection.go:272] "Successfully acquired lease" lock="kube-system/kube-controller-manager"
+
+## 7. calico-kube-controllers: 복원 전 리비전으로 watch 를 이으려다 "too old resource version" (시각은 UTC, 각 줄 앞의 "Watch has expired, triggering full resync." 는 줄임)
+  pod/calico-kube-controllers-846669895c-rgvhh 시작 2026-11-14T08:28:26Z k8s-master 재시작 0
+  12:58:54.366 ListRoot=".../v3/pc.org/globalnetworkpolicies" event=Error:too old resource version: 179989 (1000180191)
+  12:58:54.367 ListRoot=".../v3/pc.org/ippools" event=Error:too old resource version: 180013 (1000180186)
+  12:58:54.367 ListRoot=".../v3/pc.org/stagedglobalnetworkpolicies" event=Error:too old resource version: 179996 (1000180186)
+  12:58:54.367 ListRoot=".../v3/pc.org/hostendpoints" event=Error:too old resource version: 180013 (1000180186)
+  12:58:54.368 ListRoot=".../v3/pc.org/nodes" event=Error:too old resource version: 180013 (1000180176)
+  12:58:54.368 ListRoot=".../v3/pc.org/clusterinformations" event=Error:too old resource version: 180013 (1000180200)
+  12:58:54.368 ListRoot=".../v3/pc.org/stagednetworkpolicies" event=Error:too old resource version: 179972 (1000180197)
+  12:58:54.368 ListRoot=".../v3/pc.org/networkpolicies" event=Error:too old resource version: 180013 (1000180186)
+  12:58:54.368 ListRoot=".../ipam/v2/assignment/" event=Error:too old resource version: 179994 (1000180186)
+  12:58:55.375 ListRoot=".../v3/pc.org/ipreservations" event=Error:too old resource version: 179977 (1000180221)
+  Full resync is required 줄 수: 10

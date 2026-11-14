@@ -1,0 +1,38 @@
+# 앱 kill vs pause kill, 그리고 좀비 (2026-11-14 21:40:16 KST)
+
+## 1. 처음 상태
+  21:40:16 sandbox=6e1464df433e attempt=0 state=SANDBOX_READY ip=10.244.194.65 restartCount=0
+
+## 2. 앱(nginx master) 프로세스를 kill -9
+  worker1$ kill -9 181023   (nginx)
+  21:40:18 다시 Ready: 1.3초 / sandbox=6e1464df433e attempt=0 state=SANDBOX_READY ip=10.244.194.65 restartCount=1
+
+## 3. pause 프로세스를 kill -9
+  worker1$ kill -9 180993   (pause)
+  21:40:31 다시 Ready: 12.4초 / sandbox=6c69b5d1cf56 attempt=1 state=SANDBOX_READY sandbox=6e1464df433e attempt=0 state=SANDBOX_NOTREADY ip=10.244.194.65 restartCount=2
+  worker1 의 이 파드 샌드박스 전부(죽은 것 포함):
+    6c69b5d1cf56 attempt=1 SANDBOX_READY
+    6e1464df433e attempt=0 SANDBOX_NOTREADY
+  이벤트:
+    SandboxChanged       x1  Pod sandbox changed, it will be killed and re-created.
+    Killing              x1  Stopping container web
+    BackOff              x3  Back-off restarting failed container web in pod sb-demo_w1-pause(9ea8d7e2-2671-4f42-b168-dd075b01f0f0)
+    Pulled               x3  Container image "nginx:1.25.1-alpine" already present on machine and can be accessed by the pod
+    Created              x3  Container created
+    Started              x3  Container started
+
+## 4. 고아 프로세스를 누가 거두나: shareProcessNamespace false vs true
+  컨테이너 명령: sh -c "(sleep 1 &); exec sleep 3600"  → 1초 뒤 끝난 sleep 1 은 부모를 잃고 PID 1 에게 넘어감
+  21:40:36 zombie-false: ps -o pid,ppid,stat,comm
+    PID   PPID  STAT COMMAND
+        1     0 S    sleep
+        8     1 Z    sleep
+        9     0 R    ps
+  21:40:36 zombie-true: ps -o pid,ppid,stat,comm
+    PID   PPID  STAT COMMAND
+        1     0 S    pause
+        6     0 S    sleep
+       14     0 R    ps
+
+## 5. 정리
+  21:40:41 네임스페이스 w1-pause 삭제

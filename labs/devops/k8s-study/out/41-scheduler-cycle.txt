@@ -1,0 +1,88 @@
+# kube-scheduler 가 하는 일: 집어 가는 파드, 스케줄링 사이클과 바인딩 사이클, 대기열 (2026-11-14 21:04:07 KST)
+
+## 0. 스케줄러는 어디서 무슨 권한으로 도나
+NAME                        READY   STATUS    RESTARTS        AGE     IP              NODE         NOMINATED NODE   READINESS GATES
+kube-scheduler-k8s-master   1/1     Running   1 (3h43m ago)   5h21m   192.168.104.1   k8s-master   <none>           <none>
+21:04:07 master$ grep -- '- --' /etc/kubernetes/manifests/kube-scheduler.yaml
+    - --authentication-kubeconfig=/etc/kubernetes/scheduler.conf
+    - --authorization-kubeconfig=/etc/kubernetes/scheduler.conf
+    - --bind-address=127.0.0.1
+    - --kubeconfig=/etc/kubernetes/scheduler.conf
+    - --leader-elect=true
+21:04:07 리더 선출 Lease: holder=lima-k8s-master_ac8b2a46-6182-4032-bedb-80401f367a58 leaseDurationSeconds=15 renewTime=2026-11-14T12:04:05.333245Z
+21:04:07 kubectl get clusterrole system:kube-scheduler (파드 관련 규칙만)
+  nodes                                    get,list,watch
+  pods                                     delete,get,list,watch
+  bindings,pods/binding                    create
+  pods/status                              patch,update
+  poddisruptionbudgets                     get,list,watch
+  pods/finalizers                          update
+
+## 1. 스케줄러가 집어 가는 파드와 안 집어 가는 파드 (바인딩 요청 수 시작값 19)
+21:04:07 파드 3개 생성: sc-normal(아무 설정 없음) / sc-other-scheduler(schedulerName: my-scheduler) / sc-nodename(spec.nodeName: k8s-worker1 을 직접 적음)
+NAME                 READY   STATUS    RESTARTS   AGE   IP               NODE          NOMINATED NODE   READINESS GATES
+sc-nodename          1/1     Running   0          10s   10.244.194.127   k8s-worker1   <none>           <none>
+sc-normal            1/1     Running   0          10s   10.244.100.204   k8s-worker3   <none>           <none>
+sc-other-scheduler   0/1     Pending   0          10s   <none>           <none>        <none>           <none>
+21:04:17 sc-normal 이벤트(보고한 컴포넌트, 이유):
+    default-scheduler  Scheduled  Successfully assigned sc-demo/sc-normal to k8s-worker3
+    kubelet            Pulled     Container image "registry.k8s.io/pause:3.10.2" already present on machine and can be accessed by the pod
+    kubelet            Created    Container created
+    kubelet            Started    Container started
+21:04:17 sc-other-scheduler 이벤트(보고한 컴포넌트, 이유):
+    (이벤트 없음)
+21:04:17 sc-nodename 이벤트(보고한 컴포넌트, 이유):
+    kubelet            Pulled     Container image "registry.k8s.io/pause:3.10.2" already present on machine and can be accessed by the pod
+    kubelet            Created    Container created
+    kubelet            Started    Container started
+21:04:18 API 서버가 받은 POST pods/binding: 19 → 20 (+1)
+21:04:18 sc-normal 의 시각: 생성 2026-11-14T12:04:07Z / PodScheduled=True 2026-11-14T12:04:07Z
+21:04:18 sc-normal 을 쓴 주체(managedFields: manager / operation / subresource):
+    kubectl-client-side-apply Update  -        건드린 필드에 f:containers
+    calico                   Update  status   건드린 필드에 
+    kubelet                  Update  status   건드린 필드에 f:conditions,f:containerStatuses,f:podIP
+
+## 2. sc-normal 한 개를 스케줄하는 동안 돈 확장 지점 (스케줄러 메트릭 차이, 1절 전후)
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="Bind",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="Filter",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="Permit",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="PostBind",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="PreBind",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="PreBindPreFlight",profile="default-scheduler",status="Skip"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="PreEnqueue",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="PreFilter",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="PreScore",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="Reserve",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="Score",profile="default-scheduler",status="Success"}
+  +1    scheduler_framework_extension_point_duration_seconds_count{extension_point="Sign",profile="default-scheduler",status="Success"}
+  +1    scheduler_queue_incoming_pods_total{event="UnscheduledPodAdd",queue="active"}
+  +1    scheduler_schedule_attempts_total{profile="default-scheduler",result="scheduled"}
+
+## 3. 지금은 못 들어가는 파드: 대기열에서 기다리다 노드가 바뀌면 다시 시도하나
+21:04:18 sc-wait 생성 (nodeSelector lab/sched-demo=yes, 이 라벨을 가진 노드 없음)
+sc-wait   0/1   Pending   0     5s    <none>   <none>   <none>   <none>
+    FailedScheduling: 0/4 nodes are available: 1 node(s) had untolerated taint(s), 3 node(s) didn't match Pod's node affinity/selector. preemption: 0/4 nodes are available: 4 Preemption is not helpful for scheduling.
+21:04:23 스케줄러 대기열:
+    scheduler_pending_pods{queue="active"} 0
+    scheduler_pending_pods{queue="backoff"} 0
+    scheduler_pending_pods{queue="gated"} 0
+    scheduler_pending_pods{queue="incomplete"} 0
+    scheduler_pending_pods{queue="pending"} 0
+    scheduler_pending_pods{queue="unschedulable"} 1
+21:04:43 20초 더 기다린 뒤에도: Pending NODE=<none>, FailedScheduling 이벤트 count=1
+21:04:43 kubectl label node k8s-worker3 lab/sched-demo=yes
+21:04:43 sc-wait → k8s-worker3, 라벨을 붙이고 nodeName 이 보이기까지 0.1초 (조회 간격 0.2초 + kubectl 왕복 포함)
+    PodScheduled=True 2026-11-14T12:04:43Z
+21:04:44 라벨 전후 대기열 이동(scheduler_queue_incoming_pods_total 차이):
+  +1    scheduler_queue_incoming_pods_total{event="NodeUpdateNodeLabel",queue="active"}
+  +1    scheduler_schedule_attempts_total{profile="default-scheduler",result="scheduled"}
+
+## 4. 대기열에 아예 안 넣는 파드: schedulingGates (PreEnqueue)
+21:04:48 sc-gated SchedulingGated
+    FailedScheduling 이벤트 수: 0
+    scheduler_pending_pods{queue="gated"} 1
+21:04:48 schedulingGates 를 지움
+21:04:51 sc-gated Running NODE=k8s-worker3
+
+## 5. 정리
+21:05:01 네임스페이스 sc-demo 삭제, worker3 라벨 제거: lab/sched-demo 라벨 가진 노드 0개

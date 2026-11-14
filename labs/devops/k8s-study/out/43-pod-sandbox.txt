@@ -1,0 +1,116 @@
+# 01 파드 샌드박스와 pause (2026-11-14 21:26:32 KST)
+
+## 0. mac$ kubectl: 관찰할 파드 (worker1)
+  myweb-859c4764d4-scshl  restarts=0 ip=10.244.194.100 node=k8s-worker1
+  kube-state-metrics-849dd5cd8d-zzpgc  restartCount=10 ip=10.244.194.95 lastTerminated=Error/2026-11-14T08:22:07Z
+  shareProcessNamespace=true 인 파드 수(클러스터 전체): 0
+  myweb-859c4764d4-scshl 의 조건 (PodReadyToStartContainers = 샌드박스 준비 완료, 1.37 GA):
+    PodReadyToStartContainers=True 2026-11-14T05:58:05Z
+    Initialized=True 2026-11-14T05:58:04Z
+    Ready=True 2026-11-14T05:58:05Z
+    ContainersReady=True 2026-11-14T05:58:05Z
+    PodScheduled=True 2026-11-14T05:58:04Z
+
+## 1. 런타임과 pause 이미지 (CRI ImageService, containerd 설정)
+  Version:  0.1.0
+  RuntimeName:  containerd
+  RuntimeVersion:  v2.4.1
+  RuntimeApiVersion:  v1
+  IMAGE                                                   TAG                  IMAGE ID            SIZE
+  registry.k8s.io/pause                                   3.10.2               3884a33719231       268kB
+  containerd config dump:
+        [plugins.'io.containerd.cri.v1.images'.pinned_images]
+          sandbox = 'registry.k8s.io/pause:3.10.2'
+              sandboxer = 'podsandbox'
+              disable_pause_image_pull = false
+  CRI 가 pinned=true 로 알려 주는 이미지(kubelet 이미지 GC 가 건너뜀): ["registry.k8s.io/pause:3.10.2"]  / 나머지 18개는 pinned=false
+  pause 바이너리 버전 (샌드박스 rootfs 의 /pause -v): pause.c v3.10.2-
+
+## 2. Ready 샌드박스 수 = pause 프로세스 수
+  crictl pods --state ready : 9
+  pgrep -x pause            : 9
+  pause RSS 합계            : 4432 KiB
+  pause 프로세스 (PID PPID 부모 USER RSS(KiB) STAT oom_score_adj):
+    1915    1873    containerd-shim  65535  492   Ss   -998
+    2819    2785    containerd-shim  65535  492   Ss   -998
+    2965    2939    containerd-shim  65535  492   Ss   -998
+    3087    3062    containerd-shim  65535  496   Ss   -998
+    3272    3250    containerd-shim  65535  492   Ss   -998
+    3609    3584    containerd-shim  65535  492   Ss   -998
+    10332   10309   containerd-shim  65535  492   Ss   -998
+    72693   72668   containerd-shim  65535  492   Ss   -998
+    82961   82936   containerd-shim  65535  492   Ss   -998
+
+## 3. 한 파드 안: pause 와 nginx 의 네임스페이스 비교 (myweb-859c4764d4-scshl, 샌드박스 c134f148ae67e)
+  pause pid=10332 (부모 containerd-shim)  nginx pid=10360 (부모 containerd-shim)
+  ns      pause                  nginx                  같은가
+  net     net:[4026532532]       net:[4026532532]       같음
+  ipc     ipc:[4026532728]       ipc:[4026532728]       같음
+  uts     uts:[4026532727]       uts:[4026532727]       같음
+  pid     pid:[4026532729]       pid:[4026532731]       다름
+  mnt     mnt:[4026532726]       mnt:[4026532730]       다름
+  cgroup  cgroup:[4026531835]    cgroup:[4026532732]    다름
+  NSpid(호스트 PID → 자기 PID 네임스페이스 안 PID): pause '10332	1'  nginx '10360	1'
+  oom_score_adj: pause -998, nginx 1000
+  cgroup: pause /kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podf1dc88f0_91f8_4113_a7a5_2710962c4cd1.slice/cri-containerd-c134f148ae67e72268bc7eb152beb09d914eb114e144733f5db2fc146e9b22cb.scope
+          nginx /kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podf1dc88f0_91f8_4113_a7a5_2710962c4cd1.slice/cri-containerd-592a27c943d769ebc646f19442673c8350056aa6f6bf3b5a63df6743db302038.scope
+
+## 4. 네트워크 네임스페이스는 파일로도 붙잡혀 있다 (containerd 가 먼저 만들고 bind mount)
+  pause spec namespace: pid (새로 만듦)
+  pause spec namespace: ipc (새로 만듦)
+  pause spec namespace: uts (새로 만듦)
+  pause spec namespace: mount (새로 만듦)
+  pause spec namespace: network /var/run/netns/cni-0099a4f1-67e2-12c5-5900-c6cd6da46675
+  /var/run/netns/cni-0099a4f1-67e2-12c5-5900-c6cd6da46675 inode=4026532532   /proc/10332/ns/net inode=4026532532
+  ip netns identify 10332 → cni-0099a4f1-67e2-12c5-5900-c6cd6da46675
+  findmnt: /run/netns/cni-0099a4f1-67e2-12c5-5900-c6cd6da46675 nsfs[net:[4026532532]] nsfs
+  /var/run/netns 파일 수 7 / Ready 샌드박스 중 hostNetwork 아닌 것 7
+  CRI 가 본 파드 IP 10.244.194.100, 그 netns 안 eth0: 10.244.194.100/32
+  nginx 컨테이너 spec 의 네임스페이스 경로 (pause PID 의 /proc 경로로 들어간다):
+    pid (새로 만듦)
+    ipc /proc/10332/ns/ipc
+    uts /proc/10332/ns/uts
+    mount (새로 만듦)
+    network /proc/10332/ns/net
+    cgroup (새로 만듦)
+
+## 5. hostNetwork 파드에도 pause 는 있다 (kube-proxy, 샌드박스 7cc1feff8532e)
+  CRI namespace options: {"ipc":"POD","network":"NODE","pid":"CONTAINER","targetId":"","usernsOptions":{"gids":[],"mode":"NODE","uids":[]}}
+  pause pid=72693 net=net:[4026531840]  호스트 PID1 net=net:[4026531840]
+
+## 6. 앱 컨테이너가 재시작해도 샌드박스(pause)·IP 는 그대로 (kube-state-metrics, 샌드박스 77ec6eea70a69)
+  샌드박스 attempt=2 created=2026-11-14T14:42:01.041397483+09:00 ip=10.244.194.95 pause pid=2965
+  pause 프로세스 시작 시각: Sat Nov 14 14:46:15 2026
+  같은 POD ID 안의 컨테이너 (crictl ps -a --pod):
+    container 5c9b479eda37a attempt=9 state=CONTAINER_EXITED createdAt(ns)=1794644527714150006 podSandboxId=77ec6eea70a69
+    container 21bea3bc9b5b7 attempt=10 state=CONTAINER_RUNNING createdAt(ns)=1794644623717331437 podSandboxId=77ec6eea70a69
+  컨테이너 ID 별 시작 시각:
+    21bea3bc9b5b7 attempt=10 startedAt=2026-11-14T17:23:43.74393325+09:00 finishedAt=0001-01-01T00:00:00Z exitCode=0 reason=
+    5c9b479eda37a attempt=9 startedAt=2026-11-14T17:22:07.738722732+09:00 finishedAt=2026-11-14T17:22:07.75178168+09:00 exitCode=1 reason=Error
+
+## 7. 노드(VM) 재부팅 뒤에는 샌드박스가 새로 생겼다 (같은 파드 이름, NotReady 옛 샌드박스와 Ready 새 샌드박스)
+  calico-node-lj6rx sandbox=1b4a3991e6135 attempt=7 state=SANDBOX_READY createdAt(ns)=1794634911991000207
+  calico-node-lj6rx sandbox=041e6565f00cb attempt=6 state=SANDBOX_NOTREADY createdAt(ns)=1794397003602805252
+  headlamp-86c49cb4f4-9srjd sandbox=071a33e919725 attempt=2 state=SANDBOX_READY createdAt(ns)=1794634920673157602
+  headlamp-86c49cb4f4-9srjd sandbox=3247737f4754e attempt=1 state=SANDBOX_NOTREADY createdAt(ns)=1794397008865738213
+  loadgen sandbox=5e6fc74353bcd attempt=1 state=SANDBOX_READY createdAt(ns)=1794634927851970660
+  loadgen sandbox=7a5d2afc8481b attempt=0 state=SANDBOX_NOTREADY createdAt(ns)=1794398230513086017
+  node-exporter-9vx2k sandbox=b7d6655075d82 attempt=2 state=SANDBOX_READY createdAt(ns)=1794634925898176924
+  node-exporter-9vx2k sandbox=416a3a0ed3eee attempt=1 state=SANDBOX_NOTREADY createdAt(ns)=1794397020307904605
+  portainer-6d86bc584d-wrm86 sandbox=975e7fc8f1456 attempt=1 state=SANDBOX_READY createdAt(ns)=1794634921252816199
+  portainer-6d86bc584d-wrm86 sandbox=f63601e685743 attempt=0 state=SANDBOX_NOTREADY createdAt(ns)=1794399977931347093
+  (옛 NotReady 샌드박스의 IP):
+    portainer-6d86bc584d-wrm86 attempt=0 ip= pid=0
+    loadgen attempt=0 ip= pid=0
+    node-exporter-9vx2k attempt=1 ip= pid=0
+    headlamp-86c49cb4f4-9srjd attempt=1 ip= pid=0
+    calico-node-lj6rx attempt=6 ip= pid=0
+  지금 IP:
+    myweb-859c4764d4-2vkcp attempt=0 ip=10.244.194.125
+    myweb-859c4764d4-scshl attempt=0 ip=10.244.194.100
+    loadgen attempt=1 ip=10.244.194.99
+    node-exporter-9vx2k attempt=2 ip=10.244.194.97
+    portainer-6d86bc584d-wrm86 attempt=1 ip=10.244.194.96
+    kube-state-metrics-849dd5cd8d-zzpgc attempt=2 ip=10.244.194.95
+    headlamp-86c49cb4f4-9srjd attempt=2 ip=10.244.194.94
+  worker1 부팅 시각: 2026-11-14 14:45:49

@@ -1,0 +1,66 @@
+# 워커 3대 동시 정지: 축출이 멈추나 (2026-11-14 22:09:15 KST)
+
+## 0. KCM 노드 상태 메트릭 (정지 전)
+  node_collector_evictions_total{zone=""} 1
+  node_collector_unhealthy_nodes_in_zone{zone=""} 0
+  node_collector_zone_health{zone=""} 100
+  node_collector_zone_size{zone=""} 4
+
+## 1. 22:09:16 worker1·2·3 kubelet 동시 정지 (+0s)
+  +  0.1s  k8s-worker1 Lease renewTime        -8s
+  +  0.1s  k8s-worker1 Ready                  True (KubeletReady, 전이 -864187s)
+  +  0.1s  k8s-worker1 taints                 (없음)
+  +  0.1s  k8s-worker2 Lease renewTime        -7s
+  +  0.1s  k8s-worker2 Ready                  True (KubeletReady, 전이 -866896s)
+  +  0.1s  k8s-worker2 taints                 (없음)
+  +  0.1s  k8s-worker3 Lease renewTime        -8s
+  +  0.1s  k8s-worker3 Ready                  True (KubeletReady, 전이 -39s)
+  +  0.1s  k8s-worker3 taints                 (없음)
+  +  0.1s  pod on-worker1                     node=k8s-worker1 phase=Running 생성=-2s 삭제표시=-
+  +  0.1s  pod on-worker2                     node=k8s-worker2 phase=Running 생성=-1s 삭제표시=-
+  +  0.1s  pod on-worker3                     node=k8s-worker3 phase=Running 생성=-1s 삭제표시=-
+  + 45.3s  k8s-worker1 Ready                  Unknown (NodeStatusUnknown, 전이 +44s)
+  + 45.3s  k8s-worker1 taints                 unreachable:NoExecute(+44s) unreachable:NoSchedule(+44s)
+  + 45.3s  k8s-worker2 Ready                  Unknown (NodeStatusUnknown, 전이 +44s)
+  + 45.3s  k8s-worker2 taints                 unreachable:NoSchedule(+44s)
+  + 45.3s  k8s-worker3 Ready                  Unknown (NodeStatusUnknown, 전이 +44s)
+  + 45.3s  k8s-worker3 taints                 unreachable:NoSchedule(+44s)
+  (최대 420초 도달)
+
+## 2. 22:16:17 KCM 노드 상태 메트릭 (정지 뒤 7분)
+  node_collector_evictions_total{zone=""} 2
+  node_collector_unhealthy_nodes_in_zone{zone=""} 3
+  node_collector_zone_health{zone=""} 25
+  node_collector_zone_size{zone=""} 4
+  KCM 로그 (disruption·eviction 관련):
+    I1114 13:06:20.949793       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="w8-evict/default-d79945b49-ns7mv"
+    I1114 13:06:20.949797       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="default/myweb-859c4764d4-94rcc"
+    I1114 13:08:38.586876       1 topologycache.go:237] "Can't get CPU or zone information for node" node="k8s-worker1"
+    E1114 13:08:50.777012       1 replica_set.go:640] "Unhandled Error" err="sync \"w8-evict/default-d79945b49\" failed with read version: 1000181368 is not as new as written version: 1000181407 for group
+    I1114 13:08:56.081639       1 namespace_controller.go:187] "Namespace has been deleted" namespace="w8-evict"
+    I1114 13:10:01.236353       1 topologycache.go:237] "Can't get CPU or zone information for node" node="k8s-worker2"
+    I1114 13:10:01.241417       1 topologycache.go:237] "Can't get CPU or zone information for node" node="k8s-worker3"
+    I1114 13:10:02.186026       1 node_lifecycle_controller.go:1133] "Controller detected that zone is now in new state" zone="" newState="PartialDisruption"
+    I1114 13:15:01.321974       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="kube-system/kube-state-metrics-849dd5cd8d-zzpgc"
+    I1114 13:15:01.322024       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="portainer/portainer-6d86bc584d-wrm86"
+    I1114 13:15:01.322081       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="w8-zone/on-worker1"
+    I1114 13:15:01.322102       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="default/loadgen"
+    I1114 13:15:01.322120       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="default/myweb-859c4764d4-scshl"
+    I1114 13:15:01.322136       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="headlamp/headlamp-86c49cb4f4-9srjd"
+    I1114 13:15:01.322150       1 taint_eviction.go:111] "Deleting pod" controller="taint-eviction-controller" pod="default/myweb-859c4764d4-2vkcp"
+  w8-zone 파드:
+    on-worker2 Running k8s-worker2
+    on-worker3 Running k8s-worker3
+  삭제 표시가 붙은 파드(클러스터 전체): 6개
+
+## 3. 22:16:18 세 워커 kubelet 다시 시작
+  22:16:20 세 워커 Ready
+  node_collector_evictions_total{zone=""} 2
+  node_collector_unhealthy_nodes_in_zone{zone=""} 0
+  node_collector_zone_health{zone=""} 100
+  node_collector_zone_size{zone=""} 4
+
+## 4. 정리
+  22:16:30 네임스페이스 w8-zone 삭제
+  Running 아닌 파드: 2개
+  22:16:56 loadgen 다시 만듦 (워커 3대 정지 실험에서 worker1 축출로 지워진 맨 파드, 같은 이미지·명령)

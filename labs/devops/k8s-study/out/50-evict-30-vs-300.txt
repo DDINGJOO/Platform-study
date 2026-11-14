@@ -1,0 +1,44 @@
+# kubelet 정지 → 축출: toleration 30초 vs 기본 300초 (2026-11-14 21:59:25 KST, 대상 k8s-worker3)
+
+## 0. 파드와 toleration (어드미션이 채운 값 포함)
+  default-d79945b49-ns7mv      node=k8s-worker3  NoExecute toleration: not-ready=300s, unreachable=300s
+  tol30-745fcc4b-tfg48         node=k8s-worker3  NoExecute toleration: unreachable=30s, not-ready=30s
+
+## 1. 정지 전 Lease 갱신 간격 (1초마다 renewTime 확인, 25초)
+  22:00:10 renewTime 2026-11-14T13:00:09.822896Z
+  22:00:20 renewTime 2026-11-14T13:00:19.893657Z
+  22:00:31 renewTime 2026-11-14T13:00:29.984098Z
+
+## 2. 22:00:37 worker3$ systemctl stop kubelet  (이 시각 = +0s, 아래 시각은 모두 이 기준)
+  +  0.2s  k8s-worker3 Lease renewTime        -8s
+  +  0.2s  k8s-worker3 Ready                  True (KubeletReady, 전이 -14921s)
+  +  0.2s  k8s-worker3 taints                 (없음)
+  +  0.2s  pod default-d79945b49-ns7mv        node=k8s-worker3 phase=Running 생성=-73s 삭제표시=-
+  +  0.2s  pod tol30-745fcc4b-tfg48           node=k8s-worker3 phase=Running 생성=-73s 삭제표시=-
+  + 43.3s  k8s-worker3 Ready                  Unknown (NodeStatusUnknown, 전이 +42s)
+  + 43.3s  k8s-worker3 taints                 unreachable:NoExecute(+42s) unreachable:NoSchedule(+42s)
+  + 73.7s  pod tol30-745fcc4b-q9zkh           node=k8s-worker2 phase=Pending 생성=+72s 삭제표시=-
+  + 74.7s  pod tol30-745fcc4b-q9zkh           node=k8s-worker2 phase=Running 생성=+72s 삭제표시=-
+  +343.3s  pod default-d79945b49-7f5l2        node=k8s-worker1 phase=Pending 생성=+342s 삭제표시=-
+  +344.3s  pod default-d79945b49-7f5l2        node=k8s-worker1 phase=Running 생성=+342s 삭제표시=-
+  (최대 480초 도달)
+
+## 3. 이벤트 (축출 관련)
+  12:59:25 replicaset-controller  SuccessfulCreate     Created pod: default-d79945b49-ns7mv
+  12:59:25 replicaset-controller  SuccessfulCreate     Created pod: tol30-745fcc4b-tfg48
+  13:00:08 default-scheduler      Scheduled            Successfully assigned w8-evict/default-d79945b49-ns7mv to k8s-worker3
+  13:00:08 default-scheduler      Scheduled            Successfully assigned w8-evict/tol30-745fcc4b-tfg48 to k8s-worker3
+  13:01:50 taint-eviction-controller TaintManagerEviction Marking for deletion Pod w8-evict/tol30-745fcc4b-tfg48
+  13:01:50 replicaset-controller  SuccessfulCreate     Created pod: tol30-745fcc4b-q9zkh
+  13:01:51 default-scheduler      Scheduled            Successfully assigned w8-evict/tol30-745fcc4b-q9zkh to k8s-worker2
+  13:06:20 default-scheduler      Scheduled            Successfully assigned w8-evict/default-d79945b49-7f5l2 to k8s-worker1
+  13:06:20 taint-eviction-controller TaintManagerEviction Marking for deletion Pod w8-evict/default-d79945b49-ns7mv
+  13:06:20 replicaset-controller  SuccessfulCreate     Created pod: default-d79945b49-7f5l2
+
+## 4. 22:08:38 worker3 kubelet 다시 시작
+  22:08:40 k8s-worker3 Ready
+  default-d79945b49-7f5l2 Running k8s-worker1
+  tol30-745fcc4b-q9zkh Running k8s-worker2
+
+## 5. 정리
+  22:08:51 네임스페이스 w8-evict 삭제

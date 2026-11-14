@@ -1,0 +1,62 @@
+# 46 gRPC 와 REST 가 실제로 쓰이는 곳 (2026-11-14 22:14:18 KST, Mac 에서 실습 저장소 루트로 실행, 조회만)
+
+## 1. API 서버(6443)는 HTTP/2 위의 REST: worker1 에서 익명으로 /version (CA 확인은 함)
+  * ALPN: curl offers h2,http/1.1
+  * ALPN: server accepted h2
+  < HTTP/2 200 
+  < content-type: application/json
+    "gitVersion": "v1.37.2",
+
+## 2. etcd 는 gRPC 서버: 서비스·메서드별로 처리한 호출 수 (master, etcd 메트릭 127.0.0.1:2381, 0 인 줄은 뺌)
+  etcd 프로세스 시작 시각: Sat Nov 14 21:58:42 2026
+        9644  etcdserverpb.KV              Range            unary
+        2187  etcdserverpb.KV              Txn              unary
+         357  etcdserverpb.KV              RangeStream      server_stream
+         221  etcdserverpb.Maintenance     Status           unary
+         194  etcdserverpb.Lease           LeaseGrant       unary
+           2  etcdserverpb.Cluster         MemberList       unary
+           2  etcdserverpb.KV              Compact          unary
+           1  etcdserverpb.Maintenance     Alarm            unary
+  --- 스트림 RPC: 시작한 수와 끝난 수 (차이가 지금 열려 있는 스트림)
+  etcdserverpb.Watch/Watch 스트림 시작 86, 끝남 1
+  etcdserverpb.Lease/LeaseKeepAlive 스트림 시작 0, 끝남 0
+  etcdserverpb.KV/RangeStream 스트림 시작 357, 끝남 357
+  --- etcd 안의 watch 수
+  etcd_debugging_mvcc_watch_stream_total 85
+  etcd_debugging_mvcc_watcher_total 85
+  --- etcd 가 연 포트 (2379 클라이언트 gRPC, 2380 멤버끼리, 2381 메트릭)
+  LISTEN 127.0.0.1:2381
+  LISTEN 127.0.0.1:2379
+  LISTEN 192.168.104.1:2379
+  LISTEN 192.168.104.1:2380
+  2380 에 맺어진 연결 수: 0
+  2379 로 연결을 연 프로세스: 93 kube-apiserver
+  --- 같은 2379 에 HTTP/JSON 으로 Range 를 보내면 (etcd 의 grpc-gateway, /registry/namespaces/ 아래 키 개수만, API 서버의 etcd 클라이언트 인증서 사용)
+  {"header":{"cluster_id":"<cluster-id>","member_id":"<member-id>","revision":"1000182076","raft_term":"3"},"count":"9"}
+    (HTTP 2, application/json)
+
+## 3. API 서버가 받은 watch 수 (API 서버 메트릭)
+  apiserver_longrunning_requests (WATCH) 합계: 371
+  watch 캐시를 둔 리소스 종류 (apiserver_watch_cache_resource_version 줄 수): 84
+
+## 4. kubelet 과 containerd: CRI 는 gRPC, exec·logs 스트림은 따로 (worker1)
+  --- CRI 버전 (crictl 이 CRI gRPC 로 묻는다)
+  Version:  0.1.0
+  RuntimeName:  containerd
+  RuntimeVersion:  v2.4.1
+  RuntimeApiVersion:  v1
+  --- containerd 의 CRI 스트리밍 서버 설정
+  stream_server_address = '127.0.0.1'
+  stream_server_port = '0'
+  stream_idle_timeout = '4h0m0s'
+  enable_tls_streaming = false
+  --- containerd 가 연 TCP 포트
+  LISTEN 127.0.0.1:33287
+  --- kubelet 이 서버로 여는 유닉스 소켓 (장치 플러그인 등록, pod-resources)
+  /var/lib/kubelet/device-plugins/:
+  total 0
+  srwxr-xr-x 1 root root 0 Nov 14 15:33 kubelet.sock
+  
+  /var/lib/kubelet/pod-resources/:
+  total 0
+  srwxr-xr-x 1 root root 0 Nov 14 15:33 kubelet.sock

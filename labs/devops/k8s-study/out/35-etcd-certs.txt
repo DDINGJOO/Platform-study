@@ -1,0 +1,18 @@
+# etcd-ca 가 서명한 인증서는 어디에 있나 (2026-11-14 22:03:08 KST)
+
+## 1. k8s-master: etcd-ca 가 서명한 인증서 (subject / issuer / 확장 키 용도)
+  etcd/ca.crt                  subject=/CN=etcd-ca issuer=/CN=etcd-ca  | 
+  etcd/healthcheck-client.crt  subject=/CN=kube-etcd-healthcheck-client issuer=/CN=etcd-ca  | TLS Web Client Authentication
+  etcd/peer.crt                subject=/CN=k8s-master issuer=/CN=etcd-ca  | TLS Web Server Authentication, TLS Web Client Authentication
+  etcd/server.crt              subject=/CN=k8s-master issuer=/CN=etcd-ca  | TLS Web Server Authentication, TLS Web Client Authentication
+  apiserver-etcd-client.crt    subject=/CN=kube-apiserver-etcd-client issuer=/CN=etcd-ca  | TLS Web Client Authentication
+  etcd 의 클라이언트 인증서를 쓰는 정적 파드 플래그:
+    - --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+    - --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+    - --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+    - --etcd-servers=https://127.0.0.1:2379
+
+## 2. 워커의 /etc/kubernetes/pki
+  [k8s-worker1] ca.crt 
+  [k8s-worker2] ca.crt 
+  [k8s-worker3] ca.crt 

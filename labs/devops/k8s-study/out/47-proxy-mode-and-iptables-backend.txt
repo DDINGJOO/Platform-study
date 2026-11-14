@@ -1,0 +1,120 @@
+# 05 kube-proxy 모드와 iptables 백엔드 조회 (2026-11-14 21:25:06 KST)
+
+## 1. kube-proxy ConfigMap 의 mode (kubeadm 설정 파일에는 KubeProxyConfiguration 이 없다)
+27:iptables:
+28:  localhostNodePorts: null
+29:  masqueradeAll: false
+31:  minSyncPeriod: 0s
+32:  syncPeriod: 0s
+33:ipvs:
+35:  minSyncPeriod: 0s
+38:  syncPeriod: 0s
+52:mode: iptables
+53:nftables:
+54:  masqueradeAll: false
+56:  minSyncPeriod: 0s
+57:  syncPeriod: 0s
+scripts/master-init.sh 안의 KubeProxyConfiguration 줄 수: 0
+
+## 2. kube-proxy 로그: 시작할 때 고른 Proxier, 모드 기본값 경고(1.37에 추가된 'No kube-proxy mode specified') 유무
+### k8s-master (kube-proxy-292qw)
+I1114 08:04:12.157218       1 server_linux.go:144] "Using iptables Proxier"
+I1114 08:04:12.158184       1 proxier.go:231] "Setting route_localnet=1 to allow node-ports on localhost; to change this either disable iptables.localhostNodePorts (--iptables-localhost-nodeports) or set nodePortAddresse
+### k8s-worker1 (kube-proxy-fxgsm)
+I1114 08:04:11.774026       1 server_linux.go:144] "Using iptables Proxier"
+I1114 08:04:11.774895       1 proxier.go:231] "Setting route_localnet=1 to allow node-ports on localhost; to change this either disable iptables.localhostNodePorts (--iptables-localhost-nodeports) or set nodePortAddresse
+### k8s-worker2 (kube-proxy-g2nhn)
+I1114 08:04:13.143475       1 server_linux.go:144] "Using iptables Proxier"
+I1114 08:04:13.144191       1 proxier.go:231] "Setting route_localnet=1 to allow node-ports on localhost; to change this either disable iptables.localhostNodePorts (--iptables-localhost-nodeports) or set nodePortAddresse
+### k8s-worker3 (kube-proxy-gl78j)
+I1114 08:04:12.675724       1 server_linux.go:144] "Using iptables Proxier"
+I1114 08:04:12.676488       1 proxier.go:231] "Setting route_localnet=1 to allow node-ports on localhost; to change this either disable iptables.localhostNodePorts (--iptables-localhost-nodeports) or set nodePortAddresse
+KubeProxyDefaultMode / IPVSDeprecation 이벤트 수: 0 / 0
+/proxyMode (worker1): iptables
+
+## 3. kube-proxy 컨테이너 안의 iptables·nft 버전 (이미지에 든 도구)
+iptables v1.8.9 (nf_tables)
+nftables v1.0.6.1 (Lester Gooch #5)
+/usr/sbin/iptables: symlink
+/usr/sbin/iptables-wrapper: file
+/usr/sbin/iptables-legacy: symlink
+/usr/sbin/iptables-nft: symlink
+iptables-wrapper 가 백엔드를 고르는 줄(이미지 안 스크립트에서 발췌):
+  # one chain in the "mangle" table (either "KUBE-IPTABLES-HINT" or
+  nft_kubelet_rules=$( (iptables-nft-save -t mangle || true; ip6tables-nft-save -t mangle || true) 2>/dev/null | grep -E '^:(KUBE-IPTABLES-HINT|KUBE-KUBELET-CANARY)' | wc -l)
+      mode=nft
+      legacy_kubelet_rules=$( (iptables-legacy-save || true; ip6tables-legacy-save || true) 2>/dev/null | grep -E '^:(KUBE-IPTABLES-HINT|KUBE-KUBELET-CANARY)' | wc -l)
+          mode=legacy
+              mode=legacy
+              mode=nft
+
+## 4. 노드(worker1)의 커널·iptables 백엔드·규칙 수
+kernel: 6.8.0-147-generic
+host iptables: iptables v1.8.10 (nf_tables)
+host nft: nftables v1.0.9 (Old Doc Yak #3)
+update-alternatives iptables: /usr/sbin/iptables-nft
+nft 백엔드 규칙 줄 수(iptables-nft-save): 366
+legacy 백엔드 규칙 줄 수(iptables-legacy-save): 0
+legacy 쪽에 있는 표·체인:
+*mangle
+:PREROUTING ACCEPT [911076:2152367964]
+:INPUT ACCEPT [517485:363224430]
+:FORWARD ACCEPT [393578:1789143014]
+:OUTPUT ACCEPT [464942:2063206184]
+:POSTROUTING ACCEPT [852447:3851984818]
+*raw
+:PREROUTING ACCEPT [911076:2152367964]
+:OUTPUT ACCEPT [464942:2063206184]
+*nat
+:PREROUTING ACCEPT [360:33902]
+:INPUT ACCEPT [137:19312]
+:OUTPUT ACCEPT [36211:2203682]
+:POSTROUTING ACCEPT [30348:1853372]
+*filter
+:INPUT ACCEPT [517485:363224430]
+:FORWARD ACCEPT [393578:1789143014]
+:OUTPUT ACCEPT [464942:2063206184]
+KUBE-IPTABLES-HINT(kubelet 이 mangle 표에 만드는 힌트 체인) nft/legacy: 1 / 0
+nat 표: KUBE-SVC 체인 12개, KUBE-SEP 체인 22개, KUBE-SERVICES 규칙 13줄, nat 표 전체 -A 133줄, KUBE 들어간 줄 168줄
+filter 표 KUBE 줄: 23
+iptables-save 전체 바이트: 51405
+nft 테이블 목록:
+table ip nat
+table ip mangle
+table ip filter
+table ip6 mangle
+table ip6 nat
+table ip6 filter
+table arp calico-arp
+table ip raw
+ip_vs 모듈: 0개, kube-ipvs0 장치: 0개
+sysctl route_localnet(all): 1
+
+## 5. Service 수와 kube-proxy 동기화 메트릭 (worker1)
+Service 수(전체 ns): 9, Service 포트 합: 14
+# HELP kubeproxy_sync_full_proxy_rules_duration_seconds [ALPHA] SyncProxyRules latency in seconds for full resyncs
+kubeproxy_sync_full_proxy_rules_duration_seconds_sum{ip_family="IPv4"} 0.089063455
+kubeproxy_sync_full_proxy_rules_duration_seconds_count{ip_family="IPv4"} 3
+kubeproxy_sync_full_proxy_rules_duration_seconds_sum{ip_family="IPv6"} 0.091396676
+kubeproxy_sync_full_proxy_rules_duration_seconds_count{ip_family="IPv6"} 4
+# HELP kubeproxy_sync_partial_proxy_rules_duration_seconds [ALPHA] SyncProxyRules latency in seconds for partial resyncs
+kubeproxy_sync_partial_proxy_rules_duration_seconds_sum{ip_family="IPv4"} 0.30838096700000006
+kubeproxy_sync_partial_proxy_rules_duration_seconds_count{ip_family="IPv4"} 23
+kubeproxy_sync_partial_proxy_rules_duration_seconds_sum{ip_family="IPv6"} 0.014746691
+kubeproxy_sync_partial_proxy_rules_duration_seconds_count{ip_family="IPv6"} 1
+kubeproxy_sync_proxy_rules_duration_seconds_sum{ip_family="IPv4"} 0.3973357940000001
+kubeproxy_sync_proxy_rules_duration_seconds_count{ip_family="IPv4"} 26
+kubeproxy_sync_proxy_rules_duration_seconds_sum{ip_family="IPv6"} 0.106096364
+kubeproxy_sync_proxy_rules_duration_seconds_count{ip_family="IPv6"} 5
+# HELP kubeproxy_sync_proxy_rules_iptables_last [ALPHA] Number of iptables rules written by kube-proxy in last sync
+kubeproxy_sync_proxy_rules_iptables_last{ip_family="IPv4",table="filter"} 4
+kubeproxy_sync_proxy_rules_iptables_last{ip_family="IPv4",table="nat"} 29
+kubeproxy_sync_proxy_rules_iptables_last{ip_family="IPv6",table="filter"} 3
+kubeproxy_sync_proxy_rules_iptables_last{ip_family="IPv6",table="nat"} 5
+# HELP kubeproxy_sync_proxy_rules_iptables_total [ALPHA] Total number of iptables rules owned by kube-proxy
+kubeproxy_sync_proxy_rules_iptables_total{ip_family="IPv4",table="filter"} 4
+kubeproxy_sync_proxy_rules_iptables_total{ip_family="IPv4",table="nat"} 119
+kubeproxy_sync_proxy_rules_iptables_total{ip_family="IPv6",table="filter"} 3
+kubeproxy_sync_proxy_rules_iptables_total{ip_family="IPv6",table="nat"} 5
+kubeproxy_sync_proxy_rules_last_timestamp_seconds{ip_family="IPv4"} 1.7946559641620708e+09
+kubeproxy_sync_proxy_rules_last_timestamp_seconds{ip_family="IPv6"} 1.7946581068670511e+09

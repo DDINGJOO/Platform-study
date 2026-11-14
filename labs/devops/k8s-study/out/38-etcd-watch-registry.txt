@@ -1,0 +1,25 @@
+# etcd 동작 (2026-11-14 20:49:08 KST)
+
+## 1. etcd 를 직접 watch 하면서 nginx 파드 생성 → Running → 삭제
+  $ kubectl run nginx --image=nginx:1.25.1-alpine
+  Ready: k8s-worker3 10.244.100.206 rv=141913
+  $ etcdctl get /registry/pods/default/nginx --keys-only → /registry/pods/default/nginx
+  $ kubectl delete pod nginx
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141902 version=1
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141903 version=2
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141905 version=3
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141908 version=4
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141910 version=5
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141913 version=6
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141919 version=7
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141921 version=8
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141922 version=9
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141926 version=10
+   etcd watch: PUT /registry/pods/default/nginx mod_revision=141930 version=11
+   etcd watch: DELETE /registry/pods/default/nginx mod_revision=141931 version=-
+
+## 2. 컨트롤 플레인 중 데이터를 디스크에 두는 건 누구인가 (정적 파드 매니페스트의 hostPath 볼륨)
+  etcd.yaml                      쓰기 가능한 마운트: ['/var/lib/etcd', '/etc/kubernetes/pki/etcd']
+  kube-apiserver.yaml            쓰기 가능한 마운트: 없음
+  kube-controller-manager.yaml   쓰기 가능한 마운트: 없음
+  kube-scheduler.yaml            쓰기 가능한 마운트: 없음

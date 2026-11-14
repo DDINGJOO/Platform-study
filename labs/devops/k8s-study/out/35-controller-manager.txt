@@ -1,0 +1,123 @@
+# kube-controller-manager 가 하는 일 (2026-11-14 21:10:55 KST)
+
+## 0. 어디서 어떤 설정으로 도나
+NAME                                 READY   STATUS    RESTARTS        AGE     IP              NODE         NOMINATED NODE   READINESS GATES
+kube-controller-manager-k8s-master   1/1     Running   1 (3h50m ago)   6h13m   192.168.104.1   k8s-master   <none>           <none>
+21:10:55 master$ grep -- '- --' /etc/kubernetes/manifests/kube-controller-manager.yaml
+    - --allocate-node-cidrs=true
+    - --authentication-kubeconfig=/etc/kubernetes/controller-manager.conf
+    - --authorization-kubeconfig=/etc/kubernetes/controller-manager.conf
+    - --bind-address=127.0.0.1
+    - --client-ca-file=/etc/kubernetes/pki/ca.crt
+    - --cluster-cidr=10.244.0.0/16
+    - --cluster-name=k8s-lab
+    - --cluster-signing-cert-file=/etc/kubernetes/pki/ca.crt
+    - --cluster-signing-key-file=/etc/kubernetes/pki/ca.key
+    - --controllers=*,bootstrapsigner,tokencleaner
+    - --kubeconfig=/etc/kubernetes/controller-manager.conf
+    - --leader-elect=true
+    - --requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt
+    - --root-ca-file=/etc/kubernetes/pki/ca.crt
+    - --service-account-private-key-file=/etc/kubernetes/pki/sa.key
+    - --service-cluster-ip-range=10.96.0.0/12
+    - --use-service-account-credentials=true
+21:10:55 리더 선출 Lease: holder=lima-k8s-master_f8310ad1-f01b-448f-bcfc-16fb96683c19 leaseDurationSeconds=15
+21:10:55 master$ ss -tnp 로 kube-controller-manager 프로세스의 TCP 연결 (상대 주소:포트별 개수)
+        2 192.168.104.1:6443
+  LISTEN: 127.0.0.1:10257 
+
+## 1. 바이너리 안에 든 컨트롤러 (kube-controller-manager --help 의 --controllers 설명)
+  전체 49개 (그중 기본으로 꺼진 것 3개: bootstrap-signer-controller, selinux-warning-controller, token-cleaner-controller)
+    bootstrap-signer-controller             certificatesigningrequest-approving-controller  certificatesigningrequest-cleaner-controller  certificatesigningrequest-signing-controller
+    clusterrole-aggregation-controller      cronjob-controller                      daemonset-controller                    deployment-controller                 
+    device-taint-eviction-controller        disruption-controller                   endpoints-controller                    endpointslice-controller              
+    endpointslice-mirroring-controller      ephemeral-volume-controller             garbage-collector-controller            horizontal-pod-autoscaler-controller  
+    job-controller                          kube-apiserver-serving-clustertrustbundle-publisher-controller  legacy-serviceaccount-token-cleaner-controller  namespace-controller                  
+    node-ipam-controller                    node-lifecycle-controller               persistentvolume-attach-detach-controller  persistentvolume-binder-controller    
+    persistentvolume-expander-controller    persistentvolume-protection-controller  persistentvolumeclaim-protection-controller  pod-garbage-collector-controller      
+    podcertificaterequest-cleaner-controller  podgroup-protection-controller          replicaset-controller                   replicationcontroller-controller      
+    resourceclaim-controller                resourcepoolstatusrequest-controller    resourcequota-controller                root-ca-certificate-publisher-controller
+    selinux-warning-controller              service-cidr-controller                 serviceaccount-controller               serviceaccount-token-controller       
+    statefulset-controller                  storage-version-migrator-controller     storageversion-garbage-collector-controller  taint-eviction-controller             
+    token-cleaner-controller                ttl-after-finished-controller           ttl-controller                          validatingadmissionpolicy-status-controller
+    volumeattributesclass-protection-controller
+21:10:56 시작 로그에서 건너뛴 컨트롤러 (kubectl logs kube-controller-manager-k8s-master | grep -i skip)
+  I1114 08:21:55.423562       1 controller_descriptor.go:94] "Controller is disabled by a feature gate" controller="storageversion-garbage-collector-controller" requiredFeatureGates=["APIServerIdentity","StorageVersionAP
+  I1114 08:21:55.423618       1 controllermanager.go:641] "Warning: skipping controller" controller="storageversion-garbage-collector-controller"
+  I1114 08:21:55.423623       1 controllermanager.go:689] "Warning: controller is disabled" controller="selinux-warning-controller"
+  I1114 08:21:56.375482       1 range_allocator.go:113] "No Secondary Service CIDR provided. Skipping filtering out secondary service addresses" logger="node-ipam-controller"
+  I1114 08:21:56.474186       1 controller_descriptor.go:94] "Controller is disabled by a feature gate" controller="resourcepoolstatusrequest-controller" requiredFeatureGates=["DRAResourcePoolStatus"]
+  I1114 08:21:56.474203       1 controllermanager.go:641] "Warning: skipping controller" controller="resourcepoolstatusrequest-controller"
+  I1114 08:21:56.474206       1 controller_descriptor.go:94] "Controller is disabled by a feature gate" controller="podgroup-protection-controller" requiredFeatureGates=["GenericWorkload"]
+  I1114 08:21:56.474208       1 controllermanager.go:641] "Warning: skipping controller" controller="podgroup-protection-controller"
+
+## 2. 컨트롤러마다 따로 쓰는 신원 (--use-service-account-credentials=true)
+  kube-system 의 *-controller ServiceAccount: 30개
+    attachdetach-controller certificate-controller clusterrole-aggregation-controller cronjob-controller daemon-set-controller deployment-controller 
+    device-taint-eviction-controller disruption-controller endpoint-controller endpointslice-controller endpointslicemirroring-controller 
+    ephemeral-volume-controller expand-controller job-controller namespace-controller node-controller pv-protection-controller pvc-protection-controller 
+    replicaset-controller replication-controller resource-claim-controller resourcequota-controller service-account-controller service-cidrs-controller 
+    statefulset-controller storage-version-migrator-controller ttl-after-finished-controller ttl-controller validatingadmissionpolicy-status-controller 
+    volumeattributesclass-protection-controller
+
+## 3. 원하는 상태로 되돌리는 루프: Deployment → ReplicaSet → Pod
+21:10:57 주인 사슬(ownerReferences):
+    pod/web-765494fbb4-77fjl → ReplicaSet/web-765494fbb4 (controller=true)
+    replicaset/web-765494fbb4 → Deployment/web (controller=true)
+    pod 를 쓴 주체들(managedFields: manager / operation / subresource):
+      calico                   Update  status
+      kube-controller-manager  Update  -
+      kubelet                  Update  status
+
+### 3-a. 파드 하나를 지우면 (ReplicaSet 컨트롤러)
+21:10:57 kubectl delete pod web-765494fbb4-77fjl
+21:10:58 Running 3개로 돌아옴: 0.8초 (조회 간격 0.3초 포함)
+    replicaset-controller  SuccessfulCreate Created pod: web-765494fbb4-5ntdl
+
+### 3-b. ReplicaSet 을 직접 5개로 바꾸면 (위층 Deployment 컨트롤러가 되돌리나)
+21:10:58 kubectl scale rs web-765494fbb4 --replicas=5
+    +0.1s  rs.spec.replicas=3  파드  1 Completed  3 Running  2 Terminating 
+    +0.8s  rs.spec.replicas=3  파드  3 Running  2 Terminating 
+    +1.4s  rs.spec.replicas=3  파드  3 Running  2 Terminating 
+    +2.1s  rs.spec.replicas=3  파드  3 Running 
+    +2.8s  rs.spec.replicas=3  파드  3 Running 
+    +3.5s  rs.spec.replicas=3  파드  3 Running 
+    +4.1s  rs.spec.replicas=3  파드  3 Running 
+    +4.8s  rs.spec.replicas=3  파드  3 Running 
+    +5.4s  rs.spec.replicas=3  파드  3 Running 
+    +6.1s  rs.spec.replicas=3  파드  3 Running 
+21:11:04 이벤트(누가 무엇을):
+    replicaset-controller  ReplicaSet SuccessfulCreate   Created pod: web-765494fbb4-5ntdl
+    replicaset-controller  ReplicaSet SuccessfulCreate   Created pod: web-765494fbb4-vnwxz
+    replicaset-controller  ReplicaSet SuccessfulCreate   Created pod: web-765494fbb4-xbfdm
+    replicaset-controller  ReplicaSet SuccessfulDelete   Deleted pod: web-765494fbb4-vnwxz
+    replicaset-controller  ReplicaSet SuccessfulDelete   Deleted pod: web-765494fbb4-xbfdm
+    deployment-controller  Deployment ScalingReplicaSet  Scaled down replica set web-765494fbb4 from 5 to 3
+
+## 4. KCM 밖에서 도는 컨트롤러 예: calico-kube-controllers
+  calico-kube-controllers: replicas=1 image=quay.io/calico/calico:v3.33.0 ENABLED_CONTROLLERS=node,loadbalancer
+  type=LoadBalancer Service 를 맡을 cloud-controller-manager: 0개 (24편)
+
+## 5. kubectl apply 는 create/update 를 어떻게 고르나 (-v=6, ConfigMap)
+21:11:05 처음 apply:
+    GET    /api/v1/namespaces/cm-demo/configmaps/ap-demo    404 Not Found
+    GET    /api/v1/namespaces/cm-demo                       200 OK
+    POST   /api/v1/namespaces/cm-demo/configmaps            201 Created
+    → configmap/ap-demo created
+21:11:05 값을 바꿔 다시 apply:
+    GET    /api/v1/namespaces/cm-demo/configmaps/ap-demo    200 OK
+    PATCH  /api/v1/namespaces/cm-demo/configmaps/ap-demo    200 OK
+    → configmap/ap-demo configured
+
+## 6. 정리
+21:11:15 네임스페이스 cm-demo 삭제
+
+## 7. endpoints controller: Endpoints API 상태 (21:11:35)
+mac$ kubectl get endpoints kubernetes -n default
+  Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+  NAME         ENDPOINTS            AGE
+  kubernetes   192.168.104.1:6443   9d
+mac$ kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes
+  NAME         ADDRESSTYPE   PORTS   ENDPOINTS       AGE
+  kubernetes   IPv4          6443    192.168.104.1   9d
+  KCM 컨트롤러 목록에 service-lb / node-route / cloud-node 이름: (없으면 빈칸)

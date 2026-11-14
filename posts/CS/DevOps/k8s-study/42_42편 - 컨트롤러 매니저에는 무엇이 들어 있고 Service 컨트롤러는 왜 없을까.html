@@ -1,0 +1,394 @@
+<!-- ============================================================
+  k8s 스터디 42편: 컨트롤러 매니저에는 무엇이 들어 있고 Service 컨트롤러는 왜 없을까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: ReplicaSet 개수를 직접 5로 고치자 0.1초 만에 3으로 돌아왔어요. kube-controller-manager의 컨트롤러 49개가 무엇을 맡고 어떤 신원으로 쓰는지, Service 컨트롤러는 어디로 갔는지 실험과 소스로 확인했어요. -->
+<!-- tags: kube-controller-manager, 내장 컨트롤러, ReplicaSet, use-service-account-credentials, cloud-controller-manager, EndpointSlice, ServiceCIDR -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 42편</div>
+  40편. etcd 3.7에서는 백업과 복원을 어떻게 할까<br>
+  41편. 스케줄러는 어떤 파드를 집어 가고 바인딩은 무엇을 쓸까<br>
+  <b>42편. 컨트롤러 매니저에는 무엇이 들어 있고 Service 컨트롤러는 왜 없을까</b> &larr; 지금 이 글<br>
+  43편. 쿠버네티스는 왜 컨테이너가 아니라 파드를 띄우고 pause 컨테이너는 왜 있을까<br>
+  44편. 노드당 파드 110개는 어디서 나온 숫자일까
+</div>
+
+<p>21시 10분 58초에 Deployment web이 거느린 ReplicaSet에 설정된 파드 수를 직접 5로 바꿨어요(<code style="font-family:Menlo,monospace;font-size:14px;">kubectl scale rs web-765494fbb4 --replicas=5</code>). 0.1초 뒤 첫 조회에서 그 ReplicaSet의 spec.replicas는 이미 3이었고 Terminating 파드가 2개 보였어요. 2초쯤 지나자 Running 파드 3개만 남았어요. 제가 고친 숫자는 0.1초 안에 사라졌고 그사이 파드 두 개가 생겼다가 지워졌어요.</p>
+<p>예전 구성도에 적힌 컨트롤러 목록을 현재 클러스터와 비교해 봤어요. 목록은 이랬어요. Deployment, ReplicaSet, DaemonSet, Job/CronJob, endpoints, namespace, Node, Service, Route, 그리고 "User define". 설명에는 컨트롤러 매니저가 "모든 컨트롤러를 관리한다"는 말도 있었어요. 우리 클러스터의 kube-controller-manager(KCM)와 대 보면 그대로인 이름도 있고 달라진 이름도 있어요. ReplicaSet과 Deployment 컨트롤러는 위 장면에서 본 대로 KCM 안에서 서로 맞물려 돌지만 Node 컨트롤러는 이름이 셋으로 나뉘어 있고 endpoints는 다른 API로 넘어가는 중이에요. Service와 Route 컨트롤러는 아예 없고 User define에 해당하는 컨트롤러는 KCM 밖에서 따로 돌아요.</p>
+<p>KCM을 멈추면 무엇이 안 되는지는 20편에서, 컨트롤러 이름이 49개라는 것과 클라우드 컨트롤러 매니저(CCM)가 따로 있다는 것은 24편에서 봤어요. 이번 글에서는 KCM 안을 들여다봐요. 49개가 어떤 일을 나눠 맡는지, 한 프로세스에서 어떤 신원과 연결로 API 서버와 이야기하는지, 목록의 Service 컨트롤러는 어디로 갔고 그 일을 지금 누가 하는지를 실험 기록과 v1.37.2 소스로 확인해요. 클러스터는 Lima VM 4대에 kubeadm v1.37.2와 Calico v3.33.0을 올린 실습 환경이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; ReplicaSet을 직접 고치면 왜 0.1초 만에 되돌아갈까?<br>
+&middot; 컨트롤러 매니저 안의 49개는 어떤 일을 나눠 맡을까?<br>
+&middot; 49개가 한 프로세스에서 돌 때 API 서버와는 어떤 신원으로, 몇 개의 연결로 이야기할까?<br>
+&middot; 흔한 목록의 Node와 endpoints 컨트롤러는 지금 어떤 이름일까?<br>
+&middot; Service와 Route 컨트롤러는 어디로 갔고 그 일은 누가 할까?<br>
+&middot; 컨트롤러 매니저 밖에서 도는 컨트롤러는 무엇이고 kubectl apply는 무엇을 보낼까?</p>
+
+<h2>1. ReplicaSet을 5로 고치자 0.1초 만에 Deployment 컨트롤러가 3으로 되돌렸다</h2>
+
+<p>실험 전용 네임스페이스 cm-demo에 pause 이미지로 Deployment web(replicas 3)을 만들고 세 단계로 건드렸어요. 주인 관계를 보고 파드 하나를 지운 뒤 ReplicaSet에 설정된 파드 수를 직접 바꿨어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/42/01-loop.png" alt="42-controller-manager.sh 3절 실행 화면. 21:10:57 주인 사슬: pod/web-765494fbb4-77fjl은 ReplicaSet/web-765494fbb4(controller=true), replicaset/web-765494fbb4는 Deployment/web(controller=true). 파드를 쓴 주체는 calico Update status, kube-controller-manager Update, kubelet Update status. 3-a: kubectl delete pod 뒤 21:10:58 Running 3개로 돌아오기까지 0.8초, replicaset-controller SuccessfulCreate. 3-b: kubectl scale rs web-765494fbb4 --replicas=5 뒤 +0.1초에 rs.spec.replicas=3이고 Terminating 2개, +2.1초부터 Running 3개만. 이벤트: replicaset-controller가 파드 3개 생성, 2개 삭제, deployment-controller ScalingReplicaSet Scaled down replica set web-765494fbb4 from 5 to 3" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 파드를 지우면 0.8초 만에 다시 3개였고 ReplicaSet을 5로 고치면 0.1초 만에 3으로 돌아왔다</div>
+
+<p>파드의 주인은 ReplicaSet이고 ReplicaSet의 주인은 Deployment였어요. 둘 다 controller=true였어요. 파드 객체를 만든 쪽은 managedFields에 kube-controller-manager로 남아 있었어요. kubectl은 Deployment만 만들었고 ReplicaSet과 파드는 KCM이 만든 거예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ownerReferences</div>
+  객체의 metadata에 "내 주인은 누구인가"를 적는 칸이에요. controller=true가 붙은 주인이 그 객체를 관리하는 컨트롤러 쪽 객체예요. Deployment가 ReplicaSet을, ReplicaSet이 파드를 이렇게 거느려요. 주인이 지워지면 KCM의 garbage-collector-controller가 이 칸을 보고 딸린 객체를 지워요.
+</div>
+
+<p>파드 하나를 지우자 0.8초(조회 간격 0.3초 포함) 만에 Running 3개로 돌아왔고 replicaset-controller가 SuccessfulCreate 이벤트를 남겼어요. 20편에서 KCM을 멈췄을 때는 지운 파드가 다시 생기지 않았어요. 이번에는 KCM이 떠 있었으니 1초도 안 걸렸어요.</p>
+<p>ReplicaSet을 5로 바꾼 3-b가 이 글의 도입 장면이에요. 이벤트를 보면 replicaset-controller가 파드 두 개(vnwxz, xbfdm)를 만들었다가 그 둘을 다시 지웠고 그사이 deployment-controller가 "Scaled down replica set web-765494fbb4 from 5 to 3"을 남겼어요. 이벤트와 맞는 순서로 풀면 이래요.</p>
+<p>&middot; 제가 ReplicaSet의 spec.replicas를 5로 고쳤어요.<br>
+&middot; replicaset-controller는 "원하는 파드 5개, 실제 3개"를 보고 두 개를 만들었어요.<br>
+&middot; deployment-controller는 "Deployment는 3인데 그 ReplicaSet은 5"를 보고 ReplicaSet을 3으로 되돌렸어요.<br>
+&middot; replicaset-controller는 다시 "원하는 3개, 실제 5개"를 보고 두 개를 지웠어요.</p>
+<p>deployment-controller가 되돌린 곳은 v1.37.2 소스의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/deployment/rolling.go">pkg/controller/deployment/rolling.go</a>에 있어요. 롤링 업데이트 전략을 쓰는 Deployment에서 새 ReplicaSet에 설정할 파드 수를 맞추는 함수예요.</p>
+<div class="obsv-code">func (dc *DeploymentController) reconcileNewReplicaSet(ctx context.Context, allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, deployment *apps.Deployment) (bool, error) {
+    if *(newRS.Spec.Replicas) == *(deployment.Spec.Replicas) {
+        // Scaling not required.
+        return false, nil
+    }
+    if *(newRS.Spec.Replicas) &gt; *(deployment.Spec.Replicas) {
+        // Scale down.
+        scaled, _, err := dc.scaleReplicaSet(ctx, newRS, *(deployment.Spec.Replicas), deployment, false)
+        return scaled, err
+    }</div>
+<p>&rarr; ReplicaSet에 설정된 파드 수가 Deployment에 설정된 파드 수보다 크면 Deployment에 설정된 파드 수로 줄인다는 뜻이에요. 같은 패키지의 sync.go가 이때 "Scaled %s replica set %s from %d to %d" 형식의 이벤트를 남겨요. 제가 넣은 5는 이 비교에서 그냥 "틀린 값"이었어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k42aarr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k42aarr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k42aarr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">ReplicaSet을 5로 고친 뒤 0.1초 안에 일어난 일 (21:10:58)</text>
+<path d="M30 62 C 103 61.9, 175 63.1, 250 61.5 C 249.7 82, 250.9 103, 250.4 124 C 175 122.7, 103 125.0, 30.3 123.1 C 27.5 103, 30.7 82, 30 62 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="140" y="88" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">Deployment web</text>
+<text x="140" y="110" font-family="Menlo, monospace" font-size="12" fill="#3d3a34" text-anchor="middle">spec.replicas: 3</text>
+<path d="M30 176 C 103 177.6, 175 173.5, 250 176.1 C 247.8 198, 251.6 220, 249.8 242 C 175 239.7, 103 242.6, 31.1 240.7 C 31.9 220, 31.2 198, 30 176 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="140" y="202" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18" text-anchor="middle">ReplicaSet web-765494fbb4</text>
+<text x="140" y="226" font-family="Menlo, monospace" font-size="12" fill="#c07f18" text-anchor="middle">spec.replicas: 3 → 5 → 3</text>
+<path d="M30 296 C 103 293.9, 175 293.8, 250 296.4 C 251.0 316, 250.1 337, 250.4 358 C 175 355.5, 103 355.6, 30.3 358.6 C 32.5 337, 29.0 316, 30 296 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="140" y="322" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">파드</text>
+<text x="140" y="344" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">Running 3 (+2 생겼다 지워짐)</text>
+<path d="M140 172 C 139 159, 140 142, 140 128" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="4 4"/>
+<text x="152" y="156" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="start">owner</text>
+<path d="M140 292 C 140 278, 141 259, 140 246" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="4 4"/>
+<text x="152" y="274" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="start">owner</text>
+<path d="M450 110 C 523 109.2, 595 108.4, 670 108.8 C 669.9 128, 671.7 147, 668.7 166 C 595 164.5, 523 165.3, 450.7 166.3 C 449.2 147, 448.5 128, 450 110 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="560" y="136" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">deployment-controller</text>
+<text x="560" y="156" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">Deployment 3 ≠ RS 5</text>
+<path d="M450 236 C 523 236.3, 595 237.4, 670 235.9 C 670.9 254, 667.6 273, 669.4 292 C 595 293.2, 523 294.2, 449.1 293.3 C 448.0 273, 448.7 254, 450 236 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="560" y="262" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">replicaset-controller</text>
+<text x="560" y="282" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">RS 숫자 ≠ 파드 수</text>
+<text x="272" y="254" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="start">① 내가 RS를 5로 고침</text>
+<path d="M300 240 C 287 236, 270 231, 256 228" fill="none" stroke="#e5533c" stroke-width="2.6" stroke-linecap="round" marker-end="url(#k42aarr1)"/>
+<path d="M446 280 C 388 292, 312 307, 256 318" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k42aarr2)"/>
+<text x="318" y="286" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">② 파드 2개 생성</text>
+<path d="M446 150 C 389 163, 314 182, 256 196" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" marker-end="url(#k42aarr3)"/>
+<text x="330" y="150" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">③ Scaled down 5 → 3</text>
+<path d="M446 290 C 392 316, 316 340, 256 346" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k42aarr1)"/>
+<text x="400" y="374" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">④ 파드 2개 삭제</text>
+<text x="350" y="396" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">+0.1초 첫 조회에 이미 spec.replicas=3, +2.1초부터 Running 3개만 남음</text>
+<text x="350" y="426" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">아래층을 직접 고치면 위층 컨트롤러가 위층의 원하는 상태로 다시 쓴다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 원하는 상태는 층마다 따로 있고 위층 컨트롤러가 아래층의 원하는 상태를 쓴다</div>
+
+<p><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/">Deployment 문서</a> 첫머리에도 "Do not manage ReplicaSets owned by a Deployment."라는 주의가 있어요. Deployment가 거느린 ReplicaSet을 직접 관리하지 말라는 뜻이에요. <span class="obsv-mark">원하는 상태는 Deployment, ReplicaSet, 파드 층마다 따로 있고 위층 컨트롤러가 아래층의 원하는 상태를 써요. 아래층을 직접 고치면 위층 컨트롤러가 되돌려요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 개수와 템플릿은 맨 위층에서 바꿔요</div>
+  &bull; 파드 수는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl scale deploy</code>나 Deployment 매니페스트의 replicas로 바꿔요. ReplicaSet이나 파드를 직접 고치거나 지워도 위층 컨트롤러가 곧 되돌려요<br>
+  &bull; HPA를 붙였다면 replicas를 고치는 주인은 HPA 컨트롤러예요. 사람이나 GitOps 도구가 같은 칸을 같이 고치면 서로 덮어써요<br>
+  &bull; 파드 하나를 지우는 것은 "같은 템플릿으로 새로 띄워 달라"는 뜻이 돼요. 문제 파드를 살려 두고 조사하려면 <a href="https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/#isolating-pods-from-a-replicaset">ReplicaSet 문서</a>의 "You can remove Pods from a ReplicaSet by changing their labels."대로 라벨을 바꿔 떼어 내요. 떼어 낸 자리는 새 파드로 채워져요
+</div>
+
+<h2>2. 컨트롤러 매니저에는 내장 컨트롤러 49개가 들어 있고 모든 컨트롤러가 들어 있지는 않다</h2>
+
+<p>24편에서 <code style="font-family:Menlo,monospace;font-size:14px;">kube-controller-manager --help</code>의 --controllers 설명을 세어 49개를 확인했어요. 그중 bootstrap-signer, selinux-warning, token-cleaner 셋은 기본으로 꺼져 있고 kubeadm은 플래그 <code style="font-family:Menlo,monospace;font-size:14px;">--controllers=*,bootstrapsigner,tokencleaner</code>로 첫째와 셋째를 켜요. 이번에는 시작 로그에서 실제로 건너뛴 컨트롤러를 찾아봤어요.</p>
+<div class="obsv-code"># 42-controller-manager.txt 발췌 (kubectl logs kube-controller-manager-k8s-master, 08:21 UTC 시작 로그)
+"Controller is disabled by a feature gate" controller="storageversion-garbage-collector-controller" requiredFeatureGates=["APIServerIdentity","StorageVersionAP…
+"Warning: controller is disabled" controller="selinux-warning-controller"
+"Controller is disabled by a feature gate" controller="resourcepoolstatusrequest-controller" requiredFeatureGates=["DRAResourcePoolStatus"]
+"Controller is disabled by a feature gate" controller="podgroup-protection-controller" requiredFeatureGates=["GenericWorkload"]</div>
+<p>&rarr; 셋은 필요한 기능 게이트가 꺼져 있어서 시작하지 않았고 selinux-warning은 기본으로 꺼진 컨트롤러라서 시작하지 않았다는 뜻이에요. 건너뛰었다는 로그가 남은 넷을 빼면 45개가 시작됐다고 볼 수 있어요.</p>
+<p>49개를 맡은 일로 묶어 보면 이래요. 이름 뒤의 -controller는 뺐고 묶음은 제가 이름과 소스를 보고 나눈 거예요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:640px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">묶음</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">컨트롤러</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">하는 일, 다룬 편</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">워크로드 (9)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">deployment, replicaset, replicationcontroller, statefulset, daemonset, job, cronjob, ttl-after-finished, horizontal-pod-autoscaler</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">파드를 거느리는 객체의 개수와 수명을 맞춘다. 1절, 20편</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">노드 (6)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">node-ipam, node-lifecycle, taint-eviction, device-taint-eviction, pod-garbage-collector, ttl</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">노드에 대역을 나누고 응답 없는 노드에 taint를 붙이며 그 노드의 파드를 정리한다. 4절, 25·31편</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Service 주변 (4)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">endpoints, endpointslice, endpointslice-mirroring, service-cidr</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Service 뒤에 붙을 파드 목록과 서비스 대역 객체를 관리한다. 4·5절, 28편</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">스토리지 (7)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">persistentvolume-binder, persistentvolume-attach-detach, persistentvolume-expander, persistentvolume-protection, persistentvolumeclaim-protection, ephemeral-volume, volumeattributesclass-protection</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PV와 PVC를 묶어 노드에 붙이고 크기를 늘리며 쓰는 중에는 지워지지 않게 막는다. 16편</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">신원과 인증서 (12)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">serviceaccount, serviceaccount-token, legacy-serviceaccount-token-cleaner, root-ca-certificate-publisher, certificatesigningrequest-approving, certificatesigningrequest-signing, certificatesigningrequest-cleaner, bootstrap-signer, token-cleaner, clusterrole-aggregation, kube-apiserver-serving-clustertrustbundle-publisher, podcertificaterequest-cleaner</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">ServiceAccount와 토큰, 인증서 서명 요청, 부트스트랩 토큰, 롤 합치기를 다룬다. 5·10·32편</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">정리와 메타데이터 (6)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">garbage-collector, namespace, resourcequota, storage-version-migrator, storageversion-garbage-collector, validatingadmissionpolicy-status</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">주인 잃은 객체와 지운 네임스페이스의 내용을 치우고 쿼터 사용량과 정책 상태를 적는다. 33편</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">동적 자원 할당 (2)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">resourceclaim, resourcepoolstatusrequest</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">GPU 같은 장치를 요청하는 ResourceClaim을 다룬다</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">그 밖 (3)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">disruption, podgroup-protection, selinux-warning</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PodDisruptionBudget 상태 계산 등</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>흔한 목록에 이름이 있던 Deployment, ReplicaSet, DaemonSet, Job/CronJob, namespace는 그대로 있어요. 대신 목록에 없던 이름이 훨씬 많아요. 파드를 띄우는 일보다 신원과 인증서, 스토리지, 정리 작업을 맡은 컨트롤러가 더 많아요.</p>
+<p>"KCM이 모든 컨트롤러를 관리한다"는 말은 고쳐 읽어야 해요. <a href="https://kubernetes.io/docs/concepts/architecture/controller/">Controllers 문서</a>는 "Kubernetes comes with a set of built-in controllers that run inside the kube-controller-manager."라고 써요. <span class="obsv-mark">KCM에 든 것은 쿠버네티스에 기본으로 딸려 오는 내장 컨트롤러 묶음이에요.</span> 같은 문서는 "You can find controllers that run outside the control plane, to extend Kubernetes."라고도 적어요. 컨트롤 플레인 밖에서 도는 컨트롤러도 있다는 뜻이고 그 예는 6절에서 봐요. 41편의 스케줄러, 28편의 kube-proxy, 노드의 kubelet도 API 서버를 지켜보며 차이를 메우는 프로그램이지만 KCM에는 들어 있지 않아요.</p>
+
+<h2>3. 공유 인포머로 함께 읽고 컨트롤러별 ServiceAccount를 쓴다</h2>
+
+<p>컨트롤러 45개가 한 프로세스에서 돈다면 API 서버와는 어떻게 이야기할까요? 마스터에서 KCM 프로세스의 TCP 연결을 세어 보니 이랬어요.</p>
+<div class="obsv-code">21:10:55 master$ ss -tnp 로 kube-controller-manager 프로세스의 TCP 연결 (상대 주소:포트별 개수)
+        2 192.168.104.1:6443
+  LISTEN: 127.0.0.1:10257</div>
+<p>&rarr; 바깥으로 나가는 연결은 API 서버(6443)로 가는 두 개뿐이고 받는 포트는 마스터 안에서만 여는 10257(메트릭과 상태 확인용 HTTPS, 레퍼런스의 --secure-port 기본값) 하나라는 뜻이에요. etcd(2379)로 가는 연결도, 컨트롤러끼리 주고받는 연결도 없어요. 구성도의 "컨트롤러 매니저 &harr; Kubernetes objects(Desired state)" 화살표도 실제로는 이 두 연결을 지나 API 서버를 거쳐요.</p>
+
+<p>읽는 쪽과 쓰는 쪽은 신원이 달랐어요. v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/cmd/kube-controller-manager/app/controllermanager.go">cmd/kube-controller-manager/app/controllermanager.go</a>의 두 부분을 보면 이래요.</p>
+<div class="obsv-code">// CreateControllerContext creates a context struct containing references to resources needed by the
+// controllers such as the cloud provider and clientBuilder. rootClientBuilder is only used for
+// the shared-informers client and token controller.
+...
+    versionedClient, err := rootClientBuilder.Client("shared-informers")
+...
+func createClientBuilders(c *config.CompletedConfig) (clientBuilder clientbuilder.ControllerClientBuilder, rootClientBuilder clientbuilder.ControllerClientBuilder) {
+    rootClientBuilder = clientbuilder.SimpleControllerClientBuilder{
+        ClientConfig: c.Kubeconfig,
+    }
+    if c.ComponentConfig.KubeCloudShared.UseServiceAccountCredentials {
+        clientBuilder = clientbuilder.NewDynamicClientBuilder(
+            restclient.AnonymousClientConfig(c.Kubeconfig),
+            c.Client.CoreV1(),
+            metav1.NamespaceSystem)</div>
+<p>&rarr; kubeconfig(controller-manager.conf)의 신원은 공유 인포머와 메타데이터·디스커버리 조회, 토큰 컨트롤러 등에 쓰여요. 리더 선출도 이 신원을 사용해요. <code style="font-family:Menlo,monospace;font-size:14px;">--use-service-account-credentials</code>가 켜져 있으면 나머지 컨트롤러의 전용 클라이언트는 kubeconfig의 인증서를 뗀 설정에 kube-system 네임스페이스의 ServiceAccount를 붙여 써요. 인용한 주석보다 실제 rootClientBuilder의 쓰임이 넓은 것은 같은 함수의 metadata-informers와 controller-discovery 클라이언트 생성 코드에서 확인할 수 있어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 공유 인포머(shared informer)</div>
+  41편에서 본 인포머를 여러 컨트롤러가 함께 쓰도록 묶은 것이에요. 파드 watch는 한 번만 열고 ReplicaSet 컨트롤러, 가비지 컬렉터, EndpointSlice 컨트롤러 같은 여러 컨트롤러가 같은 캐시를 읽어요. KCM은 메모리를 아끼려고 이 캐시에 넣을 때 managedFields를 지워요(같은 함수의 "Informer transform to trim ManagedFields for memory efficiency." 주석).
+</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: --use-service-account-credentials</div>
+  <a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/">kube-controller-manager 레퍼런스</a>의 설명은 "If true, use individual service account credentials for each controller."예요. 컨트롤러마다 따로 ServiceAccount를 쓰게 하는 플래그이고 kubeadm이 켜 둬요. v1.37.2 clientbuilder는 그 ServiceAccount가 없으면 만들고(getOrCreateServiceAccount) 3600초짜리 토큰을 TokenRequest로 받아 갱신해요. 10편에서 본 1시간짜리 토큰과 같은 길이예요.
+</div>
+
+<p>실제 신원을 조회만 해서 확인했어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/42/02-identities.png" alt="42-controller-identities.sh 1~5절 실행 화면(22:16 조회). controller-manager.conf 인증서 subject CN=system:kube-controller-manager, issuer CN=kubernetes. kube-system ServiceAccount 전체 47개, 이름이 -controller로 끝나는 것 30개, 나머지는 bootstrap-signer, calico-cni-plugin, calico-kube-controllers, calico-node, coredns, default, generic-garbage-collector, horizontal-pod-autoscaler, kube-apiserver-serving-clustertrustbundle-publisher, kube-proxy, kube-state-metrics, legacy-service-account-token-cleaner, persistent-volume-binder, pod-garbage-collector, podcertificaterequestcleaner, root-ca-cert-publisher, token-cleaner. system:controller: ClusterRole 41개에 route-controller와 service-controller가 있다. deployment-controller 롤은 replicasets create,delete,get,list,patch,update,watch와 pods get,list,update,watch, replicaset-controller 롤은 pods create,delete,list,patch,watch. auth can-i: deployment-controller create pods no, update replicasets yes, replicaset-controller create pods yes, update deployments no" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. 공유 인포머와 리더 선출은 KCM 인증서로, 일반 컨트롤러의 전용 클라이언트는 ServiceAccount로 API 서버에 들어간다</div>
+
+<p>controller-manager.conf의 인증서는 CN=system:kube-controller-manager였어요. 공유 인포머의 watch는 모두 이 신원으로 들어가요. kube-system의 ServiceAccount는 47개였고 그중 이름이 -controller로 끝나는 것이 30개였어요. 나머지 17개 가운데 calico-cni-plugin, calico-kube-controllers, calico-node, coredns, default, kube-proxy, kube-state-metrics 7개는 다른 구성 요소의 것이고 남은 10개(generic-garbage-collector, horizontal-pod-autoscaler, persistent-volume-binder 등)는 v1.37.2 KCM 소스에서 컨트롤러가 클라이언트를 만들 때 넘기는 이름과 같았어요. KCM이 쓰는 ServiceAccount는 40개인 셈이에요.</p>
+<p>돌고 있는 컨트롤러 45개와 숫자가 다른 이유도 소스로 맞춰 볼 수 있어요. node-ipam, node-lifecycle, taint-eviction 세 컨트롤러는 node-controller 하나를 같이 쓰고(core.go) CSR을 다루는 세 컨트롤러는 certificate-controller 하나를 같이 써요(certificates.go). 여기서 네 개가 줄어 41개가 되고 토큰을 만드는 serviceaccount-token-controller는 ServiceAccount 대신 KCM 자신의 인증서로 돌아서(service_accounts.go의 rootClientBuilder) 하나가 더 줄어요. 45 &minus; 4 &minus; 1 = 40이에요.</p>
+<p>deployment-controller와 replicaset-controller의 ServiceAccount에는 RBAC 기본 정책의 ClusterRole <code style="font-family:Menlo,monospace;font-size:14px;">system:controller:&lt;이름&gt;</code>이 연결돼요(32편의 RBAC). 모든 컨트롤러가 ClusterRole을 쓰는 것은 아니에요. bootstrap-signer와 token-cleaner처럼 네임스페이스 Role을 쓰는 경우도 있어요(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/namespace_policy.go">namespace_policy.go</a>). deployment-controller는 ReplicaSet은 만들고 고칠 수 있지만 파드를 만들 수는 없었어요(<code style="font-family:Menlo,monospace;font-size:14px;">create pods: no</code>). replicaset-controller는 파드를 만들고 지울 수 있지만 Deployment를 고칠 수는 없었어요(<code style="font-family:Menlo,monospace;font-size:14px;">update deployments.apps: no</code>). 1절의 장면을 권한으로 다시 보면 deployment-controller는 ReplicaSet의 숫자만 고칠 수 있었고 파드를 만들고 지운 것은 replicaset-controller였어요. 이벤트에도 두 이름이 따로 남았어요. 반면 파드의 managedFields에는 둘 다 kube-controller-manager 하나로 남아서 이벤트보다 덜 자세해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 450" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k42barr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k42barr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k42barr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle">kube-controller-manager 한 프로세스: 공유 인포머와 컨트롤러별 신원</text>
+<path d="M18 52 C 163 52.9, 308 50.2, 458 52.4 C 458.8 161, 457.2 270, 458.1 382 C 308 383.4, 163 381.0, 19.1 383.3 C 17.0 270, 19.1 161, 18 52 Z" fill="none" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<text x="30" y="76" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="start">kube-controller-manager (마스터의 정적 파드)</text>
+<path d="M40 90 C 171 89.5, 301 92.4, 436 90.3 C 436.4 110, 436.1 130, 436.9 150 C 301 148.6, 171 148.7, 41.4 150.3 C 38.1 130, 38.2 110, 40 90 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="238" y="114" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41" text-anchor="middle">공유 인포머 한 벌 (watch로 채운 캐시)</text>
+<text x="238" y="136" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="middle">CN=system:kube-controller-manager</text>
+<path d="M52 196 C 93 194.1, 134 196.0, 176 195.4 C 175.3 214, 177.5 233, 176.6 252 C 134 251.0, 93 252.6, 51.3 253.0 C 52.6 233, 51.8 214, 52 196 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="114" y="220" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">deployment</text>
+<text x="114" y="240" font-family="Menlo, monospace" font-size="10" fill="#c07f18" text-anchor="middle">SA 토큰</text>
+<path d="M190 196 C 231 196.8, 272 197.1, 314 196.7 C 313.8 214, 311.4 233, 313.8 252 C 272 251.5, 231 254.5, 189.5 252.6 C 192.5 233, 192.6 214, 190 196 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="252" y="220" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">replicaset</text>
+<text x="252" y="240" font-family="Menlo, monospace" font-size="10" fill="#c07f18" text-anchor="middle">SA 토큰</text>
+<path d="M328 196 C 369 196.6, 410 195.0, 452 196.3 C 450.4 214, 453.9 233, 452.0 252 C 410 254.3, 369 253.6, 329.0 252.1 C 328.0 233, 326.3 214, 328 196 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="390" y="220" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">node-lifecycle</text>
+<text x="390" y="240" font-family="Menlo, monospace" font-size="10" fill="#c07f18" text-anchor="middle">SA 토큰</text>
+<path d="M52 286 C 93 283.9, 134 285.6, 176 285.2 C 177.2 304, 178.3 323, 177.0 342 C 134 344.4, 93 343.2, 51.3 343.4 C 53.1 323, 54.4 304, 52 286 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="114" y="310" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">endpointslice</text>
+<text x="114" y="330" font-family="Menlo, monospace" font-size="10" fill="#c07f18" text-anchor="middle">SA 토큰</text>
+<path d="M190 286 C 231 283.9, 272 287.0, 314 285.6 C 314.8 304, 316.2 323, 313.6 342 C 272 340.6, 231 339.8, 190.2 341.6 C 191.2 323, 189.1 304, 190 286 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="252" y="310" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">garbage-collector</text>
+<text x="252" y="330" font-family="Menlo, monospace" font-size="10" fill="#c07f18" text-anchor="middle">SA 토큰</text>
+<path d="M328 286 C 369 285.3, 410 287.6, 452 285.6 C 453.8 304, 451.7 323, 453.0 342 C 410 343.8, 369 340.5, 327.7 341.5 C 328.4 323, 329.9 304, 328 286 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="390" y="310" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">… 45개 시작</text>
+<path d="M114 154 C 115 165, 115 180, 114 192" fill="none" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="4 4" marker-end="url(#k42barr1)"/>
+<path d="M252 154 C 253 166, 252 180, 252 192" fill="none" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="4 4" marker-end="url(#k42barr1)"/>
+<path d="M390 154 C 391 166, 390 180, 390 192" fill="none" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="4 4" marker-end="url(#k42barr1)"/>
+<text x="321" y="178" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">캐시를 함께 읽는다</text>
+<path d="M540 96 C 586 96.1, 632 97.6, 680 97.3 C 678.6 178, 678.4 261, 680.0 346 C 632 344.4, 586 346.5, 539.9 347.3 C 542.2 261, 540.7 178, 540 96 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="610" y="130" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">kube-</text>
+<text x="610" y="152" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="middle">apiserver</text>
+<text x="610" y="174" font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle">:6443</text>
+<path d="M536 120 C 508 119, 469 119, 440 120" fill="none" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="6 4" marker-end="url(#k42barr2)"/>
+<text x="488" y="110" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">watch</text>
+<path d="M462 250 C 484 251, 514 250, 536 250" fill="none" stroke="#e5a33c" stroke-width="2.6" stroke-linecap="round" marker-end="url(#k42barr3)"/>
+<text x="498" y="240" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18" text-anchor="middle">쓰기</text>
+<text x="498" y="272" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#c07f18" text-anchor="middle">SA 40개</text>
+<text x="610" y="214" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">RBAC</text>
+<text x="610" y="234" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">system:controller:</text>
+<text x="610" y="252" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">역할 41개</text>
+<text x="350" y="410" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">TCP 연결은 192.168.104.1:6443 두 개, LISTEN은 127.0.0.1:10257 하나</text>
+<text x="350" y="438" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">컨트롤러끼리 직접 말하지 않고 etcd에도 붙지 않는다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 공유 인포머는 KCM 인증서로 읽고 일반 컨트롤러는 전용 ServiceAccount를 쓴다. 리더 선출과 토큰 컨트롤러는 KCM 신원을 쓰는 예외다</div>
+
+<p>연결이 컨트롤러 수만큼 생기지 않는 데에는 클라이언트 쪽 사정도 있어요. client-go는 TLS 설정이 같은 클라이언트끼리 전송 계층을 같이 써요. v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/client-go/transport/cache.go">client-go/transport/cache.go</a>의 tlsCacheKey에는 CA, 클라이언트 인증서, 서버 이름 같은 값만 있고 토큰은 들어가지 않아요. 그러니 토큰만 다른 ServiceAccount 클라이언트 40개는 같은 전송 계층을 쓸 수 있어요. 인증서를 붙인 인포머 쪽과 인증서를 뗀 컨트롤러 쪽은 TLS 설정이 달라요. 두 연결이 이 둘에 하나씩인지까지는 이번에 가르지 않았어요. <span class="obsv-mark">KCM은 내장 컨트롤러 수십 개를 한 프로세스에 넣고 공유 인포머의 캐시를 함께 읽어요. 일반 컨트롤러의 전용 클라이언트는 ServiceAccount를 쓰지만 리더 선출과 토큰 컨트롤러는 KCM 신원을 써요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 감사 로그와 권한 문제는 컨트롤러 이름으로 찾아요</div>
+  &bull; ServiceAccount를 쓰는 컨트롤러의 요청은 감사 로그에 <code style="font-family:Menlo,monospace;font-size:14px;">system:serviceaccount:kube-system:replicaset-controller</code> 같은 사용자 이름으로 남아요. 어느 컨트롤러가 객체를 고쳤는지 이 이름으로 가를 수 있어요<br>
+  &bull; 컨트롤러가 403으로 막힌다고 의심되면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth can-i &lt;동사&gt; &lt;리소스&gt; --as=system:serviceaccount:kube-system:&lt;컨트롤러 SA&gt;</code>로 권한을 바로 확인해요. 실제로 아무것도 만들지 않는 검사예요<br>
+  &bull; <a href="https://kubernetes.io/docs/reference/access-authn-authz/rbac/#auto-reconciliation">RBAC 문서</a>에 따르면 API 서버는 시작할 때마다 기본 ClusterRole에 빠진 권한을 다시 채워요("updates default cluster roles with any missing permissions"). 컨트롤러에 권한을 더 줘야 하면 <code style="font-family:Menlo,monospace;font-size:14px;">system:controller:*</code> 롤을 직접 고치기보다 별도 ClusterRole을 만들어 붙여요
+</div>
+
+<h2>4. 흔한 목록의 Node 컨트롤러는 셋으로 나뉘었고 endpoints는 EndpointSlice로 넘어가는 중이다</h2>
+
+<p>흔한 목록의 "Node 컨트롤러"라는 이름의 컨트롤러는 KCM 목록에 없어요. 그 일은 셋으로 나뉘어 있고 셋 모두 앞 절에서 본 ServiceAccount node-controller를 같이 써요.</p>
+<p>&middot; <b>node-ipam-controller</b>: <code style="font-family:Menlo,monospace;font-size:14px;">--allocate-node-cidrs=true</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">--cluster-cidr=10.244.0.0/16</code>을 보고 노드마다 podCIDR을 /24로 나눠 적어요. 이 클러스터는 Calico IPAM을 써서 그 값이 파드 IP와 상관없다는 것을 31편에서 봤어요.<br>
+&middot; <b>node-lifecycle-controller</b>: kubelet의 Lease 갱신이 끊긴 노드를 Unknown으로 바꾸고 taint를 붙여요(25편).<br>
+&middot; <b>taint-eviction-controller</b>: NoExecute taint가 붙은 노드의 파드를 toleration 시간이 지나면 내보내요. 25편에서 300초 뒤 축출을 본 것이 이 컨트롤러예요.</p>
+<p>노드와 관련된 정리도 하나 더 있어요. pod-garbage-collector-controller는 <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-garbage-collection">파드 수명 주기 문서</a>에 따르면 끝난 파드가 임계값보다 많을 때 지우고 "orphan Pods - bound to a node which no longer exists", 곧 이미 없어진 노드에 묶인 파드도 지워요. 클라우드에서 서버가 지워졌는지 확인해 Node 객체를 지우는 cloud-node-lifecycle 컨트롤러는 24편에서 본 대로 CCM 쪽에 있어요.</p>
+<p>endpoints 컨트롤러는 아직 있어요. 그런데 Endpoints를 조회하면 경고가 먼저 나와요.</p>
+<div class="obsv-code">mac$ kubectl get endpoints kubernetes -n default
+  Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+  NAME         ENDPOINTS            AGE
+  kubernetes   192.168.104.1:6443   9d
+mac$ kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes
+  NAME         ADDRESSTYPE   PORTS   ENDPOINTS       AGE
+  kubernetes   IPv4          6443    192.168.104.1   9d</div>
+<p>&rarr; v1 Endpoints API는 v1.33부터 폐기 예정(deprecated)이고 대신 EndpointSlice를 쓰라는 뜻이에요. 28편에서 본 대로 kube-proxy가 규칙을 만들 때 보는 것도 EndpointSlice예요. <span class="obsv-mark">지금 Service 뒤의 파드 목록을 만드는 주인공은 endpointslice-controller이고 endpoints-controller는 예전 API를 쓰는 쪽을 위해 남아 있어요.</span> 사용자가 직접 만든 Endpoints를 EndpointSlice로 옮겨 주는 endpointslice-mirroring-controller도 <a href="https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/">EndpointSlices 문서</a>는 Endpoints API와 함께 폐기 예정으로 적어 두었어요.</p>
+<p>누가 만든 EndpointSlice인지는 라벨로 가릴 수 있어요. 같은 문서에 따르면 "The endpoint slice controller sets endpointslice-controller.k8s.io as the value for this label"이고 그 라벨은 <code style="font-family:Menlo,monospace;font-size:14px;">endpointslice.kubernetes.io/managed-by</code>예요. default 네임스페이스를 조회해 보니 myweb의 슬라이스에는 endpointslice-controller.k8s.io가 있었고 kubernetes 서비스의 슬라이스에는 이 라벨이 비어 있었어요. API 서버 자신을 가리키는 이 슬라이스는 KCM이 아니라 API 서버가 Endpoints와 함께 직접 써요(v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/reconcilers/endpointsadapter.go">pkg/controlplane/reconcilers/endpointsadapter.go</a>의 EnsureEndpointSliceFromEndpoints).</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: Endpoints를 읽는 스크립트와 도구는 EndpointSlice로 옮겨요</div>
+  &bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get endpoints</code>는 아직 동작하지만 v1.33부터 경고가 붙어요. 모니터링 스크립트나 직접 만든 컨트롤러가 Endpoints를 본다면 <code style="font-family:Menlo,monospace;font-size:14px;">discovery.k8s.io/v1</code> EndpointSlice로 바꿔요<br>
+  &bull; EndpointSlice는 Service 하나에 여러 개일 수 있어요. 이름이 아니라 <code style="font-family:Menlo,monospace;font-size:14px;">kubernetes.io/service-name=&lt;서비스&gt;</code> 라벨로 찾아요
+</div>
+
+<h2>5. Service와 Route 컨트롤러는 cloud-controller-manager로 옮겨 갔다</h2>
+
+<p>흔한 목록의 Service 컨트롤러와 Route 컨트롤러는 KCM 목록에 없어요. 24편에서 본 대로 둘은 클라우드 API를 불러야 하는 컨트롤러라서 cloud-controller-manager(CCM)로 옮겨 갔어요. Service 컨트롤러는 type LoadBalancer Service를 보면 클라우드에 로드밸런서를 만들고 Route 컨트롤러는 다른 노드의 파드끼리 닿도록 클라우드 네트워크에 경로를 넣어요. v1.31에서 마지막 in-tree 클라우드 연동 코드가 빠졌고 v1.37.0에서는 KCM에 남아 있던 이름(service-lb-controller, node-route-controller, cloud-node-lifecycle-controller)까지 빠졌어요. 우리 클러스터에는 CCM이 0개예요.</p>
+<p>이번 조회에서 흔적을 하나 더 찾았어요. 3절의 <code style="font-family:Menlo,monospace;font-size:14px;">system:controller:</code> 롤 41개 가운데 route-controller와 service-controller가 있었어요. RBAC 기본 정책(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/controller_policy.go">controller_policy.go</a>)에 두 롤이 아직 정의돼 있기 때문이에요. 현재 kube-system에는 그 이름의 ServiceAccount가 없고 v1.37.2 KCM의 컨트롤러 등록 목록에도 두 컨트롤러가 없어요. 롤이 왜 남아 있는지는 원문에서 이유를 찾지 못했어요.</p>
+<p>그렇다면 이름이 Service인 컨트롤러가 없는데 Service는 누가 처리할까요? ClusterIP는 컨트롤러가 아니라 API 서버가 정해요. <a href="https://kubernetes.io/docs/reference/networking/virtual-ips/">Virtual IPs and Service Proxies 문서</a>는 "Kubernetes does that by allocating each Service its own IP address from within the service-cluster-ip-range CIDR range that is configured for the API Server."라고 써요. API 서버에 설정된 서비스 대역에서 Service마다 IP를 하나씩 할당한다는 뜻이에요. 같은 문서는 이 할당을 IPAddress와 ServiceCIDR 객체로 기록하는 방식도 설명해요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/42/03-service-records.png" alt="42-controller-identities.sh 6·7절 실행 화면. servicecidrs는 kubernetes 하나이고 CIDRS 10.96.0.0/12, AGE 10d. IPAddress 객체 수 8, Service 수 9, 그중 clusterIP None(headless) 1. 10.96.0.1의 parentRef는 services/default/kubernetes, managed-by 라벨은 ipallocator.k8s.io. default 네임스페이스 EndpointSlice: kubernetes는 managed-by가 비어 있고 myweb-tr7zj는 managed-by=endpointslice-controller.k8s.io" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. ClusterIP는 IPAddress 객체로 하나씩 기록돼 있었고 headless Service 하나만 IP가 없었다</div>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: ServiceCIDR와 IPAddress</div>
+  ServiceCIDR는 Service에 줄 수 있는 IP 대역을 담은 객체이고 IPAddress는 그 대역에서 할당된 IP 하나를 "어느 Service 몫인지"와 함께 적은 객체예요. 문서에 따르면 클러스터가 처음 뜰 때 kube-apiserver의 <code style="font-family:Menlo,monospace;font-size:14px;">--service-cluster-ip-range</code> 값으로 kubernetes라는 이름의 ServiceCIDR가 만들어져요. KCM의 service-cidr-controller는 ServiceCIDR에 보호용 finalizer와 Ready 조건을 달고 아직 IPAddress가 남은 대역이 지워지지 않게 막아요(v1.37.2 servicecidrs_controller.go).
+</div>
+
+<p>우리 클러스터의 ServiceCIDR는 kubernetes 하나(10.96.0.0/12)였어요. Service 9개 가운데 clusterIP가 None인 headless Service가 1개였고 IPAddress 객체는 정확히 8개였어요. 10.96.0.1의 주인(parentRef)은 services/default/kubernetes였고 managed-by 라벨은 ipallocator.k8s.io였어요. v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/registry/core/service/ipallocator/ipallocator.go">pkg/registry/core/service/ipallocator/ipallocator.go</a>의 ControllerName 값이에요. Service를 저장할 때 IP를 고르는 API 서버 안의 할당기가 이 라벨을 붙여요.</p>
+<p>Service 하나의 일을 나눠 맡는 쪽을 모으면 그림 6과 같아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 490" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k42carr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k42carr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">이 클러스터에서 Service 하나의 일을 누가 맡나</text>
+<text x="110" y="66" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">할 일</text>
+<text x="365" y="66" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">맡는 쪽</text>
+<text x="603" y="66" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">이 클러스터에서 대신하는 것</text>
+<path d="M20 78 C 79 79.9, 139 79.5, 200 79.0 C 198.6 96, 200.9 114, 198.9 132 C 139 131.9, 79 134.4, 21.0 131.9 C 20.8 114, 20.8 96, 20 78 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="111" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">ClusterIP 정하기</text>
+<path d="M250 78 C 326 77.5, 402 80.0, 480 79.1 C 480.3 96, 479.4 114, 479.6 132 C 402 130.0, 326 131.4, 250.7 132.0 C 251.2 114, 249.4 96, 250 78 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="365" y="102" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">kube-apiserver</text>
+<text x="365" y="122" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">IPAddress 객체로 기록</text>
+<path d="M204 105 C 217 105, 234 106, 246 105" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#k42carr1)"/>
+<path d="M20 142 C 79 139.8, 139 144.5, 200 143.2 C 198.5 160, 200.9 178, 200.9 196 C 139 198.1, 79 195.1, 21.2 194.9 C 21.9 178, 20.7 160, 20 142 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="175" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">뒤에 붙을 파드 목록</text>
+<path d="M250 142 C 326 140.9, 402 143.7, 480 142.4 C 481.4 160, 481.9 178, 478.6 196 C 402 195.0, 326 194.2, 251.4 196.1 C 251.1 178, 249.9 160, 250 142 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="365" y="166" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">KCM endpointslice-controller</text>
+<text x="365" y="186" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">EndpointSlice</text>
+<path d="M204 169 C 218 169, 234 169, 246 169" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#k42carr1)"/>
+<path d="M20 206 C 79 203.9, 139 204.3, 200 205.0 C 199.7 224, 202.3 242, 201.5 260 C 139 257.6, 79 260.8, 20.5 258.7 C 22.4 242, 22.0 224, 20 206 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="239" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">노드의 패킷 규칙</text>
+<path d="M250 206 C 326 204.0, 402 205.2, 480 205.9 C 481.5 224, 480.9 242, 480.3 260 C 402 262.2, 326 258.6, 249.8 260.2 C 252.0 242, 249.1 224, 250 206 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="365" y="230" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">kube-proxy (노드마다)</text>
+<text x="365" y="250" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">iptables, 28편</text>
+<path d="M204 233 C 216 232, 233 233, 246 233" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#k42carr1)"/>
+<path d="M20 270 C 79 268.2, 139 272.5, 200 271.4 C 198.1 288, 201.9 306, 199.5 324 C 139 322.0, 79 322.8, 20.6 324.3 C 17.8 306, 20.3 288, 20 270 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="303" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">이름 풀이</text>
+<path d="M250 270 C 326 269.7, 402 272.5, 480 269.5 C 477.6 288, 481.8 306, 481.5 324 C 402 325.1, 326 326.3, 250.1 323.6 C 250.4 306, 250.5 288, 250 270 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="365" y="294" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="middle">CoreDNS</text>
+<text x="365" y="314" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">29편</text>
+<path d="M204 297 C 217 297, 233 298, 246 297" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#k42carr1)"/>
+<path d="M20 334 C 79 333.7, 139 334.7, 200 334.3 C 198.9 352, 198.5 370, 198.5 388 C 139 387.4, 79 389.4, 18.7 388.2 C 20.7 370, 18.2 352, 20 334 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="367" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">클라우드 LB / IP 할당</text>
+<path d="M250 334 C 326 333.3, 402 335.3, 480 335.4 C 479.2 352, 481.8 370, 480.7 388 C 402 387.6, 326 388.7, 249.8 388.3 C 250.7 370, 249.9 352, 250 334 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="365" y="358" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">CCM service-controller</text>
+<text x="365" y="378" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#b3502f" text-anchor="middle">없음 → pending (24편)</text>
+<path d="M204 361 C 217 361, 234 361, 246 361" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#k42carr1)"/>
+<path d="M520 338 C 575 337.9, 630 335.7, 686 339.4 C 684.0 353, 687.1 368, 684.6 384 C 630 384.3, 575 384.2, 521.2 385.0 C 520.1 368, 521.9 353, 520 338 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="603" y="366" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">Calico IP 할당 (24편)</text>
+<path d="M484 361 C 494 360, 507 362, 516 361" fill="none" stroke="#5a9e6f" stroke-width="2.0" stroke-linecap="round" stroke-dasharray="5 4" marker-end="url(#k42carr2)"/>
+<path d="M20 398 C 79 398.8, 139 399.7, 200 396.7 C 199.6 416, 200.1 434, 199.4 452 C 139 450.9, 79 454.5, 20.8 451.2 C 18.4 434, 22.5 416, 20 398 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="110" y="431" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">노드 사이 파드 경로</text>
+<path d="M250 398 C 326 395.4, 402 399.4, 480 396.6 C 481.2 416, 477.4 434, 479.8 452 C 402 451.4, 326 451.3, 250.7 450.9 C 250.1 434, 250.1 416, 250 398 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="365" y="422" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">CCM route-controller</text>
+<text x="365" y="442" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#b3502f" text-anchor="middle">없음</text>
+<path d="M204 425 C 217 425, 234 425, 246 425" fill="none" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" marker-end="url(#k42carr1)"/>
+<path d="M520 402 C 575 401.7, 630 401.4, 686 402.4 C 684.5 417, 688.0 432, 686.8 448 C 630 449.4, 575 448.5, 519.4 447.6 C 522.3 432, 517.9 417, 520 402 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="603" y="430" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#2e6b41" text-anchor="middle">Calico BIRD·Felix (30편)</text>
+<path d="M484 425 C 494 424, 507 425, 516 425" fill="none" stroke="#5a9e6f" stroke-width="2.0" stroke-linecap="round" stroke-dasharray="5 4" marker-end="url(#k42carr2)"/>
+<text x="350" y="476" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">여섯 가지 중 빈 칸은 클라우드 API를 불러야 하는 두 가지다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. Service의 일은 여러 구성 요소가 나눠 맡는다. CCM이 없는 이 실습에서 Calico는 LoadBalancer IP 할당과 파드 경로를 맡는다</div>
+
+<p>이 실습에서 Calico가 맡는 일은 LoadBalancer IP 할당과 노드 사이 파드 경로 설정이에요. 외부 클라우드 로드밸런서를 만드는 것은 아니에요. LoadBalancer IP는 24편에서 calico-kube-controllers의 loadbalancer 컨트롤러가 IP 풀을 만들자 3초 안에 채웠고 노드 사이 파드 경로는 30편에서 본 BIRD와 Felix가 넣어요. <span class="obsv-mark">"Service 컨트롤러"는 지금 클라우드 로드밸런서를 만드는 CCM의 컨트롤러를 가리키고 Service의 나머지 일은 API 서버, KCM의 EndpointSlice 컨트롤러, kube-proxy, CoreDNS가 나눠 맡아요.</span></p>
+
+<h2>6. 컨트롤러 매니저 밖의 컨트롤러와 kubectl apply가 보내는 요청</h2>
+
+<p>흔한 목록의 마지막 "User define"은 KCM 안에 없어요. 사용자가 설치한 컨트롤러는 보통 클러스터 안의 Deployment로 떠서 KCM과 똑같이 API 서버를 지켜봐요. 이 클러스터에서 가장 가까운 예가 calico-kube-controllers예요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/42/04-outside-and-apply.png" alt="42-controller-manager.sh 4·5·7절 실행 화면. calico-kube-controllers replicas=1, image quay.io/calico/calico:v3.33.0, ENABLED_CONTROLLERS=node,loadbalancer. type=LoadBalancer Service를 맡을 cloud-controller-manager 0개. kubectl apply -v=6 처음: GET configmaps/ap-demo 404 Not Found, GET namespaces/cm-demo 200 OK, POST configmaps 201 Created, configmap/ap-demo created. 값을 바꿔 다시 apply: GET 200 OK, PATCH 200 OK, configmap/ap-demo configured. kubectl get endpoints kubernetes에 Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice, endpointslices kubernetes IPv4 6443 192.168.104.1. KCM 컨트롤러 목록에 service-lb, node-route, cloud-node 이름 없음" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. KCM 밖에는 calico-kube-controllers가 있고 kubectl apply는 처음에는 POST, 다음에는 PATCH를 보냈다</div>
+
+<p>calico-kube-controllers는 replicas 1인 Deployment이고 환경 변수 ENABLED_CONTROLLERS가 node,loadbalancer였어요. node 컨트롤러는 34편에서 본 IPAM 정리(새는 IP와 빈 블록 반납)를, loadbalancer 컨트롤러는 24편에서 본 LoadBalancer IP 할당을 맡아요. 이 컨트롤러는 KCM의 ServiceAccount가 아니라 자기 ServiceAccount(calico-kube-controllers)로 API 서버에 붙어요. CRD로 새 리소스를 정의하고 그 리소스를 지켜보는 컨트롤러를 함께 배포하는 오퍼레이터도 같은 자리예요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 오퍼레이터(operator)</div>
+  CRD로 새 객체 종류(예: 데이터베이스 클러스터)를 정의하고 그 객체를 지켜보며 실제 상태를 맞추는 컨트롤러를 함께 배포하는 방식이에요. 동작 원리는 KCM의 내장 컨트롤러와 같고 보통 클러스터 안의 Deployment로 떠서 자기 ServiceAccount와 RBAC으로 일해요.
+</div>
+
+<p>구성도에서 kubectl과 API 서버 사이 화살표에는 "kubectl apply(create/update)"라고 적혀 있었어요. 같은 ConfigMap을 두 번 apply하며 <code style="font-family:Menlo,monospace;font-size:14px;">-v=6</code>으로 요청을 보니 처음에는 GET이 404 Not Found를 받은 뒤 POST로 만들었고(201 Created, "created") 값을 바꾼 두 번째에는 GET이 200을 받은 뒤 PATCH를 보냈어요(200, "configured"). kubectl apply가 "없으면 만들고 있으면 고친다"를 고르는 것은 맞지만 고칠 때 보내는 것은 객체 전체를 바꾸는 update(PUT)가 아니라 바뀐 부분만 보내는 PATCH였어요. 41편에서 managedFields에 kubectl-client-side-apply가 보인 것도 이 방식(클라이언트 쪽 apply) 때문이에요. <span class="obsv-mark">어느 쪽이든 kubectl은 API 서버의 원하는 상태를 고칠 뿐이고 나머지는 1절에서 본 컨트롤러들이 해요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: KCM 밖의 컨트롤러는 KCM 로그와 메트릭에 나오지 않아요</div>
+  &bull; calico-kube-controllers나 오퍼레이터가 멈추면 KCM은 멀쩡해도 그 컨트롤러가 맡은 일(IP 정리, LoadBalancer IP, CRD 객체)이 멈춰요. 34편에서는 calico-kube-controllers 안의 다른 기능이 막혀 IPAM 정리가 23분 넘게 돌지 않았어요<br>
+  &bull; 클러스터에 어떤 컨트롤러가 있는지는 KCM 목록만으로 알 수 없어요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get deploy -A</code>에서 controller나 operator가 들어간 이름과 CRD 목록(<code style="font-family:Menlo,monospace;font-size:14px;">kubectl get crd</code>)을 함께 봐요<br>
+  &bull; 장애 때는 그 컨트롤러의 파드 로그에서 "Waiting" 같은 대기 메시지가 계속 찍히는지부터 봐요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>컨트롤러 매니저는 쿠버네티스 내장 컨트롤러 49개를 묶은 프로세스이고 Service와 Route 컨트롤러는 클라우드 API가 필요해서 cloud-controller-manager로 옮겨 갔어요.</b><br><br>
+  ReplicaSet을 직접 5로 고치자 replicaset-controller가 파드 둘을 만들었고 0.1초 안에 deployment-controller가 ReplicaSet을 3으로 되돌려 그 둘은 다시 지워졌어요. 원하는 상태는 층마다 있고 위층 컨트롤러가 아래층을 써요. KCM 안의 49개 가운데 45개가 시작됐고 워크로드보다 신원·인증서·스토리지·정리를 맡은 컨트롤러가 더 많았어요. 공유 인포머는 KCM 자신의 인증서로 읽고 일반 컨트롤러의 전용 클라이언트는 ServiceAccount 40개를 나눠 써요. 리더 선출과 토큰 컨트롤러는 KCM 신원을 써요. 역할별 권한이 달라서 deployment-controller는 파드를 만들 수 없고 replicaset-controller는 Deployment를 고칠 수 없어요. 연결은 API 서버로 가는 두 개뿐이었어요. 흔한 목록의 Node 컨트롤러는 node-ipam·node-lifecycle·taint-eviction으로 나뉘었고 endpoints는 EndpointSlice로 넘어가는 중이에요. ClusterIP는 API 서버가 정해 IPAddress 객체로 기록했고 이 클러스터의 Calico는 LoadBalancer IP 할당과 노드 사이 파드 경로 설정을 맡아요. KCM에 무엇이 있는지만큼 무엇이 없는지 알아야 장애 때 어느 컨트롤러를 볼지 고를 수 있어요.
+</div>
+
+</div>

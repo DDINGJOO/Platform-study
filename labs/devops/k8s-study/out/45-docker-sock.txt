@@ -1,0 +1,25 @@
+# docker.sock 을 마운트하는 파드 (2026-11-14 21:39:36 KST)
+
+## 0. 노드에 docker.sock 이 있나 (worker2)
+  ls: cannot access '/var/run/docker.sock': No such file or directory
+  srw-rw---- 1 root root 0 Nov 14 14:41 /run/containerd/containerd.sock
+
+## 1. 파드 두 개 (둘 다 worker2, hostPath /var/run/docker.sock)
+  sock-typed: type: Socket / sock-untyped: type 없음
+NAME           READY   STATUS              RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES
+sock-typed     0/1     ContainerCreating   0          12s   <none>          k8s-worker2   <none>           <none>
+sock-untyped   1/1     Running             0          12s   10.244.126.58   k8s-worker2   <none>           <none>
+21:39:48 sock-typed 이벤트:
+    FailedMount: MountVolume.SetUp failed for volume "s" : hostPath type check failed, /var/run/docker.sock is not a socket file, unable to determine its type: path "/var/run/docker.sock" does not exi
+    FailedMount: MountVolume.SetUp failed for volume "s" : hostPath type check failed: /var/run/docker.sock is not a socket file, it's a Directory
+21:39:48 sock-untyped 안에서: ls -ld /var/run/docker.sock
+    drwxr-xr-x    2 root     root            40 Nov 14 12:39 /var/run/docker.sock
+21:39:48 sock-untyped 안에서: [ -S /var/run/docker.sock ] (유닉스 소켓인가)
+    소켓 아님 (Docker 클라이언트가 붙을 데몬이 없음)
+21:39:48 worker2 에 남은 것:
+    drwxr-xr-x 2 root root 40 Nov 14 21:39 /var/run/docker.sock
+
+## 2. 정리
+  worker2: 파드가 만든 빈 디렉터리 /var/run/docker.sock 삭제
+  ls: cannot access '/var/run/docker.sock': No such file or directory
+21:39:54 네임스페이스 w3-sock 삭제

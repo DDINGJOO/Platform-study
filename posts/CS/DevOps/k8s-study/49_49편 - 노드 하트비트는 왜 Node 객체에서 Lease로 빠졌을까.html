@@ -1,0 +1,395 @@
+<!-- ============================================================
+  k8s 스터디 49편: 노드 하트비트는 왜 Node 객체에서 Lease로 빠졌을까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 우리 클러스터에서 Lease는 10초마다 갱신되는데 Node.status의 하트비트 시각은 76~225초 전이었어요. 큰 클러스터에서 etcd가 쓰기를 멈춘 2018년의 사건부터 KEP-589의 대안 비교, 10초와 1/4이라는 숫자까지 하트비트가 Lease로 빠진 이유를 원문으로 따라갔어요. -->
+<!-- tags: Node Lease, 노드 하트비트, KEP-589, kube-node-lease, nodeStatusReportFrequency, etcd DB 크기, lastHeartbeatTime -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 49편</div>
+  46편. 쿠버네티스 API는 REST인데 CRI와 etcd는 왜 gRPC일까<br>
+  47편. kube-proxy는 왜 iptables와 IPVS를 거쳐 nftables로 왔을까<br>
+  48편. 쿠버네티스는 왜 etcd와 Raft를 골랐고 Kafka는 왜 ZooKeeper를 버렸을까<br>
+  <b>49편. 노드 하트비트는 왜 Node 객체에서 Lease로 빠졌을까</b> &larr; 지금 이 글<br>
+  50편. 노드 장애 판단의 50초와 300초는 왜 그 값일까
+</div>
+
+<p>21:22에 worker1의 Lease를 2초마다 26초 동안 찍었어요. renewTime은 12:22:34.09, 12:22:44.43, 12:22:54.67로 약 10초마다 바뀌었어요. 같은 순간 네 노드의 Node.status에서 Ready 조건의 lastHeartbeatTime을 보니 76초에서 225초 전이었고 Lease는 모두 10초 안쪽에 갱신돼 있었어요. 노드가 살아 있다는 신호는 Node 객체가 아니라 Lease로 가고 있었어요.</p>
+<p>25편에서 이 두 갈래를 처음 봤을 때는 Node Status 문서의 "a Lease is a lightweight resource"라는 한 줄로 이유를 넘겼어요. 48편에서는 쿠버네티스가 클러스터의 모든 상태를 etcd 한 곳에 두고 그 한 곳을 Raft로 지킨다는 것을 봤어요. 그 한 곳에 노드 수천 대가 10초마다 몇 KB짜리 객체를 통째로 다시 쓰면 무슨 일이 생길까요? 2018년의 쿠버네티스가 실제로 겪은 일이고 하트비트가 Lease로 빠진 이유예요.</p>
+<p>이번 글에서는 2015년의 첫 제안부터 KEP-589의 대안 비교, 10초와 1/4이라는 숫자, Lease로 옮긴 뒤 남은 틈까지 원문으로 따라가요. 마지막에는 우리 클러스터에서 Node와 Lease가 etcd에 실제로 얼마나 쓰는지 쟀어요. 하트비트가 끊긴 뒤 50초와 300초를 기다리는 이유는 50편의 몫이라 여기서는 가리키기만 해요. 클러스터는 Lima VM 4대에 kubeadm v1.37.2를 올린 실습 환경이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 하트비트를 Node 객체에 쓰던 시절에는 무엇이 문제였을까?<br>
+&middot; 2015년에 나온 "하트비트를 따로 빼자"는 제안은 왜 미뤄졌을까?<br>
+&middot; 검토한 대안 가운데 왜 Lease였을까?<br>
+&middot; 10초와 40초, 1/4은 어디서 나온 숫자일까?<br>
+&middot; Lease로 옮긴 뒤 무엇이 깨지고 무엇이 남았을까?<br>
+&middot; 우리 클러스터에서 Node와 Lease는 etcd에 얼마나 쓸까?</p>
+
+<h2>1. 2015년의 하트비트는 Node 객체 전체를 10초마다 다시 쓰는 일이었다</h2>
+
+<p>kubelet이 노드 상태를 직접 API 서버에 올리고 노드 컨트롤러가 그걸 지켜보는 구조는 2015년 3월 <a href="https://github.com/kubernetes/kubernetes/pull/5399">PR #5399</a>(v0.14)에서 들어왔어요. 처음 kubelet의 보고 주기는 2초였고 2주 뒤 <a href="https://github.com/kubernetes/kubernetes/pull/6535">PR #6535</a>에서 10초로 늘었어요. 이 PR의 본문은 "To partially address the numerous performance complaints." 한 줄이에요. 성능 불만이 많아서 2초를 10초로 늘렸다는 뜻이에요. 같은 PR에서 grace도 함께 늘었는데 그 숫자의 이야기는 50편에서 해요.</p>
+<p>문제는 무엇을 보고했느냐예요. 하트비트 시각인 lastHeartbeatTime은 Node 객체의 status.conditions 안에 있어요(25편 그림 1). 이 시각 하나를 바꾸려면 Node 객체를 고쳐야 하는데 Node의 status에는 조건 말고도 용량, 주소, 노드에 있는 이미지 목록, 붙은 볼륨이 함께 들어 있어요. 그래서 하트비트 한 번이 곧 Node 객체 하나를 통째로 다시 쓰는 일이었어요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: NodeStatus와 lastHeartbeatTime</div>
+  Node 객체의 status 칸 전체를 NodeStatus라고 불러요. 그 안의 conditions 항목마다 lastHeartbeatTime(마지막으로 보고된 시각)이 있어요. NodeLease가 기본으로 켜진 1.14 전에는 이 시각이 10초마다 바뀌는 것이 곧 노드가 살아 있다는 신호였어요.
+</div>
+
+<h3>"하트비트를 따로 빼자"는 2015년 제안은 미뤄졌다</h3>
+<p>2015년 9월에 gmarek이 <a href="https://github.com/kubernetes/kubernetes/issues/14733">이슈 #14733</a>을 열었어요.</p>
+
+<div class="obsv-code">We're currently sending whole NodeStatuses only to update a Node heartbeat.
+This a big source of traffic in the cluster, and one of the possible causes of
+1000-node cluster failures. We need to extract heartbeat to a new API
+'Heartbeat' object with timestamp and object reference only</div>
+
+<p>&rarr; 하트비트 시각 하나를 고치려고 NodeStatus 전체를 보내는 것이 클러스터 트래픽의 큰 몫이고 1000노드 클러스터 장애의 원인일 수 있으니 시각과 객체 참조만 담은 Heartbeat 객체로 빼자는 뜻이에요.</p>
+<p>반응은 차가웠어요. lavalamp는 "-100 on heartbeat object. Switch to PATCH."라고 답했고 몇 시간 뒤 이유를 덧붙였어요.</p>
+
+<div class="obsv-code">we are not bandwidth limited, we are write QPS limited (right?) and that PATCH,
+the current PUT, and a hypothetical heartbeat object ALL cause the same number
+of etcd writes</div>
+
+<p>&rarr; 병목은 네트워크 대역이 아니라 etcd 쓰기 횟수(QPS)이고 PATCH든 지금의 PUT이든 새 Heartbeat 객체든 etcd에 쓰는 횟수는 같다는 뜻이에요. dchen1107도 어느 방식이든 "we have the same amount etcd writes"라고 동의했어요. 쓰기 횟수가 병목이라는 전제에서는 맞는 말이에요. 노드마다 10초에 한 번 쓰는 것은 어느 방식이든 같으니까요.</p>
+<p>다른 길도 나왔어요. 하트비트는 언제든 다시 만들 수 있으니 디스크(etcd)에 둘 필요가 없다는 의견, status 전체를 따로 떼어 디스크에 남기지 말자는 의견, Raft 합의는 거치되 디스크에는 남기지 않는 키 영역을 etcd에 두자는 의견이 오갔어요. lavalamp는 spec과 status를 따로 두는 안을 "potentially a lot of work"라고 했어요. 제안자 gmarek은 "as we noticed during Omega project, putting a lot of stuff in a huge objects that contain everything does not work very well for both: performance and development"라며 물러서지 않았지만 2016년 2월 dchen1107이 1.2에서도 그다음 릴리스에서도 할 계획이 없다고 적으면서 이슈는 미뤄졌어요.</p>
+
+<h2>2. 2018년, 큰 클러스터에서 etcd가 쓰기를 멈췄다</h2>
+
+<p>2018년 1월 shyamjvs가 이 이슈를 다시 열자고 했어요. "we're seeing problems due to this in large clusters (~3k nodes) with heavy node objects (particularly due to images). Etcd seems to be consuming too much memory in storing multiple versions of those objects." 약 3천 노드 클러스터에서 이미지 목록 때문에 무거워진 Node 객체의 여러 버전을 etcd가 들고 있느라 메모리를 너무 쓴다는 뜻이에요. 같은 해 4월 wojtek-t가 쓴 KEP "Efficient Node Heartbeats"(지금 번호 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/589-efficient-node-heartbeats">KEP-589</a>)의 Motivation은 더 구체적이에요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: KEP (Kubernetes Enhancement Proposal)</div>
+  쿠버네티스의 큰 변경을 제안하는 문서예요. kubernetes/enhancements 저장소에 번호를 붙여 두고 동기, 제안, 검토한 대안, 단계별 졸업 기준(alpha, beta, GA)을 함께 적어요. 하트비트 KEP는 처음에 community 저장소의 0009번으로 병합됐고 지금은 589번이에요.
+</div>
+
+<div class="obsv-code">While running different scalability tests we observed that in big enough clusters
+(more than 2000 nodes) with non-trivial number of images used by pods on all
+nodes (10-15), we were hitting etcd limits for its database size. That effectively
+means that etcd enters "alert mode" and stops accepting all write requests.</div>
+
+<p>&rarr; 2000노드가 넘고 노드마다 이미지가 10~15개쯤 있는 클러스터에서 etcd의 DB 크기 한도에 걸렸고 그러면 etcd가 "alert mode"에 들어가 모든 쓰기를 거절한다는 뜻이에요. KEP는 원인을 세 가지의 조합으로 적어요.</p>
+<p>&middot; etcd가 현재 상태와 함께 변경 이력을 copy-on-write로 들고 있다("etcd keeping both current state and transaction log with copy-on-write")<br>
+&middot; 노드 하트비트가 아주 큰 객체일 수 있다. 이미지뿐 아니라 노드 하나에 볼륨을 100개 넘게 붙이려는 사용자도 있어서 15kB를 쉽게 넘고 "even though the patch send over network is small, in etcd we store the whole Node object"<br>
+&middot; kubelet이 10초마다 하트비트를 보낸다</p>
+<p>세 번째만 보면 2015년과 다를 게 없어요. 달라진 것은 문제를 보는 단위예요. 2015년의 논의는 쓰기 횟수를 봤고 그래서 "어느 방식이든 쓰기 횟수는 같다"는 결론이 났어요. 2018년에 터진 것은 쓰기 한 번의 크기와 그 크기가 이력으로 쌓이는 양이었어요. 38편에서 본 대로 etcd는 값을 덮어쓰지 않고 새 리비전을 추가하고 옛 리비전은 컴팩션 때까지 남아요. PATCH가 아무리 작아도 etcd에는 Node 객체 전체가 새 리비전으로 쌓여요. <span class="obsv-mark">하트비트의 비용은 몇 번 쓰느냐보다 한 번에 얼마나 큰 객체를 이력에 남기느냐였어요.</span></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: etcd DB 크기 한도와 경보 (alarm)</div>
+  etcd는 DB 파일이 한도를 넘으면 NOSPACE 경보를 걸고 새 값을 넣거나 갱신하는 요청을 제한해요. 우리 etcd 3.7.0의 <code style="font-family:Menlo,monospace;font-size:14px;">--help</code>는 <code style="font-family:Menlo,monospace;font-size:14px;">--quota-backend-bytes</code>를 "Exceeding this triggers an alarm and puts etcd in read-only mode. Set to 0 to use the default 2GiB limit."이라고 설명해요(6절 화면). 다만 <a href="https://etcd.io/docs/v3.7/op-guide/maintenance/#space-quota">공식 유지보수 문서</a>에 따르면 키 읽기와 삭제는 허용돼요. 새 객체와 상태 갱신을 저장하지 못하면 API 서버의 변경 처리도 막혀요.
+</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 428" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">하트비트 한 번이 etcd에 남기는 것: 1.14 이전과 1.17 이후 기본값</text>
+<defs><marker id="k49a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k49a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k49a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k49a4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="24" y="64" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="start">1.14 이전 (Lease 기본 꺼짐)</text>
+<path d="M20 96 C 53 98, 86 96, 120 95 C 122 114, 122 132, 120 150 C 86 152, 53 149, 21 150 C 19 132, 19 114, 20 96 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="70" y="128" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<path d="M124 122 C 143 123, 164 121, 186 122" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k49a2)"/>
+<text x="155" y="110" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">10초마다</text>
+<path d="M192 74 C 257 76, 322 76, 388 75 C 387 111, 389 148, 387 186 C 322 184, 257 184, 192 185 C 191 148, 193 111, 192 74 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="290" y="96" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">Node 객체 전체</text>
+<text x="290" y="118" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">status.conditions</text>
+<text x="290" y="134" font-family="Menlo, monospace" font-size="10.5" fill="#8a8272" text-anchor="middle">(lastHeartbeatTime)</text>
+<text x="290" y="152" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">status.images, volumes…</text>
+<text x="290" y="176" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">큰 클러스터 15~20KB (KEP-589)</text>
+<path d="M392 128 C 408 127, 425 130, 444 128" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k49a2)"/>
+<path d="M452 84 C 502 84, 552 84, 602 85 C 602 94, 600 104, 601 114 C 552 114, 502 114, 453 113 C 454 104, 452 94, 452 84 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M460 100 C 510 99, 560 100, 610 101 C 611 110, 609 120, 609 130 C 560 131, 510 132, 460 129 C 460 120, 458 110, 460 100 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M468 116 C 518 116, 568 118, 618 116 C 620 126, 619 136, 619 146 C 568 144, 518 144, 467 145 C 468 136, 469 126, 468 116 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M476 132 C 526 134, 576 132, 626 132 C 624 142, 624 152, 626 162 C 576 163, 526 163, 476 161 C 478 152, 477 142, 476 132 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="536" y="152" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">rev N  Node 전체</text>
+<text x="600" y="76" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#4a7fb5" text-anchor="middle">etcd</text>
+<text x="560" y="196" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#b3502f" text-anchor="middle">컴팩션(5분) 전까지 Node 사본이 쌓임</text>
+<path d="M20 214 C 241 216, 462 215, 680 216" fill="none" stroke="#d8cfba" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 6"/>
+<text x="24" y="244" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="start">1.17 이후 기본값</text>
+<path d="M20 290 C 53 289, 86 290, 120 289 C 121 308, 122 326, 121 344 C 86 343, 53 346, 19 343 C 19 326, 19 308, 20 290 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="70" y="322" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<path d="M124 304 C 148 297, 173 287, 196 276" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k49a3)"/>
+<text x="150" y="278" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">10초마다</text>
+<path d="M202 252 C 264 254, 326 254, 388 252 C 390 269, 389 286, 389 304 C 326 302, 264 305, 203 304 C 200 286, 200 269, 202 252 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="295" y="274" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">Lease (kube-node-lease)</text>
+<text x="295" y="294" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">renewTime 갱신, 약 480B</text>
+<path d="M124 330 C 146 335, 170 345, 196 352" fill="none" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k49a4)"/>
+<text x="150" y="372" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">바뀔 때나 5분마다</text>
+<path d="M202 330 C 264 330, 326 328, 388 331 C 390 345, 389 360, 389 376 C 326 377, 264 374, 202 377 C 200 360, 203 345, 202 330 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="295" y="352" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="middle">Node status</text>
+<text x="295" y="369" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">우리 worker1 약 6528B</text>
+<path d="M392 278 C 408 277, 425 280, 444 278" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k49a3)"/>
+<path d="M392 352 C 408 351, 427 350, 444 352" fill="none" stroke="#8a8272" stroke-width="2.0" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k49a4)"/>
+<path d="M452 254 C 475 255, 498 256, 522 254 C 520 260, 522 266, 523 272 C 498 270, 475 272, 452 273 C 453 266, 450 260, 452 254 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M460 263 C 483 262, 506 264, 530 263 C 528 269, 528 275, 529 281 C 506 280, 483 280, 459 282 C 458 275, 459 269, 460 263 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M468 272 C 491 271, 514 272, 538 272 C 537 278, 537 284, 539 290 C 514 291, 491 288, 467 291 C 470 284, 466 278, 468 272 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M476 281 C 499 282, 522 283, 546 280 C 546 287, 548 293, 545 299 C 522 297, 499 298, 475 298 C 477 293, 478 287, 476 281 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="560" y="286" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="start">작은 Lease 사본</text>
+<path d="M452 336 C 502 338, 552 337, 602 337 C 602 346, 603 356, 602 366 C 552 366, 502 366, 452 365 C 451 356, 450 346, 452 336 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="527" y="356" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">가끔 Node 전체</text>
+<text x="350" y="410" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">살아 있다는 신호만 작은 객체로 떼어 내자 etcd에 쌓이는 양이 줄었다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 1.14 전에는 하트비트마다 Node 사본이 이력에 쌓였고 지금은 작은 Lease 사본이 쌓이고 Node는 가끔만 쓰인다</div>
+
+<p>이미지 목록이 왜 Node에 들어 있는지도 같은 이슈에 나와요. bgrant0607은 2018년 3월에 이미지 정보가 "just for scheduler placement optimization"이라서 완벽할 필요가 없으니 해시 같은 손실 압축으로 줄이자는 안을 냈어요. 스케줄러가 이미지를 이미 가진 노드에 점수를 더 주는 데 쓰는 정보예요(23편). 해시로 줄이는 안이 실제로 들어갔는지는 확인하지 못했어요. 지금 kubelet에는 Node.status.images에 넣는 이미지 수를 자르는 <code style="font-family:Menlo,monospace;font-size:14px;">nodeStatusMaxImages</code> 설정이 있고 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/kubelet/config/v1beta1/types.go">types.go</a> 주석의 기본값은 50이에요.</p>
+<p>KEP가 든 규모를 숫자로 보면 이래요. 1.17 계획 절은 운영 클러스터의 평균 Node 객체를 20KB(server-side apply를 켜면 약 30KB)로 잡고 NodeStatus 주기를 1분에서 5분으로 늘리면 5천 노드 클러스터의 etcd 쓰기량이 "150MB/min to 30MB/min"으로 준다고 적어요. 같은 20KB를 10초마다 썼던 때로 계산하면 5천 노드 &times; 분당 6번 &times; 20KB로 분당 약 600MB예요(제 계산). 이 사본들이 컴팩션 전까지 DB에 쌓였어요.</p>
+
+<h2>3. 대안 여덟 가지를 놓고 리더 선출용 Lease를 다시 썼다</h2>
+
+<p>KEP-589의 Alternatives 절과 2015년 이슈에 나온 안을 모으면 이래요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:680px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">대안</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">좋은 점</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">버린 이유 (원문 요지)</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">① PATCH로 바꾸기 (2015년 #14733)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">네트워크로 보내는 양이 준다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">"the same number of etcd writes". etcd에는 여전히 Node 객체 전체가 쌓인다</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">② 하트비트 전용 객체</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">"Conceptually easier to understand"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">"Introduces a new, narrow-purpose API. Lease is already used by other components"</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">③ Event로 하트비트</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">새 API가 필요 없다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Event는 "best-effort"라 조용히 버려질 수 있는데 하트비트가 안 오면 "unnecessary evictions"로 이어진다. Node를 watch하던 사용자가 옮겨 갈 곳도 없다</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">④ Component Registration API 재사용</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">원래 원하던 API</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">새 API를 들이고 안정화하는 데 시간이 걸린다</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">⑤ etcd 안에서 Node를 두 조각으로 저장</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">API를 바꾸지 않는다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">"Very complicated to support watch". 처리할 데이터 양 자체는 그대로</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">⑥ etcd에 바뀐 부분(델타)만 저장</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">쿠버네티스를 고칠 필요가 없다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">etcd는 쿠버네티스 데이터 모델을 모르고 "May require a major rewrite of etcd code and not even be accepted by its maintainers"</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">⑦ etcd를 다른 DB로 교체</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">새 API가 필요 없다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">쓸 만한 대안이 있는지도 모르고 "Migration will take us years."</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">⑧ etcd v3의 lease로 갱신 (2018년 #14733)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">저장 계층에서 싸게 갱신한다</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">etcd의 lease 갱신("refresh lease")은 watch로 볼 수 없어서 하트비트의 의미가 바뀐다</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>KEP의 결론은 coordination.k8s.io 그룹에 내장 API Lease를 새로 두는 것이었어요. 새로 만들었다고는 하지만 내용은 이미 쓰던 거예요. KEP는 Lease의 spec이 "effectively of already existing (and thus proved) LeaderElectionRecord"라고 적어요. 컨트롤러 매니저와 스케줄러가 리더를 뽑을 때(21편) 쓰던 기록을 그대로 가져와 시각의 정밀도만 MicroTime으로 높였고 덕분에 "go get directly to Beta"를 기대했어요. ② 하트비트 전용 객체를 버린 이유가 바로 이것이었어요. <span class="obsv-mark">좁은 용도의 새 API보다 이미 검증된 범용 객체를 다시 쓰는 쪽을 골랐어요.</span></p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: LeaderElectionRecord</div>
+  여러 복제본 가운데 하나만 일하게 할 때 "누가, 언제부터, 몇 초 동안 리더인가"를 적는 기록이에요. holderIdentity, leaseDurationSeconds, acquireTime, renewTime, leaseTransitions 칸이 있고 Lease 객체의 spec이 이 칸을 그대로 가져왔어요. 노드 하트비트용 Lease에서는 holderIdentity가 노드 이름이에요.
+</div>
+
+<p>자리도 따로 만들었어요. KEP는 kube-system 네임스페이스를 쓰는 안을 "already too overloaded"라며 버리고 kube-node-lease를 새로 두었어요. CRD로 정의하는 안은 당시 CRD가 버전 관리를 지원하지 않고 protobuf가 없어 "significantly less performant"하다는 이유로 버렸어요. 그리고 KEP는 Node의 status 갱신도 계속 남겨 두기로 해요. NodeStatus를 아예 안 쓰면 API를 깨는 변경이 되니 주기만 늘리겠다는 거예요("We can’t stop periodically updating NodeStatus as it would be API breaking change").</p>
+
+<h2>4. Lease 갱신 간격은 기간의 1/4로 계산해 10초를 지키고 NodeStatus는 5분으로 늘렸다</h2>
+
+<p>KEP가 지키려던 것은 그때까지의 동작이에요. Motivation 절은 grace(당시 40초) 동안 NodeStatus가 없으면 NotReady, pod-eviction-timeout(5분) 동안 없으면 축출이라는 기본 동작을 적고 "We would like to preserve that behavior."라고 해요. 그래서 계획은 Lease를 10초마다 갱신하고 NodeStatus 주기만 40초, 1분, 5분 순서로 천천히 늘리는 것이었어요.</p>
+
+<h3>40초 기간과 10초 갱신</h3>
+<p>kubelet이 Lease를 만들고 갱신하게 한 <a href="https://github.com/kubernetes/kubernetes/pull/66257">PR #66257</a>(v1.12, 2018-08-27 머지)의 릴리스 노트는 "The lease duration defaults to 40s"예요. 처음 코드는 갱신 간격을 기간의 1/3로 계산했는데 리뷰 끝에 10초 고정으로 바뀌었어요. 작성자 mtaufen이 남긴 말이에요.</p>
+
+<div class="obsv-code">10s keeps the behavior close to today's defaults and will help accelerate the
+path to beta for this feature. We will stick with 10s for now.</div>
+
+<p>&rarr; 10초는 2015년부터 써 온 보고 주기라 지금 동작에 가깝고 beta로 빨리 가는 데 도움이 되니 당분간 10초로 간다는 뜻이에요. 40초 자체를 고른 이유는 원문에서 찾지 못했어요. 당시 grace 기본값이 40초였다는 점과 겹친다는 정황만 있어요.</p>
+<p>1.13(2018-12-03)에서 NodeLease가 alpha로 들어왔고 1.14(2019-03-25)에서 beta가 되며 기본으로 켜졌어요. beta 승격 <a href="https://github.com/kubernetes/kubernetes/pull/72096">PR #72096</a>은 5천 노드 측정 결과를 적었어요.</p>
+
+<div class="obsv-code">Without this change: etcd DB size: ~2.2GB
+With this change: etcd DB size: ~1.3GB</div>
+
+<p>&rarr; 같은 5천 노드에서 etcd DB가 약 2.2GB에서 약 1.3GB로 줄었다는 뜻이에요. 노드에 이미지가 거의 없는 상태의 측정이라 "the more images on the nodes exist, the bigger impact we will have"라는 말도 붙어 있어요. 이때 상태 변화가 없을 때의 NodeStatus 주기는 10초에서 1분이 됐어요.</p>
+
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 기능 게이트와 alpha·beta·GA</div>
+  새 기능은 기능 게이트(feature gate)라는 스위치 뒤에 들어와요. alpha는 기본 꺼짐, beta는 대개 기본 켜짐, GA는 게이트 없이 늘 켜진 상태예요. NodeLease는 1.13 alpha, 1.14 beta, 1.17 GA를 거쳤어요.
+</div>
+
+<h3>10초 고정이 흔든 클러스터와 1/4 공식</h3>
+<p>10초 고정은 곧 문제를 일으켰어요. <a href="https://github.com/kubernetes/kubernetes/pull/80173">PR #80173</a>(2019-07)을 연 gaorong은 1.14로 올린 뒤 노드가 가끔 NotReady가 됐다가 몇 초 뒤 Ready로 돌아온다고 적었어요. 빠른 장애 감지를 위해 kubelet 보고 주기를 5초, grace를 10초로 줄여 쓰던 클러스터였어요. NodeLease가 켜지자 kubelet은 5초 설정과 상관없이 Lease를 10초마다 갱신했고 네트워크 지연으로 10초를 조금만 넘겨도 grace 10초에 걸려 "the node status is flapping between ready and not ready state"가 됐어요. 이 PR은 갱신 간격을 kubelet 보고 주기에 맞추는 처방으로 머지돼 이전 릴리스에도 옮겨졌어요.</p>
+<p>근본 처방은 <a href="https://github.com/kubernetes/kubernetes/pull/80429">PR #80429</a>(v1.16)였어요. 갱신 간격을 고정값 대신 Lease 기간의 0.25배로 바꿨어요. wojtek-t는 분수를 이렇게 골랐어요.</p>
+
+<div class="obsv-code">I think 1/2 or way to much (one missed update would mean that we can loose
+the lease). But 1/4th I think it would actually make sense.</div>
+
+<p>&rarr; 1/2이면 갱신 하나만 놓쳐도 Lease를 잃을 수 있지만 1/4이면 기간 안에 기회가 네 번이라 하나를 놓쳐도 버틴다는 뜻이에요. 이 4배는 2015년부터 kubelet 보고 주기와 grace 사이에 써 온 관계(2초와 8초, 10초와 40초)와 같아요. 기본 기간 40초의 1/4이 10초라서 기본값을 쓰는 클러스터의 동작은 그대로였어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">Lease 기간 40초 안에 갱신을 몇 번 하게 할까</text>
+<defs><marker id="k49b1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M92.0 300 C 278 301, 460 303, 646.0 301" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k49b1)"/>
+<path d="M92.0 296 C 92 297, 91 301, 92.0 306" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="92.0" y="322" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">0초</text>
+<path d="M182.0 296 C 181 300, 180 303, 182.0 306" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="182.0" y="322" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">10초</text>
+<path d="M272.0 296 C 273 297, 272 305, 272.0 306" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="272.0" y="322" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">20초</text>
+<path d="M362.0 296 C 364 298, 361 303, 362.0 306" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="362.0" y="322" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">30초</text>
+<path d="M452.0 296 C 454 298, 454 305, 452.0 306" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="452.0" y="322" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">40초</text>
+<path d="M542.0 296 C 541 297, 540 304, 542.0 306" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="542.0" y="322" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">50초</text>
+<path d="M632.0 296 C 631 301, 633 303, 632.0 306" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/>
+<text x="632.0" y="322" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="middle">60초</text>
+<text x="20" y="97" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5" text-anchor="start">1/4</text>
+<text x="20" y="117" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">(1.16~)</text>
+<path d="M92.0 92 C 270 90, 451 90, 632.0 92" fill="none" stroke="#d8cfba" stroke-width="1.6" stroke-linecap="round"/>
+<circle cx="92.0" cy="92" r="6" fill="#4a7fb5" stroke="#3d3a34" stroke-width="1"/>
+<path d="M175.0 85 C 180.0 89, 184.0 95, 189.0 99" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/><path d="M189.0 85 C 185.0 90, 179.0 94, 175.0 99" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+<circle cx="272.0" cy="92" r="6" fill="#4a7fb5" stroke="#3d3a34" stroke-width="1"/>
+<circle cx="362.0" cy="92" r="6" fill="#4a7fb5" stroke="#3d3a34" stroke-width="1"/>
+<circle cx="452.0" cy="92" r="6" fill="#4a7fb5" stroke="#3d3a34" stroke-width="1"/>
+<circle cx="542.0" cy="92" r="6" fill="#4a7fb5" stroke="#3d3a34" stroke-width="1"/>
+<text x="182.0" y="76" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#b3502f" text-anchor="middle">놓침</text>
+<text x="416.0" y="122" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">10초 간격. 10초째를 놓쳐도 20초째 갱신이 기간 안에 온다</text>
+<text x="20" y="175" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="start">1/2</text>
+<text x="20" y="195" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">(기각)</text>
+<path d="M92.0 170 C 270 168, 451 169, 632.0 170" fill="none" stroke="#d8cfba" stroke-width="1.6" stroke-linecap="round"/>
+<circle cx="92.0" cy="170" r="6" fill="#e5533c" stroke="#3d3a34" stroke-width="1"/>
+<path d="M265.0 163 C 270.0 167, 274.0 173, 279.0 177" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/><path d="M279.0 163 C 275.0 168, 269.0 172, 265.0 177" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+<circle cx="452.0" cy="170" r="6" fill="#e5533c" stroke="#3d3a34" stroke-width="1"/>
+<circle cx="632.0" cy="170" r="6" fill="#e5533c" stroke="#3d3a34" stroke-width="1"/>
+<text x="272.0" y="154" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#b3502f" text-anchor="middle">놓침</text>
+<path d="M92.0 186 C 213 184, 330 188, 452.0 187" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round"/>
+<text x="290.0" y="206" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">하나만 놓쳐도 다음 갱신이 40초째, 기간이 끝나는 순간</text>
+<text x="20" y="242" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41" text-anchor="start">판단</text>
+<path d="M92.0 234 C 213 233, 330 233, 452.0 235" fill="none" stroke="#8a8272" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="6 5"/>
+<text x="272.0" y="228" font-family="'Nanum Pen Script', cursive" font-size="13.5" fill="#8a8272" text-anchor="middle">leaseDurationSeconds 40: 컨트롤러는 이 값을 보지 않는다</text>
+<path d="M92.0 252 C 242 250, 394 252, 542.0 253" fill="none" stroke="#5a9e6f" stroke-width="3" stroke-linecap="round"/>
+<text x="326.0" y="272" font-family="'Nanum Pen Script', cursive" font-size="13.5" fill="#2e6b41" text-anchor="middle">node-monitor-grace-period 50초: 마지막 갱신을 본 뒤 이만큼 소식이 없으면 Unknown (50편)</text>
+<text x="350" y="362" font-family="'Nanum Pen Script', cursive" font-size="17.5" fill="#b3502f" text-anchor="middle">갱신 간격은 기간의 1/4로 정하고 노드가 죽었는지는 컨트롤러 매니저의 grace로 판단한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. 1/4이면 갱신 하나를 놓쳐도 기간 안에 다음 갱신이 온다. 노드가 죽었는지는 Lease 기간이 아니라 grace로 판단한다</div>
+
+<p>v1.37.2 kubelet 소스(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet.go">kubelet.go</a>)에도 그대로 있어요.</p>
+
+<div class="obsv-code">// nodeLeaseRenewIntervalFraction is the fraction of lease duration to renew the lease
+nodeLeaseRenewIntervalFraction = 0.25
+...
+renewInterval := time.Duration(float64(leaseDuration) * nodeLeaseRenewIntervalFraction)</div>
+
+<p>&rarr; 갱신 간격은 Lease 기간 &times; 0.25라는 뜻이에요. 우리 kubelet의 nodeLeaseDurationSeconds가 40이니 10초예요.</p>
+<p>마지막 단계는 1.17(2019-12-09)이었어요. <a href="https://github.com/kubernetes/kubernetes/pull/84007">PR #84007</a>이 NodeStatus 보고 주기(nodeStatusReportFrequency) 기본값을 5분으로 늘렸고 <a href="https://github.com/kubernetes/kubernetes/pull/84351">PR #84351</a>이 NodeLease를 GA로 올렸어요. #84007의 릴리스 노트는 "periodic node status updates will be send every 5m if node status doesn't change (otherwise they are still send with 10s)"예요. 상태가 바뀌면 여전히 10초 안에 보내고 바뀌지 않을 때만 5분에 한 번 보낸다는 뜻이에요. 5분에서 멈춘 이유도 KEP에 있어요. "We don't want to increase it further, as we would like to keep at least one NodeStatus update at least every eviction period (which is defaulted to 5 minutes)." 축출 기준인 5분 안에 NodeStatus가 한 번은 오게 하려는 거예요. 그 5분(300초)이 어디서 왔는지는 50편에서 다뤄요.</p>
+<p>연대표로 정리하면 이래요.</p>
+
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:680px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">머지·릴리스</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">버전</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">사건</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">출처</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-03-24</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">v0.14</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">kubelet이 NodeStatus를 직접 올리고 노드 컨트롤러가 감시. 보고 2초</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/5399">#5399</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-04-07</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">v0.15</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">보고 2초 &rarr; 10초 ("numerous performance complaints")</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/6535">#6535</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-09-29</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.1 시기</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Heartbeat 객체 제안. "same number of etcd writes"로 미뤄짐</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/issues/14733">#14733</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2018-01-31</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"></td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">약 3천 노드에서 무거운 Node 객체의 여러 버전 때문에 etcd 메모리 문제, 재개 요청</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/issues/14733">#14733</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2018-04</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">v1.11</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">KEP "Efficient Node Heartbeats" 작성, v1.11에 병합</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/589-efficient-node-heartbeats">KEP-589</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2018-08-27</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">v1.12</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">kubelet이 kube-node-lease에 Lease 생성·갱신. 기간 40초, 갱신 10초 고정</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/66257">#66257</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2018-12-03</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.13</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">NodeLease alpha</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.13.md">CHANGELOG-1.13</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2019-03-25</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.14</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">beta, 기본 켜짐. NodeStatus 10초 &rarr; 1분. 5천 노드 etcd 약 2.2GB &rarr; 약 1.3GB</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/72096">#72096</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2019-09-18</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.16</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">갱신 간격 = 기간 &times; 0.25</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/80173">#80173</a>, <a href="https://github.com/kubernetes/kubernetes/pull/80429">#80429</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2019-12-09</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.17</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">NodeStatus 5분, NodeLease GA</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/84007">#84007</a>, <a href="https://github.com/kubernetes/kubernetes/pull/84351">#84351</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2024-12 / 2025-08</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.32 / 1.34</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">5분 주기에 1회성 &plusmn;50% 무작위 지연(25편). 1.32의 첫 시도는 인증서 갱신 회귀로 되돌림</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/130348">#130348</a>, <a href="https://github.com/kubernetes/kubernetes/pull/130919">#130919</a></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2026-05-05 머지</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.37</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Lease 캐시가 만료돼 보이면 실제로 GET해서 확인(NodeControllerLeaseCircuitBreaker, beta 기본 켜짐), 50편</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;"><a href="https://github.com/kubernetes/kubernetes/pull/138698">#138698</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>5. Lease로 옮긴 대가와 아직 남은 틈</h2>
+
+<p>Lease로 옮기면서 etcd의 짐은 줄었어요. 그 대신 몇 군데에 틈이 남았어요.</p>
+<h3>leaseDurationSeconds는 판단에 쓰이지 않는다</h3>
+<p>Lease 객체에는 leaseDurationSeconds: 40이 적혀 있지만 노드가 죽었는지 판단하는 node-lifecycle-controller는 이 값을 읽지 않아요. 25편에서 본 대로 v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/nodelifecycle/node_lifecycle_controller.go">node_lifecycle_controller.go</a>는 Lease의 renewTime이 바뀌었는지만 보고 바뀌었으면 자기 시계로 probeTimestamp를 찍어요. 그 시각에서 grace 50초가 지나면 Unknown이에요. 2019년 <a href="https://github.com/kubernetes/kubernetes/pull/80173">#80173</a> 리뷰에서 wojtek-t도 gaorong의 지적을 받아 "leaseDuriationSeconds is currently only propagated as part of Lease object and not really used in any meaningful way."라고 적었어요(철자는 원문 그대로예요).</p>
+<p>그래서 nodeLeaseDurationSeconds를 바꾸면 갱신 간격만 바뀌어요. 예를 들어 240으로 올리면 갱신 간격이 60초가 되어 grace 50초보다 길어지니 멀쩡한 노드도 Unknown과 Ready를 오갈 수 있어요(계산이고 실험하지는 않았어요). kubelet은 grace를 모르고 컨트롤러 매니저는 Lease 기간을 보지 않으니 두 값의 짝은 운영자가 맞춰야 해요. 2018년 #66257 리뷰에서 bgrant0607은 이런 타임아웃을 API 객체 하나에 두고 kubelet이 거기서 하트비트 간격을 계산하게 하자고 했지만 "I think that change could be made later"라며 미뤘고 확인한 범위에서는 아직 그런 객체가 없어요.</p>
+
+<h3>주석과 문서가 1.16 이전에 머물러 있다</h3>
+<p>v1.37.2 kubelet 설정 타입(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/kubelet/config/v1beta1/types.go">types.go</a>)의 nodeLeaseDurationSeconds 주석은 아직 이래요.</p>
+
+<div class="obsv-code">// The lease is currently renewed every 10s, per KEP-0009. In the future, the lease renewal
+// interval may be set based on the lease duration.</div>
+
+<p>&rarr; Lease를 10초마다 갱신하고 나중에는 기간을 바탕으로 정할 수도 있다는 뜻인데 그 "나중"은 1.16에서 이미 왔어요. 25편에서 인용한 kubelet 설정 문서의 "The lease is currently renewed every 10s"도 같은 주석에서 만들어진 문장으로 보이고 기본값 40을 쓸 때만 맞아요. KEP-0009는 KEP-589의 옛 번호예요.</p>
+
+<h3>Node의 lastHeartbeatTime에 기대던 코드가 깨졌다</h3>
+<p>KEP를 쓸 때 wojtek-t는 GitHub에서 LastHeartbeatTime을 쓰는 파일 수천 개를 훑어 Lease와 맞지 않는 프로젝트 다섯 개를 적었어요. 다만 그 프로젝트들은 NodeStatus를 1분 주기로 바꾼 시점에 "would already be broken"이었다고 판단했어요. 바깥만이 아니었어요. 1.32에서 5분 주기에 무작위 지연을 넣자(25편) kubelet 자신의 서빙 인증서 갱신이 NodeStatus 갱신에 기대고 있던 것이 드러났어요. 1.32의 이 변경을 되돌린 <a href="https://github.com/kubernetes/kubernetes/pull/130348">PR #130348</a>에는 "who could imagine that the certificate creation was dependong on the node status update"라는 말이 남아 있고 고친 판은 1.34에 다시 들어갔어요(<a href="https://github.com/kubernetes/kubernetes/pull/130919">#130919</a>).</p>
+
+<h3>작아졌을 뿐 횟수는 그대로다</h3>
+<p>Lease는 여전히 노드마다 10초에 한 번 쓰여요. 5천 노드면 분당 3만 번, 초당 500번이에요(계산). 2015년 lavalamp의 말대로 쓰기 횟수는 Heartbeat 객체를 따로 만들어도 줄지 않았고 줄어든 것은 한 번의 크기와 이력에 쌓이는 양이에요. 48편의 Kafka는 같은 문제를 다르게 풀었어요. KIP-500은 브로커가 메타데이터 변경을 가져가는 요청이 하트비트 역할도 한다고("will double as a heartbeat") 설명해요. 하트비트를 따로 쓰지 않고 이미 하는 요청에 얹은 거예요. 그리고 Lease 캐시 자체가 낡아 모든 노드가 한꺼번에 NotReady가 되는 문제는 1.37의 서킷 브레이커로 이어지는데 그 이야기는 50편에서 해요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 하트비트 설정을 만질 때 짝을 맞춰요</div>
+  &bull; kubelet 설정에 <code style="font-family:Menlo,monospace;font-size:14px;">nodeStatusUpdateFrequency</code>만 적으면 <code style="font-family:Menlo,monospace;font-size:14px;">nodeStatusReportFrequency</code> 기본값이 5분이 아니라 그 값이 돼요. v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/apis/config/v1beta1/defaults.go">defaults.go</a>에 "For backward compatibility"라는 주석과 함께 그렇게 적혀 있어요. 오래된 튜닝 설정을 옮겨 오면 NodeStatus가 다시 10초마다 써지니 그 줄을 지우거나 report 주기를 함께 적어요<br>
+  &bull; 감지를 빠르게 하고 싶다면 <code style="font-family:Menlo,monospace;font-size:14px;">nodeLeaseDurationSeconds</code>만 줄여서는 안 돼요. Lease 기간은 갱신 간격만 바꾸고 판단은 컨트롤러 매니저의 node-monitor-grace-period가 하니 둘을 함께 정해요(50편)<br>
+  &bull; 이미지가 많은 노드라면 <code style="font-family:Menlo,monospace;font-size:14px;">nodeStatusMaxImages</code>(기본 50)가 Node 객체 크기를 정하는 손잡이예요
+</div>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: Node의 lastHeartbeatTime으로 노드 생존을 판단하지 마세요</div>
+  &bull; 지금 Node.status의 lastHeartbeatTime은 상태가 바뀔 때나 약 5분마다만 바뀌어요. 우리 클러스터에서도 76~225초 전이었어요<br>
+  &bull; 외부 모니터링이나 스크립트가 노드 생존을 봐야 한다면 <code style="font-family:Menlo,monospace;font-size:14px;">kube-node-lease</code> 네임스페이스의 Lease renewTime을 봐요<br>
+  &bull; Ready 조건 자체는 node-lifecycle-controller가 Lease를 보고 Unknown으로 바꿔 주니 조건의 status를 보는 것은 괜찮아요
+</div>
+
+<h2>6. 우리 클러스터에서 Node와 Lease가 etcd에 쓰는 양을 쟀다</h2>
+
+<p>도입의 장면부터 다시 볼게요. 21:22에 조회만 하는 스크립트로 kubelet 설정과 Lease, Node의 하트비트 시각을 모았어요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/49/01-lease-vs-nodestatus.png" alt="49-heartbeat-numbers.sh 실행 화면 앞부분. k8s-worker1 kubelet configz는 nodeStatusUpdateFrequency 10s, nodeStatusReportFrequency 5m0s, nodeLeaseDurationSeconds 40이고 /var/lib/kubelet/config.yaml에 직접 적힌 값은 없다. 2초마다 찍은 worker1 Lease renewTime은 12:22:34.094498Z에서 21:22:46에 12:22:44.431996Z로, 21:22:56에 12:22:54.666832Z로 바뀐다. 같은 순간 NodeStatus 하트비트는 k8s-master 87초 전, worker1 126초 전, worker2 76초 전, worker3 225초 전이고 Lease 갱신은 각각 2.1초, -0.9초, 7.9초, 8.8초 전이다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 3. Lease는 약 10초마다 갱신되고 Node.status의 하트비트 시각은 1~4분 전에 머물러 있다</div>
+
+<p>kubelet 설정의 세 값(10초, 5분, 40)은 config.yaml에 적지 않은 기본값이에요. Lease의 renewTime 간격은 약 10.2~10.3초였어요. 40 &times; 0.25 = 10초에 요청 왕복 시간이 더해진 값으로 보여요. worker1 Lease의 "-0.9초 전"은 Mac과 VM의 시계 차이예요.</p>
+<p>이어서 22:21에 새 스크립트(49-heartbeat-etcd-cost.sh)로 etcd에 저장된 두 객체의 크기와 60초 동안 쓰인 횟수를 쟀어요. 키의 version은 그 키를 만든 뒤 몇 번 고쳤는지를 세는 etcd의 번호라서 두 시점의 version 차이가 그 사이에 쓴 횟수예요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/49/02-node-vs-lease-etcd.png" alt="49-heartbeat-etcd-cost.sh 실행 화면 앞부분. etcd에 저장된 값 크기는 k8s-master Node 5489B와 Lease 478B, worker1 Node 6528B와 Lease 480B, worker2 Node 7264B와 Lease 481B, worker3 Node 6341B와 Lease 481B다. worker1 Node JSON은 8708B이고 status.images 3330B(이미지 19개), status.conditions 1024B(5개), status 나머지 1309B, metadata.managedFields 2172B(쓰는 주체 calico, kube-controller-manager, kubectl-label, kubelet), metadata 나머지 713B, spec 56B다. Lease JSON은 811B, spec 100B이고 쓰는 주체는 kubelet 하나다. 60초 동안 네 노드 모두 Node version은 +0, Lease version은 +6이고 합계는 Node 쓰기 0번, Lease 쓰기 24번(약 11520B)이다. 같은 시간 etcd 전체 revision은 +104다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. etcd에 저장된 Node는 5~7KB, Lease는 약 480B였고 60초 동안의 하트비트 쓰기 24번은 모두 Lease로 갔다</div>
+
+<p>etcd에 protobuf로 저장된 Node는 5489~7264바이트, Lease는 478~481바이트로 Node가 11~15배 컸어요. worker1 Node를 JSON으로 뜯어 보면 가장 큰 칸이 이미지 19개의 목록(3330바이트)이에요. KEP가 지목한 바로 그 칸이에요. 쓰는 주체도 달랐어요. Node는 calico, kube-controller-manager, kubectl-label(우리 ./lab 스크립트가 worker 역할 라벨을 붙인 기록), kubelet 넷이 고치는 객체이고 Lease는 kubelet 하나만 고쳐요.</p>
+
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: managedFields</div>
+  API 서버가 객체의 어떤 칸을 누가 관리하는지 적어 두는 메타데이터예요. server-side apply의 충돌 판단에 쓰고 일반 Update도 기록해요. 여러 주체(manager)가 많은 칸을 관리하면 기록도 길어질 수 있어요. kubectl은 기본으로 숨기고 --show-managed-fields를 주면 보여요.
+</div>
+
+<p>60초 동안 네 노드의 Lease version은 모두 6씩 올랐고 Node version은 하나도 오르지 않았어요. 하트비트 쓰기 24번(약 11.5KB)이 전부 Lease로 갔어요. 같은 60초 동안 etcd 전체 revision은 104 올랐어요. Lease 갱신 24회는 이 구간의 revision 증가 104의 약 23%에 해당해요(24/104, 계산). <span class="obsv-mark">이번 60초 관측에서 하트비트 갱신이 차지한 횟수를 보면 한 번에 쓰는 값의 크기도 중요해요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 344" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">노드 한 대가 1분 동안 하트비트로 etcd에 쓰는 바이트</text>
+<text x="236" y="96" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="end">Lease 갱신 (측정 횟수)</text>
+<path d="M250 76 C 253 77, 256 76, 260 76 C 258 87, 262 98, 261 110 C 256 110, 253 109, 249 111 C 250 98, 251 87, 250 76 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="254" y="136" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="start">6번 × 480B ≈ 2.9KB</text>
+<text x="236" y="178" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="end">우리 Node를 10초마다 썼다면</text>
+<path d="M250 158 C 293 159, 336 160, 380 159 C 382 169, 380 180, 380 192 C 336 192, 293 191, 251 191 C 251 180, 252 169, 250 158 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="254" y="218" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#c07f18" text-anchor="start">6번 × 6528B ≈ 39KB (계산)</text>
+<text x="236" y="260" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="end">KEP 가정 20KB Node를 10초마다</text>
+<path d="M250 240 C 383 238, 516 239, 650 241 C 652 251, 649 262, 651 274 C 516 274, 383 275, 249 273 C 250 262, 252 251, 250 240 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="254" y="300" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="start">6번 × 20KB = 120KB (계산)</text>
+<path d="M250 60 C 251 141, 253 220, 251 300" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+<text x="350" y="326" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f" text-anchor="middle">Lease는 Node보다 작아서 같은 10초 주기로 써도 etcd에 쌓이는 양이 열 배 넘게 작다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 같은 10초 주기라도 Lease 갱신은 우리 Node를 통째로 쓰는 것보다 열 배 넘게, KEP가 가정한 Node보다 마흔 배 넘게 작다</div>
+
+<p>worker1 기준으로 보면 Lease 갱신은 1분에 6번 &times; 480바이트로 약 2.9KB예요. Node 객체(6528바이트)를 예전과 같이 10초마다 썼다면 약 39KB, KEP가 가정한 20KB짜리 Node라면 120KB예요. 뒤의 두 값은 계산이에요.</p>
+
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/49/03-apiserver-and-quota.png" alt="49-heartbeat-etcd-cost.sh 실행 화면 뒷부분. API 서버 기동 뒤 24분 동안 nodes/status PATCH(NodeStatus 보고)는 20번, leases PUT(Lease 갱신, 리더 선출 포함)은 1956번이다. kube-node-lease 밖의 Lease는 kube-system/apiserver-slupzodazdrbewijviwya35vwq, kube-system/kube-controller-manager, kube-system/kube-scheduler다. etcd --help의 --quota-backend-bytes 기본값은 0이고 설명은 Exceeding this triggers an alarm and puts etcd in read-only mode. Set to 0 to use the default 2GiB limit.이다. 지금 dbSize 29.4MB, dbSizeInUse 4.5MB, quota 2.00GiB다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 6. API 서버가 받은 Lease 갱신은 NodeStatus 보고보다 훨씬 많았고 etcd의 한도는 기본 2GiB였다</div>
+
+<p>API 서버 쪽 지표도 같은 이야기를 해요. API 서버가 뜬 뒤 24분 동안 nodes/status PATCH는 20번, leases PUT은 1956번이었어요. leases PUT에는 kube-system의 Lease 셋(API 서버, 컨트롤러 매니저, 스케줄러가 쓰는 것)의 갱신도 함께 세져서 노드 하트비트만의 수는 아니에요. 리더 선출(21편)과 노드 하트비트가 같은 Lease 리소스를 쓴다는 것이 이 숫자에서도 보여요. 이 API 서버는 직전에 40편의 etcd 복원 리허설로 다시 떴고 그 사이 50편의 노드 정지 실험도 있어서 NodeStatus 보고 20번에는 노드 상태가 바뀌며 보낸 보고도 섞여 있어요.</p>
+<p>마지막 줄은 KEP의 "alert mode"가 우리 etcd에서는 어떤 모습인지 보여 줘요. 한도는 기본 2GiB이고 넘으면 경보를 걸어 새 값의 추가와 갱신을 제한해요. 읽기와 삭제는 허용돼요. 우리 DB는 29.4MB라 한참 멀지만 2018년의 5천 노드 클러스터는 하트비트만 바꿔도 DB가 약 2.2GB에서 약 1.3GB로 줄어드는 규모였어요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>노드 하트비트가 Lease로 빠진 것은 쓰기 횟수가 아니라 쓰기 한 번의 크기 때문이에요. 큰 Node 객체가 10초마다 etcd 이력에 통째로 쌓이다가 큰 클러스터에서 etcd가 쓰기를 멈췄어요.</b><br><br>
+  2015년에 하트비트를 따로 빼자는 제안이 나왔지만 어느 방식이든 etcd 쓰기 횟수는 같다는 반론에 미뤄졌어요. 2018년에 2000노드가 넘는 클러스터가 etcd DB 크기 한도에 걸리고 나서야 문제가 횟수가 아니라 크기와 이력이라는 것이 분명해졌어요. KEP-589는 Event, etcd 쪼개기, etcd 교체 같은 대안을 버리고 리더 선출에 쓰던 Lease를 다시 써서 1.13 alpha, 1.14 beta, 1.17 GA로 옮겼어요. 10초는 그때까지의 동작을 지키려고 남겼고 1.16부터는 Lease 기간 40초의 1/4로 계산하며 NodeStatus는 바뀔 때나 5분마다만 써요. 그 대가로 leaseDurationSeconds는 판단에 쓰이지 않는 값이 됐고 lastHeartbeatTime에 기대던 코드가 깨졌으며 하트비트 설정은 kubelet과 컨트롤러 매니저가 서로 모르는 짝이 됐어요. 우리 클러스터에서도 60초 동안의 하트비트 쓰기 24번은 모두 약 480바이트짜리 Lease로 갔고 5~7KB짜리 Node는 한 번도 쓰이지 않았어요. 하트비트는 살아 있다는 사실 하나만 전하면 되니 그 사실만 담는 가장 작은 객체로 보내는 것이 맞았어요.
+</div>
+
+</div>

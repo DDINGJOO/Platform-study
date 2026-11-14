@@ -1,0 +1,32 @@
+# 스케줄러·컨트롤러 매니저는 API 서버와 무엇으로 통신하나 (2026-11-14 20:00:04 KST)
+
+## 1. 바이너리 --help 의 API 요청 형식 기본값
+[kube-scheduler]
+  --kube-api-content-type string                      DEPRECATED: content type of requests sent to apiserver. This parameter is ignored if a config file is specified in --config. (default "application/vnd.kubernetes.protobuf")
+  --kube-api-qps float32                              DEPRECATED: QPS to use while talking with kubernetes apiserver. This parameter is ignored if a config file is specified in --config. (default 50)
+[kube-controller-manager]
+  --kube-api-content-type string                       Content type of requests sent to apiserver. (default "application/vnd.kubernetes.protobuf")
+  --kube-api-qps float32                               QPS to use while talking with kubernetes apiserver. (default 20)
+
+## 2. 둘이 쓰는 kubeconfig 의 서버 주소 (https = HTTP over TLS)
+  scheduler.conf: https://192.168.104.1:6443
+  controller-manager.conf: https://192.168.104.1:6443
+
+## 3. 같은 6443 포트에 붙는 연결 (19편 19-hub-and-authz.txt 와 같은 방법)
+      1 users:(("kube-apiserver
+      2 users:(("kube-controller
+      1 users:(("kube-proxy
+      2 users:(("kube-scheduler
+      1 users:(("kubectl
+      1 users:(("kubelet
+
+## 4. API 서버는 같은 REST 경로에서 protobuf 로도 답함 (Accept 헤더만 바꿈)
+  JSON 응답 앞 20바이트: {"kind":"Service","a
+	Accept: application/json, */*
+  protobuf 응답 앞 바이트: 0000000   k   8   s  \0
+  \f  
+ 002   v   1 022 006
+
+## 5. gRPC 를 실제로 쓰는 곳
+  API 서버 → etcd: --etcd-servers=https://127.0.0.1:2379 (etcd v3 API 는 gRPC, 22편)
+  kubelet → containerd: containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock (CRI 는 gRPC, 27편)

@@ -1,0 +1,18 @@
+# 캐시와 일관성 (2026-11-14 20:29:33 KST)
+
+## 1. API 서버 안의 watch cache (etcd 를 watch 해서 메모리에 들고 있는 사본)
+  {group="",resource="nodes"} 139825
+  {group="",resource="pods"} 139825
+  {group="",resource="services"} 139825
+  etcd 의 현재 revision: 139829
+  관련 기능 게이트(kubernetes_feature_enabled):
+    kubernetes_feature_enabled{name="ListFromCacheSnapshot",stage="BETA"} 1
+    kubernetes_feature_enabled{name="WatchList",stage="BETA"} 1
+
+## 2. 너무 오래된 resourceVersion 부터 watch 하겠다고 하면 (22편 때 rv 103241, 이미 compaction 됨)
+  {"type":"ERROR","object":{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"too old resource version: 103241 (135108)","reason":"Expired","code":410}}
+
+
+## 3. 오래된 사본으로 고치려 하면 (낙관적 잠금 → 409)
+  먼저 읽어 둔 사본의 resourceVersion: 134309, 지금: 139832
+  Error from server (Conflict): error when replacing "/tmp/old.json": Operation cannot be fulfilled on deployments.apps "myweb": the object has been modified; please apply your changes to the latest version and try again

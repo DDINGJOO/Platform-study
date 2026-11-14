@@ -1,0 +1,40 @@
+# 49 노드 하트비트가 etcd 에 쓰는 양: Node 와 Lease (조회만, 2026-11-14 22:21:47 KST)
+
+## 1. etcd 에 저장된 값의 크기 (protobuf 그대로, 바이트)
+  k8s-master   Node   5489 B | Lease  478 B
+  k8s-worker1  Node   6528 B | Lease  480 B
+  k8s-worker2  Node   7264 B | Lease  481 B
+  k8s-worker3  Node   6341 B | Lease  481 B
+
+## 2. Node 객체가 큰 이유: k8s-worker1 의 JSON 에서 칸별 크기
+  Node 전체 JSON 8708 B
+    status.images       3330 B (이미지 19개)
+    status.conditions   1024 B (5개)
+    status 나머지       1309 B
+    metadata.managedFields  2172 B (쓰는 주체 ['calico', 'kube-controller-manager', 'kubectl-label', 'kubelet'])
+    metadata 나머지      713 B
+    spec                  56 B
+  Lease 전체 JSON 811 B, spec 100 B (쓰는 주체 ['kubelet'])
+
+## 3. 60초 동안 etcd 에 쓰인 횟수: 키의 version 이 몇 번 올랐나
+  경과 60초
+  k8s-master   Node version    294 →    294 (+0) | Lease version   7998 →   8004 (+6)
+  k8s-worker1  Node version    306 →    306 (+0) | Lease version   7881 →   7887 (+6)
+  k8s-worker2  Node version    309 →    309 (+0) | Lease version   7936 →   7942 (+6)
+  k8s-worker3  Node version    339 →    339 (+0) | Lease version   7688 →   7694 (+6)
+  합계: Node 쓰기 0번(약 0 B) | Lease 쓰기 24번(약 11520 B)
+  같은 시간 etcd 전체 revision(키·값 변경 번호) 증가: +104
+
+## 4. API 서버가 받은 하트비트 요청 수 (kube-apiserver /metrics, 기동 뒤 누적)
+  API 서버 기동 뒤 24분
+  nodes/status PATCH (NodeStatus 보고)                  20번
+  leases PUT (Lease 갱신, 리더 선출 포함)                   1956번
+  kube-node-lease 밖의 Lease (리더 선출 등):
+    kube-system/apiserver-slupzodazdrbewijviwya35vwq
+    kube-system/kube-controller-manager
+    kube-system/kube-scheduler
+
+## 5. etcd 가 DB 크기 한도에 닿으면 (etcd --help, endpoint status)
+  --quota-backend-bytes '0'
+  Sets the maximum size (in bytes) that the etcd backend database may consume. Exceeding this triggers an alarm and puts etcd in read-only mode. Set to 0 to use the default 2GiB limit.
+  지금 dbSize=29.4MB dbSizeInUse=4.5MB quota=2.00GiB

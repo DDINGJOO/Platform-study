@@ -80,6 +80,36 @@
 | `out/32-tls-authn.txt` · `32-rbac-sa.txt` · `32-node-authz.txt` · `32-kubectl-messages.txt` · `32-anon-cluster-info.txt` (+ `.sh`) | TLS·인증서 신원, 401 과 403, RoleBinding 전후, Node 인가자·NodeRestriction, 관문별 kubectl 오류 문구, 익명으로 읽히는 cluster-info | 32편 |
 | `out/33-admission.txt` (+ `.sh`) | 어드미션 플러그인 목록(바이너리·문서), mutating 결과, ResourceQuota·LimitRange·PodSecurity 거절 | 33편 |
 
+## 35~50편 원자료 (2026-11-14)
+
+글별 링크와 교정·검증 결과는 [35~50편 작성·검토 기록](review-35-50.md)에서 확인할 수 있다.
+
+숫자와 시각은 파일에 기록된 실험 시점의 값이다. 설정 변경·복원 실험이 서로 다른 시점에 진행됐으므로 리비전과 누적 메트릭을 파일 사이에서 합산하지 않는다.
+
+| 편 | 출력 파일 (`out/`) | 확인한 내용 |
+|---|---|---|
+| 35편 | [35-apiserver-clients.txt](out/35-apiserver-clients.txt) · [35-connection-map.txt](out/35-connection-map.txt) · [35-apiserver-protocols.txt](out/35-apiserver-protocols.txt) · [35-etcd-clients.txt](out/35-etcd-clients.txt) · [35-etcd-certs.txt](out/35-etcd-certs.txt) · [35-control-plane.txt](out/35-control-plane.txt) · [35-apiserver-where.txt](out/35-apiserver-where.txt) · [35-node-roles.txt](out/35-node-roles.txt) · [35-scheduler-cycle.txt](out/35-scheduler-cycle.txt) · [35-controller-manager.txt](out/35-controller-manager.txt) | 프로세스·포트·프로토콜·신원별 연결 지도와 정적 파드 |
+| 36편 | [36-apiserver-manifest.txt](out/36-apiserver-manifest.txt) · [36-apiserver-where.txt](out/36-apiserver-where.txt) · [36-apiserver-requests.txt](out/36-apiserver-requests.txt) · [36-apiserver-metrics-snapshot.txt](out/36-apiserver-metrics-snapshot.txt) · [36-apiserver-request-mix.txt](out/36-apiserver-request-mix.txt) · [36-apf-classify.txt](out/36-apf-classify.txt) · [36-aggregation-idle.txt](out/36-aggregation-idle.txt) · [36-kubelet-serving-cert.txt](out/36-kubelet-serving-cert.txt) · [36-privileged-ds.txt](out/36-privileged-ds.txt) · [36-validation-vs-admission.txt](out/36-validation-vs-admission.txt) · [36-order-and-nodename.txt](out/36-order-and-nodename.txt) | API 서버 플래그, 요청 구성·APF, 객체 검증 422와 어드미션 403의 순서 |
+| 37편 | [37-master-workload.txt](out/37-master-workload.txt) · [37-node-roles.txt](out/37-node-roles.txt) · [37-master-taints-now.txt](out/37-master-taints-now.txt) | 마스터 taint와 toleration, nodeSelector·nodeName에 따른 배치 |
+| 38편 | [38-control-plane.txt](out/38-control-plane.txt) · [38-etcd-btree.txt](out/38-etcd-btree.txt) · [38-etcd-compaction-defrag.txt](out/38-etcd-compaction-defrag.txt) · [38-etcd-flags.txt](out/38-etcd-flags.txt) · [38-etcd-watch-registry.txt](out/38-etcd-watch-registry.txt) | MVCC·리비전·bbolt, 컴팩션과 조각 모음, 파드 하나의 키 변경 |
+| 39편 | [39-cache-consistency.txt](out/39-cache-consistency.txt) · [39-dns-source.txt](out/39-dns-source.txt) · [39-kubectl-get-v6.txt](out/39-kubectl-get-v6.txt) · [39-read-semantics.txt](out/39-read-semantics.txt) | watch 캐시와 읽기 일관성, 410·409, CoreDNS 반영 |
+| 40편 | [40-etcd-backup-cronjob.txt](out/40-etcd-backup-cronjob.txt) · [40-etcd-snapshot-restore.txt](out/40-etcd-snapshot-restore.txt) · [40-etcd-restore-rehearsal.txt](out/40-etcd-restore-rehearsal.txt) · [40-restore-aftermath.txt](out/40-restore-aftermath.txt) | etcd 3.7 스냅숏·CronJob, 실제 복원과 리비전 증가·복원 뒤 상태 |
+| 41편 | [41-scheduler-cycle.txt](out/41-scheduler-cycle.txt) · [41-scheduler-steps.txt](out/41-scheduler-steps.txt) · [41-apiserver-requests.txt](out/41-apiserver-requests.txt) · [41-etcd-clients.txt](out/41-etcd-clients.txt) | 스케줄러 대상·바인딩·캐시·큐와 확장 지점 |
+| 42편 | [42-controller-manager.txt](out/42-controller-manager.txt) · [42-controller-identities.txt](out/42-controller-identities.txt) | 내장 컨트롤러 목록과 재조정, ServiceAccount·RBAC·ServiceCIDR·EndpointSlice |
+| 43편 | [43-pod-sandbox.txt](out/43-pod-sandbox.txt) · [43-pause-vs-app-kill.txt](out/43-pause-vs-app-kill.txt) · [43-pause-kill-timeline.txt](out/43-pause-kill-timeline.txt) | 파드 샌드박스·네임스페이스, 앱과 pause 종료의 차이 및 복구 시각 |
+| 44편 | [44-maxpods-capacity.txt](out/44-maxpods-capacity.txt) · [44-fill-110.txt](out/44-fill-110.txt) | maxPods·노드 할당량, 111번째 파드 거절과 PLEG·메모리·IPAM 관찰 |
+| 45편 | [45-runtime-no-docker.txt](out/45-runtime-no-docker.txt) · [45-docker-sock.txt](out/45-docker-sock.txt) | Docker 없는 런타임 구성, docker.sock 유무와 CRI 소켓 |
+| 46편 | [46-apiserver-protocols.txt](out/46-apiserver-protocols.txt) · [46-client-content-types.txt](out/46-client-content-types.txt) · [46-grpc-vs-rest.txt](out/46-grpc-vs-rest.txt) | API 클라이언트의 REST·protobuf와 etcd·CRI의 gRPC 경계 |
+| 47편 | [47-proxy-mode-and-iptables-backend.txt](out/47-proxy-mode-and-iptables-backend.txt) · [47-iptables-vs-nftables.txt](out/47-iptables-vs-nftables.txt) | Service 1,000개에서 iptables·nftables 규칙·동기화·연결 시간 비교와 원복 |
+| 48편 | [48-etcd-raft-single-member.txt](out/48-etcd-raft-single-member.txt) | 단일 etcd 멤버의 Raft 지표와 30초 동안의 커밋·리비전 차이 |
+| 49편 | [49-heartbeat-numbers.txt](out/49-heartbeat-numbers.txt) · [49-heartbeat-etcd-cost.txt](out/49-heartbeat-etcd-cost.txt) | 하트비트 설정과 60초 동안 Node·Lease 쓰기 횟수·저장 크기 |
+| 50편 | [50-evict-30-vs-300.txt](out/50-evict-30-vs-300.txt) · [50-three-workers-down.txt](out/50-three-workers-down.txt) | toleration 30초·300초 축출 비교, 워커 3대 동시 정지 시 부분 장애 전환 |
+
+- 같은 이름의 `.sh`는 출력을 만든 스크립트이며 실습 저장소 루트에서 실행한다. 일부 출력은 스크립트 실행 뒤 별도로 조회한 결과를 덧붙였고, 이 경우 파일 머리나 해당 절의 설명을 함께 읽는다.
+- `40-etcd-backup-cronjob.yaml`은 백업 실험용 매니페스트다. `50-watch_nodes.py`는 노드·taint·파드의 변화를 기록한 관찰 도구다.
+- 40편 복원은 `--bump-revision`과 `--mark-compacted`를 사용했다. 그 뒤 원자료의 큰 리비전 값은 이 복원 실험의 영향이다.
+- 50편의 전체 워커 정지 실험은 VM 전원이나 데이터 경로를 끊은 실험이 아니라 kubelet을 정지한 실험이다. 두 장애 방식의 차이는 본문에 적었다.
+
 ## 손댄 곳
 
 - 각 블록 첫 줄의 `노드$ 명령` 은 그 출력을 만든 명령을 그대로 적은 것이다. 실제로는 Mac 에서 `./lab ssh <노드> bash -c '<명령>'` 으로 실행했다.

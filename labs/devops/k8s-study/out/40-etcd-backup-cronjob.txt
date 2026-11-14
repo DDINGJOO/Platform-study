@@ -1,0 +1,23 @@
+# etcd 백업 CronJob (2026-11-14 20:58:37 KST)
+
+$ kubectl apply -f 16-etcd-backup-cronjob.yaml
+cronjob.batch/etcd-backup created
+NAME          SCHEDULE      TIMEZONE   SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+etcd-backup   0 */6 * * *   <none>     False     0        <none>          0s
+
+$ kubectl -n kube-system create job --from=cronjob/etcd-backup etcd-backup-now   (예약을 기다리지 않고 한 번 실행)
+job.batch/etcd-backup-now created
+job.batch/etcd-backup-now condition met
+  job: etcd-backup-now Complete 1/1
+  로그:
+    {"level":"info","ts":"2026-11-14T11:58:37.914254Z","caller":"snapshot/v3_snapshot.go:121","msg":"saved","path":"/backup/etcd-snapshot.db"}
+    Snapshot saved at /backup/etcd-snapshot.db
+    Server version 3.7.0
+
+## 마스터에 생긴 백업 파일
+  total 3012
+  -rw------- 1 root root 3080224 Nov 14 20:58 etcd-snapshot.db
+
+## 정리 (20:58:54): 실습이라 CronJob·Job 과 백업 파일을 지움 (스냅숏에는 Secret 이 평문으로 들어 있음, 22편)
+cronjob.batch "etcd-backup" deleted from kube-system namespace
+/var/backups/etcd 삭제

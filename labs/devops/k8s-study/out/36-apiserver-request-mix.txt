@@ -1,0 +1,68 @@
+# 36편: Mac 의 실습 저장소 루트에서 bash 36-apiserver-request-mix.sh 36-apiserver-metrics-snapshot.txt 로 실행 (1절은 21:55:56 에 받아 둔 /metrics 를 집계, 2~5절은 22:02 에 클러스터를 조회). 조회만 함
+# API 서버가 받은 요청 구성 (2026-11-14 22:02:21 KST)
+  입력: 저장해 둔 /metrics 파일 36-apiserver-metrics-snapshot.txt (첫 줄에 받은 시각이 있다)
+
+## 1. verb 와 대상별 누적 요청 수 (GET·PUT·CONNECT, 많은 순 3개)
+  API 서버 프로세스 시작 2026-11-14 17:26:05, 집계 시각 2026-11-14 21:55:56, 경과 16190초
+  GET      합계  50495 (초당 3.12)
+      (경로) /readyz                              16199 (초당 1.00, GET 의 32%)
+      (경로) api                                   3840 (초당 0.24, GET 의 8%)
+      (경로) apis                                  3840 (초당 0.24, GET 의 8%)
+  PUT      합계  33722 (초당 2.08)
+      coordination.k8s.io/leases                23894 (초당 1.48, PUT 의 71%)
+      discovery.k8s.io/endpointslices            4074 (초당 0.25, PUT 의 12%)
+      endpoints                                  3990 (초당 0.25, PUT 의 12%)
+  CONNECT  합계  26026 (초당 1.61)
+      nodes proxy                               25928 (초당 1.60, CONNECT 의 100%)
+      pods exec                                    68 (초당 0.00, CONNECT 의 0%)
+      pods log                                     30 (초당 0.00, CONNECT 의 0%)
+
+## 2. 매니페스트의 프로브 주기 (kube-apiserver 정적 파드)
+  readinessProbe /readyz 1초 | livenessProbe /livez 10초 | startupProbe /livez 10초
+
+## 3. Lease (PUT 의 대상)
+NAMESPACE         NAME                                   HOLDER                                                                      AGE
+kube-node-lease   k8s-master                             k8s-master                                                                  10d
+kube-node-lease   k8s-worker1                            k8s-worker1                                                                 10d
+kube-node-lease   k8s-worker2                            k8s-worker2                                                                 10d
+kube-node-lease   k8s-worker3                            k8s-worker3                                                                 10d
+kube-system       apiserver-slupzodazdrbewijviwya35vwq   apiserver-slupzodazdrbewijviwya35vwq_1314562f-17a2-46b1-9792-bfad623b5037   3m37s
+kube-system       kube-controller-manager                lima-k8s-master_5f1146b5-0af2-490f-bca9-7fde2459a4b2                        10d
+kube-system       kube-scheduler                         lima-k8s-master_53a940dd-9708-4d38-a814-045baa215fc8                        10d
+
+## 4. Prometheus 수집 설정 가운데 API 서버 프록시를 거치는 job (CONNECT nodes/proxy 의 출처)
+  2:  scrape_interval: 5s
+  14:  - job_name: 'kubernetes-apiservers'
+  29:  - job_name: 'kubernetes-nodes'
+  44:      replacement: kubernetes.default.svc:443
+  48:      replacement: /api/v1/nodes/${1}/proxy/metrics
+  51:  - job_name: 'kubernetes-pods'
+  78:  - job_name: 'kube-state-metrics'
+  82:  - job_name: 'kubernetes-cadvisor'
+  97:      replacement: kubernetes.default.svc:443
+  101:      replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+  103:  - job_name: 'kubernetes-service-endpoints'
+
+## 5. 상태 확인·리더 선출·kubelet 요청을 받는 FlowSchema
+  probes -> exempt (precedence 2)
+      누가: system:unauthenticated, system:authenticated
+      경로: ['/healthz', '/readyz', '/livez'] ['get']
+  system-leader-election -> leader-election (precedence 100)
+      누가: system:kube-controller-manager, system:kube-scheduler, *
+      리소스: ['leases'] ['get', 'create', 'update']
+  system-node-high -> node-high (precedence 400)
+      누가: system:nodes
+      리소스: ['nodes', 'nodes/status'] ['*']
+      리소스: ['leases'] ['*']
+  system-nodes -> system (precedence 500)
+      누가: system:nodes
+      경로: ['*'] ['*']
+      리소스: ['*'] ['*']
+NAME              TYPE      NOMINALCONCURRENCYSHARES   QUEUES   HANDSIZE   QUEUELENGTHLIMIT   AGE
+exempt            Exempt    <none>                     <none>   <none>     <none>             10d
+leader-election   Limited   10                         16       4          50                 10d
+system            Limited   30                         64       6          50                 10d
+node-high         Limited   40                         64       6          50                 10d
+workload-high     Limited   40                         128      6          50                 10d
+workload-low      Limited   100                        128      6          50                 10d
+global-default    Limited   20                         128      6          50                 10d

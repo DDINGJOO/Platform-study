@@ -1,0 +1,46 @@
+# 스케줄러 동작 순서 확인 (2026-11-14 21:08:02 KST)
+
+## 1. 스케줄러가 들고 있는 캐시 (scheduler_cache_size)
+  scheduler_cache_size{type="assumed_pods"} 0
+  scheduler_cache_size{type="nodes"} 4
+  scheduler_cache_size{type="pods"} 31
+
+## 2. 파드 5개를 스케줄하는 동안 API 서버가 받은 nodes 요청과 바인딩 요청
+21:08:03 전: nodes GET=1902 nodes LIST=91 nodes PATCH=6 nodes POST=1 nodes WATCH=475 pods/binding POST=22
+21:08:09 후: nodes GET=1907 nodes LIST=91 nodes PATCH=6 nodes POST=1 nodes WATCH=475 pods/binding POST=27
+  st-1 Running NODE=k8s-worker3
+  st-2 Running NODE=k8s-worker3
+  st-3 Running NODE=k8s-worker3
+  st-4 Running NODE=k8s-worker3
+  st-5 Running NODE=k8s-worker3
+  (nodes get 은 kubelet 들이 자기 노드를 주기적으로 읽는 요청도 섞인 수. list 가 늘지 않으면 스케줄러가 파드마다 노드 목록을 다시 받지 않았다는 뜻)
+
+## 3. 컨테이너 런타임 쪽: 이미지 서비스·런타임 서비스(CRI) 와 OCI 런타임 스펙
+21:08:09 st-1 → k8s-worker3, 컨테이너 ID c452331711217
+k8s-worker3$ crictl version
+  Version:  0.1.0
+  RuntimeName:  containerd
+  RuntimeVersion:  v2.4.1
+  RuntimeApiVersion:  v1
+k8s-worker3$ crictl images | grep pause  (CRI ImageService: ListImages)
+  IMAGE                                    TAG                  IMAGE ID            SIZE
+  registry.k8s.io/pause                    3.10.2               3884a33719231       268kB
+k8s-worker3$ ls /run/containerd/io.containerd.runtime.v2.task/k8s.io/c452331711217af9b9e6ac02109dac9a9f1421e8f9dd0470df62fb078d9f1daa  (containerd 가 runc 에 넘기는 OCI 번들)
+  bootstrap.json
+  config.json
+  init.pid
+  log
+  log.json
+  options.json
+  rootfs
+  runtime
+  sandbox
+  work
+k8s-worker3$ config.json 의 ociVersion·process.args·root
+  ociVersion 1.3.0 | args ['/pause'] | root {'path': 'rootfs'}
+k8s-worker3$ runc --version
+  runc version 1.5.2
+  commit: v1.5.2-0-g29dd3dc
+
+## 4. 정리
+21:08:20 네임스페이스 st-demo 삭제

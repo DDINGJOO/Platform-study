@@ -1,0 +1,334 @@
+<!-- ============================================================
+  k8s 스터디 44편: 노드당 파드 110개는 어디서 나온 숫자일까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: kubelet 설정 파일에 maxPods를 적지 않았는데 노드 4대 모두 파드 상한이 110이었어요. 110이 /24 서브넷의 절반이라는 설명이 맞는지, 2015~2016년 이슈와 PR에서 이 숫자가 정해진 과정과 노드에 파드 110개를 채웠을 때를 확인했어요. -->
+<!-- tags: maxPods, 노드당 파드 수, Too many pods, PLEG, podCIDR, pods-per-core, kubelet 기본값 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 44편</div>
+  42편. 컨트롤러 매니저에는 무엇이 들어 있고 Service 컨트롤러는 왜 없을까<br>
+  43편. 쿠버네티스는 왜 컨테이너가 아니라 파드를 띄우고 pause 컨테이너는 왜 있을까<br>
+  <b>44편. 노드당 파드 110개는 어디서 나온 숫자일까</b> &larr; 지금 이 글<br>
+  45편. 쿠버네티스는 왜 kubelet에서 Docker를 떼어 냈을까, CRI와 dockershim<br>
+  46편. 쿠버네티스 API는 REST인데 CRI와 etcd는 왜 gRPC일까
+</div>
+
+<p>우리 클러스터의 노드 4대는 모두 <code style="font-family:Menlo,monospace;font-size:14px;">capacity.pods</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">allocatable.pods</code>가 110이에요. 그런데 네 노드 어디에도 110을 적은 사람이 없어요. kubelet 설정 파일 <code style="font-family:Menlo,monospace;font-size:14px;">/var/lib/kubelet/config.yaml</code>에는 maxPods 줄이 아예 없고 실행 중인 kubelet에 물어보면(<code style="font-family:Menlo,monospace;font-size:14px;">/configz</code>) <code style="font-family:Menlo,monospace;font-size:14px;">maxPods=110</code>, <code style="font-family:Menlo,monospace;font-size:14px;">podsPerCore=0</code>이 나와요. 2코어·4GiB VM에서도 이 숫자이고 같은 kubelet을 코어가 수십 개인 서버에 올려도 110이에요.</p>
+<p>21편에서 "워커 노드도 12개 국룰 이런 거 통하나?"라는 제 질문에 답하면서 공식 문서의 "No more than 110 pods per node"를 옮긴 적이 있어요. 그때는 숫자만 옮겼어요. 43편에서 쿠버네티스가 파드마다 IP 하나를 주고 그 IP를 붙잡는 pause를 파드마다 하나씩 띄운다는 것을 봤으니 이번에는 그 파드를 노드 하나에 몇 개까지 둘 수 있는지, 그 상한이 왜 하필 110인지를 봐요. 흔히 듣는 설명은 "노드에 /24(주소 256개)를 주니 그 절반쯤인 110"인데 이 설명이 맞는지도 원문으로 확인해요.</p>
+<p>근거는 2015~2016년 kubernetes/kubernetes 저장소의 이슈와 PR 스레드, sig-scalability 문서, v1.37.2 소스예요. 마지막에는 worker3 한 대에 파드를 110개까지 채워서 111번째가 어떻게 거절되는지, kubelet이 얼마나 무거워지는지 봐요. 클러스터는 Lima VM 4대(각 2 CPU·4GiB)에 kubeadm v1.37.2, containerd 2.4.1, Calico v3.33.0을 올린 실습 환경이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 노드당 파드 수 상한은 처음에 무엇을 막으려고 생겼을까?<br>
+&middot; 40이던 기본값이 왜 100이 아니라 110이 됐을까?<br>
+&middot; 그때 검토하고 버린 대안은 무엇이었을까?<br>
+&middot; "/24의 절반이라 110"이라는 설명은 어디서 왔을까?<br>
+&middot; 2코어 노드에 파드 110개를 채우면 무엇이 보일까?</p>
+
+<h2>1. 노드당 파드 상한은 IP 문제에서 출발했다</h2>
+
+<p>먼저 우리 노드에서 110이 어디서 오는지 확인했어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/44/01-maxpods-110.png" alt="44-maxpods-capacity.sh 실행 화면 앞부분. 노드 4대 k8s-master, worker1, worker2, worker3의 PODCIDR은 10.244.0.0/24, 10.244.2.0/24, 10.244.1.0/24, 10.244.4.0/24, CAP_PODS와 ALLOC_PODS는 모두 110, CPU 2, 메모리 약 3998420Ki, kubelet v1.37.2. kubelet 설정 파일의 maxPods 줄은 4대 모두 비어 있고 configz는 maxPods=110 podPidsLimit=-1 podsPerCore=0. kube-controller-manager 플래그 --allocate-node-cidrs=true, --cluster-cidr=10.244.0.0/16, --node-cidr-mask-size 줄 없음이라 IPv4 기본값 24. kubeadm-config podSubnet 10.244.0.0/16, serviceSubnet 10.96.0.0/12" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. 설정 파일에는 maxPods가 없고 kubelet 기본값 110이 그대로 쓰였다. 노드마다 /24 podCIDR도 기본값이다</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: maxPods와 allocatable.pods</div>
+  kubelet이 한 노드에서 함께 돌릴 파드 수의 상한이에요. kubelet 설정 파일의 maxPods로 정하고 적지 않으면 기본값 110을 써요(v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/apis/config/v1beta1/defaults.go">defaults.go</a>의 <code style="font-family:Menlo,monospace;font-size:14px;">obj.MaxPods = 110</code>). kubelet은 이 값을 Node 객체의 capacity.pods와 allocatable.pods로 알리고 스케줄러는 allocatable.pods를 넘지 않게 파드를 놓아요. 31편에서 노드 하나가 꽉 차면 /26 블록이 2개 필요하다고 계산할 때 쓴 숫자가 이 값이에요.
+</div>
+<p>화면의 PODCIDR 열은 kube-controller-manager가 노드마다 나눠 준 파드 대역이에요. <code style="font-family:Menlo,monospace;font-size:14px;">--node-cidr-mask-size</code>를 주지 않았으니 기본값 24가 쓰였어요. 그러니 노드마다 주소 256개짜리 대역과 파드 110개 상한이 함께 있는 셈이에요. 둘을 나란히 놓으면 "256의 절반쯤이라 110"이라는 설명이 그럴듯해 보여요. 하지만 둘이 생긴 시점부터 달라요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: podCIDR</div>
+  노드 하나에 배정된 파드 IP 대역이에요. kube-controller-manager의 node-ipam 컨트롤러가 <code style="font-family:Menlo,monospace;font-size:14px;">--cluster-cidr</code>를 <code style="font-family:Menlo,monospace;font-size:14px;">--node-cidr-mask-size</code>(IPv4 기본 24) 크기로 잘라 노드의 <code style="font-family:Menlo,monospace;font-size:14px;">spec.podCIDR</code>에 적어요. host-local 같은 CNI IPAM은 이 대역에서 파드 IP를 주지만 31편에서 봤듯 Calico IPAM은 이 값을 쓰지 않고 자기 블록(/26)에서 IP를 줘요.
+</div>
+<p>노드마다 /24를 주는 관행은 2014년부터 있었어요. v0.2 시절 GCE 설치 스크립트(<a href="https://github.com/kubernetes/kubernetes/blob/v0.2/cluster/gce/config-default.sh">cluster/gce/config-default.sh</a>)는 노드(그때 이름은 minion)마다 <code style="font-family:Menlo,monospace;font-size:14px;">10.244.{1..N}.0/24</code>를 줬어요. 43편에서 본 2014년 네트워크 문서도 GCE의 VM마다 IP 256개를 추가로 라우팅해 준다고 적었어요. 노드당 파드 수 상한은 그보다 늦게, 이 IP 대역과 관련된 문제로 시작됐어요.</p>
+<p>2015-02-27에 열린 <a href="https://github.com/kubernetes/kubernetes/issues/4910">이슈 #4910</a>의 처음 제목은 "Track IPs as part of scheduling to limit the number of pods per machine"이었어요. 노드에 줄 수 있는 IP가 정해져 있으니 스케줄러가 IP를 세서 노드당 파드 수를 막자는 제안이에요. 그날 바로 bgrant0607이 "The right way to do this isn't to track IPs."라고 답했어요. IP를 셀 게 아니라 파드마다 기본으로 붙는 새 자원 요구량을 만들자는 의견이었어요. 3월의 <a href="https://github.com/kubernetes/kubernetes/issues/5507#issuecomment-82763130">#5507</a>에서 davidopp가 이렇게 정리했어요.</p>
+<div class="obsv-code">we should not have a separate resource for IP addresses; instead we should
+have a "max pods per host" (set on a per-host basis) with an upper bound ==
+however many IP addresses are allocated per machine on the given provider.</div>
+<p>&rarr; IP 주소를 별도 자원으로 만들지 말고 호스트마다 "최대 파드 수" 하나를 두되 그 값의 위쪽 한계는 그 클라우드에서 기계마다 받는 IP 수로 하자는 뜻이에요. 2015-04-28에 #4910의 제목은 "Limit number of pods that are allowed to run per machine"으로 바뀌었어요. IP라는 말이 제목에서 빠진 거예요.</p>
+<p>그리고 2015-05 <a href="https://github.com/kubernetes/kubernetes/pull/5547">PR #5547</a>로 kubelet에 <code style="font-family:Menlo,monospace;font-size:14px;">--max_pods</code> 플래그가 생겼어요. 기본값은 100이었는데 리뷰에서 davidopp는 1.0 전에 직접 부하 시험을 해 보는 사람들을 놀라게 하지 않게 "set the flag to 100 for now"하고 성능 작업이 끝나면 30으로 돌리자고 했어요. 8월의 <a href="https://github.com/kubernetes/kubernetes/issues/12069#issuecomment-134794934">#12069</a>에서 bgrant0607은 이 값의 성격을 한 줄로 못 박았어요. "Max pods should be for protecting Kubelet due to scaling limitations." <span class="obsv-mark">출발점은 IP였지만 maxPods는 곧 "kubelet이 감당할 수 있는 파드 수"를 뜻하게 됐어요.</span> IP 수는 그 값이 넘으면 안 되는 위쪽 한계로만 남았어요.</p>
+
+<h2>2. 40에서 110으로: 약속한 사용자 파드 수에 시스템 몫 10을 더했다</h2>
+
+<p>1.0을 앞둔 2015-07, 기본값이 100에서 40으로 내려갔어요. 기본값을 바꾸는 dchen1107의 <a href="https://github.com/kubernetes/kubernetes/pull/11027">PR #11027</a> 본문은 "changed the default value of --max-pods to 40 from 100 based on v1.0 roadmap: 30 pods per node. Adding 10 more for kube-system pods."였어요. 1.0이 약속한 노드당 사용자 파드 30개에 kube-system 파드 몫 10개를 더해 40이라는 뜻이에요. 실제로 머지된 <a href="https://github.com/kubernetes/kubernetes/pull/11078">PR #11078</a>에서 davidopp도 "we chose 40 to allow 30 user pods plus a generous number of cluster addon pods"라고 적었어요. 그 무렵 대형 클러스터 문서에는 "At v1.0, Kubernetes supports clusters up to 100 nodes with 30 pods per node"가 실렸어요. 1.0이 노드당 30개를 고른 측정 근거는 찾지 못했어요.</p>
+<p>문제는 kubelet이었어요. 2015-11 yujuhong이 연 <a href="https://github.com/kubernetes/kubernetes/issues/16943">#16943</a>은 1.2의 kubelet 확장성 목표를 정하는 RFC였는데 1.1의 상태를 이렇게 적었어요.</p>
+<div class="obsv-code">v1.1 does not support 90 pods per node, but I did some rough measurement and
+the median cpu usage of kubelet and docker combined varies from 0.35 to 1.2
+cores -- it was right on the edge of a steep curve.</div>
+<p>&rarr; 1.1은 노드당 파드 90개를 감당하지 못하고 그때 kubelet과 docker의 CPU 사용량 중앙값이 0.35코어에서 1.2코어 사이를 오갔으며 가파른 곡선의 문턱에 있었다는 뜻이에요. 같은 RFC에 적힌 v1.1 측정 환경은 2코어 GCE 노드(n1-standard-2) 세 대였어요. 원인은 파드마다 도는 kubelet의 작업자가 각자 docker에 상태를 물어보는 구조였어요(yujuhong, "Each pod worker polls docker directly."). 파드가 늘수록 docker가 금세 감당하지 못했어요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: PLEG (Pod Lifecycle Event Generator)</div>
+  kubelet 안에서 컨테이너 런타임의 상태 변화를 한곳에서 감지해 파드별 작업자에게 이벤트로 나눠 주는 부분이에요. 파드마다 런타임에 묻던 것을 PLEG 하나가 주기적으로 전체 목록을 다시 받아(relist) 비교하는 방식으로 바꿨어요. v1.37.2에서도 relist 주기는 1초예요.
+</div>
+<p>PLEG가 들어간 뒤 yujuhong이 같은 RFC에 2016-02 측정을 올렸어요. 1초 단위로 잰 CPU 사용량(코어)이에요.</p>
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:620px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">측정</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">kubelet 중앙값 / 95% / 99%</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">docker 중앙값 / 95% / 99%</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">v1.1, pause 파드 40개</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0.18 / 0.64 / 약 1</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0.01 / 0.62 / 약 1</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.2 개발판, pause 파드 40개</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0.11 / 0.19 / 0.26</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0.02 / 0.07 / 0.11</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.2 개발판, pause 파드 100개</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0.21 / 0.34 / 0.45</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0.05 / 0.10 / 0.16</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.2 개발판, test-webserver 파드 100개 + 1초 주기 liveness·readiness 프로브</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">0.56 / 0.79 / 1.08</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">(kubelet만 측정)</td></tr>
+</tbody>
+</table>
+</div>
+<p>결론은 "running single-container 100 pause pods on a single, reasonable-spec node looks ok as far as the cpu usage is concerned for kubelet and docker"였어요. 적당한 사양의 노드 하나에서 컨테이너 하나짜리 pause 파드 100개는 kubelet과 docker의 CPU로 보면 괜찮다는 뜻이에요. 같은 글에 단서도 붙어 있어요. 프로브를 촘촘히 걸면 kubelet CPU가 크게 늘어요. 파드를 한꺼번에 만들고 지우는 동안에는 더 많이 쓰고 컨테이너가 재시작해도 늘어요. 공식 블로그(<a href="https://kubernetes.io/blog/2016/03/1000-nodes-and-beyond-updates-to-kubernetes-performance-and-scalability-in-12/">1000 nodes and Beyond</a>)는 PLEG로 동시 폴링을 없애 "lower the steady-state CPU usage of Kubelet and the container runtime by 4x"했다고 정리했어요.</p>
+
+<h3>100이 아니라 110이 된 순간</h3>
+<p>2016-02 yujuhong은 기본값을 40에서 100으로 올리는 <a href="https://github.com/kubernetes/kubernetes/pull/21361">PR #21361</a>을 열었어요. 같은 때 dchen1107도 110으로 올리는 PR #21365를 열었어요. 리뷰에서 오간 말은 이래요.</p>
+<p>&middot; gmarek: "Don't you want to set it to 105 or sth, to account for system pods?" (시스템 파드 몫을 생각해 105쯤으로 하는 게 어때요?)<br>
+&middot; dchen1107(<a href="https://github.com/kubernetes/kubernetes/pull/21365#issuecomment-187431772">#21365</a>): 1.0·1.1이 노드당 30개를 약속하고 플래그는 kube-system 몫을 더해 40으로 둔 것과 맞추자. e2e 테스트와도 맞추자.<br>
+&middot; yujuhong(<a href="https://github.com/kubernetes/kubernetes/pull/21361#issuecomment-187969498">2016-02-23</a>): "I decided to go with 110 to make testing gke clusters easier (which have no separate test configurations). We should still advertise 100 user pods."</p>
+<p>&rarr; 마지막 말은 GKE 테스트 클러스터는 테스트용 설정을 따로 줄 수 없어서 테스트를 쉽게 하려고 110으로 정했고 밖에 약속하는 값은 여전히 사용자 파드 100개라는 뜻이에요. 사용자 파드 100개를 띄우는 테스트가 있는데 기본값이 100이면 시스템 파드 때문에 100개가 다 들어가지 않으니 시스템 몫 10을 더한 거예요. 2016-02-25 dchen1107은 "we made the decision on configuring max-pods to 40 for 1.0 release because we announce 30 user pods per node, there 10 pods for kube-system. This change is align with that decision."이라고 결정의 맥락을 다시 적었어요.</p>
+<p>반대도 있었어요. jeremyeder는 "the 110 has a strange reasoning behind it. Any chance you can just go with 100?"이라고 물었고 timstclair는 kubelet 플래그를 조회하면 보일 110이 "a little arbitrary"해 보인다고 했어요. 그래도 PR은 1.2 마일스톤으로 머지됐고 diff는 <code style="font-family:Menlo,monospace;font-size:14px;">MaxPods: 40</code> → <code style="font-family:Menlo,monospace;font-size:14px;">110</code>, <code style="font-family:Menlo,monospace;font-size:14px;">MaxContainerCount: 100</code> → <code style="font-family:Menlo,monospace;font-size:14px;">240</code>이었어요. 1.2.0 릴리스 노트에는 "Kubelet supports 100 pods per node with 4x reduced system overhead."가 실렸어요. 기본값은 110, 약속은 100이었던 거예요. <span class="obsv-mark">110은 "밖에 약속한 사용자 파드 수 100 + kube-system 몫 10"이고 1.0의 "30 + 10 = 40"을 그대로 이어 붙인 숫자예요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 370" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<path d="M60 300 C 250 299, 450 301, 670 300" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M60 300 C 61 230, 59 140, 60 50" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<text x="52" y="304" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="end">0</text>
+<text x="52" y="224" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="end">40</text>
+<text x="52" y="104" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="end">100</text>
+<text x="52" y="84" font-family="Menlo, monospace" font-size="11" fill="#8a8272" text-anchor="end">110</text>
+<path d="M380 100 C 450 101, 560 99, 660 100" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="560" y="122" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">밖에 약속한 사용자 파드 100</text>
+<path d="M110 100 C 150 101, 190 99, 230 100 C 231 140, 229 180, 230 220 C 280 221, 330 219, 380 220 C 381 170, 379 120, 380 80 C 450 81, 560 79, 660 80" fill="none" stroke="#4a7fb5" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M230 220 C 280 221, 330 219, 380 220 C 381 250, 380 280, 380 299 C 330 300, 280 299, 231 300 C 230 280, 231 250, 230 220 Z" fill="#e8f0f8" stroke="none"/>
+<text x="305" y="248" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">40 = 약속 30</text>
+<text x="305" y="270" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">+ kube-system 10</text>
+<text x="170" y="88" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#4a7fb5" text-anchor="middle">--max_pods 도입, 일단 100</text>
+<text x="520" y="66" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41" text-anchor="middle">110 = 약속 100 + kube-system 10</text>
+<text x="305" y="176" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">1.1: 파드 90개면</text>
+<text x="305" y="198" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">CPU가 가파르게 오름</text>
+<text x="470" y="160" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">PLEG 뒤 pause 파드 100개 실측</text>
+<text x="470" y="180" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">+ GKE 테스트 편의로 +10</text>
+<text x="110" y="322" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">2015-05</text>
+<text x="110" y="338" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">PR #5547</text>
+<text x="230" y="322" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">2015-07 v1.0</text>
+<text x="230" y="338" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">PR #11078</text>
+<text x="380" y="322" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">2016-02 v1.2</text>
+<text x="380" y="338" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">PR #21361</text>
+<text x="630" y="322" font-family="Menlo, monospace" font-size="11" fill="#3d3a34" text-anchor="middle">v1.37.2 (지금)</text>
+<text x="630" y="338" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">defaults.go</text>
+<text x="350" y="364" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">기본값은 "약속한 사용자 파드 수 + 시스템 몫 10"으로 정해졌고 2016년 뒤로 그대로다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 2. maxPods 기본값은 100으로 시작해 1.0에서 40이 됐고 1.2에서 110이 된 뒤 바뀌지 않았다</div>
+
+<p>그 뒤로 기본값은 한 번도 오르지 않았어요. 2017-09 yujuhong은 노드당 파드를 늘리자는 <a href="https://github.com/kubernetes/kubernetes/issues/23349">#23349</a>에 "We never increased the maximum number of pods above 110."이라고 적었어요. 공식 문서 쪽은 반대로 늦게 따라왔어요. 대형 클러스터 문서는 2021년까지 "100 pods per node"였다가 <a href="https://github.com/kubernetes/website/pull/28152">website PR #28152</a>에서 "better align with the actual default Kubernetes setting of 110 pods per node"하려고 110으로 바뀌었어요. 같은 PR에는 "from where this 110 pods limit actually is coming from?"이라는 질문이 달렸어요.</p>
+
+<h3>연대표</h3>
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:620px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">시점</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">일어난 일</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">출처</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2014 (v0.2)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">GCE 스크립트가 노드마다 <code style="font-family:Menlo,monospace;font-size:14px;">10.244.{1..N}.0/24</code>를 줌</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">cluster/gce/config-default.sh</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-02-27</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">"IP를 세서 노드당 파드 수를 막자" 이슈. 같은 날 "IP를 셀 일이 아니다"라는 답</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#4910</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-03</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">IP 자원 대신 "max pods per host" 하나로 정리</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#5507</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-05</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">kubelet <code style="font-family:Menlo,monospace;font-size:14px;">--max_pods</code> 도입, 기본 100</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PR #5547</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-07 (v1.0)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">기본값 40 = 약속 30 + kube-system 10</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PR #11027, #11078</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-08</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">"Max pods should be for protecting Kubelet"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#12069</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2015-11 ~ 2016-02</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.1 kubelet 측정, PLEG 도입 뒤 pause 파드 100개 측정</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#16943</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2016-02 (v1.2)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">기본값 110 = 약속 100 + kube-system 10. 릴리스 노트는 "100 pods per node"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PR #21361, CHANGELOG-1.2</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2016-05 (v1.3 개발 주기)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">노드 컨트롤러에 박혀 있던 /24를 <code style="font-family:Menlo,monospace;font-size:14px;">--node-cidr-mask-size</code> 플래그로 뺌(기본 24)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">PR #19242</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2021</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">공식 문서 "100 pods per node" → "110"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">website PR #28152</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">1.26 ~</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">이벤트 기반 PLEG(KEP-3386) 1.26 알파, 1.27 베타(기본 꺼짐), 1.30에 알파로 되돌림, 베타 목표 1.38</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">KEP-3386</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">2026-04</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">노드당 파드를 늘리자는 #23349가 기본값을 바꾸지 않고 닫힘</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#23349</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>3. 검토했다가 버린 것들</h2>
+
+<p>110이 정해지는 동안 여러 안이 나왔고 대부분 이유와 함께 버려졌어요.</p>
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:620px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">안</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">누가 / 언제</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">결과와 이유</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">IP를 스케줄링 자원으로 세기</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#4910 원안, #5507 (2015)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">버림. "The right way to do this isn't to track IPs." IP 자원과 파드 수 상한 두 가지를 두지 않고 "max pods per host" 하나로 정리</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">기본값을 100 그대로</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">yujuhong 처음 PR, jeremyeder·timstclair 지지 (2016-02)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">버림. 1.0의 "약속 + 10" 관례와 GKE 테스트 편의</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">105</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">gmarek (2016-02)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">yujuhong이 100을 계속 약속할 수 있다면 105도 괜찮다고 했지만 최종은 110</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">시스템 파드는 상한에서 빼고 세기</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">timstclair "what if we just don't count system pods towards the maximum?"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">채택되지 않음. 지금도 스케줄러는 노드의 모든 파드를 셈(5절)</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">코어 수에 비례</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#4910, #12069 (2015)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">kubelet에 <code style="font-family:Menlo,monospace;font-size:14px;">--pods-per-core</code>(설정 파일의 podsPerCore)가 생겼지만 기본값 0(끔). 우리 노드도 <code style="font-family:Menlo,monospace;font-size:14px;">podsPerCore=0</code></td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">모든 노드에 맞는 공식으로 자동 계산</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#23349 (2016-03)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">버림. dchen1107 "I don't think we are ready to have a formula applying to all to dynamically figure out --max-pods."</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">개수 상한 없이 자원 사용량 기준으로만 거절</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#23349 (2016-03)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">버림. bgrant0607 "An explicit, predictable limit (as opposed to opaquely just denying requests at some point) helps schedulers make better decisions"</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">기본값을 250, 500으로 올리기</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">#23349 (2016~2026), thockin 2025-07 "the hard limit CAN be raised now"</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">올리지 않고 2026-04 닫힘. 이유는 6절</td></tr>
+</tbody>
+</table>
+</div>
+<p>bgrant0607의 말은 지금도 상한이 남아 있는 이유로 읽혀요. 메모리나 CPU가 어느 순간 모자라 요청이 거절되는 것보다 "이 노드는 110개까지"라는 숫자가 미리 보여야 스케줄러가 노드 하나에 자원을 남겨 두는 일을 피하고 사용자도 파드가 어디에 놓였는지 이해할 수 있다는 뜻이에요. dchen1107은 2016-03에 기본값이 Docker의 성능, kubelet의 관리 부담, 노드의 CPU·메모리·IP, 클러스터 수준 구성 요소, 사용자에게 약속한 성능 SLO 같은 여러 제약 아래에서 "out-of-box solution"을 원하는 사용자를 위해 정해졌다고 적었어요.</p>
+
+<h2>4. /24의 절반이라서 110이라는 설명은 upstream 원문에 없다</h2>
+
+<p>여기까지 본 스레드 어디에도 110을 /24(256)에서 계산했다는 말은 없어요. 순서도 거꾸로예요. 노드당 /24는 2014년 스크립트부터 있었고 110은 2016년에 kubelet 측정과 약속값으로 정해졌어요. kube-controller-manager의 <code style="font-family:Menlo,monospace;font-size:14px;">--node-cidr-mask-size</code>도 2016년 <a href="https://github.com/kubernetes/kubernetes/pull/19242">PR #19242</a>에서 생겼는데 작성자(mqliang)는 리뷰에서 그 이유를 "the previous hard code the podCIDR mask size as 24"라고 설명했어요. 노드 컨트롤러 코드에 박혀 있던 /24를 플래그로 꺼낸 것이고 110과 맞추려고 고른 값이 아니에요.</p>
+<p>"두 배" 설명이 실제로 있는 곳은 GKE 문서예요(<a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/flexible-pod-cidr">노드당 최대 파드 수 설정 문서</a>).</p>
+<div class="obsv-code">With the default maximum of 110 Pods per node for Standard clusters, Kubernetes
+assigns a /24 CIDR block (256 addresses) to each of the nodes. By having more than
+twice as many available IP addresses as the maximum number of Pods that can be
+created on a node, Kubernetes can reduce IP address reuse as Pods are added to and
+removed from a node.</div>
+<p>&rarr; GKE Standard 클러스터의 기본 110에 /24를 주는 것은 노드에서 만들 수 있는 파드 수보다 IP를 두 배 넘게 둬서 파드가 생기고 사라질 때 IP 재사용을 줄이려는 것이라는 뜻이에요. GKE는 이 규칙으로 최대 파드 수에 맞춰 대역을 정해요. 다만 이건 GKE가 110에 맞춰 대역 크기를 고른 이유이지 110이 /24에서 나왔다는 근거가 아니에요. GKE 문서에 이 문장이 언제 처음 들어갔는지는 확인하지 못했어요.</p>
+<p>클라우드마다 maxPods와 IP를 묶는 방식도 제각각이에요.</p>
+<div style="overflow-x:auto;margin:0 0 18px;">
+<table style="width:100%;border-collapse:collapse;font-size:15px;min-width:620px;">
+<thead><tr><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">환경</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">기본 maxPods</th><th style="border:1px solid #d8cfba;padding:6px 8px;background:#f5efe0;text-align:left;">IP와 묶는 방식</th></tr></thead>
+<tbody>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">upstream kubelet</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">110</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">묶지 않음. kubelet 설정 검증과 KCM 소스에서 maxPods와 podCIDR 크기를 맞춰 보는 코드를 찾지 못했어요</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">GKE Standard</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">110 (최대 512)</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">최대 파드 수의 두 배 이상 주소를 가진 대역을 노드에 줌. 110이면 /24</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">EKS</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">ENI 식 <code style="font-family:Menlo,monospace;font-size:14px;">(ENI 수 × (ENI당 IP 수 − 1)) + 2</code>. 관리형 노드 그룹은 30 vCPU 미만 110, 넘으면 250으로 캡</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">VPC CNI가 파드에 VPC IP를 직접 주니 인스턴스가 받을 수 있는 IP 수가 상한</td></tr>
+<tr><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">AKS</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Azure CNI Overlay 250, Pod subnet 110, kubenet 110, Azure CNI(Legacy) 30. 최대 250</td><td style="border:1px solid #d8cfba;padding:6px 8px;vertical-align:top;">Overlay는 노드마다 /24를 주면서 250까지 허용(GKE의 두 배 규칙을 따르지 않음)</td></tr>
+</tbody>
+</table>
+</div>
+<p>출처는 각 클라우드의 공식 문서예요(<a href="https://docs.aws.amazon.com/eks/latest/userguide/choosing-instance-type.html">EKS</a>, <a href="https://learn.microsoft.com/en-us/azure/aks/concepts-network-ip-address-planning">AKS</a>). IP를 바로 다시 쓰지 않게 하는 장치도 클라우드 문서의 "두 배" 말고 IPAM 쪽에 있어요. podCIDR을 쓰는 host-local IPAM은 소스 주석에 "a crash-looping container will not see the same IP until the entire range has been run through"라고 적힌 대로 대역을 한 바퀴 돌며 IP를 줘요. Calico는 반납한 IP를 빈칸 목록 맨 뒤에 붙이고 ipCooldownSeconds를 둬요(34편).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="178" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#4a7fb5" text-anchor="middle">파드 수 상한 110 (kubelet maxPods)</text>
+<text x="525" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#c07f18" text-anchor="middle">파드 IP는 따로 센다</text>
+<path d="M30 48 C 120 46, 230 49, 322 47 C 324 75, 323 100, 324 126 C 230 128, 120 125, 31 127 C 29 100, 31 75, 30 48 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="176" y="74" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">스케줄러 NodeResourcesFit</text>
+<text x="176" y="98" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="middle">노드의 파드 수 + 1 &gt; 110</text>
+<text x="176" y="116" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">→ "Too many pods"</text>
+<path d="M30 142 C 120 140, 230 143, 322 141 C 324 160, 323 180, 324 200 C 230 202, 120 199, 31 201 C 29 180, 31 160, 30 142 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="176" y="168" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">kubelet 어드미션</text>
+<text x="176" y="190" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">넘으면 OutOfpods 로 거절</text>
+<text x="40" y="232" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">• hostNetwork 파드도 센다 (IP는 안 씀)</text>
+<text x="40" y="256" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">• DaemonSet 파드도 센다</text>
+<text x="40" y="280" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">• requests가 없어도 센다</text>
+<path d="M350 44 C 351 120, 349 230, 350 300" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="8 8" stroke-linecap="round"/>
+<path d="M378 48 C 470 46, 580 49, 672 47 C 674 75, 673 100, 674 126 C 580 128, 470 125, 379 127 C 377 100, 379 75, 378 48 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="525" y="74" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">podCIDR /24 = 256 (KCM이 나눔)</text>
+<text x="525" y="98" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">host-local IPAM이면 여기서 IP를 줌</text>
+<text x="525" y="118" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">우리 Calico는 이 값을 안 씀 (31편)</text>
+<path d="M378 142 C 470 140, 580 143, 672 141 C 674 160, 673 180, 674 200 C 580 202, 470 199, 379 201 C 377 180, 379 160, 378 142 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="525" y="168" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">Calico 블록 /26 = 64칸</text>
+<text x="525" y="190" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">모자라면 블록을 더 받는다 (110개면 2개)</text>
+<text x="390" y="232" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">• EKS: 인스턴스의 ENI·IP 수로 계산</text>
+<text x="390" y="256" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">• GKE: 최대 파드 수의 두 배 넘는 대역</text>
+<text x="390" y="280" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">• AKS Overlay: /24에 250까지</text>
+<text x="350" y="330" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">110은 IP 수가 아니라 kubelet이 감당할 파드 수에서 나왔다</text>
+<text x="350" y="360" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272" text-anchor="middle">upstream은 두 값을 맞춰 보지 않고 IP 쪽 한계는 CNI와 클라우드가 각자 정한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 파드 수 상한은 스케줄러와 kubelet이 세고 IP는 CNI IPAM이 따로 센다. 둘이 맞는지는 각 환경이 챙긴다</div>
+
+<h2>5. worker3에 파드 110개를 채워 보니</h2>
+
+<p>상한에 닿으면 실제로 무엇이 보이는지 확인했어요. 실험용 네임스페이스 w2-fill에 pause 이미지만 띄우는 Deployment를 만들고 nodeSelector로 worker3에만 놓이게 했어요. requests는 적지 않았어요. worker3에는 DaemonSet 파드를 포함해 이미 파드 4개가 있었으니 110 − 4 + 1 = 107개를 요청하면 1개가 남아야 해요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/44/02-fill-110.png" alt="44-fill-110.sh 실행 화면. 21:43:00 시작, worker3 allocatable.pods 110, 기존 파드 4개라 107개를 요청하면 1개가 남아야 함. Calico 블록 10.244.100.192/26과 10.244.101.0/26. 30초 동안 PLEG relist 30번 평균 1.59ms, kubelet RSS 95MiB, running_pods 4. Deployment fill replicas 107 생성 뒤 +0s Running 0, +10s 62, +20s 106. 21:43:51 Pending 1, Running 106. 남은 파드 fill-64956ff65b-vb2k7의 FailedScheduling 0/4 nodes are available: 1 Too many pods, 1 node(s) had untolerated taint(s), 2 node(s) didn't match Pod's node affinity/selector. preemption: 0/4 nodes are available: 1 No preemption victims found for incoming pod, 3 Preemption is not helpful for scheduling. worker3 파드 수 110. 21:44:22 30초 동안 PLEG relist 평균 2.19ms, kubelet RSS 143MiB, running_pods 110. 정리: 네임스페이스 삭제 6초" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 107개 중 106개가 20초 안에 Running이 됐고 마지막 하나는 "1 Too many pods"로 Pending에 남았다</div>
+<p>&middot; 10초 뒤 62개, 20초 뒤 106개가 Running이었고 worker3의 파드는 110개가 됐어요.<br>
+&middot; 남은 한 개의 FailedScheduling 메시지는 노드 4대가 모두 안 되는 이유를 하나씩 적었어요. <code style="font-family:Menlo,monospace;font-size:14px;">1 Too many pods</code>는 worker3, <code style="font-family:Menlo,monospace;font-size:14px;">1 node(s) had untolerated taint(s)</code>는 마스터(37편의 control-plane taint), <code style="font-family:Menlo,monospace;font-size:14px;">2 node(s) didn't match Pod's node affinity/selector</code>는 worker1·worker2예요.<br>
+&middot; 선점(preemption)도 도움이 안 된다고 나왔어요. 실험 파드는 우선순위를 주지 않았으니 worker3의 파드를 밀어낼 수 없었어요.</p>
+<p>&rarr; 111번째 파드를 막은 것은 IP도 CPU도 메모리도 아니고 파드 개수였다는 뜻이에요. 23편에서 본 대로 requests를 적지 않은 파드는 CPU·메모리 필터를 늘 통과하니 이 파드들에 걸리는 제한은 개수뿐이었어요. 스케줄러의 이 검사는 v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/scheduler/framework/plugins/noderesources/fit.go">fit.go</a>의 fitsRequest에 있어요.</p>
+<div class="obsv-code">allowedPodNumber := nodeInfo.GetAllocatable().GetAllowedPodNumber()
+if len(nodeInfo.GetPods())+1 &gt; allowedPodNumber {
+    insufficientResources = append(insufficientResources, InsufficientResource{
+        ResourceName: v1.ResourcePods,
+        Reason:       "Too many pods",
+        ...</div>
+<p>&rarr; 노드에 이미 있는 파드 수에 이 파드 하나를 더한 값이 allocatable.pods를 넘으면 "Too many pods"로 거른다는 뜻이에요. 파드가 hostNetwork인지, DaemonSet 파드인지 가리지 않고 노드의 모든 파드를 세요. 스케줄러를 거치지 않고 노드에 바로 온 파드는 kubelet이 어드미션 단계에서 같은 상한으로 다시 걸러요. 이때 거절 사유가 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/lifecycle/predicate.go">predicate.go</a>의 <code style="font-family:Menlo,monospace;font-size:14px;">OutOfpods</code>예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: hostNetwork 파드</div>
+  파드의 <code style="font-family:Menlo,monospace;font-size:14px;">hostNetwork: true</code>로 자기 네트워크 네임스페이스 없이 노드의 네트워크를 그대로 쓰는 파드예요. 파드 IP가 노드 IP와 같아서 파드 대역의 IP를 쓰지 않아요. kube-proxy와 calico-node가 이렇게 떠요. IP는 안 쓰지만 maxPods에는 똑같이 한 개로 세요.
+</div>
+<p>파드 수와 IP 수가 어떻게 갈리는지는 평소 상태에서도 보여요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/44/03-pods-per-node-pleg.png" alt="44-maxpods-capacity.sh 실행 화면 5·6절. 노드별 파드 수: master 9개 중 hostNetwork 6개, IP 쓰는 파드 3개, DaemonSet 3개, 110 대비 남은 자리 101. worker1과 worker2는 9개 중 hostNetwork 2개, IP 쓰는 파드 7개, DaemonSet 3개, 남은 자리 101. worker3은 4개 중 hostNetwork 2개, IP 쓰는 파드 2개, DaemonSet 3개, 남은 자리 106. PLEG relist: master 23938회 평균 0.97ms, worker1 20833회 평균 1.02ms, worker2 23920회 평균 1.14ms, worker3 12600회 평균 0.85ms, 모두 99%가 0.005초 이하, relist 간격 평균 1.002초, running_pods 9, 9, 9, 4" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 마스터는 파드 9개 중 6개가 hostNetwork라 IP는 3개만 썼지만 110 대비 남은 자리는 9개를 다 뺀 101이었다</div>
+<p>마스터는 파드 9개 중 6개가 hostNetwork라 파드 IP를 쓰는 파드는 3개뿐이었어요. 숫자로 보면 컨트롤 플레인 정적 파드 4개와 kube-proxy, calico-node가 hostNetwork인 것으로 보여요. 그래도 110 대비 남은 자리는 9개를 다 뺀 101이에요. 노드마다 DaemonSet 파드가 3개씩 있으니 워커에서 사용자가 쓸 수 있는 자리는 110이 아니라 107 이하예요.</p>
+
+<h3>kubelet은 얼마나 무거워졌나</h3>
+<p>같은 실험에서 파드를 채우기 전과 뒤에 30초씩 kubelet 지표를 쟀어요. PLEG가 1초마다 전체 목록을 다시 받는 데 걸린 평균 시간(relist)과 kubelet의 메모리(RSS)예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34" text-anchor="middle">worker3 (2 CPU · 4GiB): 파드 4개 → 110개, 각 30초 측정</text>
+<text x="40" y="72" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">PLEG relist 평균</text>
+<path d="M190 58 C 280 56, 380 59, 480 57 C 481 66, 480 74, 481 82 C 380 84, 280 81, 191 83 C 189 74, 190 66, 190 58 Z" fill="#e8f0f8" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="490" y="76" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5">1.59ms (파드 4)</text>
+<path d="M190 92 C 300 90, 450 93, 590 91 C 591 100, 590 108, 591 116 C 450 118, 300 115, 191 117 C 189 108, 190 100, 190 92 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600" y="110" font-family="Menlo, monospace" font-size="13" fill="#c07f18">2.19ms</text>
+<text x="190" y="138" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">약 1.4배 · relist 주기 1초, 3분 넘게 못 끝내면 노드 NotReady</text>
+<text x="40" y="186" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">kubelet RSS</text>
+<path d="M190 172 C 280 170, 380 173, 456 171 C 457 180, 456 188, 457 196 C 380 198, 280 195, 191 197 C 189 188, 190 180, 190 172 Z" fill="#e8f0f8" stroke="#4a7fb5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="466" y="190" font-family="Menlo, monospace" font-size="13" fill="#4a7fb5">95MiB (파드 4)</text>
+<path d="M190 206 C 300 204, 450 207, 590 205 C 591 214, 590 222, 591 230 C 450 232, 300 229, 191 231 C 189 222, 190 214, 190 206 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600" y="224" font-family="Menlo, monospace" font-size="13" fill="#c07f18">143MiB</text>
+<text x="190" y="252" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">약 1.5배 · 파드 110개 (주황)</text>
+<text x="350" y="292" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">pause 파드 106개를 더해 전체 110개는 버텼다. 실제 앱은 다를 수 있다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. 파드가 4개에서 110개로 늘자 relist 평균은 약 1.4배, kubelet 메모리는 약 1.5배가 됐다</div>
+
+<p>2코어·4GiB VM에서도 pause 파드 106개를 추가해 전체 110개를 채우는 데 20초가 걸렸고 relist는 평균 2.19ms로 1초 주기에 비하면 아주 짧았어요. 부하가 없는 pause 파드를 띄웠을 때 관리 비용이 작았다는 점은 2016년 측정과 비슷했어요. 하지만 이 파드들은 아무 일도 하지 않고 프로브도 없어요. 2016년 표에서 1초 주기 프로브를 붙이자 kubelet CPU 중앙값이 0.21코어에서 0.56코어로 뛰었던 것을 떠올리면 실제 앱 110개는 전혀 다른 이야기예요.</p>
+<p>sig-scalability가 정리한 기준(<a href="https://github.com/kubernetes/community/blob/master/sig-scalability/configs-and-limits/thresholds.md">thresholds.md</a>)도 같은 방향이에요. 노드당 파드 수의 임계값은 <code style="font-family:Menlo,monospace;font-size:14px;">min(110, 10*#cores)</code>예요. 2016년 목표 문서(goals.md)가 코어당 10개를 목표로 잡은 이유는 "pods per core is a much more stable ratio to pursue than e.g. pods per machine"이에요. 해마다 기계의 코어 수가 크게 바뀌니 기계당 파드 수보다 코어당 파드 수가 더 안정된 기준이라는 뜻이에요. 이 기준이면 2코어인 우리 노드의 임계값은 20개예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 확장성 임계값(threshold)과 SLO</div>
+  sig-scalability는 "클러스터를 바르게 설정하고 부하를 권장 한도 안에 두면 모든 SLO(예: 파드 시작 지연)를 지킨다"는 식으로 약속해요(<a href="https://github.com/kubernetes/community/blob/master/sig-scalability/slos/slos.md">slos.md</a>). 그 권장 한도가 임계값이에요. thresholds.md는 대부분의 임계값이 "NOT hard limits - crossing the limit results in degraded performance"라고 적었어요. 넘는다고 바로 실패하지는 않지만 성능 약속 밖으로 나간다는 뜻이에요.
+</div>
+<p>파드가 많아질 때 확인할 지표 중 하나는 PLEG예요. v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet.go">kubelet.go</a>는 relist 주기를 1초, 임계값을 3분으로 두고 주석에 "the relisting itself can take more than 1s to finish if the container runtime responds slowly and/or when there are many container changes in one cycle"이라고 적었어요. 런타임이 느리거나 한 주기에 바뀐 컨테이너가 많으면 relist 자체가 1초를 넘길 수 있다는 뜻이에요. 마지막 relist가 3분 넘게 끝나지 않으면 PLEG 헬스 체크가 실패하고 노드 Ready 조건에 <code style="font-family:Menlo,monospace;font-size:14px;">PLEG is not healthy: pleg was last seen active ... ago; threshold is 3m0s</code>가 올라가 노드가 NotReady가 돼요. 25편에서 본 하트비트 말고도 노드가 NotReady가 되는 또 하나의 길이에요.</p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: maxPods를 올리기 전에 볼 것</div>
+  &bull; IP: CNI가 podCIDR을 쓰는 host-local이면 /24에서 줄 수 있는 IP는 254개 안팎이라 maxPods를 그 위로 올려도 IP가 먼저 모자라요. 블록을 빌리는 Calico IPAM은 블록을 더 받지만 풀 크기와 노드 수 계산(31편)이 달라져요<br>
+  &bull; kubelet과 런타임: PLEG는 지금도 1초마다 전체 목록을 다시 받아요. 1.26에 들어간 이벤트 기반 PLEG(KEP-3386)는 1.30에 알파로 되돌려졌고 KEP의 Non-Goals에는 "Reducing the Generic PLEG global relist frequency"가 적혀 있어요. 파드 수를 늘리면 relist 비용도 그대로 늘어요<br>
+  &bull; 노드 재시작 시간: 2016년 측정의 단서대로 파드를 한꺼번에 만들고 지울 때 kubelet과 런타임이 가장 무거워요. 노드가 재부팅되면 그 노드의 파드가 한꺼번에 다시 떠요
+</div>
+
+<h2>6. 110이 남긴 숙제와 maxPods를 정하는 기준</h2>
+
+<p>110은 2016년 뒤로 그대로지만 그 사이 숙제가 쌓였어요.</p>
+<p>&middot; <b>약속값과 기본값이 달라요.</b> 기본값은 110, 1.2에서 밖에 약속한 값은 100이었어요. 공식 문서는 2021년에야 110으로 맞췄어요.<br>
+&middot; <b>하드웨어를 보지 않아요.</b> 2코어 VM과 수십 코어 서버가 같은 110이에요. sig-scalability 기준은 <code style="font-family:Menlo,monospace;font-size:14px;">min(110, 10*#cores)</code>이지만 kubelet의 podsPerCore 기본값은 0이라 강제하지 않아요.<br>
+&middot; <b>"시스템 몫 10"은 2015년 기준이에요.</b> 지금은 CNI, kube-proxy, 로그·모니터링 에이전트가 DaemonSet으로 노드마다 깔리고 그만큼 사용자 몫이 줄어요. 우리 워커도 DaemonSet 파드가 3개씩이었어요.<br>
+&middot; <b>파드 수 상한과 할당 가능한 IP 수를 맞추는 일은 각 환경의 몫이에요.</b> upstream은 maxPods와 podCIDR 크기를 맞추지 않고 GKE·EKS·AKS는 4절 표에서 본 대로 서로 다른 규칙을 써요.</p>
+<p>노드당 파드를 늘리자는 #23349는 2016-03에 열려 10년을 끌었어요. 2025-07 thockin이 "I feel like the hard limit CAN be raised now - should we close this?"라고 물었고 2026-04 SergeyKanzhelev가 이렇게 답하며 닫았어요.</p>
+<div class="obsv-code">The known bottleneck today is network. All other bottlenecks is a reality of
+running too many things on a single VM. Vendors already support higher values
+and I do not see much appetite from anybody in upstream to invest into
+scalability and performance testing to make a statement on the higher
+supported Pods count.</div>
+<p>&rarr; 지금 알려진 병목은 네트워크이고 나머지는 VM 하나에 너무 많은 것을 돌리면 생기는 당연한 일이며 클라우드 업체들은 이미 더 큰 값을 지원하지만 upstream에서 더 큰 파드 수를 보장하려고 확장성·성능 시험에 투자할 의욕을 가진 곳이 보이지 않는다는 뜻이에요. <span class="obsv-mark">110은 지금 "upstream이 시험하고 보장하는 범위"로 남아 있고 그보다 큰 값은 각 클라우드와 운영자가 스스로 책임지는 영역이에요.</span></p>
+
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: maxPods는 이 순서로 정해요</div>
+  &bull; 먼저 코어 수를 봐요. sig-scalability 기준은 코어당 10개, 최대 110개예요. 2코어 노드라면 기본값 110은 이 기준의 다섯 배가 넘어요<br>
+  &bull; CNI IPAM을 봐요. podCIDR을 쓰는 IPAM이면 <code style="font-family:Menlo,monospace;font-size:14px;">--node-cidr-mask-size</code>가 정한 대역 안에 들어가야 하고 클라우드 IP를 직접 받는 EKS라면 ENI 식이 상한이에요. Calico라면 maxPods와 블록 크기로 노드당 블록 수를 계산해요(31편)<br>
+  &bull; 사용자 파드를 더 띄울 수 있는 자리는 110에서 이미 있는 파드 수를 빼서 계산해요. DaemonSet·hostNetwork·정적 파드도 포함하되 같은 파드를 중복해서 세지 않아요<br>
+  &bull; 기본값을 바꾸려면 kubelet 설정 파일에 <code style="font-family:Menlo,monospace;font-size:14px;">maxPods</code>를 적고 kubelet을 재시작해요. 우리 클러스터는 이 줄이 없어서 110이었어요. 값을 올렸다면 Node의 allocatable.pods와 kubelet의 PLEG 지표(<code style="font-family:Menlo,monospace;font-size:14px;">kubelet_pleg_relist_duration_seconds</code>)를 함께 지켜봐요
+</div>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>110은 /24에서 계산한 숫자가 아니라 2016년에 "밖에 약속한 사용자 파드 100개 + kube-system 몫 10개"로 정한 kubelet 기본값이에요.</b><br><br>
+  노드당 파드 상한은 2015년 "IP를 세서 노드당 파드 수를 막자"는 이슈에서 출발했지만 메인테이너들은 IP 자원 대신 "max pods per host" 하나를 두기로 했고 그 값은 곧 kubelet을 보호하는 숫자가 됐어요. 1.0은 사용자 파드 30개를 약속하고 기본값을 40으로 뒀어요. 1.1의 kubelet은 파드마다 docker에 묻느라 90개 근처에서 CPU가 가파르게 올랐고 PLEG가 들어간 뒤 적당한 사양의 노드에서 pause 파드 100개는 괜찮다는 측정이 나왔어요. 그래서 1.2는 100개를 약속하고 GKE 테스트 편의로 10을 더해 110을 기본값으로 정했고 그 뒤 한 번도 오르지 않았어요. 노드마다 /24를 주는 관행은 2014년부터 있었고 "두 배라서 IP 재사용이 줄어든다"는 설명은 GKE 문서에만 있어요. worker3에 파드를 채우자 111번째가 "Too many pods"로 막혔고 스케줄러는 hostNetwork와 DaemonSet 파드까지 모두 셌어요. 기존 파드 4개에 pause 파드 106개를 더한 전체 110개는 2코어 VM에서도 버텼지만 sig-scalability의 코어당 10개 기준에 대입하면 2코어인 우리 노드의 임계값은 20개예요. maxPods는 기본값이 아니라 코어 수와 CNI IPAM, DaemonSet 수를 보고 정해요.
+</div>
+
+</div>

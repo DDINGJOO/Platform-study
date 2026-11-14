@@ -1,0 +1,72 @@
+# 37편: Mac 의 실습 저장소 루트에서 bash 37-master-taints-now.sh 로 실행 (2026-11-14 22:05, 조회만). 이때 다른 실험으로 worker3 이 응답하지 않아 unreachable taint 가 붙어 있었다
+# 마스터의 taint 와 마스터에 있는 파드 (2026-11-14 22:05:07 KST)
+
+## 1. 노드별 역할 라벨과 taint
+  k8s-master   role 라벨=control-plane  taints=node-role.kubernetes.io/control-plane:NoSchedule
+  k8s-worker1  role 라벨=worker         taints=없음
+  k8s-worker2  role 라벨=worker         taints=없음
+  k8s-worker3  role 라벨=worker         taints=node.kubernetes.io/unreachable:NoSchedule node.kubernetes.io/unreachable:NoExecute
+
+## 2. 마스터에 떠 있는 파드: 소유자, 만든 시각, CPU·메모리 requests, toleration
+  kube-system/calico-kube-controllers-846669895c-rgvhh  owner=ReplicaSet  created=2026-11-14T08:28:26Z  cpu=- mem=-
+        toleration: CriticalAddonsOnly Exists (effect 없음)
+        toleration: node-role.kubernetes.io/master Equal NoSchedule
+        toleration: node-role.kubernetes.io/control-plane Equal NoSchedule
+        toleration: node.kubernetes.io/not-ready Exists NoExecute 300s
+        toleration: node.kubernetes.io/unreachable Exists NoExecute 300s
+  kube-system/calico-node-tvx2h  owner=DaemonSet  created=2026-11-04T12:19:36Z  cpu=250m mem=-
+        toleration: (key 없음) Exists NoSchedule
+        toleration: CriticalAddonsOnly Exists (effect 없음)
+        toleration: (key 없음) Exists NoExecute
+        toleration: node.kubernetes.io/not-ready Exists NoExecute
+        toleration: node.kubernetes.io/unreachable Exists NoExecute
+        toleration: node.kubernetes.io/disk-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/memory-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/pid-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/unschedulable Exists NoSchedule
+        toleration: node.kubernetes.io/network-unavailable Exists NoSchedule
+  kube-system/coredns-559f6c778d-r2776  owner=ReplicaSet  created=2026-11-14T08:28:26Z  cpu=100m mem=70Mi
+        toleration: CriticalAddonsOnly Exists (effect 없음)
+        toleration: node-role.kubernetes.io/control-plane Equal NoSchedule
+        toleration: node.kubernetes.io/not-ready Exists NoExecute 300s
+        toleration: node.kubernetes.io/unreachable Exists NoExecute 300s
+  kube-system/etcd-k8s-master  owner=Node  created=2026-11-14T12:58:52Z  cpu=100m mem=100Mi
+        toleration: (key 없음) Exists NoExecute
+  kube-system/kube-apiserver-k8s-master  owner=Node  created=2026-11-14T08:22:03Z  cpu=250m mem=-
+        toleration: (key 없음) Exists NoExecute
+  kube-system/kube-controller-manager-k8s-master  owner=Node  created=2026-11-14T05:57:47Z  cpu=200m mem=-
+        toleration: (key 없음) Exists NoExecute
+  kube-system/kube-proxy-6t5jq  owner=DaemonSet  created=2026-11-14T12:56:04Z  cpu=- mem=-
+        toleration: (key 없음) Exists (effect 없음)
+        toleration: node.kubernetes.io/not-ready Exists NoExecute
+        toleration: node.kubernetes.io/unreachable Exists NoExecute
+        toleration: node.kubernetes.io/disk-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/memory-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/pid-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/unschedulable Exists NoSchedule
+        toleration: node.kubernetes.io/network-unavailable Exists NoSchedule
+  kube-system/kube-scheduler-k8s-master  owner=Node  created=2026-11-14T06:42:58Z  cpu=100m mem=-
+        toleration: (key 없음) Exists NoExecute
+  monitoring/node-exporter-47twj  owner=DaemonSet  created=2026-11-09T11:39:33Z  cpu=- mem=-
+        toleration: node-role.kubernetes.io/control-plane Exists NoSchedule
+        toleration: node.kubernetes.io/not-ready Exists NoExecute
+        toleration: node.kubernetes.io/unreachable Exists NoExecute
+        toleration: node.kubernetes.io/disk-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/memory-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/pid-pressure Exists NoSchedule
+        toleration: node.kubernetes.io/unschedulable Exists NoSchedule
+
+## 3. 마스터의 Allocatable 과 Allocated resources (kubectl describe node)
+Allocatable:
+  cpu:                2
+  memory:             3896020Ki
+  pods:               110
+  Resource           Requests    Limits
+  cpu                1 (50%)     0 (0%)
+  memory             170Mi (4%)  170Mi (4%)
+
+## 4. 노드별 CPU requests 합 (지금 떠 있는 파드 기준)
+  k8s-master   Running 파드  9개, CPU requests 합 1000m
+  k8s-worker1  Running 파드  9개, CPU requests 합 250m
+  k8s-worker2  Running 파드 10개, CPU requests 합 350m
+  k8s-worker3  Running 파드  5개, CPU requests 합 250m

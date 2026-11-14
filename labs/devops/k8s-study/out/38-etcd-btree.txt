@@ -1,0 +1,27 @@
+# etcd 저장 구조 (2026-11-14 19:38:28 KST)
+
+## 1. 디스크의 데이터 파일 (bbolt = B+트리 한 파일) 과 WAL
+-rw------- 1 root root 34672640 Nov 14 19:38 db
+0000000000000000-0000000000000000.wal
+0000000000000001-00000000000139eb.wal
+0000000000000002-0000000000021843.wal
+WAL 파일 수: 3
+
+## 2. endpoint status: DB SIZE 와 IN USE
+  revision=134255 raftIndex=185113 dbSize=21.8MB dbSizeInUse=2.7MB (빈 페이지 88%)
+
+## 3. 키 하나에 리비전이 여러 개 (MVCC): myweb Deployment
+  create_revision=89896 mod_revision=121680 version=118 | 클러스터 현재 revision=134257
+  $ kubectl scale deploy myweb --replicas=6
+  create_revision=89896 mod_revision=134283 version=123 | 클러스터 현재 revision=134286
+  $ kubectl scale deploy myweb --replicas=5
+  create_revision=89896 mod_revision=134309 version=127 | 클러스터 현재 revision=134312
+  같은 키를 --rev=134283 (6개로 바꿨던 때) 로 읽기:
+   mod_revision=134283 version=123 값 길이 2156바이트
+  kubectl 로 보면 지금: replicas=5, 그때 값은 etcd 에만 남아 있음
+
+## 4. 오래된 리비전은 compaction 으로 지워짐 (API 서버 --etcd-compaction-interval 기본 5m)
+  22편 실험 때의 리비전 103241 로 읽기:
+   {"level":"warn","ts":"2026-11-14T10:38:42.591043Z","logger":"etcd-client","caller":"v3/retry_interceptor.go:68","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x52629c180e00/127.0.0.1:2379","peer":"Peer{Addr: '127.0.0.1:2379', LocalAddr: '127.0.0.1:48294', AuthInfo: 'tls'}","method":"/etcdserverpb.KV/Range","attempt":0,"error":"rpc error: code = OutOfRange desc = etcdserver: mvcc: required revision has been compacted"}
+   Error: etcdserver: mvcc: required revision has been compacted
+  지금 compaction 된 지점 이전 리비전은 읽을 수 없음. 바로 직전 리비전(134283)은 아직 읽혔음

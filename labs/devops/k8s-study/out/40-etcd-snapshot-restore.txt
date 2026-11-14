@@ -1,0 +1,32 @@
+# etcd snapshot save & restore (2026-11-14 20:59:35 KST)
+
+## 1. 예전 버전(etcd 3.5)식 명령 그대로 (sh -c "ETCDCTL_API=3 etcdctl …")
+  error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "a6dc6241e5630f41618c8025d2dfed520abc37ba7f0279b1975bab53fcf3bcc2": OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH
+  etcd 이미지 버전: registry.k8s.io/etcd:3.7.0-0
+
+## 2. 셸 없이 etcdctl 을 바로 실행 (v3 API 는 3.4 부터 기본이라 ETCDCTL_API=3 도 필요 없음)
+  Snapshot saved at /var/lib/etcd/snapshot.db
+  Server version 3.7.0
+
+## 3. 스냅숏 확인 (etcdutl)
+  ┌──────────┬──────────┬────────────┬────────────┬─────────┐
+  │   HASH   │ REVISION │ TOTAL KEYS │ TOTAL SIZE │ VERSION │
+  ├──────────┼──────────┼────────────┼────────────┼─────────┤
+  │ 3bfcc7a4 │   143014 │        514 │     3.1 MB │   3.7.0 │
+  └──────────┴──────────┴────────────┴────────────┴─────────┘
+
+## 4. 복원은 etcdutl 로 (etcdctl 쪽 restore 는 있나?)
+  etcdctl snapshot 하위 명령: save Flags: -h, Use
+  $ etcdutl snapshot restore /var/lib/etcd/snapshot.db --data-dir /var/lib/etcd/restore-test   (운영 데이터와 다른 임시 폴더)
+  복원된 폴더: restore-test restore-test/member restore-test/member/wal restore-test/member/wal/0000000000000000-0000000000000000.wal restore-test/member/snap restore-test/member/snap/0000000000000001-0000000000000001.snap restore-test/member/snap/db
+
+## 5. 실제 복원이라면 (실행하지 않음): API 서버·etcd 정적 파드 매니페스트를 잠시 빼고 → etcd.yaml 의 hostPath 를 restore 폴더로 바꾸거나 /var/lib/etcd 를 교체 → 매니페스트를 되돌림
+
+## 6. 정리: 스냅숏과 임시 복원 폴더 삭제
+  삭제 완료: member
+
+## 7. 예전 버전식 restore 명령(etcdctl snapshot restore)을 우리 etcdctl 3.7.0 에 그대로 (20:59:44)
+  Manages etcd node snapshots
+  
+  Usage:
+  etcdctl version: etcdctl version: 3.7.0

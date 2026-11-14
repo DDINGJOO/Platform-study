@@ -1,0 +1,299 @@
+<!-- ============================================================
+  k8s 스터디 39편: 캐시가 늦어도 쿠버네티스는 왜 꼬이지 않을까, watch 캐시와 410·409
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿을 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: API 서버의 watch 캐시와 informer 사본은 etcd보다 늦을 수 있어요. 그래도 쿠버네티스가 꼬이지 않는 이유를 409·410 응답과 level-triggered 컨트롤러로 확인하고 CoreDNS와 앱의 DNS 캐시를 나눠 봤어요. -->
+<!-- tags: watch cache, informer, 410 Gone, too old resource version, 409 Conflict, resourceVersion, level-triggered, CoreDNS 캐시 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 39편</div>
+  37편. 마스터 노드에도 일반 파드를 올릴 수 있을까, taint와 toleration<br>
+  38편. etcd는 데이터를 어떻게 쌓고 왜 지워도 파일이 줄지 않을까<br>
+  <b>39편. 캐시가 늦어도 쿠버네티스는 왜 꼬이지 않을까, watch 캐시와 410·409</b> &larr; 지금 이 글<br>
+  40편. etcd 3.7에서는 백업과 복원을 어떻게 할까<br>
+  41편. 스케줄러는 어떤 파드를 집어 가고 바인딩은 무엇을 쓸까
+</div>
+
+<p>etcd를 하나씩 열어 보던 날 20시 29분에 이런 질문을 남겼어요. "etcd도 결국 저장소면 각 노드나 이런 게 캐싱하고 있을 텐데 이런 거에 대한 문제는 없어?" 답을 찾으려고 먼저 API 서버의 메트릭을 열었어요. API 서버가 메모리에 들고 있는 nodes, pods, services 사본의 위치는 셋 다 139825였고 같은 순간 etcd의 리비전은 139829였어요. etcd에 붙어 있는 유일한 프로그램인 API 서버조차 etcd와 같은 순간을 들고 있지 않았어요.</p>
+<p>사본이 늦을 수 있다면 컨트롤러가 옛 사본을 보고 엉뚱한 결정을 내리지는 않을까요? 이번 글에서는 쿠버네티스가 사본이 늦다는 것을 전제로 어떤 장치를 두었는지 409·410 응답과 로그로 확인해요. 마지막에는 같은 자리에서 나온 질문 "DNS 이런 것도 etcd에서 관리해?"와 "가끔 캐싱돼서 문제 있다던데"의 답도 정리해요. 클러스터는 Lima VM 4대에 kubeadm v1.37.2, etcd 3.7.0을 올린 실습 환경이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 쿠버네티스에서 사본을 들고 있는 것은 누구이고 얼마나 늦을까?<br>
+&middot; 늦은 사본을 보고 고치면 어떻게 될까?<br>
+&middot; 너무 늦어서 변화를 이어 받을 수 없으면 어떻게 할까?<br>
+&middot; 늦게 알아도 결과가 맞는 이유는 무엇일까?<br>
+&middot; DNS는 어디에서 만들고 CoreDNS와 앱은 각각 무엇을 캐시할까?</p>
+
+<h2>1. 사본은 두 겹이다: API 서버의 watch 캐시와 구성 요소의 informer</h2>
+
+<p>질문의 "각 노드"부터 바로잡을게요. 노드는 etcd를 직접 보지 않아요. 22편에서 본 대로 etcd의 2379 포트에 붙어 있는 것은 kube-apiserver뿐이에요. 사본은 두 겹으로 있어요. API 서버가 etcd를 지켜보며 들고 있는 watch 캐시가 한 겹이고 컨트롤러 매니저, 스케줄러, kubelet, kube-proxy, CoreDNS 같은 구성 요소가 API 서버를 지켜보며 들고 있는 informer 사본이 또 한 겹이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: watch 캐시</div>
+  API 서버가 리소스 종류마다 etcd를 watch해서 메모리에 들고 있는 사본이에요. <a href="https://kubernetes.io/docs/reference/using-api/api-concepts/#semantics-for-get-and-list">API 개념 문서</a>는 "an internal, in-memory store within the API server that caches and mirrors the state of data persisted into etcd"라고 설명해요. 객체의 지금 값과 함께 최근 이벤트도 일정량 들고 있다가 클라이언트의 watch 요청에 내줘요.
+</div>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: informer</div>
+  구성 요소가 API 서버에서 초기 객체와 이후 변화를 받아 자기 메모리에 들고 있는 사본과 그 사본을 관리하는 도구예요. API 개념 문서는 목록을 받고(LIST) 이어서 변화를 받는(WATCH) "list-then-watch" 일을 Go 클라이언트에서는 Reflector가 맡는다고 적어요. 최신 client-go에는 초기 객체도 WATCH로 받는 방식이 있고 아래에서 두 경로를 나눠 봐요. 컨트롤러는 사본에 생긴 변화를 informer에게서 알림으로 받고 필요한 값도 API 서버가 아니라 이 사본에서 읽어요.
+</div>
+<p>API 서버 쪽 사본이 etcd보다 얼마나 늦는지는 API 서버의 메트릭으로 볼 수 있어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/39/01-watch-cache-rv.png" alt="39-cache-consistency.sh 실행 화면 1절. 2026-11-14 20:29:33 API 서버 /metrics의 apiserver_watch_cache_resource_version은 nodes 139825, pods 139825, services 139825이고 etcd의 현재 revision은 139829. kubernetes_feature_enabled는 ListFromCacheSnapshot BETA 1, WatchList BETA 1" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 1. API 서버가 들고 있는 nodes, pods, services 사본의 위치는 139825였고 etcd의 리비전은 139829였다</div>
+<p>v1.37.2 소스(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/storage/cacher/metrics/metrics.go">metrics.go</a>)는 이 메트릭을 "Current resource version of watch cache broken by resource type"이라고 설명해요. 리소스 종류마다 캐시가 어디까지 따라왔는지를 적은 값이에요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/storage/cacher/watch_cache.go">watch_cache.go</a>를 보면 이 값은 그 리소스에 이벤트가 올 때와 etcd가 보내는 진행 알림을 받을 때 앞으로 가요. API 서버가 etcd에 거는 watch는 진행 알림을 요청하고(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/storage/cacher/lister_watcher.go">lister_watcher.go</a>의 ProgressNotify: true) 우리 etcd는 이 알림을 5초마다 보내요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: 진행 알림(progress notification)</div>
+  etcd가 watch를 건 쪽에 변화가 없어도 "지금 리비전 여기까지는 다 보냈다"고 알려 주는 빈 응답이에요. <a href="https://etcd.io/docs/v3.7/op-guide/configuration/">etcd 설정 문서</a>는 --watch-progress-notify-interval을 "Duration of periodical watch progress notification"이라고 설명하고 기본값은 10m이에요. kubeadm이 만든 우리 etcd 매니페스트에는 5s가 들어 있어요(38-etcd-flags.txt).
+</div>
+<p>세 리소스가 똑같이 139825였던 것도 같은 진행 알림을 받았기 때문으로 보여요. etcd는 그사이 4 리비전 더 나가 있었어요. 그 넷이 파드나 노드의 변경이었는지 다른 키(Lease 등)의 변경이었는지는 이 기록에 없어요. 분명한 것은 API 서버의 사본도 etcd와 같은 순간에 있다고 보장하지 않는다는 점이에요.</p>
+<p>그러면 kubectl get은 늦은 사본을 보여 줄까요? <a href="https://kubernetes.io/docs/reference/using-api/api-concepts/#semantics-for-get-and-list">API 개념 문서</a>의 표를 보면 LIST 요청은 resourceVersion을 어떻게 주느냐에 따라 뜻이 달라요.</p>
+<p>&middot; <code style="font-family:Menlo,monospace;font-size:14px;">resourceVersion=0</code>은 Any예요. 문서는 "Always served from watch cache"라고 적고 "due to partitions or stale caches" 훨씬 옛 데이터가 올 수도 있다고 주의를 줘요.<br>
+&middot; resourceVersion을 비우면 Most recent예요. 문서는 "The returned data must be consistent"라고 적고 지금 버전은 etcd v3.4.31+·v3.5.13+에서 이 읽기도 watch 캐시에서 처리한다고 해요(우리 etcd는 3.7.0이에요). 캐시가 etcd와 어긋나지 않게 진행 알림을 요청한다는 설명이 붙어 있어요.</p>
+<p>두 읽기를 같은 순간에 나란히 돌려 봤어요(22시 04분, 조회만 했어요). 숫자가 10억을 넘는 것은 21시 57분의 복원 리허설에서 etcd 리비전을 10억 올려 두었기 때문이에요(40편).</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/39/02-read-semantics.png" alt="39-read-semantics.sh 실행 화면 1절. 다섯 번 차례로 읽은 값. [1] rv=0 LIST 1000180926, etcd 1000180928, rv 비운 LIST 1000180928, rv=0 다시 1000180928, 캐시 메트릭 1000180928. [2] 모두 1000180934. [3] 모두 1000180938. [4] rv=0 LIST 1000180942, etcd 1000180945, 나머지 1000180945. [5] rv=0 LIST 1000180950, etcd 1000180951, 나머지 1000180951. 파드 수는 모두 34" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 2. resourceVersion을 비운 읽기(③)는 다섯 번 모두 바로 앞의 etcd 리비전(②)과 같았고 rv=0 읽기(①)는 세 번 1~3 작았다</div>
+<p>③은 다섯 번 모두 바로 앞에서 본 etcd 리비전 ②와 같았어요. ①은 [1], [4], [5]에서 바로 뒤의 etcd 리비전보다 각각 2, 3, 1 작았고 [2]와 [3]에서는 같았어요. ③ 뒤에 다시 한 ④와 캐시 메트릭 ⑤는 다섯 번 모두 ③과 같았어요. 파드 수는 모든 읽기에서 34개였어요.</p>
+<p>③에서 API 서버는 etcd의 지금 리비전을 확인하고 캐시가 거기까지 따라오기를 기다렸다가 답해요. watch_cache.go는 resourceVersion이 비어 있는 목록 요청을 주석 그대로 "Consistent read"로 보고 getCurrentRV로 etcd의 지금 리비전을 얻은 뒤 waitUntilFreshLocked로 캐시가 그 리비전에 닿기를 기다려요. 그 과정에서 캐시 위치가 앞으로 당겨져 바로 뒤의 ④와 ⑤도 같은 값이 된 것으로 보여요. ①은 그 순간 캐시가 알던 위치를 그대로 돌려줬어요. 다만 ①과 ② 사이 약 0.1초 동안 etcd에 쓰기가 있었을 수도 있어서 이 기록만으로 캐시가 몇 리비전 늦었는지는 가를 수 없어요.</p>
+<p>누가 어느 읽기를 쓸까요? kubectl get pods -A를 -v=6으로 돌려 보니 요청 URL은 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/pods?limit=500</code>으로 resourceVersion이 없었어요(39-kubectl-get-v6.txt). 이 kubectl get은 Most recent로 읽어요. 전통적인 LIST-WATCH 경로에서는 informer의 첫 LIST가 resourceVersion=0을 사용해요. v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/client-go/tools/cache/reflector.go">reflector.go</a>의 주석에는 "initial list performed by reflector uses "0" as resource version to allow it to be served from the watch cache"라고 적혀 있어요. 이것은 LIST-WATCH 대체 경로의 설명이에요. client-go v1.37.2에서는 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/client-go/features/known_features.go">WatchListClient가 1.35부터 기본으로 켜져</a> 있어서 지원되는 클라이언트는 sendInitialEvents=true인 WATCH로 초기 객체까지 받아요. 지원되지 않거나 실패하면 LIST-WATCH 경로를 써요. 두 방식 모두 처음 상태와 이후 변화를 resourceVersion으로 이어 받아요. API 개념 문서도 LIST-WATCH 방식이 "without missing any events" 지금 상태를 받고 이후 변화를 구독하게 해 준다고 설명해요.</p>
+<p>그림 1의 기능 게이트 목록에 ConsistentListFromCache가 없는 것도 같은 이야기예요. Most recent 읽기를 캐시에서 처리하는 이 기능은 <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.34.md">1.34에서 GA</a>가 됐고 <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.37.md">1.37에서 게이트가 지워졌어요</a>. 이제는 끌 수 없는 기본 동작이에요. <span class="obsv-mark">사본은 늦을 수 있지만 최신을 달라고 하면 API 서버가 캐시를 etcd의 지금 리비전까지 맞춘 뒤에 답해요.</span></p>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 450" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k39aarr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k39aarr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k39aarr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">사본은 두 겹이다: etcd → API 서버의 watch 캐시 → 구성 요소의 informer</text>
+<path d="M20 150 C 62 151.7, 104 152.4, 148 151.5 C 145.5 184, 148.9 219, 147.5 254 C 104 253.9, 62 256.1, 20.4 255.0 C 18.7 219, 21.8 184, 20 150 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="84" y="188" font-family="'Nanum Pen Script', cursive" font-size="26" fill="#2e6b41" text-anchor="middle">etcd</text>
+<text x="84" y="214" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">원본</text>
+<text x="84" y="238" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="middle">리비전 139829</text>
+<path d="M222 96 C 293 95.4, 363 97.3, 436 97.1 C 435.9 167, 436.2 237, 437.0 310 C 363 311.8, 293 308.9, 220.6 310.2 C 223.1 237, 220.2 167, 222 96 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="329" y="126" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#4a7fb5" text-anchor="middle">API 서버</text>
+<path d="M242 140 C 299 140.9, 357 141.6, 416 140.7 C 414.6 170, 417.4 201, 415.7 232 C 357 233.4, 299 233.3, 241.3 231.6 C 241.2 201, 241.6 170, 242 140 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="329" y="166" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#4a7fb5" text-anchor="middle">watch 캐시</text>
+<text x="329" y="188" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">리소스마다 메모리 사본</text>
+<text x="329" y="214" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="middle">pods 위치 139825</text>
+<text x="329" y="258" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">rv=0 읽기: 캐시에서 바로</text>
+<text x="329" y="280" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">rv 비운 읽기: 캐시가 etcd를</text>
+<text x="329" y="299" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="middle">따라잡은 뒤 답한다</text>
+<path d="M150 204 C 170 198, 198 195, 220 198" fill="none" stroke="#5a9e6f" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k39aarr1)"/>
+<text x="186" y="166" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#2e6b41" text-anchor="middle">watch</text>
+<text x="186" y="184" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">+진행 알림 5초</text>
+<path d="M520 72 C 573 73.3, 627 70.5, 682 72.4 C 680.4 87, 683.5 101, 681.3 116 C 627 115.5, 573 117.4, 521.0 114.6 C 520.1 101, 519.8 87, 520 72 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="601" y="93" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">컨트롤러 매니저</text>
+<text x="601" y="109" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">informer 사본</text>
+<path d="M438 170 C 462 149, 493 118, 516 94" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" marker-end="url(#k39aarr2)"/>
+<path d="M520 128 C 573 129.2, 627 129.4, 682 127.5 C 680.7 143, 682.1 157, 682.6 172 C 627 173.3, 573 172.6, 520.4 172.2 C 521.2 157, 520.2 143, 520 128 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="601" y="149" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">스케줄러</text>
+<text x="601" y="165" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">informer 사본</text>
+<path d="M438 170 C 462 165, 493 158, 516 150" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" marker-end="url(#k39aarr2)"/>
+<path d="M520 184 C 573 185.3, 627 184.0, 682 182.6 C 681.8 199, 680.6 213, 682.4 228 C 627 227.5, 573 228.6, 520.6 227.2 C 518.6 213, 521.1 199, 520 184 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="601" y="205" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">kubelet</text>
+<text x="601" y="221" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">informer 사본</text>
+<path d="M438 170 C 460 183, 492 198, 516 206" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" marker-end="url(#k39aarr2)"/>
+<path d="M520 240 C 573 241.5, 627 238.5, 682 240.0 C 681.5 255, 680.9 269, 681.3 284 C 627 284.0, 573 285.2, 519.4 284.3 C 519.8 269, 520.6 255, 520 240 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="601" y="261" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">kube-proxy</text>
+<text x="601" y="277" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">informer 사본</text>
+<path d="M438 170 C 460 199, 491 236, 516 262" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" marker-end="url(#k39aarr2)"/>
+<path d="M520 296 C 573 295.2, 627 295.3, 682 295.5 C 683.6 311, 683.5 325, 681.8 340 C 627 341.2, 573 341.3, 520.9 340.3 C 520.9 325, 518.9 311, 520 296 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="601" y="317" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">CoreDNS</text>
+<text x="601" y="333" font-family="Menlo, monospace" font-size="10" fill="#8a8272" text-anchor="middle">informer 사본</text>
+<path d="M438 170 C 459 215, 492 276, 516 318" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round" marker-end="url(#k39aarr2)"/>
+<text x="478" y="70" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#4a7fb5" text-anchor="middle">watch</text>
+<path d="M520 352 C 409 358, 261 358, 150 352" fill="none" stroke="#e5533c" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="7 5" marker-end="url(#k39aarr3)"/>
+<text x="335" y="340" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f" text-anchor="middle">쓰기는 사본을 거치지 않고 etcd까지 간다</text>
+<text x="335" y="378" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#b3502f" text-anchor="middle">etcd에 쓸 때 mod_revision이 읽은 값과 다르면 거절 → 409</text>
+<text x="350" y="432" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle">읽기 사본은 늦을 수 있고 쓰기는 언제나 원본에서 검사한다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 읽기는 두 겹의 사본에서 오고 쓰기는 사본을 거치지 않고 etcd까지 가서 검사를 받는다</div>
+
+<h2>2. 늦은 사본으로 고치면 409를 받고 다시 읽는다</h2>
+
+<p>읽기가 늦을 수 있다면 늦은 사본을 보고 고치는 쓰기는 어떻게 될까요? 20시 29분에 myweb Deployment를 읽어 사본을 만들었어요. 그 사본의 resourceVersion은 134309였어요. 19시 38분에 replicas를 5로 되돌린 뒤로 바뀌지 않았다는 뜻이에요(38편). 그다음 다른 요청으로 annotation 하나를 고쳐 지금 값을 139832로 만들어 두고 처음 사본에 다른 annotation을 더해 replace로 보냈어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/39/03-conflict-409.png" alt="39-cache-consistency.sh 실행 화면 3절. 먼저 읽어 둔 사본의 resourceVersion 134309, 지금 139832. kubectl replace 결과 Error from server (Conflict): error when replacing /tmp/old.json: Operation cannot be fulfilled on deployments.apps myweb: the object has been modified; please apply your changes to the latest version and try again" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 4. 사본의 resourceVersion(134309)이 지금 값(139832)과 달라 replace가 409 Conflict로 거절됐다</div>
+<p>&rarr; 내가 읽은 뒤에 누군가 이 객체를 바꿨으니 최신 버전에 변경을 다시 적용해서 보내라는 뜻이에요. 22편에서 ConfigMap으로 사용자 A와 B를 흉내 냈을 때와 같은 오류예요.</p>
+<p>이 결과를 보고 제가 한 말은 "결국에 API 서버 통해서 가니까 여기서 체크하면 되는구나"였어요. 맞는 말이에요. 읽기는 여러 사본에서 오지만 쓰기는 모두 API 서버로 가고 API 서버는 두 번 확인해요.</p>
+<p>&middot; 요청에 resourceVersion이 들어 있으면 지금 저장된 값과 비교해요. <a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency">API 규약 문서</a>는 "If resourceVersion is included with the PUT operation the system will verify that there have not been other successful mutations to the resource during a read/modify/write cycle"이라고 적어요. 다르면 409예요.<br>
+&middot; etcd에 쓸 때도 조건을 붙여요. v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/storage/etcd3/store.go">store.go</a>는 etcd 클라이언트의 OptimisticPut을 부르고 이 함수(<a href="https://github.com/etcd-io/etcd/blob/v3.7.0/client/v3/kubernetes/client.go">etcd v3.7.0 client/v3/kubernetes/client.go</a>)는 "이 키의 mod_revision이 내가 읽은 값과 같을 때만 쓴다"는 트랜잭션을 보내요. 38편에서 본 mod_revision이 여기서 잠금 노릇을 해요. API 서버가 캐시에서 꺼낸 값으로 고치기 시작했더라도 etcd에 늦은 값을 덮어쓰지는 못해요.</p>
+<p><span class="obsv-mark">읽기는 늦은 사본에서 와도 쓰기는 etcd의 지금 mod_revision과 비교를 통과해야만 들어가요.</span> 사본이 늦어서 생기는 일은 대부분 409 한 번과 다시 읽기로 끝나요.</p>
+<p>다만 이 검사가 모든 쓰기에 걸리지는 않아요. 두 경우를 알아 둬야 해요.</p>
+<p>&middot; <b>resourceVersion 없이 보낸 PATCH</b>: API 개념 문서는 PATCH가 "isn't conditional on the existing data"인 변경에 알맞다고 하고 변경 유실을 막아야 하는 클라이언트는 PUT이든 PATCH든 resourceVersion을 조건으로 넣으라고 권해요. resourceVersion을 넣지 않으면 읽어 둔 버전과 비교하는 조건 없이 현재 값에 변경을 적용해요.<br>
+&middot; <b>새로 만들기</b>: 아직 없는 객체에는 비교할 resourceVersion이 없어요. 같은 이름이 이미 있으면 409 AlreadyExists로 막히지만 이름이 다른 파드는 막을 것이 없어요. ReplicaSet 컨트롤러가 늦은 사본만 믿으면 방금 만든 파드가 아직 안 보여 하나 더 만들 수도 있어요. 그래서 v1.37.2의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/replicaset/replica_set.go">ReplicaSet 컨트롤러</a>는 만들거나 지우겠다고 요청한 개수를 expectations로 기억해 두고 informer가 그만큼을 보기 전에는 파드를 더 만들거나 지우지 않아요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/controller_utils.go">controller_utils.go</a> 주석의 "A controller isn't synced till its expectations are either fulfilled, or expire"가 그 규칙이고 기다리는 한도는 5분(ExpectationsTimeout)이에요.</p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: 409를 만나면 다시 읽고 다시 써요</div>
+  &bull; kubectl에서 "the object has been modified"가 나오면 최신 객체를 다시 읽고 그 위에 변경을 다시 적용해요. resourceVersion을 지우고 보내면 남의 변경을 덮어써요(22편)<br>
+  &bull; 직접 짠 컨트롤러나 스크립트는 client-go의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/client-go/util/retry/util.go">retry.RetryOnConflict</a>로 "읽기, 고치기, 쓰기"를 감싸 409가 나면 다시 시도하게 해요<br>
+  &bull; 읽은 내용에 따라 값을 정하는 PATCH라면 resourceVersion을 넣어 조건부로 보내요. resourceVersion을 넣지 않으면 읽은 뒤 다른 변경이 있었는지 확인하는 조건이 자동으로 생기지는 않아요
+</div>
+
+<h2>3. 너무 오래된 위치에서 이어 받으려 하면 410을 받고 처음부터 다시 받는다</h2>
+
+<p>watch는 "이 resourceVersion 뒤의 변화를 달라"는 요청이에요. 그러면 너무 옛 위치를 주면 어떻게 될까요? 22편 실험 때(15시 17분)의 resourceVersion 103241부터 파드를 watch하겠다고 요청해 봤어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/39/04-gone-410.png" alt="39-cache-consistency.sh 실행 화면 2절. GET /api/v1/namespaces/default/pods?watch=true&amp;resourceVersion=103241의 응답은 type ERROR, kind Status, status Failure, message too old resource version: 103241 (135108), reason Expired, code 410" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 5. 22편 때의 resourceVersion 103241로 watch를 걸자 410 Expired, too old resource version: 103241 (135108)이 돌아왔다</div>
+<p>&rarr; 103241은 너무 옛 위치라 그 뒤 변화를 이어 줄 수 없다는 뜻이에요. 이 문구는 watch 캐시가 낸 것이에요. v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/storage/cacher/watch_cache_history.go">watch_cache_history.go</a>에 "too old resource version: %d (%d)" 형식이 그대로 있고 etcd까지 내려가서 컴팩션에 걸렸다면 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/storage/etcd3/errors.go">errors.go</a>의 "The resourceVersion for the provided watch is too old."가 나와요. 괄호 안 135108은 같은 소스에서 oldest-1, 곧 이 캐시가 그 순간 이어 줄 수 있던 가장 옛 위치예요.</p>
+<p>창은 두 개예요. 하나는 38편에서 본 etcd의 이력이에요. API 서버가 5분마다 5분 전 리비전까지 컴팩션하니 etcd에는 최근 5~10분이 남아요. 다른 하나는 watch 캐시가 리소스마다 들고 있는 최근 이벤트예요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go">cacher.go</a>와 watch_cache_history.go를 보면 이벤트를 고리 모양 버퍼에 100개에서 102,400개까지 담고 되도록 최근 75초(DefaultEventFreshDuration, 북마크 간격 1분에 15초를 더한 값) 이상을 남기도록 크기를 두 배로 늘리거나 반으로 줄여요. 이 창은 리소스마다 달라요. 19시 38분의 리비전이 134257이고 20시 20분이 138928이었으니(38편) 135108은 19시 40분대 위치예요. 컴팩션이 5분마다 돌았다면 etcd에는 이미 없는 리비전인데 pods의 watch 캐시는 그 뒤 이벤트를 아직 들고 있었어요. 103241은 두 창 모두의 바깥이었어요.</p>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k39barr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k39barr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k39barr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle">어디서부터 이어 받을 수 있나 (pods watch, 20:29 기준, 축척 아님)</text>
+<path d="M30 100 C 222 101, 479 100, 670 100" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k39barr1)"/>
+<text x="36" y="86" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="start">옛 리비전</text>
+<text x="664" y="86" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#8a8272" text-anchor="end">지금</text>
+<path d="M90 92 C 89 97, 91 103, 90 108" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M300 92 C 300 97, 300 104, 300 108" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M470 92 C 471 98, 469 102, 470 108" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M630 92 C 629 97, 630 103, 630 108" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<text x="90" y="126" font-family="Menlo, monospace" font-size="11" fill="#b3502f" text-anchor="middle">103241</text>
+<text x="90" y="146" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="middle">22편 15:17</text>
+<text x="300" y="126" font-family="Menlo, monospace" font-size="11" fill="#4a7fb5" text-anchor="middle">135108</text>
+<text x="300" y="146" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#4a7fb5" text-anchor="middle">캐시가 이어 줄 수 있는 가장 옛 위치</text>
+<text x="470" y="126" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">etcd 컴팩션 경계</text>
+<text x="470" y="144" font-family="'Nanum Pen Script', cursive" font-size="13" fill="#8a8272" text-anchor="middle">(5~10분 전)</text>
+<text x="630" y="126" font-family="Menlo, monospace" font-size="11" fill="#2e6b41" text-anchor="middle">139829</text>
+<path d="M300 160 C 419 160.9, 538 160.4, 660 159.9 C 660.8 169, 659.7 177, 659.9 186 C 538 187.2, 419 185.9, 299.2 186.0 C 300.3 177, 301.1 169, 300 160 Z" fill="#eef3f9" stroke="#4a7fb5" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="480" y="179" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#4a7fb5" text-anchor="middle">pods watch 캐시의 이벤트 창 (되도록 75초 이상, 100~102,400개)</text>
+<path d="M470 196 C 533 197.2, 595 196.3, 660 196.5 C 661.1 205, 660.7 213, 660.1 222 C 595 223.0, 533 221.0, 470.7 222.1 C 469.0 213, 469.4 205, 470 196 Z" fill="#e3f1e6" stroke="#5a9e6f" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="565" y="215" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#2e6b41" text-anchor="middle">etcd에 남은 이력</text>
+<text x="30" y="262" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#2e6b41" text-anchor="start">A</text>
+<text x="56" y="262" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="start">(예) watch ?resourceVersion=139700 → 창 안이라 그 뒤 변화만 받는다</text>
+<text x="30" y="302" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#b3502f" text-anchor="start">B</text>
+<text x="56" y="302" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#3d3a34" text-anchor="start">(그림 5) watch ?resourceVersion=103241 → 410 Expired</text>
+<path d="M90 316 C 90 324, 90 333, 90 340" fill="none" stroke="#e5533c" stroke-width="2" stroke-linecap="round" marker-end="url(#k39barr2)"/>
+<path d="M56 344 C 106 345.0, 155 343.1, 206 344.2 C 205.9 355, 205.5 366, 206.9 378 C 155 377.2, 106 378.4, 56.0 377.9 C 57.3 366, 56.0 355, 56 344 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="131" y="367" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#c07f18" text-anchor="middle">초기 상태 재조회</text>
+<path d="M210 361 C 225 361, 247 361, 262 361" fill="none" stroke="#e5a33c" stroke-width="2" stroke-linecap="round" marker-end="url(#k39barr3)"/>
+<path d="M266 344 C 337 344.9, 407 345.3, 480 343.5 C 479.6 355, 480.0 366, 480.3 378 C 407 377.4, 337 378.4, 266.1 376.8 C 267.0 366, 264.7 355, 266 344 Z" fill="#e3f1e6" stroke="#5a9e6f" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="373" y="367" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#2e6b41" text-anchor="middle">받은 resourceVersion부터 WATCH</text>
+<text x="490" y="367" font-family="'Nanum Pen Script', cursive" font-size="14" fill="#8a8272" text-anchor="start">(client-go Reflector)</text>
+<text x="350" y="408" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle">410은 고장이 아니라 처음부터 다시 받으라는 신호다</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 6. 창 안에서는 resourceVersion으로 이어 받고 창 밖이면 410을 받아 처음부터 다시 받는다</div>
+<p>410을 받은 클라이언트가 할 일은 API 개념 문서에 정해져 있어요. "clients must handle the case by recognizing the status code 410 Gone, clearing their local cache, performing a new get or list operation, and starting the watch from the resourceVersion that was returned." 전통적인 LIST-WATCH 경로에서는 410을 알아보고 자기 사본을 비운 뒤 목록을 새로 받아 그 resourceVersion부터 다시 watch하라는 뜻이에요. client-go의 Reflector도 너무 오래된 위치에서 이어 받을 수 없으면 초기 상태를 다시 받아요. reflector.go의 relistResourceVersion 주석은 LIST-WATCH 대체 경로를 설명해요. watch가 410으로 끝나면 먼저 마지막으로 본 위치보다 옛날이 아닌 목록을 다시 받고 그 목록마저 410이면 resourceVersion을 비운 일관된 읽기로 다시 받아요. WatchList 경로에서는 초기 객체를 보내는 WATCH로 사본을 다시 채워요.</p>
+<p>410이 자주 나지 않게 하는 장치도 있어요. API 개념 문서는 "To mitigate the impact of short history window" BOOKMARK 이벤트를 둔다고 해요. 변화가 없어도 "여기까지는 다 보냈다"는 resourceVersion만 담은 이벤트를 보내 클라이언트의 위치를 앞으로 당겨 주는 거예요. cacher.go의 주석은 watch 캐시가 75초를 남기는 이유를 "to maximize chances that last bookmark was sent within kept history"라고 적어요. 북마크를 1분마다 보내니 마지막 북마크 위치가 늘 창 안에 있게 한다는 뜻이에요.</p>
+<p>40편에서 다룰 etcd 복원도 이 규칙을 이용해요. 21시 57분의 복원 리허설은 etcdutl snapshot restore에 <code style="font-family:Menlo,monospace;font-size:14px;">--bump-revision 1000000000 --mark-compacted</code>를 줬어요. <a href="https://etcd.io/docs/v3.7/op-guide/recovery/">etcd 복구 문서</a>는 --mark-compacted를 "This ensures that all watches are terminated and etcd does not respond to requests about revisions that happened after taking the snapshot - effectively invalidating its informer caches"라고 설명해요. 복원한 뒤 모든 informer가 옛 위치로 이어 받지 못하고 410을 받아 처음부터 다시 받게 만드는 거예요. <span class="obsv-mark">410은 고장이 아니라 사본을 버리고 처음부터 다시 받으라는 신호예요.</span></p>
+
+<h2>4. 늦게 알아도 결과가 맞는 이유는 컨트롤러가 지금 상태를 다시 맞추기 때문이다</h2>
+
+<p>409와 410이 쓰기와 watch를 지킨다면 남은 걱정은 이것이에요. 컨트롤러가 이벤트 하나를 늦게 받거나 놓치면 어떻게 될까요? 쿠버네티스 커뮤니티의 <a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-api-machinery/controllers.md">컨트롤러 작성 가이드</a>는 컨트롤러를 이렇게 정의하는 데서 시작해요.</p>
+<div class="obsv-code">for {
+  desired := getDesiredState()
+  current := getCurrentState()
+  makeChanges(desired, current)
+}</div>
+<p>&rarr; 원하는 상태와 지금 상태를 읽어 차이를 메우는 일을 끝없이 되풀이하는 것이 컨트롤러라는 뜻이에요. 가이드는 바로 아래에 "Watches, etc, are all merely optimizations of this logic"이라고 덧붙여요. watch는 이 반복을 빠르게 하는 장치일 뿐이라는 말이에요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: level-triggered와 edge-triggered</div>
+  edge-triggered는 "false가 true로 바뀌었다"는 사건을 받았을 때 움직이는 방식이고 level-triggered는 "지금 true다"라는 상태를 보고 움직이는 방식이에요. 사건 방식은 사건 하나를 놓치면 결과가 틀어지지만 상태 방식은 언제 다시 보든 지금 상태에 맞춰 같은 결론을 내요.
+</div>
+<p>가이드의 지침 가운데 하나가 "Level driven, not edge driven"이에요. 컨트롤러는 한동안 꺼져 있다 다시 돌 수 있으니 "false가 true로 바뀌는 것을 봤다"는 데 기대지 말고 "지금 true다"만 믿으라고 해요. 그러면서 "Even an API watch suffers from this problem"이라고 적어요. watch도 변화를 하나하나 다 보여 준다고 장담하지 않는다는 뜻이에요. 20편에서 컨트롤러 매니저를 멈춘 사이 replicas를 7로 올리고 파드 하나를 지웠을 때 돌아온 컨트롤러 매니저는 그 두 사건을 보지 못했지만 지금 Deployment는 7, ReplicaSet은 5, 파드는 4개라는 상태만 보고 차이를 메웠어요. 사건을 놓쳐도 상태를 다시 보면 같은 결론이 나요.</p>
+<p>그래도 시작할 때는 사본이 비어 있어요. 비어 있는 사본을 지금 상태로 믿으면 "파드가 0개다"라고 잘못 결론 내리게 돼요. 가이드는 이것도 지침으로 적어요. "Use the cache.WaitForCacheSync function to wait for your secondary caches before starting your primary sync functions." ReplicaSet의 파드 수를 세는 일이 알려진 옛 정보로 돌지 않게 하려는 것이라는 설명이 붙어 있어요. 우리 클러스터의 로그에서 이 기다림을 찾아봤어요. 21시 57분의 복원 리허설로 컨트롤러 매니저와 스케줄러가 다시 뜬 뒤였어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/39/05-cache-sync.png" alt="39-read-semantics.sh 실행 화면 2~4절. 컨트롤러 매니저 로그 12:58:22.959 Starting version v1.37.2, 12:59:04.248 Successfully acquired lease kube-system/kube-controller-manager, 12:59:05.755 Waiting for caches to sync, 12:59:05.961 Caches are synced, Waiting 50줄과 Caches are synced 50줄. 스케줄러 로그 12:57:18.002 Waiting for caches to sync, 12:59:03.802 Caches are synced, 12:59:22.660 Successfully acquired lease kube-system/kube-scheduler, 각 1줄. API 서버 /readyz?verbose의 informer-sync ok, generic-apiserver-start-informers ok, storage-object-count-tracker-hook ok, start-apiextensions-informers ok, crd-informer-synced ok, storage-readiness ok, start-kube-aggregator-informers ok" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 7. 컨트롤러 매니저는 리더가 된 뒤 캐시 동기화를 50번 기다려 끝내고서 일을 시작했고 스케줄러는 캐시를 다 채운 뒤에 리더가 됐다. 로그 시각은 UTC다</div>
+<p>로그 시각은 UTC라 9시간을 더하면 한국 시각이에요. 컨트롤러 매니저는 21:58:22에 다시 시작해 21:59:04에 리더가 됐고 21:59:05.755부터 "Waiting for caches to sync"를 50줄 찍은 뒤 21:59:05.961까지 "Caches are synced"도 50줄 찍었어요. 컨트롤러들이 각자 informer 사본이 찰 때까지 기다렸고 약 0.2초 만에 모두 채운 다음에 일을 시작한 거예요. 스케줄러는 21:57:18부터 기다리기 시작해 21:59:03에야 캐시를 다 채웠고 21:59:22에 리더가 됐어요. 그사이 API 서버가 복원 리허설 때문에 두 번 멈췄어요(21:57:05~21:57:50, 21:58:41~21:58:47, 40편의 리허설 기록).</p>
+<p>API 서버도 같은 규칙을 지켜요. /readyz에는 informer-sync와 storage-readiness 항목이 있어요. storage-readiness는 기능 게이트 WatchCacheInitializationPostStartHook이 켜져 있을 때 등록되는 확인이고 이 게이트는 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/features/kube_features.go">1.37에서 GA</a>가 됐어요. API 개념 문서는 이 동작을 "the API server delays reporting ready (/readyz) until every registered watch cache completes its initial synchronization from etcd"라고 설명해요. CoreDNS도 마찬가지예요. <a href="https://github.com/coredns/coredns/blob/v1.14.6/plugin/kubernetes/README.md">kubernetes 플러그인 설명</a>에 따르면 시작할 때 최대 5초까지 API 서버와 watch 동기화를 기다리고 동기화되지 않은 쿠버네티스 이름에는 SERVFAIL로 답해요. <span class="obsv-mark">늦게 받은 사본은 다시 맞추면 되고 빈 사본으로는 아예 결정하지 않아요.</span></p>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;">
+<defs><marker id="k39carr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5a33c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34" text-anchor="middle">읽기 사본이 늦어도 결과가 맞는 네 장치</text>
+<path d="M210 48 C 302 50.0, 395 49.0, 490 48.8 C 489.0 63, 492.0 77, 491.2 92 C 395 90.9, 302 89.6, 210.7 92.2 C 209.7 77, 212.5 63, 210 48 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="350" y="77" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18" text-anchor="middle">사본은 늦을 수 있다 (1장)</text>
+<path d="M20 112 C 126 111.2, 231 113.1, 340 113.4 C 338.7 151, 342.3 190, 339.1 230 C 231 231.1, 126 230.6, 21.1 228.7 C 21.8 190, 21.5 151, 20 112 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="36" y="142" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="start">① 쓰기: 원본과 비교</text>
+<text x="42" y="170" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">resourceVersion이 다르면 409</text>
+<text x="42" y="192" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">etcd도 mod_revision 비교 (2장)</text>
+<text x="42" y="214" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">만들기는 expectations로 기다림</text>
+<path d="M360 112 C 466 110.7, 571 111.9, 680 113.0 C 677.6 151, 679.1 190, 679.1 230 C 571 232.5, 466 230.5, 361.2 229.9 C 360.9 190, 359.8 151, 360 112 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="376" y="142" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="start">② watch: 리비전으로 이어 받기</text>
+<text x="382" y="170" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">창 안이면 빠짐없이 이어 받고</text>
+<text x="382" y="192" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">410 → 초기 상태 재조회 (3장)</text>
+<text x="382" y="214" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">BOOKMARK로 위치를 앞당긴다</text>
+<path d="M20 246 C 126 246.8, 231 245.5, 340 246.9 C 338.8 285, 338.0 324, 339.6 364 C 231 365.1, 126 361.8, 18.8 365.0 C 19.8 324, 17.4 285, 20 246 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="36" y="276" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="start">③ 컨트롤러: 지금 상태를 맞춘다</text>
+<text x="42" y="304" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">사건(edge)이 아니라 상태(level)</text>
+<text x="42" y="326" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">놓친 이벤트가 있어도 다음에 맞춘다</text>
+<text x="42" y="348" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">멈췄다 돌아와도 차이를 메운다 (20편)</text>
+<path d="M360 246 C 466 246.2, 571 247.9, 680 247.3 C 677.8 285, 681.7 324, 681.0 364 C 571 362.2, 466 364.9, 360.9 363.1 C 359.8 324, 360.8 285, 360 246 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="376" y="276" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#4a7fb5" text-anchor="start">④ 시작: 캐시가 찰 때까지 기다림</text>
+<text x="382" y="304" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">WaitForCacheSync, /readyz</text>
+<text x="382" y="326" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">CoreDNS는 동기화 전 SERVFAIL</text>
+<text x="382" y="348" font-family="'Nanum Pen Script', cursive" font-size="15" fill="#3d3a34" text-anchor="start">Calico IPAM은 InSync 전 정리 안 함 (34편)</text>
+<path d="M330 94 C 286 99, 226 106, 180 110" fill="none" stroke="#e5a33c" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k39carr1)"/>
+<path d="M370 94 C 414 99, 475 104, 520 110" fill="none" stroke="#e5a33c" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k39carr1)"/>
+<text x="350" y="392" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f" text-anchor="middle">대가: 사본을 고치는 쪽이 멈추면 그 사본은 멈춘 값 그대로 남는다 (20·28·34편)</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 8. 사본이 늦다는 것을 전제로 쓰기, watch, 컨트롤러, 시작 단계에 장치를 하나씩 둔다</div>
+<div class="obsv-callout">
+  <div class="obsv-ct">⚠️ 주의: 사본이 실제로 문제를 일으킨 것은 사본을 고치는 쪽이 멈췄을 때였어요</div>
+  &bull; 20편에서 컨트롤러 매니저를 멈추자 ReplicaSet의 CURRENT는 실제 파드 수와 달리 5에 머물렀어요. 그 숫자를 고쳐 쓸 컨트롤러가 없었기 때문이에요<br>
+  &bull; 28편에서 worker1의 kube-proxy만 빼 두자 그 노드의 iptables 규칙은 옛 엔드포인트에 멈췄고 그 노드에서 보낸 요청만 실패했어요<br>
+  &bull; 34편에서는 calico-kube-controllers가 InSync를 기다리느라 약 23분 동안 IPAM 정리를 하지 않았어요. 캐시가 다 차기 전에 결정하지 않는 규칙이 이번에는 대가로 돌아왔어요<br>
+  &bull; 그래서 사본 자체보다 사본을 고치는 쪽(컨트롤러, kube-proxy, CoreDNS)이 살아 있는지를 먼저 봐요. 리더 선출 Lease의 renewTime, 파드 재시작 수, 로그의 "Caches are synced"가 단서예요
+</div>
+
+<h2>5. DNS는 API 서버를 지켜보는 CoreDNS가 만들고 앱도 응답을 캐시할 수 있다</h2>
+
+<p>캐시 이야기 끝에 제가 한 질문은 "DNS 이런 것도 etcd에서 관리해?"였어요. CoreDNS의 설정과 Service 하나의 생성과 삭제를 같이 봤어요.</p>
+<div class="obsv-fig">
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/39/06-dns-source.png" alt="39-dns-source.sh 실행 화면. CoreDNS Corefile에는 kubernetes cluster.local in-addr.arpa ip6.arpa 블록, forward . /etc/resolv.conf, cache 30, ttl 30, disable success cluster.local, disable denial cluster.local이 있고 etcd 플러그인은 없다. CoreDNS가 붙는 곳은 10.96.0.1:443(API 서버). 20:32:39 만들기 전 etcd 키 0개 DNS NXDOMAIN, kubectl create service clusterip dns-src-demo ClusterIP 10.97.200.213, 20:32:39~41 etcd 키 1개 DNS 10.97.200.213, 20:32:43 kubectl delete svc dns-src-demo, 20:32:43~45 etcd 키 0개 DNS NXDOMAIN" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;">
+</div>
+<div class="obsv-figcap">그림 9. Service를 만들자 같은 초에 etcd 키와 DNS 응답이 생겼고 지우자 같은 초에 둘 다 사라졌다</div>
+<p>Corefile에서 이름에 답하는 플러그인은 kubernetes였고 etcd 플러그인은 없었어요. CoreDNS가 연결을 여는 곳도 2379(etcd)가 아니라 10.96.0.1:443, 곧 API 서버예요(19편). <a href="https://github.com/coredns/coredns/blob/v1.14.6/plugin/kubernetes/README.md">kubernetes 플러그인 설명</a>의 첫 줄은 "enables reading zone data from a Kubernetes cluster"이고 엔드포인트는 EndpointSlice API로 watch한다고 적혀 있어요. 길을 이으면 etcd의 Service 키, API 서버, CoreDNS의 informer 사본, DNS 응답 순서예요. CoreDNS에도 <a href="https://github.com/coredns/coredns/blob/v1.14.6/plugin/etcd/README.md">etcd 플러그인</a>이 따로 있지만 그것은 SkyDNS 형식으로 적은 레코드를 etcd에서 읽는 옛 방식이고 쿠버네티스의 객체를 읽는 것이 아니에요.</p>
+<p>Service를 만든 20:32:39에 etcd 키가 생겼고 같은 초에 DNS도 10.97.200.213으로 답했어요. 20:32:43에 지우자 같은 초에 키가 사라지고 DNS도 NXDOMAIN을 돌려줬어요. 29편에서 본 대로 우리 Corefile은 <code style="font-family:Menlo,monospace;font-size:14px;">cache 30</code>을 켜 두었지만 <code style="font-family:Menlo,monospace;font-size:14px;">disable success cluster.local</code>과 <code style="font-family:Menlo,monospace;font-size:14px;">disable denial cluster.local</code> 때문에 클러스터 안 이름의 응답은 CoreDNS가 캐시하지 않아요. CoreDNS의 informer 사본이 바뀌면 다음 질의부터 바로 새 답이 나가요. 대신 응답에는 TTL 30초(<code style="font-family:Menlo,monospace;font-size:14px;">ttl 30</code>)가 붙어서 묻는 쪽이 캐시한다면 그만큼 옛 답을 들고 있을 수 있어요.</p>
+<p>이어서 제가 "가끔 캐싱돼서 문제 있다던데 아 이건 k8s가 아니라 파드 자체가 업데이트가 안 돼서"라고 스스로 답을 달았어요. 이번 실험에서는 CoreDNS의 답이 같은 초에 바뀌었지만 앱의 지연까지 측정한 것은 아니에요. 앱이 이름을 풀어 둔 답을 오래 들고 있는지도 따로 확인해야 해요.</p>
+<p>&middot; <b>JVM</b>: OpenJDK 21의 <a href="https://github.com/openjdk/jdk21u/blob/master/src/java.base/share/conf/security/java.security">java.security</a> 주석에 따르면 성공한 이름 조회는 networkaddress.cache.ttl로 캐시하고 "When a security manager is not set, the default behavior in this implementation is to cache for 30 seconds"예요. 시큐리티 매니저가 있으면 영원히 캐시해요.<br>
+&middot; <b>nginx</b>: <a href="https://nginx.org/en/docs/http/ngx_http_upstream_module.html#server">upstream 모듈 문서</a>에 따르면 server의 resolve 파라미터가 있어야 이름에 해당하는 IP가 바뀌는 것을 지켜보고 "without the need of restarting nginx" 설정을 고쳐요(resolver 지시어도 필요하고 1.27.3 전에는 상용 구독 기능이었어요). <a href="https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass">proxy_pass</a>에 변수를 쓰면 이름을 resolver로 찾는다고 적혀 있어요. 둘 다 없이 적은 이름은 nginx를 다시 시작해야 새 IP를 따라간다는 뜻으로 읽혀요.<br>
+&middot; <b>커넥션 풀과 keep-alive</b>: 이미 열린 연결은 이름을 다시 묻지 않아요. 상대가 사라져도 연결이 끊기기 전까지 옛 주소로 보내요.<br>
+&middot; <b>Service 환경 변수</b>: 29편에서 본 대로 컨테이너가 시작할 때 있던 Service만 담고 그 뒤에는 바뀌지 않아요.</p>
+<p>이 캐시가 늘 문제가 되지는 않아요. 보통 Service의 이름은 ClusterIP 하나로 풀리고 ClusterIP는 Service를 지우지 않는 한 그대로라서 앱이 옛 답을 들고 있어도 같은 주소예요. 문제가 되는 것은 답이 바뀌는 경우예요.</p>
+<div class="obsv-term">
+  <div class="obsv-tt">📖 용어: headless Service</div>
+  clusterIP를 None으로 둬서 ClusterIP를 받지 않는 Service예요. <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#a-aaaa-records">Service·파드 DNS 문서</a>에 따르면 보통 Service의 이름은 ClusterIP 하나로 풀리지만 headless Service의 이름은 "the set of IPs of all of the Pods selected by the Service"로 풀려요. 파드가 바뀌면 답도 바뀔 수 있어요.
+</div>
+<p>headless Service는 파드 IP를 직접 돌려주니 파드가 다시 뜨면 답이 바뀔 수 있어요. Service를 지우고 다시 만들어도 ClusterIP를 직접 정하지 않았다면 같은 주소를 받는다는 보장이 없어요. 이때 앱이 들고 있는 옛 답은 쿠버네티스가 아니라 앱이 고쳐야 해요. <span class="obsv-mark">이번 실험에서 CoreDNS의 답은 같은 초에 바뀌었어요. 앱이 답을 캐시하면 그 뒤에도 옛 주소를 쓸 수 있어요.</span></p>
+<div class="obsv-callout">
+  <div class="obsv-ct">💡 실무에서는: "DNS가 늦게 바뀐다"면 이 순서로 봐요</div>
+  &bull; 먼저 클러스터 쪽: 파드 안에서 정식 이름(…svc.cluster.local)으로 다시 물어 CoreDNS가 지금 무엇을 답하는지 봐요(29편). 우리 Corefile에서는 cluster.local 응답을 CoreDNS가 캐시하지 않아요<br>
+  &bull; 다음은 앱 쪽: JVM이면 networkaddress.cache.ttl, nginx면 resolve 파라미터와 resolver, 그리고 커넥션 풀이 오래 붙잡고 있는 연결이 있는지 봐요<br>
+  &bull; ClusterIP Service는 지우고 다시 만들지 않는 한 주소가 그대로라 앱이 옛 답을 들고 있어도 대개 괜찮아요. 문제는 headless Service로 파드 IP를 직접 받는 경우와 Service를 다시 만든 경우예요<br>
+  &bull; 34편에서 본 대로 파드 IP는 반납된 뒤 다른 파드에게 다시 나갈 수 있어요. headless Service의 옛 답은 엉뚱한 파드로 갈 수도 있어요
+</div>
+<p>마지막으로 etcd의 watch가 왜 이런 모양인지 한 가지만 짚어 둘게요. Kafka가 ZooKeeper를 걷어 낸 <a href="https://cwiki.apache.org/confluence/spaces/KAFKA/pages/123898922/KIP-500+Replace+ZooKeeper+with+a+Self-Managed+Metadata+Quorum">KIP-500</a> 문서는 ZooKeeper의 일회성(one-shot) watch를 두고 "When a watch triggers, it doesn't tell the controller the current state-- only that the state has changed"라고 적어요. 쿠버네티스의 watch는 리비전과 값을 함께 주고 그 리비전부터 이어 받을 수 있어요. 이 차이와 쿠버네티스가 etcd를 고른 이유는 48편에서 이어 가요.</p>
+
+<div class="obsv-summary">
+  <div class="obsv-st2">✍️ 오늘의 요약</div>
+  <b>쿠버네티스는 사본이 늦다는 것을 전제로 만들었어요. API 서버는 원본과 비교해 충돌하는 쓰기를 409로 거절해요. 클라이언트는 리비전으로 watch를 이어 받다가 더 이을 수 없으면 410을 받고 다시 읽어요. 컨트롤러는 지금 상태를 다시 맞추는 방식으로 늦은 사본을 견뎌요.</b><br><br>
+  노드는 etcd를 직접 보지 않고 API 서버의 watch 캐시와 구성 요소의 informer라는 두 겹의 사본이 있어요. API 서버의 사본도 etcd보다 몇 리비전 늦을 수 있었고(139825 대 139829) resourceVersion=0 읽기는 캐시의 값을 그대로 줬지만 resourceVersion을 비운 읽기는 다섯 번 모두 etcd의 지금 리비전과 같았어요. 읽어 둔 사본으로 고치는 사이 다른 변경이 끼어들자 replace는 409 Conflict로 거절됐고 API 서버는 etcd에도 mod_revision이 같을 때만 쓰라는 조건을 붙여요. 너무 옛 위치에서 watch를 이어 받으려 하자 watch 캐시가 410 too old resource version으로 거절했고 client-go의 Reflector는 이때 초기 상태를 다시 받아 사본을 채워요. 컨트롤러는 사건이 아니라 상태를 보고 움직이고 캐시가 다 찰 때까지 결정하지 않아요. 컨트롤러 매니저는 재시작 뒤 캐시 동기화를 50번 기다려 끝낸 다음에 일을 시작했어요. DNS도 etcd가 아니라 API 서버를 지켜보는 CoreDNS가 만들었고 이번 실험에서는 같은 초에 바뀌었어요. JVM, nginx, 커넥션 풀이 DNS 응답이나 연결을 오래 보관하는지도 따로 확인해야 해요. 앞선 장애 실험에서는 사본을 고치는 쪽이 멈췄을 때 실제 통신 오류가 이어졌어요.
+</div>
+
+</div>

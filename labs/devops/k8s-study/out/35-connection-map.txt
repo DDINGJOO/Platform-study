@@ -1,0 +1,115 @@
+# 구성 요소의 연결 지도: 받는 주소, 먼저 여는 쪽, 요청 형식, 신원 (2026-11-14 22:00:29 KST)
+
+## 1. 노드마다 TCP 연결을 받는 주소 (ss -tlnp, sshd·systemd-resolved 는 뺌)
+[k8s-master]
+  bird               0.0.0.0:179
+  calico             127.0.0.1:9099
+  containerd         127.0.0.1:43891
+  etcd               127.0.0.1:2379
+  etcd               127.0.0.1:2381
+  etcd               192.168.104.1:2379
+  etcd               192.168.104.1:2380
+  kube-apiserver     *:6443
+  kube-controller    127.0.0.1:10257
+  kube-proxy         *:10256
+  kube-proxy         127.0.0.1:10249
+  kube-scheduler     127.0.0.1:10259
+  kubelet            *:10250
+  kubelet            127.0.0.1:10248
+[k8s-worker1]
+  bird               0.0.0.0:179
+  calico             127.0.0.1:9099
+  containerd         127.0.0.1:33287
+  kube-proxy         *:10256
+  kube-proxy         127.0.0.1:10249
+  kubelet            *:10250
+  kubelet            127.0.0.1:10248
+[k8s-worker2]
+  bird               0.0.0.0:179
+  calico             127.0.0.1:9099
+  containerd         127.0.0.1:46233
+  kube-proxy         *:10256
+  kube-proxy         127.0.0.1:10249
+  kubelet            *:10250
+  kubelet            127.0.0.1:10248
+[k8s-worker3]
+  bird               0.0.0.0:179
+  calico             127.0.0.1:9099
+  containerd         127.0.0.1:40277
+  kube-proxy         *:10256
+  kube-proxy         127.0.0.1:10249
+  kubelet            *:10250
+  kubelet            127.0.0.1:10248
+
+## 2. 받는 주소를 정한 설정
+[k8s-master 정적 파드 매니페스트]
+  kube-apiserver          - --advertise-address=192.168.104.1
+  kube-apiserver          - --secure-port=6443
+  kube-scheduler          - --bind-address=127.0.0.1
+  kube-controller-manager - --bind-address=127.0.0.1
+  etcd                    - --listen-client-urls=https://127.0.0.1:2379,https://192.168.104.1:2379
+  etcd                    - --listen-metrics-urls=http://127.0.0.1:2381
+  etcd                    - --listen-peer-urls=https://192.168.104.1:2380
+  etcd 피어 포트 2380 에 맺어진 연결: 0개
+[k8s-worker1]
+  kubelet → containerd:  containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+  containerd 의 CRI 스트리밍 서버 설정: stream_server_address = '127.0.0.1' stream_server_port = '0' 
+[kube-proxy ConfigMap]
+  healthzBindAddress: ""
+  metricsBindAddress: ""
+
+## 3. API 서버가 먼저 여는 연결 (k8s-master 의 kube-apiserver 프로세스, 자기 6443 이 아닌 쪽에서 나간 연결의 상대 포트별 개수)
+  kube-apiserver → :10250  4개
+  kube-apiserver → :2379   93개
+  kube-apiserver → :6443   1개
+  kubelet 관련 플래그:
+    - --kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+    - --kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+    - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+    (--kubelet-certificate-authority 없음)
+  웹훅 설정: validating 0개, mutating 0개
+  API 서버 밖으로 넘기는 APIService(SERVICE 가 Local 이 아닌 것): 0개
+
+## 4. API 서버에 보내는 요청 본문 형식
+[kubectl get svc kubernetes -v=8 의 Accept 헤더]
+  Accept: application/json;as=Table;v=v1;g=meta.k8s.io,application/json;as=Table;v=v1beta1;g=meta.k8s.io,application/json
+[같은 REST 경로를 Accept 만 바꿔 요청 (kubectl proxy 경유, GET 만)]
+  Accept: application/json                     → 응답 앞 16바이트(od -c): { \n " k i n d " : " S e r
+  Accept: application/vnd.kubernetes.protobuf  → 응답 앞 16바이트(od -c): k 8 s \0 \n \r \n 002 v 1 022 \a S e r v
+[kubelet 이 실제로 쓰는 설정 (k8s-worker1 의 /configz)]
+  contentType: application/vnd.kubernetes.protobuf
+[kube-proxy ConfigMap 의 clientConnection.contentType]
+  contentType: ""
+
+## 5. 신원: kubeconfig 와 인증서의 주인, 그리고 API 서버가 그 요청을 누구로 보나 (kubectl auth whoami)
+  admin.conf               인증서 /O=kubeadm:cluster-admins/CN=kubernetes-admin      → whoami kubernetes-admin ["kubeadm:cluster-admins","system:authenticated"]
+  scheduler.conf           인증서 /CN=system:kube-scheduler                          → whoami system:kube-scheduler ["system:authenticated"]
+  controller-manager.conf  인증서 /CN=system:kube-controller-manager                 → whoami system:kube-controller-manager ["system:authenticated"]
+  kubelet.conf             인증서 /O=system:nodes/CN=system:node:k8s-master          → whoami system:node:k8s-master ["system:nodes","system:authenticated"]
+  pki/apiserver-etcd-client.crt subject=/CN=kube-apiserver-etcd-client issuer=/CN=etcd-ca 
+  pki/apiserver-kubelet-client.crt subject=/CN=kube-apiserver-kubelet-client issuer=/CN=kubernetes 
+  [k8s-worker1] kubelet 클라이언트 인증서 subject=/O=system:nodes/CN=system:node:k8s-worker1
+  [k8s-worker1] kubelet 서버 인증서(10250) subject=/CN=k8s-worker1@1793794780 issuer=/CN=k8s-worker1-ca@1793794780 
+
+## 6. 신원에 권한을 붙이는 ClusterRoleBinding (roleRef ← subjects)
+  system:kube-scheduler              system:kube-scheduler              ← User:/system:kube-scheduler 
+  system:volume-scheduler            system:volume-scheduler            ← User:/system:kube-scheduler 
+  system:kube-controller-manager     system:kube-controller-manager     ← User:/system:kube-controller-manager 
+  kubeadm:node-proxier               system:node-proxier                ← ServiceAccount:kube-system/kube-proxy 
+  kubeadm:apiserver-kubelet-client   system:kubelet-api-admin           ← User:/kube-apiserver-kubelet-client 
+  kubeadm:cluster-admins             cluster-admin                      ← Group:/kubeadm:cluster-admins 
+  system:node                        system:node                        ← (subjects 없음)
+  calico-node                        calico-node                        ← ServiceAccount:kube-system/calico-node 
+  calico-kube-controllers            calico-kube-controllers            ← ServiceAccount:kube-system/calico-kube-controllers 
+  system:coredns                     system:coredns                     ← ServiceAccount:kube-system/coredns 
+  system:controller:* 바인딩 41개, subject 종류: ServiceAccount kube-system 41개
+
+## 7. 컨트롤 플레인 정적 파드가 노드에서 쓸 수 있는 경로 (미러 파드 spec 의 hostPath 마운트, readOnly 여부)
+  etcd-k8s-master                      쓰기 가능: /var/lib/etcd, /etc/kubernetes/pki/etcd
+                                       읽기 전용: 없음
+  kube-apiserver-k8s-master            쓰기 가능: 없음
+                                       읽기 전용: /etc/ssl/certs, /etc/ca-certificates, /etc/kubernetes/pki, /usr/local/share/ca-certificates, /usr/share/ca-certificates
+  kube-controller-manager-k8s-master   쓰기 가능: 없음
+                                       읽기 전용: /etc/ssl/certs, /etc/ca-certificates, /etc/kubernetes/pki, /etc/kubernetes/controller-manager.conf, /usr/local/share/ca-certificates, /usr/share/ca-certificates
+  kube-scheduler-k8s-master            쓰기 가능: 없음
+                                       읽기 전용: /etc/kubernetes/scheduler.conf

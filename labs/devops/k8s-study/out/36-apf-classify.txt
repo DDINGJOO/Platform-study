@@ -1,0 +1,47 @@
+# 36편: Mac 의 실습 저장소 루트에서 bash 36-apf-classify.sh 로 실행 (조회만). 관리자 인증서 지문은 <생략> 으로 가림
+# 요청 분류(APF)와 kubeadm ClusterConfiguration (2026-11-14 22:07:44 KST)
+
+## 1. 같은 GET 이라도 누가 보내느냐에 따라 서는 줄이 다르다 (응답 헤더 X-Kubernetes-PF-*-UID 를 이름으로 바꿈)
+  관리자 kubeconfig: GET pods  status="200 OK"
+      → FlowSchema global-default  |  우선순위 수준 global-default
+  관리자 kubeconfig: GET /readyz  status="200 OK"
+      → FlowSchema probes  |  우선순위 수준 exempt
+  --as=system:kube-scheduler: GET pods  status="200 OK"
+      → FlowSchema kube-scheduler  |  우선순위 수준 workload-high
+  --as=system:node:k8s-worker1 (그룹 system:nodes): GET node  status="200 OK"
+      → FlowSchema system-node-high  |  우선순위 수준 node-high
+  --as=system:serviceaccount:monitoring:default: GET pods  status="200 OK"
+      → FlowSchema service-accounts  |  우선순위 수준 workload-low
+
+## 2. 관리자 kubeconfig 의 사용자와 그룹
+  ATTRIBUTE                                           VALUE
+  Username                                            kubernetes-admin
+  Groups                                              [kubeadm:cluster-admins system:authenticated]
+  Extra: authentication.kubernetes.io/credential-id   [X509SHA256=<생략>]
+
+## 3. kubeadm 이 매니페스트를 만들 때 쓴 ClusterConfiguration (kube-system/kubeadm-config)
+  apiServer:
+    certSANs:
+    - k8s-master
+    - 192.168.64.2
+    - 127.0.0.1
+  apiVersion: kubeadm.k8s.io/v1beta4
+  caCertificateValidityPeriod: 87600h0m0s
+  certificateValidityPeriod: 8760h0m0s
+  certificatesDir: /etc/kubernetes/pki
+  clusterName: k8s-lab
+  controllerManager: {}
+  dns: {}
+  encryptionAlgorithm: RSA-2048
+  etcd:
+    local:
+      dataDir: /var/lib/etcd
+  imageRepository: registry.k8s.io
+  kind: ClusterConfiguration
+  kubernetesVersion: v1.37.2
+  networking:
+    dnsDomain: cluster.local
+    podSubnet: 10.244.0.0/16
+    serviceSubnet: 10.96.0.0/12
+  proxy: {}
+  scheduler: {}
