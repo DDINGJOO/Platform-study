@@ -1,0 +1,596 @@
+[
+  {
+    "label": "namespace-preflight",
+    "started": "2026-11-14T23:35:16.805996+09:00",
+    "ended": "2026-11-14T23:35:16.861518+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl get namespace calico-blog-56 --ignore-not-found -o name",
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "label": "environment-nodes",
+    "started": "2026-11-14T23:35:16.862050+09:00",
+    "ended": "2026-11-14T23:35:16.921237+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl get nodes -o wide",
+    "exit": 0,
+    "stdout": "NAME          STATUS   ROLES           AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION              CONTAINER-RUNTIME\nk8s-master    Ready    control-plane   10d   v1.37.2   192.168.104.1   <none>        Ubuntu 24.04.5 LTS   6.8.0-147-generic (arm64)   containerd://2.4.1\nk8s-worker1   Ready    worker          10d   v1.37.2   192.168.104.3   <none>        Ubuntu 24.04.5 LTS   6.8.0-147-generic (arm64)   containerd://2.4.1\nk8s-worker2   Ready    worker          10d   v1.37.2   192.168.104.4   <none>        Ubuntu 24.04.5 LTS   6.8.0-147-generic (arm64)   containerd://2.4.1\nk8s-worker3   Ready    worker          10d   v1.37.2   192.168.104.5   <none>        Ubuntu 24.04.5 LTS   6.8.0-147-generic (arm64)   containerd://2.4.1\n",
+    "stderr": ""
+  },
+  {
+    "label": "environment-pools",
+    "started": "2026-11-14T23:35:16.921614+09:00",
+    "ended": "2026-11-14T23:35:16.989046+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl get ippools.crd.projectcalico.org -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"apiVersion\": \"crd.projectcalico.org/v1\",\n            \"kind\": \"IPPool\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"projectcalico.org/metadata\": \"{\\\"creationTimestamp\\\":\\\"2026-11-04T12:21:42Z\\\"}\"\n                },\n                \"creationTimestamp\": \"2026-11-04T12:21:43Z\",\n                \"generation\": 1,\n                \"name\": \"default-ipv4-ippool\",\n                \"resourceVersion\": \"977\",\n                \"uid\": \"e2b4c95b-0d0a-476b-8f93-a3eda3039168\"\n            },\n            \"spec\": {\n                \"allowedUses\": [\n                    \"Workload\",\n                    \"Tunnel\"\n                ],\n                \"assignmentMode\": \"Automatic\",\n                \"blockSize\": 26,\n                \"cidr\": \"10.244.0.0/16\",\n                \"ipipMode\": \"Always\",\n                \"natOutgoing\": true,\n                \"nodeSelector\": \"all()\",\n                \"vxlanMode\": \"Never\"\n            },\n            \"status\": {\n                \"conditions\": [\n                    {\n                        \"lastTransitionTime\": \"2026-11-04T12:21:42Z\",\n                        \"message\": \"IPPool is available for IP allocation.\",\n                        \"reason\": \"OK\",\n                        \"status\": \"True\",\n                        \"type\": \"Allocatable\"\n                    }\n                ]\n            }\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "environment-calico-image",
+    "started": "2026-11-14T23:35:16.989487+09:00",
+    "ended": "2026-11-14T23:35:17.047058+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl get ds calico-node -n kube-system -o 'jsonpath={.spec.template.spec.containers[0].image}'",
+    "exit": 0,
+    "stdout": "quay.io/calico/node:v3.33.0",
+    "stderr": ""
+  },
+  {
+    "label": "create-namespace",
+    "started": "2026-11-14T23:35:17.047458+09:00",
+    "ended": "2026-11-14T23:35:17.104704+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl create namespace calico-blog-56",
+    "exit": 0,
+    "stdout": "namespace/calico-blog-56 created\n",
+    "stderr": ""
+  },
+  {
+    "label": "apply-resources",
+    "started": "2026-11-14T23:35:17.105357+09:00",
+    "ended": "2026-11-14T23:35:17.239736+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 apply -f -",
+    "exit": 0,
+    "stdout": "pod/client created\npod/local created\npod/remote created\nservice/web created\n",
+    "stderr": ""
+  },
+  {
+    "label": "wait-ready",
+    "started": "2026-11-14T23:35:17.240268+09:00",
+    "ended": "2026-11-14T23:35:18.430033+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 wait --for=condition=Ready pod --all --timeout=120s",
+    "exit": 0,
+    "stdout": "pod/client condition met\npod/local condition met\npod/remote condition met\n",
+    "stderr": ""
+  },
+  {
+    "label": "pods-json",
+    "started": "2026-11-14T23:35:18.431148+09:00",
+    "ended": "2026-11-14T23:35:18.492486+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get pods -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"apiVersion\": \"v1\",\n            \"kind\": \"Pod\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"cni.projectcalico.org/containerID\": \"fe6a5e52b69a908b62bb92b2ba499fef1d966970005a1b4854a746f271d2c930\",\n                    \"cni.projectcalico.org/podIP\": \"10.244.194.80/32\",\n                    \"cni.projectcalico.org/podIPs\": \"10.244.194.80/32\",\n                    \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Pod\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"labels\\\":{\\\"app\\\":\\\"client\\\"},\\\"name\\\":\\\"client\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"automountServiceAccountToken\\\":false,\\\"containers\\\":[{\\\"command\\\":[\\\"sh\\\",\\\"-c\\\",\\\"sleep 3600\\\"],\\\"image\\\":\\\"curlimages/curl:8.11.1\\\",\\\"imagePullPolicy\\\":\\\"Never\\\",\\\"name\\\":\\\"client\\\",\\\"resources\\\":{\\\"limits\\\":{\\\"cpu\\\":\\\"100m\\\",\\\"memory\\\":\\\"64Mi\\\"},\\\"requests\\\":{\\\"cpu\\\":\\\"1m\\\",\\\"memory\\\":\\\"12Mi\\\"}}}],\\\"nodeName\\\":\\\"k8s-worker1\\\"}}\\n\"\n                },\n                \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n                \"generation\": 1,\n                \"labels\": {\n                    \"app\": \"client\"\n                },\n                \"name\": \"client\",\n                \"namespace\": \"calico-blog-56\",\n                \"resourceVersion\": \"1000190999\",\n                \"uid\": \"d817801c-3533-4d00-90f8-534048636ed3\"\n            },\n            \"spec\": {\n                \"automountServiceAccountToken\": false,\n                \"containers\": [\n                    {\n                        \"command\": [\n                            \"sh\",\n                            \"-c\",\n                            \"sleep 3600\"\n                        ],\n                        \"image\": \"curlimages/curl:8.11.1\",\n                        \"imagePullPolicy\": \"Never\",\n                        \"name\": \"client\",\n                        \"resources\": {\n                            \"limits\": {\n                                \"cpu\": \"100m\",\n                                \"memory\": \"64Mi\"\n                            },\n                            \"requests\": {\n                                \"cpu\": \"1m\",\n                                \"memory\": \"12Mi\"\n                            }\n                        },\n                        \"terminationMessagePath\": \"/dev/termination-log\",\n                        \"terminationMessagePolicy\": \"File\"\n                    }\n                ],\n                \"dnsPolicy\": \"ClusterFirst\",\n                \"enableServiceLinks\": true,\n                \"nodeName\": \"k8s-worker1\",\n                \"preemptionPolicy\": \"PreemptLowerPriority\",\n                \"priority\": 0,\n                \"restartPolicy\": \"Always\",\n                \"schedulerName\": \"default-scheduler\",\n                \"securityContext\": {},\n                \"serviceAccount\": \"default\",\n                \"serviceAccountName\": \"default\",\n                \"terminationGracePeriodSeconds\": 30,\n                \"tolerations\": [\n                    {\n                        \"effect\": \"NoExecute\",\n                        \"key\": \"node.kubernetes.io/not-ready\",\n                        \"operator\": \"Exists\",\n                        \"tolerationSeconds\": 300\n                    },\n                    {\n                        \"effect\": \"NoExecute\",\n                        \"key\": \"node.kubernetes.io/unreachable\",\n                        \"operator\": \"Exists\",\n                        \"tolerationSeconds\": 300\n                    }\n                ]\n            },\n            \"status\": {\n                \"allocatedResources\": {\n                    \"cpu\": \"1m\",\n                    \"memory\": \"12Mi\"\n                },\n                \"conditions\": [\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"PodReadyToStartContainers\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"Initialized\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"Ready\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"ContainersReady\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"PodScheduled\"\n                    }\n                ],\n                \"containerStatuses\": [\n                    {\n                        \"allocatedResources\": {\n                            \"cpu\": \"1m\",\n                            \"memory\": \"12Mi\"\n                        },\n                        \"containerID\": \"containerd://7801e881675b43a5edc41136e19e820b37c43abe52041ed5a1703ec6ea8102f2\",\n                        \"image\": \"docker.io/curlimages/curl:8.11.1\",\n                        \"imageID\": \"docker.io/curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69\",\n                        \"lastState\": {},\n                        \"name\": \"client\",\n                        \"ready\": true,\n                        \"resources\": {\n                            \"limits\": {\n                                \"cpu\": \"100m\",\n                                \"memory\": \"64Mi\"\n                            },\n                            \"requests\": {\n                                \"cpu\": \"1m\",\n                                \"memory\": \"12Mi\"\n                            }\n                        },\n                        \"restartCount\": 0,\n                        \"started\": true,\n                        \"state\": {\n                            \"running\": {\n                                \"startedAt\": \"2026-11-14T14:35:17Z\"\n                            }\n                        },\n                        \"user\": {\n                            \"linux\": {\n                                \"gid\": 101,\n                                \"supplementalGroups\": [\n                                    101\n                                ],\n                                \"uid\": 100\n                            }\n                        }\n                    }\n                ],\n                \"hostIP\": \"192.168.104.3\",\n                \"hostIPs\": [\n                    {\n                        \"ip\": \"192.168.104.3\"\n                    }\n                ],\n                \"observedGeneration\": 1,\n                \"phase\": \"Running\",\n                \"podIP\": \"10.244.194.80\",\n                \"podIPs\": [\n                    {\n                        \"ip\": \"10.244.194.80\"\n                    }\n                ],\n                \"qosClass\": \"Burstable\",\n                \"resources\": {\n                    \"limits\": {\n                        \"cpu\": \"100m\",\n                        \"memory\": \"64Mi\"\n                    },\n                    \"requests\": {\n                        \"cpu\": \"1m\",\n                        \"memory\": \"12Mi\"\n                    }\n                },\n                \"startTime\": \"2026-11-14T14:35:17Z\"\n            }\n        },\n        {\n            \"apiVersion\": \"v1\",\n            \"kind\": \"Pod\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"cni.projectcalico.org/containerID\": \"25d0a2fdafe95ccb118b4f03680ec5b7696b2c24adc3704c52680c383c74e589\",\n                    \"cni.projectcalico.org/podIP\": \"10.244.194.84/32\",\n                    \"cni.projectcalico.org/podIPs\": \"10.244.194.84/32\",\n                    \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Pod\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"labels\\\":{\\\"app\\\":\\\"local\\\"},\\\"name\\\":\\\"local\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"automountServiceAccountToken\\\":false,\\\"containers\\\":[{\\\"image\\\":\\\"nginx:1.25.1-alpine\\\",\\\"imagePullPolicy\\\":\\\"Never\\\",\\\"name\\\":\\\"local\\\",\\\"readinessProbe\\\":{\\\"httpGet\\\":{\\\"path\\\":\\\"/\\\",\\\"port\\\":80},\\\"initialDelaySeconds\\\":1,\\\"periodSeconds\\\":1},\\\"resources\\\":{\\\"limits\\\":{\\\"cpu\\\":\\\"100m\\\",\\\"memory\\\":\\\"64Mi\\\"},\\\"requests\\\":{\\\"cpu\\\":\\\"1m\\\",\\\"memory\\\":\\\"12Mi\\\"}}}],\\\"nodeName\\\":\\\"k8s-worker1\\\"}}\\n\"\n                },\n                \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n                \"generation\": 1,\n                \"labels\": {\n                    \"app\": \"local\"\n                },\n                \"name\": \"local\",\n                \"namespace\": \"calico-blog-56\",\n                \"resourceVersion\": \"1000191013\",\n                \"uid\": \"c084ff2c-83bf-4af4-a95e-d9bf80d8331b\"\n            },\n            \"spec\": {\n                \"automountServiceAccountToken\": false,\n                \"containers\": [\n                    {\n                        \"image\": \"nginx:1.25.1-alpine\",\n                        \"imagePullPolicy\": \"Never\",\n                        \"name\": \"local\",\n                        \"readinessProbe\": {\n                            \"failureThreshold\": 3,\n                            \"httpGet\": {\n                                \"path\": \"/\",\n                                \"port\": 80,\n                                \"scheme\": \"HTTP\"\n                            },\n                            \"initialDelaySeconds\": 1,\n                            \"periodSeconds\": 1,\n                            \"successThreshold\": 1,\n                            \"timeoutSeconds\": 1\n                        },\n                        \"resources\": {\n                            \"limits\": {\n                                \"cpu\": \"100m\",\n                                \"memory\": \"64Mi\"\n                            },\n                            \"requests\": {\n                                \"cpu\": \"1m\",\n                                \"memory\": \"12Mi\"\n                            }\n                        },\n                        \"terminationMessagePath\": \"/dev/termination-log\",\n                        \"terminationMessagePolicy\": \"File\"\n                    }\n                ],\n                \"dnsPolicy\": \"ClusterFirst\",\n                \"enableServiceLinks\": true,\n                \"nodeName\": \"k8s-worker1\",\n                \"preemptionPolicy\": \"PreemptLowerPriority\",\n                \"priority\": 0,\n                \"restartPolicy\": \"Always\",\n                \"schedulerName\": \"default-scheduler\",\n                \"securityContext\": {},\n                \"serviceAccount\": \"default\",\n                \"serviceAccountName\": \"default\",\n                \"terminationGracePeriodSeconds\": 30,\n                \"tolerations\": [\n                    {\n                        \"effect\": \"NoExecute\",\n                        \"key\": \"node.kubernetes.io/not-ready\",\n                        \"operator\": \"Exists\",\n                        \"tolerationSeconds\": 300\n                    },\n                    {\n                        \"effect\": \"NoExecute\",\n                        \"key\": \"node.kubernetes.io/unreachable\",\n                        \"operator\": \"Exists\",\n                        \"tolerationSeconds\": 300\n                    }\n                ]\n            },\n            \"status\": {\n                \"allocatedResources\": {\n                    \"cpu\": \"1m\",\n                    \"memory\": \"12Mi\"\n                },\n                \"conditions\": [\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"PodReadyToStartContainers\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"Initialized\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:18Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"Ready\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:18Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"ContainersReady\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"PodScheduled\"\n                    }\n                ],\n                \"containerStatuses\": [\n                    {\n                        \"allocatedResources\": {\n                            \"cpu\": \"1m\",\n                            \"memory\": \"12Mi\"\n                        },\n                        \"containerID\": \"containerd://1d4d97d933232bb9a676c6e6b114d4dec07bb132f29e1235a693eb4f9187f3ac\",\n                        \"image\": \"docker.io/library/nginx:1.25.1-alpine\",\n                        \"imageID\": \"docker.io/library/nginx@sha256:647c5c83418c19eef0cddc647b9899326e3081576390c4c7baa4fce545123b6c\",\n                        \"lastState\": {},\n                        \"name\": \"local\",\n                        \"ready\": true,\n                        \"resources\": {\n                            \"limits\": {\n                                \"cpu\": \"100m\",\n                                \"memory\": \"64Mi\"\n                            },\n                            \"requests\": {\n                                \"cpu\": \"1m\",\n                                \"memory\": \"12Mi\"\n                            }\n                        },\n                        \"restartCount\": 0,\n                        \"started\": true,\n                        \"state\": {\n                            \"running\": {\n                                \"startedAt\": \"2026-11-14T14:35:17Z\"\n                            }\n                        },\n                        \"user\": {\n                            \"linux\": {\n                                \"gid\": 0,\n                                \"supplementalGroups\": [\n                                    0,\n                                    1,\n                                    2,\n                                    3,\n                                    4,\n                                    6,\n                                    10,\n                                    11,\n                                    20,\n                                    26,\n                                    27\n                                ],\n                                \"uid\": 0\n                            }\n                        }\n                    }\n                ],\n                \"hostIP\": \"192.168.104.3\",\n                \"hostIPs\": [\n                    {\n                        \"ip\": \"192.168.104.3\"\n                    }\n                ],\n                \"observedGeneration\": 1,\n                \"phase\": \"Running\",\n                \"podIP\": \"10.244.194.84\",\n                \"podIPs\": [\n                    {\n                        \"ip\": \"10.244.194.84\"\n                    }\n                ],\n                \"qosClass\": \"Burstable\",\n                \"resources\": {\n                    \"limits\": {\n                        \"cpu\": \"100m\",\n                        \"memory\": \"64Mi\"\n                    },\n                    \"requests\": {\n                        \"cpu\": \"1m\",\n                        \"memory\": \"12Mi\"\n                    }\n                },\n                \"startTime\": \"2026-11-14T14:35:17Z\"\n            }\n        },\n        {\n            \"apiVersion\": \"v1\",\n            \"kind\": \"Pod\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"cni.projectcalico.org/containerID\": \"955297889844ecf415976daf3567bdce385b3b0ad1abee33c6261df321a33253\",\n                    \"cni.projectcalico.org/podIP\": \"10.244.126.28/32\",\n                    \"cni.projectcalico.org/podIPs\": \"10.244.126.28/32\",\n                    \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Pod\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"labels\\\":{\\\"app\\\":\\\"web\\\"},\\\"name\\\":\\\"remote\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"automountServiceAccountToken\\\":false,\\\"containers\\\":[{\\\"image\\\":\\\"nginx:1.25.1-alpine\\\",\\\"imagePullPolicy\\\":\\\"Never\\\",\\\"name\\\":\\\"remote\\\",\\\"readinessProbe\\\":{\\\"httpGet\\\":{\\\"path\\\":\\\"/\\\",\\\"port\\\":80},\\\"initialDelaySeconds\\\":1,\\\"periodSeconds\\\":1},\\\"resources\\\":{\\\"limits\\\":{\\\"cpu\\\":\\\"100m\\\",\\\"memory\\\":\\\"64Mi\\\"},\\\"requests\\\":{\\\"cpu\\\":\\\"1m\\\",\\\"memory\\\":\\\"12Mi\\\"}}}],\\\"nodeName\\\":\\\"k8s-worker2\\\"}}\\n\"\n                },\n                \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n                \"generation\": 1,\n                \"labels\": {\n                    \"app\": \"web\"\n                },\n                \"name\": \"remote\",\n                \"namespace\": \"calico-blog-56\",\n                \"resourceVersion\": \"1000191009\",\n                \"uid\": \"6d3ded00-825f-42c4-8702-174e7385f225\"\n            },\n            \"spec\": {\n                \"automountServiceAccountToken\": false,\n                \"containers\": [\n                    {\n                        \"image\": \"nginx:1.25.1-alpine\",\n                        \"imagePullPolicy\": \"Never\",\n                        \"name\": \"remote\",\n                        \"readinessProbe\": {\n                            \"failureThreshold\": 3,\n                            \"httpGet\": {\n                                \"path\": \"/\",\n                                \"port\": 80,\n                                \"scheme\": \"HTTP\"\n                            },\n                            \"initialDelaySeconds\": 1,\n                            \"periodSeconds\": 1,\n                            \"successThreshold\": 1,\n                            \"timeoutSeconds\": 1\n                        },\n                        \"resources\": {\n                            \"limits\": {\n                                \"cpu\": \"100m\",\n                                \"memory\": \"64Mi\"\n                            },\n                            \"requests\": {\n                                \"cpu\": \"1m\",\n                                \"memory\": \"12Mi\"\n                            }\n                        },\n                        \"terminationMessagePath\": \"/dev/termination-log\",\n                        \"terminationMessagePolicy\": \"File\"\n                    }\n                ],\n                \"dnsPolicy\": \"ClusterFirst\",\n                \"enableServiceLinks\": true,\n                \"nodeName\": \"k8s-worker2\",\n                \"preemptionPolicy\": \"PreemptLowerPriority\",\n                \"priority\": 0,\n                \"restartPolicy\": \"Always\",\n                \"schedulerName\": \"default-scheduler\",\n                \"securityContext\": {},\n                \"serviceAccount\": \"default\",\n                \"serviceAccountName\": \"default\",\n                \"terminationGracePeriodSeconds\": 30,\n                \"tolerations\": [\n                    {\n                        \"effect\": \"NoExecute\",\n                        \"key\": \"node.kubernetes.io/not-ready\",\n                        \"operator\": \"Exists\",\n                        \"tolerationSeconds\": 300\n                    },\n                    {\n                        \"effect\": \"NoExecute\",\n                        \"key\": \"node.kubernetes.io/unreachable\",\n                        \"operator\": \"Exists\",\n                        \"tolerationSeconds\": 300\n                    }\n                ]\n            },\n            \"status\": {\n                \"allocatedResources\": {\n                    \"cpu\": \"1m\",\n                    \"memory\": \"12Mi\"\n                },\n                \"conditions\": [\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"PodReadyToStartContainers\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"Initialized\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:18Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"Ready\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:18Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"ContainersReady\"\n                    },\n                    {\n                        \"lastProbeTime\": null,\n                        \"lastTransitionTime\": \"2026-11-14T14:35:17Z\",\n                        \"observedGeneration\": 1,\n                        \"status\": \"True\",\n                        \"type\": \"PodScheduled\"\n                    }\n                ],\n                \"containerStatuses\": [\n                    {\n                        \"allocatedResources\": {\n                            \"cpu\": \"1m\",\n                            \"memory\": \"12Mi\"\n                        },\n                        \"containerID\": \"containerd://48df521f797aeba0c0ad18f9863a95bdec42bc18c07c26bf91262f0c95b6aa49\",\n                        \"image\": \"docker.io/library/nginx:1.25.1-alpine\",\n                        \"imageID\": \"docker.io/library/nginx@sha256:647c5c83418c19eef0cddc647b9899326e3081576390c4c7baa4fce545123b6c\",\n                        \"lastState\": {},\n                        \"name\": \"remote\",\n                        \"ready\": true,\n                        \"resources\": {\n                            \"limits\": {\n                                \"cpu\": \"100m\",\n                                \"memory\": \"64Mi\"\n                            },\n                            \"requests\": {\n                                \"cpu\": \"1m\",\n                                \"memory\": \"12Mi\"\n                            }\n                        },\n                        \"restartCount\": 0,\n                        \"started\": true,\n                        \"state\": {\n                            \"running\": {\n                                \"startedAt\": \"2026-11-14T14:35:17Z\"\n                            }\n                        },\n                        \"user\": {\n                            \"linux\": {\n                                \"gid\": 0,\n                                \"supplementalGroups\": [\n                                    0,\n                                    1,\n                                    2,\n                                    3,\n                                    4,\n                                    6,\n                                    10,\n                                    11,\n                                    20,\n                                    26,\n                                    27\n                                ],\n                                \"uid\": 0\n                            }\n                        }\n                    }\n                ],\n                \"hostIP\": \"192.168.104.4\",\n                \"hostIPs\": [\n                    {\n                        \"ip\": \"192.168.104.4\"\n                    }\n                ],\n                \"observedGeneration\": 1,\n                \"phase\": \"Running\",\n                \"podIP\": \"10.244.126.28\",\n                \"podIPs\": [\n                    {\n                        \"ip\": \"10.244.126.28\"\n                    }\n                ],\n                \"qosClass\": \"Burstable\",\n                \"resources\": {\n                    \"limits\": {\n                        \"cpu\": \"100m\",\n                        \"memory\": \"64Mi\"\n                    },\n                    \"requests\": {\n                        \"cpu\": \"1m\",\n                        \"memory\": \"12Mi\"\n                    }\n                },\n                \"startTime\": \"2026-11-14T14:35:17Z\"\n            }\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "service-initial",
+    "started": "2026-11-14T23:35:18.493095+09:00",
+    "ended": "2026-11-14T23:35:18.549051+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get svc web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Service\",\n    \"metadata\": {\n        \"annotations\": {\n            \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Service\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"name\\\":\\\"web\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"ports\\\":[{\\\"name\\\":\\\"http\\\",\\\"port\\\":80,\\\"targetPort\\\":80}],\\\"selector\\\":{\\\"app\\\":\\\"web\\\"}}}\\n\"\n        },\n        \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n        \"name\": \"web\",\n        \"namespace\": \"calico-blog-56\",\n        \"resourceVersion\": \"1000190980\",\n        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n    },\n    \"spec\": {\n        \"clusterIP\": \"10.104.230.204\",\n        \"clusterIPs\": [\n            \"10.104.230.204\"\n        ],\n        \"internalTrafficPolicy\": \"Cluster\",\n        \"ipFamilies\": [\n            \"IPv4\"\n        ],\n        \"ipFamilyPolicy\": \"SingleStack\",\n        \"ports\": [\n            {\n                \"name\": \"http\",\n                \"port\": 80,\n                \"protocol\": \"TCP\",\n                \"targetPort\": 80\n            }\n        ],\n        \"selector\": {\n            \"app\": \"web\"\n        },\n        \"sessionAffinity\": \"None\",\n        \"type\": \"ClusterIP\"\n    },\n    \"status\": {\n        \"loadBalancer\": {}\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "baseline-pods",
+    "started": "2026-11-14T23:35:20.549975+09:00",
+    "ended": "2026-11-14T23:35:20.609322+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get pods -o wide",
+    "exit": 0,
+    "stdout": "NAME     READY   STATUS    RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES\nclient   1/1     Running   0          3s    10.244.194.80   k8s-worker1   <none>           <none>\nlocal    1/1     Running   0          3s    10.244.194.84   k8s-worker1   <none>           <none>\nremote   1/1     Running   0          3s    10.244.126.28   k8s-worker2   <none>           <none>\n",
+    "stderr": ""
+  },
+  {
+    "label": "baseline-service",
+    "started": "2026-11-14T23:35:20.609939+09:00",
+    "ended": "2026-11-14T23:35:20.668390+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get service web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Service\",\n    \"metadata\": {\n        \"annotations\": {\n            \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Service\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"name\\\":\\\"web\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"ports\\\":[{\\\"name\\\":\\\"http\\\",\\\"port\\\":80,\\\"targetPort\\\":80}],\\\"selector\\\":{\\\"app\\\":\\\"web\\\"}}}\\n\"\n        },\n        \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n        \"name\": \"web\",\n        \"namespace\": \"calico-blog-56\",\n        \"resourceVersion\": \"1000190980\",\n        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n    },\n    \"spec\": {\n        \"clusterIP\": \"10.104.230.204\",\n        \"clusterIPs\": [\n            \"10.104.230.204\"\n        ],\n        \"internalTrafficPolicy\": \"Cluster\",\n        \"ipFamilies\": [\n            \"IPv4\"\n        ],\n        \"ipFamilyPolicy\": \"SingleStack\",\n        \"ports\": [\n            {\n                \"name\": \"http\",\n                \"port\": 80,\n                \"protocol\": \"TCP\",\n                \"targetPort\": 80\n            }\n        ],\n        \"selector\": {\n            \"app\": \"web\"\n        },\n        \"sessionAffinity\": \"None\",\n        \"type\": \"ClusterIP\"\n    },\n    \"status\": {\n        \"loadBalancer\": {}\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "baseline-endpointslices",
+    "started": "2026-11-14T23:35:20.668974+09:00",
+    "ended": "2026-11-14T23:35:20.728806+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get endpointslices -l kubernetes.io/service-name=web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"addressType\": \"IPv4\",\n            \"apiVersion\": \"discovery.k8s.io/v1\",\n            \"endpoints\": [\n                {\n                    \"addresses\": [\n                        \"10.244.126.28\"\n                    ],\n                    \"conditions\": {\n                        \"ready\": true,\n                        \"serving\": true,\n                        \"terminating\": false\n                    },\n                    \"nodeName\": \"k8s-worker2\",\n                    \"targetRef\": {\n                        \"kind\": \"Pod\",\n                        \"name\": \"remote\",\n                        \"namespace\": \"calico-blog-56\",\n                        \"uid\": \"6d3ded00-825f-42c4-8702-174e7385f225\"\n                    }\n                }\n            ],\n            \"kind\": \"EndpointSlice\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"endpoints.kubernetes.io/last-change-trigger-time\": \"2026-11-14T14:35:18Z\"\n                },\n                \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n                \"generateName\": \"web-\",\n                \"generation\": 3,\n                \"labels\": {\n                    \"endpointslice.kubernetes.io/managed-by\": \"endpointslice-controller.k8s.io\",\n                    \"kubernetes.io/service-name\": \"web\"\n                },\n                \"name\": \"web-2qznv\",\n                \"namespace\": \"calico-blog-56\",\n                \"ownerReferences\": [\n                    {\n                        \"apiVersion\": \"v1\",\n                        \"blockOwnerDeletion\": true,\n                        \"controller\": true,\n                        \"kind\": \"Service\",\n                        \"name\": \"web\",\n                        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n                    }\n                ],\n                \"resourceVersion\": \"1000191011\",\n                \"uid\": \"0d1c6d22-6fa1-456f-86db-7ce9f45d782b\"\n            },\n            \"ports\": [\n                {\n                    \"name\": \"http\",\n                    \"port\": 80,\n                    \"protocol\": \"TCP\"\n                }\n            ]\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "baseline-policies",
+    "started": "2026-11-14T23:35:20.729381+09:00",
+    "ended": "2026-11-14T23:35:20.789387+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get networkpolicies -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "baseline-local-pod",
+    "started": "2026-11-14T23:35:20.790237+09:00",
+    "ended": "2026-11-14T23:35:20.867523+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.194.84/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.194.84 connect=0.000304\n",
+    "stderr": ""
+  },
+  {
+    "label": "baseline-remote-pod",
+    "started": "2026-11-14T23:35:20.868293+09:00",
+    "ended": "2026-11-14T23:35:20.948059+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.126.28/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.126.28 connect=0.000394\n",
+    "stderr": ""
+  },
+  {
+    "label": "baseline-cluster-ip",
+    "started": "2026-11-14T23:35:20.949115+09:00",
+    "ended": "2026-11-14T23:35:21.024989+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.104.230.204/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.104.230.204 connect=0.000364\n",
+    "stderr": ""
+  },
+  {
+    "label": "baseline-dns",
+    "started": "2026-11-14T23:35:21.025862+09:00",
+    "ended": "2026-11-14T23:35:21.124823+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://web.calico-blog-56.svc.cluster.local/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.104.230.204 connect=0.019762\n",
+    "stderr": ""
+  },
+  {
+    "label": "remote-listen-localhost",
+    "started": "2026-11-14T23:35:21.125494+09:00",
+    "ended": "2026-11-14T23:35:21.210282+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec remote -- sh -c 'netstat -lnt; wget -q -O /dev/null http://127.0.0.1/ && echo localhost_http_ok'",
+    "exit": 0,
+    "stdout": "Active Internet connections (only servers)\nProto Recv-Q Send-Q Local Address           Foreign Address         State       \ntcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      \ntcp        0      0 :::80                   :::*                    LISTEN      \nlocalhost_http_ok\n",
+    "stderr": ""
+  },
+  {
+    "label": "fault-target-port",
+    "started": "2026-11-14T23:35:21.210906+09:00",
+    "ended": "2026-11-14T23:35:21.270469+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 patch svc web --type=merge -p '{\"spec\": {\"ports\": [{\"name\": \"http\", \"port\": 80, \"targetPort\": 8081}]}}'",
+    "exit": 0,
+    "stdout": "service/web patched\n",
+    "stderr": ""
+  },
+  {
+    "label": "wrong-target-port-pods",
+    "started": "2026-11-14T23:35:23.273401+09:00",
+    "ended": "2026-11-14T23:35:23.332194+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get pods -o wide",
+    "exit": 0,
+    "stdout": "NAME     READY   STATUS    RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES\nclient   1/1     Running   0          6s    10.244.194.80   k8s-worker1   <none>           <none>\nlocal    1/1     Running   0          6s    10.244.194.84   k8s-worker1   <none>           <none>\nremote   1/1     Running   0          6s    10.244.126.28   k8s-worker2   <none>           <none>\n",
+    "stderr": ""
+  },
+  {
+    "label": "wrong-target-port-service",
+    "started": "2026-11-14T23:35:23.333020+09:00",
+    "ended": "2026-11-14T23:35:23.388913+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get service web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Service\",\n    \"metadata\": {\n        \"annotations\": {\n            \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Service\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"name\\\":\\\"web\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"ports\\\":[{\\\"name\\\":\\\"http\\\",\\\"port\\\":80,\\\"targetPort\\\":80}],\\\"selector\\\":{\\\"app\\\":\\\"web\\\"}}}\\n\"\n        },\n        \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n        \"name\": \"web\",\n        \"namespace\": \"calico-blog-56\",\n        \"resourceVersion\": \"1000191024\",\n        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n    },\n    \"spec\": {\n        \"clusterIP\": \"10.104.230.204\",\n        \"clusterIPs\": [\n            \"10.104.230.204\"\n        ],\n        \"internalTrafficPolicy\": \"Cluster\",\n        \"ipFamilies\": [\n            \"IPv4\"\n        ],\n        \"ipFamilyPolicy\": \"SingleStack\",\n        \"ports\": [\n            {\n                \"name\": \"http\",\n                \"port\": 80,\n                \"protocol\": \"TCP\",\n                \"targetPort\": 8081\n            }\n        ],\n        \"selector\": {\n            \"app\": \"web\"\n        },\n        \"sessionAffinity\": \"None\",\n        \"type\": \"ClusterIP\"\n    },\n    \"status\": {\n        \"loadBalancer\": {}\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "wrong-target-port-endpointslices",
+    "started": "2026-11-14T23:35:23.389576+09:00",
+    "ended": "2026-11-14T23:35:23.446131+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get endpointslices -l kubernetes.io/service-name=web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"addressType\": \"IPv4\",\n            \"apiVersion\": \"discovery.k8s.io/v1\",\n            \"endpoints\": [\n                {\n                    \"addresses\": [\n                        \"10.244.126.28\"\n                    ],\n                    \"conditions\": {\n                        \"ready\": true,\n                        \"serving\": true,\n                        \"terminating\": false\n                    },\n                    \"nodeName\": \"k8s-worker2\",\n                    \"targetRef\": {\n                        \"kind\": \"Pod\",\n                        \"name\": \"remote\",\n                        \"namespace\": \"calico-blog-56\",\n                        \"uid\": \"6d3ded00-825f-42c4-8702-174e7385f225\"\n                    }\n                }\n            ],\n            \"kind\": \"EndpointSlice\",\n            \"metadata\": {\n                \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n                \"generateName\": \"web-\",\n                \"generation\": 4,\n                \"labels\": {\n                    \"endpointslice.kubernetes.io/managed-by\": \"endpointslice-controller.k8s.io\",\n                    \"kubernetes.io/service-name\": \"web\"\n                },\n                \"name\": \"web-2qznv\",\n                \"namespace\": \"calico-blog-56\",\n                \"ownerReferences\": [\n                    {\n                        \"apiVersion\": \"v1\",\n                        \"blockOwnerDeletion\": true,\n                        \"controller\": true,\n                        \"kind\": \"Service\",\n                        \"name\": \"web\",\n                        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n                    }\n                ],\n                \"resourceVersion\": \"1000191026\",\n                \"uid\": \"0d1c6d22-6fa1-456f-86db-7ce9f45d782b\"\n            },\n            \"ports\": [\n                {\n                    \"name\": \"http\",\n                    \"port\": 8081,\n                    \"protocol\": \"TCP\"\n                }\n            ]\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "wrong-target-port-policies",
+    "started": "2026-11-14T23:35:23.446712+09:00",
+    "ended": "2026-11-14T23:35:23.502286+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get networkpolicies -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "wrong-target-port-local-pod",
+    "started": "2026-11-14T23:35:23.502879+09:00",
+    "ended": "2026-11-14T23:35:23.574603+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.194.84/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.194.84 connect=0.000094\n",
+    "stderr": ""
+  },
+  {
+    "label": "wrong-target-port-remote-pod",
+    "started": "2026-11-14T23:35:23.575324+09:00",
+    "ended": "2026-11-14T23:35:23.668927+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.126.28/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.126.28 connect=0.000366\n",
+    "stderr": ""
+  },
+  {
+    "label": "wrong-target-port-cluster-ip",
+    "started": "2026-11-14T23:35:23.669739+09:00",
+    "ended": "2026-11-14T23:35:23.758020+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.104.230.204/",
+    "exit": 7,
+    "stdout": "http=000 remote= connect=0.000000\n",
+    "stderr": "curl: (7) Failed to connect to 10.104.230.204 port 80 after 0 ms: Could not connect to server\ncommand terminated with exit code 7\n"
+  },
+  {
+    "label": "wrong-target-port-dns",
+    "started": "2026-11-14T23:35:23.758763+09:00",
+    "ended": "2026-11-14T23:35:23.843017+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://web.calico-blog-56.svc.cluster.local/",
+    "exit": 7,
+    "stdout": "http=000 remote= connect=0.000000\n",
+    "stderr": "curl: (7) Failed to connect to web.calico-blog-56.svc.cluster.local port 80 after 3 ms: Could not connect to server\ncommand terminated with exit code 7\n"
+  },
+  {
+    "label": "restore-target-port",
+    "started": "2026-11-14T23:35:23.843737+09:00",
+    "ended": "2026-11-14T23:35:23.910357+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 patch svc web --type=merge -p '{\"spec\": {\"ports\": [{\"name\": \"http\", \"port\": 80, \"targetPort\": 80}]}}'",
+    "exit": 0,
+    "stdout": "service/web patched\n",
+    "stderr": ""
+  },
+  {
+    "label": "port-restored-cluster-ip",
+    "started": "2026-11-14T23:35:25.915509+09:00",
+    "ended": "2026-11-14T23:35:26.002545+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.104.230.204/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.104.230.204 connect=0.000380\n",
+    "stderr": ""
+  },
+  {
+    "label": "fault-selector",
+    "started": "2026-11-14T23:35:26.003291+09:00",
+    "ended": "2026-11-14T23:35:26.058935+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 patch svc web --type=merge -p '{\"spec\": {\"selector\": {\"app\": \"does-not-exist\"}}}'",
+    "exit": 0,
+    "stdout": "service/web patched\n",
+    "stderr": ""
+  },
+  {
+    "label": "no-endpoint-pods",
+    "started": "2026-11-14T23:35:28.061767+09:00",
+    "ended": "2026-11-14T23:35:28.120247+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get pods -o wide",
+    "exit": 0,
+    "stdout": "NAME     READY   STATUS    RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES\nclient   1/1     Running   0          11s   10.244.194.80   k8s-worker1   <none>           <none>\nlocal    1/1     Running   0          11s   10.244.194.84   k8s-worker1   <none>           <none>\nremote   1/1     Running   0          11s   10.244.126.28   k8s-worker2   <none>           <none>\n",
+    "stderr": ""
+  },
+  {
+    "label": "no-endpoint-service",
+    "started": "2026-11-14T23:35:28.120875+09:00",
+    "ended": "2026-11-14T23:35:28.174955+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get service web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Service\",\n    \"metadata\": {\n        \"annotations\": {\n            \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Service\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"name\\\":\\\"web\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"ports\\\":[{\\\"name\\\":\\\"http\\\",\\\"port\\\":80,\\\"targetPort\\\":80}],\\\"selector\\\":{\\\"app\\\":\\\"web\\\"}}}\\n\"\n        },\n        \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n        \"name\": \"web\",\n        \"namespace\": \"calico-blog-56\",\n        \"resourceVersion\": \"1000191057\",\n        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n    },\n    \"spec\": {\n        \"clusterIP\": \"10.104.230.204\",\n        \"clusterIPs\": [\n            \"10.104.230.204\"\n        ],\n        \"internalTrafficPolicy\": \"Cluster\",\n        \"ipFamilies\": [\n            \"IPv4\"\n        ],\n        \"ipFamilyPolicy\": \"SingleStack\",\n        \"ports\": [\n            {\n                \"name\": \"http\",\n                \"port\": 80,\n                \"protocol\": \"TCP\",\n                \"targetPort\": 80\n            }\n        ],\n        \"selector\": {\n            \"app\": \"does-not-exist\"\n        },\n        \"sessionAffinity\": \"None\",\n        \"type\": \"ClusterIP\"\n    },\n    \"status\": {\n        \"loadBalancer\": {}\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "no-endpoint-endpointslices",
+    "started": "2026-11-14T23:35:28.175579+09:00",
+    "ended": "2026-11-14T23:35:28.230169+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get endpointslices -l kubernetes.io/service-name=web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"addressType\": \"IPv4\",\n            \"apiVersion\": \"discovery.k8s.io/v1\",\n            \"endpoints\": null,\n            \"kind\": \"EndpointSlice\",\n            \"metadata\": {\n                \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n                \"generateName\": \"web-\",\n                \"generation\": 6,\n                \"labels\": {\n                    \"endpointslice.kubernetes.io/managed-by\": \"endpointslice-controller.k8s.io\",\n                    \"kubernetes.io/service-name\": \"web\"\n                },\n                \"name\": \"web-2qznv\",\n                \"namespace\": \"calico-blog-56\",\n                \"ownerReferences\": [\n                    {\n                        \"apiVersion\": \"v1\",\n                        \"blockOwnerDeletion\": true,\n                        \"controller\": true,\n                        \"kind\": \"Service\",\n                        \"name\": \"web\",\n                        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n                    }\n                ],\n                \"resourceVersion\": \"1000191058\",\n                \"uid\": \"0d1c6d22-6fa1-456f-86db-7ce9f45d782b\"\n            },\n            \"ports\": null\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "no-endpoint-policies",
+    "started": "2026-11-14T23:35:28.230775+09:00",
+    "ended": "2026-11-14T23:35:28.284857+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get networkpolicies -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "no-endpoint-local-pod",
+    "started": "2026-11-14T23:35:28.285708+09:00",
+    "ended": "2026-11-14T23:35:28.361642+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.194.84/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.194.84 connect=0.000102\n",
+    "stderr": ""
+  },
+  {
+    "label": "no-endpoint-remote-pod",
+    "started": "2026-11-14T23:35:28.362470+09:00",
+    "ended": "2026-11-14T23:35:28.433280+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.126.28/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.126.28 connect=0.000349\n",
+    "stderr": ""
+  },
+  {
+    "label": "no-endpoint-cluster-ip",
+    "started": "2026-11-14T23:35:28.434844+09:00",
+    "ended": "2026-11-14T23:35:28.506220+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.104.230.204/",
+    "exit": 7,
+    "stdout": "http=000 remote= connect=0.000000\n",
+    "stderr": "curl: (7) Failed to connect to 10.104.230.204 port 80 after 0 ms: Could not connect to server\ncommand terminated with exit code 7\n"
+  },
+  {
+    "label": "no-endpoint-dns",
+    "started": "2026-11-14T23:35:28.507257+09:00",
+    "ended": "2026-11-14T23:35:28.582323+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://web.calico-blog-56.svc.cluster.local/",
+    "exit": 7,
+    "stdout": "http=000 remote= connect=0.000000\n",
+    "stderr": "curl: (7) Failed to connect to web.calico-blog-56.svc.cluster.local port 80 after 3 ms: Could not connect to server\ncommand terminated with exit code 7\n"
+  },
+  {
+    "label": "restore-selector",
+    "started": "2026-11-14T23:35:28.583251+09:00",
+    "ended": "2026-11-14T23:35:28.642835+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 patch svc web --type=merge -p '{\"spec\": {\"selector\": {\"app\": \"web\"}}}'",
+    "exit": 0,
+    "stdout": "service/web patched\n",
+    "stderr": ""
+  },
+  {
+    "label": "selector-restored-cluster-ip",
+    "started": "2026-11-14T23:35:30.647846+09:00",
+    "ended": "2026-11-14T23:35:30.726812+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.104.230.204/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.104.230.204 connect=0.000347\n",
+    "stderr": ""
+  },
+  {
+    "label": "fault-ingress-deny",
+    "started": "2026-11-14T23:35:30.727807+09:00",
+    "ended": "2026-11-14T23:35:30.793257+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 apply -f -",
+    "exit": 0,
+    "stdout": "networkpolicy.networking.k8s.io/deny-web created\n",
+    "stderr": ""
+  },
+  {
+    "label": "ingress-denied-pods",
+    "started": "2026-11-14T23:35:32.794683+09:00",
+    "ended": "2026-11-14T23:35:32.857370+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get pods -o wide",
+    "exit": 0,
+    "stdout": "NAME     READY   STATUS    RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES\nclient   1/1     Running   0          15s   10.244.194.80   k8s-worker1   <none>           <none>\nlocal    1/1     Running   0          15s   10.244.194.84   k8s-worker1   <none>           <none>\nremote   1/1     Running   0          15s   10.244.126.28   k8s-worker2   <none>           <none>\n",
+    "stderr": ""
+  },
+  {
+    "label": "ingress-denied-service",
+    "started": "2026-11-14T23:35:32.858222+09:00",
+    "ended": "2026-11-14T23:35:32.913198+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get service web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Service\",\n    \"metadata\": {\n        \"annotations\": {\n            \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Service\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"name\\\":\\\"web\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"ports\\\":[{\\\"name\\\":\\\"http\\\",\\\"port\\\":80,\\\"targetPort\\\":80}],\\\"selector\\\":{\\\"app\\\":\\\"web\\\"}}}\\n\"\n        },\n        \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n        \"name\": \"web\",\n        \"namespace\": \"calico-blog-56\",\n        \"resourceVersion\": \"1000191082\",\n        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n    },\n    \"spec\": {\n        \"clusterIP\": \"10.104.230.204\",\n        \"clusterIPs\": [\n            \"10.104.230.204\"\n        ],\n        \"internalTrafficPolicy\": \"Cluster\",\n        \"ipFamilies\": [\n            \"IPv4\"\n        ],\n        \"ipFamilyPolicy\": \"SingleStack\",\n        \"ports\": [\n            {\n                \"name\": \"http\",\n                \"port\": 80,\n                \"protocol\": \"TCP\",\n                \"targetPort\": 80\n            }\n        ],\n        \"selector\": {\n            \"app\": \"web\"\n        },\n        \"sessionAffinity\": \"None\",\n        \"type\": \"ClusterIP\"\n    },\n    \"status\": {\n        \"loadBalancer\": {}\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "ingress-denied-endpointslices",
+    "started": "2026-11-14T23:35:32.913886+09:00",
+    "ended": "2026-11-14T23:35:32.972564+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get endpointslices -l kubernetes.io/service-name=web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"addressType\": \"IPv4\",\n            \"apiVersion\": \"discovery.k8s.io/v1\",\n            \"endpoints\": [\n                {\n                    \"addresses\": [\n                        \"10.244.126.28\"\n                    ],\n                    \"conditions\": {\n                        \"ready\": true,\n                        \"serving\": true,\n                        \"terminating\": false\n                    },\n                    \"nodeName\": \"k8s-worker2\",\n                    \"targetRef\": {\n                        \"kind\": \"Pod\",\n                        \"name\": \"remote\",\n                        \"namespace\": \"calico-blog-56\",\n                        \"uid\": \"6d3ded00-825f-42c4-8702-174e7385f225\"\n                    }\n                }\n            ],\n            \"kind\": \"EndpointSlice\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"endpoints.kubernetes.io/last-change-trigger-time\": \"2026-11-14T14:35:18Z\"\n                },\n                \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n                \"generateName\": \"web-\",\n                \"generation\": 7,\n                \"labels\": {\n                    \"endpointslice.kubernetes.io/managed-by\": \"endpointslice-controller.k8s.io\",\n                    \"kubernetes.io/service-name\": \"web\"\n                },\n                \"name\": \"web-2qznv\",\n                \"namespace\": \"calico-blog-56\",\n                \"ownerReferences\": [\n                    {\n                        \"apiVersion\": \"v1\",\n                        \"blockOwnerDeletion\": true,\n                        \"controller\": true,\n                        \"kind\": \"Service\",\n                        \"name\": \"web\",\n                        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n                    }\n                ],\n                \"resourceVersion\": \"1000191084\",\n                \"uid\": \"0d1c6d22-6fa1-456f-86db-7ce9f45d782b\"\n            },\n            \"ports\": [\n                {\n                    \"name\": \"http\",\n                    \"port\": 80,\n                    \"protocol\": \"TCP\"\n                }\n            ]\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "ingress-denied-policies",
+    "started": "2026-11-14T23:35:32.973246+09:00",
+    "ended": "2026-11-14T23:35:33.028929+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get networkpolicies -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"apiVersion\": \"networking.k8s.io/v1\",\n            \"kind\": \"NetworkPolicy\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"networking.k8s.io/v1\\\",\\\"kind\\\":\\\"NetworkPolicy\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"name\\\":\\\"deny-web\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"ingress\\\":[],\\\"podSelector\\\":{\\\"matchLabels\\\":{\\\"app\\\":\\\"web\\\"}},\\\"policyTypes\\\":[\\\"Ingress\\\"]}}\\n\"\n                },\n                \"creationTimestamp\": \"2026-11-14T14:35:30Z\",\n                \"generation\": 1,\n                \"name\": \"deny-web\",\n                \"namespace\": \"calico-blog-56\",\n                \"resourceVersion\": \"1000191089\",\n                \"uid\": \"05f400ef-e430-4059-93c1-967d09fc9817\"\n            },\n            \"spec\": {\n                \"podSelector\": {\n                    \"matchLabels\": {\n                        \"app\": \"web\"\n                    }\n                },\n                \"policyTypes\": [\n                    \"Ingress\"\n                ]\n            }\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "ingress-denied-local-pod",
+    "started": "2026-11-14T23:35:33.029588+09:00",
+    "ended": "2026-11-14T23:35:33.103637+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.194.84/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.194.84 connect=0.000121\n",
+    "stderr": ""
+  },
+  {
+    "label": "ingress-denied-remote-pod",
+    "started": "2026-11-14T23:35:33.104594+09:00",
+    "ended": "2026-11-14T23:35:35.179993+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.126.28/",
+    "exit": 28,
+    "stdout": "http=000 remote= connect=0.000000\n",
+    "stderr": "curl: (28) Connection timed out after 2002 milliseconds\ncommand terminated with exit code 28\n"
+  },
+  {
+    "label": "ingress-denied-cluster-ip",
+    "started": "2026-11-14T23:35:35.181162+09:00",
+    "ended": "2026-11-14T23:35:37.260296+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.104.230.204/",
+    "exit": 28,
+    "stdout": "http=000 remote= connect=0.000000\n",
+    "stderr": "curl: (28) Connection timed out after 2002 milliseconds\ncommand terminated with exit code 28\n"
+  },
+  {
+    "label": "ingress-denied-dns",
+    "started": "2026-11-14T23:35:37.261342+09:00",
+    "ended": "2026-11-14T23:35:39.339345+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://web.calico-blog-56.svc.cluster.local/",
+    "exit": 28,
+    "stdout": "http=000 remote= connect=0.000000\n",
+    "stderr": "curl: (28) Connection timed out after 2001 milliseconds\ncommand terminated with exit code 28\n"
+  },
+  {
+    "label": "restore-policy",
+    "started": "2026-11-14T23:35:39.340400+09:00",
+    "ended": "2026-11-14T23:35:39.402620+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 delete networkpolicy deny-web",
+    "exit": 0,
+    "stdout": "networkpolicy.networking.k8s.io \"deny-web\" deleted from calico-blog-56 namespace\n",
+    "stderr": ""
+  },
+  {
+    "label": "policy-restored-local-pod",
+    "started": "2026-11-14T23:35:41.404498+09:00",
+    "ended": "2026-11-14T23:35:41.482230+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.194.84/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.194.84 connect=0.000112\n",
+    "stderr": ""
+  },
+  {
+    "label": "policy-restored-remote-pod",
+    "started": "2026-11-14T23:35:41.483251+09:00",
+    "ended": "2026-11-14T23:35:41.554792+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.244.126.28/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.244.126.28 connect=0.000381\n",
+    "stderr": ""
+  },
+  {
+    "label": "policy-restored-cluster-ip",
+    "started": "2026-11-14T23:35:41.555754+09:00",
+    "ended": "2026-11-14T23:35:41.635976+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://10.104.230.204/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.104.230.204 connect=0.000613\n",
+    "stderr": ""
+  },
+  {
+    "label": "policy-restored-dns",
+    "started": "2026-11-14T23:35:41.637282+09:00",
+    "ended": "2026-11-14T23:35:41.720035+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://web.calico-blog-56.svc.cluster.local/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.104.230.204 connect=0.003844\n",
+    "stderr": ""
+  },
+  {
+    "label": "wrong-name-dns",
+    "started": "2026-11-14T23:35:41.720945+09:00",
+    "ended": "2026-11-14T23:35:41.872149+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://web-typo.calico-blog-56.svc.cluster.local/",
+    "exit": 6,
+    "stdout": "http=000 remote= connect=0.000000\n",
+    "stderr": "curl: (6) Could not resolve host: web-typo.calico-blog-56.svc.cluster.local\ncommand terminated with exit code 6\n"
+  },
+  {
+    "label": "name-corrected-dns",
+    "started": "2026-11-14T23:35:41.873174+09:00",
+    "ended": "2026-11-14T23:35:41.950926+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 exec client -- curl --noproxy '*' --connect-timeout 2 --max-time 3 -sS -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' http://web.calico-blog-56.svc.cluster.local/",
+    "exit": 0,
+    "stdout": "http=200 remote=10.104.230.204 connect=0.001837\n",
+    "stderr": ""
+  },
+  {
+    "label": "worker2-routes",
+    "started": "2026-11-14T23:35:41.951908+09:00",
+    "ended": "2026-11-14T23:35:42.034540+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab ssh worker2 -- ip -4 route show",
+    "exit": 0,
+    "stdout": "default via 192.168.64.1 dev lima1 proto dhcp src 192.168.64.4 metric 100 \ndefault via 192.168.104.2 dev eth0 proto dhcp src 192.168.104.4 metric 200 \n10.244.100.192/26 via 192.168.104.5 dev tunl0 proto 80 onlink mtu 1480 \nblackhole 10.244.126.0/26 proto 80 \n10.244.126.16 dev cali4efa59c59a3 scope link metric 1024 \n10.244.126.19 dev cali0143041baaf scope link metric 1024 \n10.244.126.22 dev calid3872e56459 scope link metric 1024 \n10.244.126.28 dev cali98721e3d585 scope link metric 1024 \n10.244.126.29 dev caliee0cc3f2dd8 scope link metric 1024 \n10.244.126.30 dev caliad4358c530b scope link metric 1024 \n10.244.126.32 dev calid1fd5393dc6 scope link metric 1024 \n10.244.126.34 dev cali1952c59059f scope link metric 1024 \n10.244.126.37 dev cali72047e43ade scope link metric 1024 \n10.244.194.64/26 via 192.168.104.3 dev tunl0 proto 80 onlink mtu 1480 \n10.244.235.192/26 via 192.168.104.1 dev tunl0 proto 80 onlink mtu 1480 \n192.168.64.0/24 dev lima1 proto kernel scope link src 192.168.64.4 metric 100 \n192.168.64.1 dev lima1 proto dhcp scope link src 192.168.64.4 metric 100 \n192.168.104.0/24 dev eth0 proto kernel scope link src 192.168.104.4 metric 200 \n192.168.104.2 dev eth0 proto dhcp scope link src 192.168.104.4 metric 200 \n",
+    "stderr": ""
+  },
+  {
+    "label": "route-existing-pod",
+    "started": "2026-11-14T23:35:42.035817+09:00",
+    "ended": "2026-11-14T23:35:42.103679+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab ssh worker2 -- ip -4 route get 10.244.126.28",
+    "exit": 0,
+    "stdout": "10.244.126.28 dev cali98721e3d585 src 192.168.104.4 uid 501 \n    cache \n",
+    "stderr": ""
+  },
+  {
+    "label": "route-no-specific-host",
+    "started": "2026-11-14T23:35:42.104465+09:00",
+    "ended": "2026-11-14T23:35:42.173665+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab ssh worker2 -- ip -4 route get 10.244.126.62",
+    "exit": 2,
+    "stdout": "",
+    "stderr": "RTNETLINK answers: Invalid argument\n"
+  },
+  {
+    "label": "final-restored-pods",
+    "started": "2026-11-14T23:35:42.174515+09:00",
+    "ended": "2026-11-14T23:35:42.234544+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get pods -o wide",
+    "exit": 0,
+    "stdout": "NAME     READY   STATUS    RESTARTS   AGE   IP              NODE          NOMINATED NODE   READINESS GATES\nclient   1/1     Running   0          25s   10.244.194.80   k8s-worker1   <none>           <none>\nlocal    1/1     Running   0          25s   10.244.194.84   k8s-worker1   <none>           <none>\nremote   1/1     Running   0          25s   10.244.126.28   k8s-worker2   <none>           <none>\n",
+    "stderr": ""
+  },
+  {
+    "label": "final-restored-service",
+    "started": "2026-11-14T23:35:42.235284+09:00",
+    "ended": "2026-11-14T23:35:42.291941+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get service web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Service\",\n    \"metadata\": {\n        \"annotations\": {\n            \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"v1\\\",\\\"kind\\\":\\\"Service\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"name\\\":\\\"web\\\",\\\"namespace\\\":\\\"calico-blog-56\\\"},\\\"spec\\\":{\\\"ports\\\":[{\\\"name\\\":\\\"http\\\",\\\"port\\\":80,\\\"targetPort\\\":80}],\\\"selector\\\":{\\\"app\\\":\\\"web\\\"}}}\\n\"\n        },\n        \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n        \"name\": \"web\",\n        \"namespace\": \"calico-blog-56\",\n        \"resourceVersion\": \"1000191082\",\n        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n    },\n    \"spec\": {\n        \"clusterIP\": \"10.104.230.204\",\n        \"clusterIPs\": [\n            \"10.104.230.204\"\n        ],\n        \"internalTrafficPolicy\": \"Cluster\",\n        \"ipFamilies\": [\n            \"IPv4\"\n        ],\n        \"ipFamilyPolicy\": \"SingleStack\",\n        \"ports\": [\n            {\n                \"name\": \"http\",\n                \"port\": 80,\n                \"protocol\": \"TCP\",\n                \"targetPort\": 80\n            }\n        ],\n        \"selector\": {\n            \"app\": \"web\"\n        },\n        \"sessionAffinity\": \"None\",\n        \"type\": \"ClusterIP\"\n    },\n    \"status\": {\n        \"loadBalancer\": {}\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "final-restored-endpointslices",
+    "started": "2026-11-14T23:35:42.292827+09:00",
+    "ended": "2026-11-14T23:35:42.354630+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get endpointslices -l kubernetes.io/service-name=web -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"addressType\": \"IPv4\",\n            \"apiVersion\": \"discovery.k8s.io/v1\",\n            \"endpoints\": [\n                {\n                    \"addresses\": [\n                        \"10.244.126.28\"\n                    ],\n                    \"conditions\": {\n                        \"ready\": true,\n                        \"serving\": true,\n                        \"terminating\": false\n                    },\n                    \"nodeName\": \"k8s-worker2\",\n                    \"targetRef\": {\n                        \"kind\": \"Pod\",\n                        \"name\": \"remote\",\n                        \"namespace\": \"calico-blog-56\",\n                        \"uid\": \"6d3ded00-825f-42c4-8702-174e7385f225\"\n                    }\n                }\n            ],\n            \"kind\": \"EndpointSlice\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"endpoints.kubernetes.io/last-change-trigger-time\": \"2026-11-14T14:35:18Z\"\n                },\n                \"creationTimestamp\": \"2026-11-14T14:35:17Z\",\n                \"generateName\": \"web-\",\n                \"generation\": 7,\n                \"labels\": {\n                    \"endpointslice.kubernetes.io/managed-by\": \"endpointslice-controller.k8s.io\",\n                    \"kubernetes.io/service-name\": \"web\"\n                },\n                \"name\": \"web-2qznv\",\n                \"namespace\": \"calico-blog-56\",\n                \"ownerReferences\": [\n                    {\n                        \"apiVersion\": \"v1\",\n                        \"blockOwnerDeletion\": true,\n                        \"controller\": true,\n                        \"kind\": \"Service\",\n                        \"name\": \"web\",\n                        \"uid\": \"9ffaf6c8-d880-4866-9eeb-7a18f01349e4\"\n                    }\n                ],\n                \"resourceVersion\": \"1000191084\",\n                \"uid\": \"0d1c6d22-6fa1-456f-86db-7ce9f45d782b\"\n            },\n            \"ports\": [\n                {\n                    \"name\": \"http\",\n                    \"port\": 80,\n                    \"protocol\": \"TCP\"\n                }\n            ]\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "final-restored-policies",
+    "started": "2026-11-14T23:35:42.355590+09:00",
+    "ended": "2026-11-14T23:35:42.418028+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl -n calico-blog-56 get networkpolicies -o json",
+    "exit": 0,
+    "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+    "stderr": ""
+  },
+  {
+    "label": "cleanup-namespace",
+    "started": "2026-11-14T23:35:42.418993+09:00",
+    "ended": "2026-11-14T23:36:24.732825+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl delete namespace calico-blog-56 --wait=true --timeout=90s",
+    "exit": 0,
+    "stdout": "namespace \"calico-blog-56\" deleted\n",
+    "stderr": ""
+  },
+  {
+    "label": "cleanup-verification",
+    "started": "2026-11-14T23:36:24.733710+09:00",
+    "ended": "2026-11-14T23:36:24.800307+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl get namespace calico-blog-56 --ignore-not-found -o name",
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "label": "post-nodes",
+    "started": "2026-11-14T23:36:24.801265+09:00",
+    "ended": "2026-11-14T23:36:24.870570+09:00",
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab kubectl get nodes",
+    "exit": 0,
+    "stdout": "NAME          STATUS   ROLES           AGE   VERSION\nk8s-master    Ready    control-plane   10d   v1.37.2\nk8s-worker1   Ready    worker          10d   v1.37.2\nk8s-worker2   Ready    worker          10d   v1.37.2\nk8s-worker3   Ready    worker          10d   v1.37.2\n",
+    "stderr": ""
+  }
+]

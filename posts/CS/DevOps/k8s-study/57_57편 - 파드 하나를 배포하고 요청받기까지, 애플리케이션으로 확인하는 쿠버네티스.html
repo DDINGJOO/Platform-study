@@ -1,0 +1,211 @@
+<!-- tags: Deployment 배포, readiness probe, EndpointSlice, 롤링 업데이트, 파드 복구 -->
+<!-- lead: 파드를 배포한 뒤 Running인데도 NodePort 요청은 실패했어요. 작은 웹 앱으로 Ready·EndpointSlice·HTTP 응답을 대조하고, 롤링 업데이트와 파드 삭제에서 실제 요청 결과와 바뀌는 정보를 확인했어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 57편</div>
+  51편. 파드의 eth0 반대편에는 무엇이 있을까, Calico의 netns와 veth 추적<br>
+  52편. 다른 노드의 파드까지 패킷은 어떻게 갈까, Calico IPIP를 tcpdump로 보기<br>
+  53편. 작은 요청은 되는데 큰 요청은 왜 멈출까, Calico MTU와 PMTUD<br>
+  54편. NetworkPolicy를 적용했는데 왜 어떤 연결은 계속될까<br>
+  55편. 파드가 밖으로 나갈 때 출발지 IP는 어디서 바뀔까, Calico NAT와 conntrack<br>
+  56편. 파드 통신 장애는 어디부터 볼까, Calico 장애를 구간별로 좁히기<br>
+  <b>57편. 파드 하나를 배포하고 요청받기까지, 애플리케이션으로 확인하는 쿠버네티스</b> &larr; 지금 이 글<br>
+</div>
+
+<p><code>kubectl apply</code>는 성공했는데 노드의 30057번 포트로 보낸 curl은 연결에 실패했어요. 파드는 <code>Running</code>이었어요. 같은 초기 준비 구간에 파드 IP와 노드 포트로 순차 요청했을 때, 파드 IP의 API는 HTTP 200으로 응답했어요. “파드를 띄웠다”와 “사용자가 앱을 쓸 수 있다”는 확인해야 할 것이 달랐어요.</p>
+<p>이번에는 버전·파드·노드·요청 수를 보여 주는 작은 웹 앱을 직접 배포했어요. 첫 응답을 받은 뒤 준비 검사를 실패시키고, v2로 업데이트하고, 실행 중인 파드를 지워 봤어요. 앞에서 따로 확인한 컨트롤 플레인·런타임·Calico를 <b>실제 앱의 생성과 요청 처리</b>에 연결하는 실습이에요.</p>
+<p>환경은 Lima VM 네 대, Kubernetes v1.37.2, containerd 2.4.1, Calico v3.33.0이에요. 앱은 정상 상태에서 파드 한 개를 유지하고, 실험용 요청 클라이언트만 별도로 만들었다가 삭제했어요.</p>
+<div class="obsv-callout"><div class="obsv-ct">🔎 이번에 확인할 질문</div>파드가 Running이면 배포가 끝난 걸까요?<br>Service로 보낸 요청은 어느 파드가 처리할까요?<br>v2가 준비되기 전에는 누가 응답할까요?<br>파드를 삭제해도 앱이 복구되면 요청도 끊기지 않을까요?</div>
+
+<h2>1. 배포 완료 기준을 앱의 응답까지 잡았어요</h2>
+<p>앱의 이름은 <code>deploy-board</code>예요. Python 표준 라이브러리의 HTTP 서버 하나가 <code>/</code> 화면, <code>/api/info</code> 상태 응답, <code>/readyz</code> 준비 검사, <code>/healthz</code> 생존 검사를 제공해요. 화면은 2초마다 API에 새 요청을 보내므로 파드가 바뀌면 화면에서도 확인할 수 있어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: NodePort</div>Service를 각 노드의 지정된 포트로 노출하는 방식이에요. 이번에는 30057번 포트를 사용했어요. 실제 접근 가능 여부는 노드 주소·네트워크·방화벽 설정에도 영향을 받아요.</div>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/57/01-app-board.png" alt="실제 NodePort로 접속한 배포 확인 보드, v2와 최종 파드 정보가 표시된 화면" style="max-width:100%;height:auto;" /></div>
+<div class="obsv-figcap">실행 화면 1. NodePort로 접속한 실제 앱이에요. 값은 화면에서 보낸 HTTP 요청의 응답이에요.</div>
+<p>실행 단위는 독립적인 Pod 객체 대신 <code>replicas: 1</code>인 Deployment로 정했어요. 파드를 한 개 만든 뒤 끝나는 대신, 그 한 개를 유지하도록 요청하려는 거예요. Deployment가 관리하는 ReplicaSet이 필요한 수의 파드를 만들어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Deployment와 ReplicaSet</div>Deployment는 사용할 파드의 설정과 업데이트 방식을 선언하는 자원이에요. ReplicaSet은 그 설정에 해당하는 파드 수를 유지해요. 이번에는 정상 상태에서 앱 파드 한 개를 유지하도록 했어요.</div>
+<p>앱 코드는 변경 불가능한 ConfigMap에 넣어 <code>/app/app.py</code>로 마운트했어요. Python 이미지는 태그가 가리키는 내용의 변경을 피하려고 <code>sha256:9ef1a599…15b960e</code> digest로 고정했어요. 전체 digest와 소스는 <a href="https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/k8s-study/application-57/application-v1.json">실습 매니페스트</a>에 있어요. Kubernetes는 JSON 매니페스트도 읽으므로 그대로 적용할 수 있어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: ConfigMap</div>컨테이너에 전달할 일반 설정 데이터를 저장하는 Kubernetes 자원이에요. 이번 실습에서는 작은 앱 소스도 넣었어요. <code>immutable: true</code>로 설정했으므로 같은 ConfigMap의 내용을 덮어쓰는 방식으로 코드를 변경하지 않아요.</div>
+<div class="obsv-code"># 저장소 루트에서 실행해요. NodePort 30057이 비어 있어야 해요.
+kubectl apply -f labs/devops/k8s-study/application-57/application-v1.json
+kubectl -n app-capstone rollout status deployment/deploy-board
+kubectl -n app-capstone get pods,svc -o wide
+
+# 이 실습 Mac에서 접근 가능한 worker1 주소예요.
+curl -sS http://192.168.64.3:30057/api/info</div>
+<p>매니페스트는 Namespace·ConfigMap·Deployment·Service 네 종류를 만들어요. <code>rollout status</code>는 Deployment의 진행 상태를 확인하고, 마지막 curl은 앱의 HTTP 응답을 확인해요. 두 확인을 합쳐야 배포된 설정과 사용자의 요청 경로를 함께 점검할 수 있어요.</p>
+<p>이 주소는 인터넷 주소가 아니라 실습 Mac에서 VM으로 접근하는 주소예요. 다른 환경에서는 노드의 접근 가능한 IP를 사용해야 해요. 앱에는 CPU 요청 25m·메모리 요청 32Mi, CPU 제한 200m·메모리 제한 96Mi를 지정했어요. 이번 실습의 작은 서버를 위한 시작값이며 운영 적정 용량을 측정한 결과는 아니에요.</p>
+<div class="obsv-callout"><div class="obsv-ct">💡 실습과 운영 배포의 경계</div>이번에는 배포 흐름을 읽기 쉽게 하려고 공식 Python 이미지와 고정된 ConfigMap 소스를 사용했어요. 운영 앱의 빌드·이미지 저장소·CI/CD를 구축한 실험은 아니에요. 요청 수는 프로세스 메모리에만 있으므로 재시작이나 파드 교체 때 초기화돼요. 데이터 저장·인증·TLS도 이번 확인 범위에 포함하지 않았어요.</div>
+<p><span class="obsv-mark">배포의 성공 기준은 “자원이 만들어졌다”에서 끝내지 않고, 준비된 앱이 실제 요청에 응답하는 것까지예요.</span></p>
+
+<h2>2. 내가 만든 Deployment와 실제 프로세스를 연결했어요</h2>
+<p>처음 생성된 파드는 <code>deploy-board-7bf857644b-qz5n2</code>였어요. 이 파드의 <code>ownerReferences</code>는 ReplicaSet <code>deploy-board-7bf857644b</code>를 가리켰고, 그 ReplicaSet의 소유자는 Deployment <code>deploy-board</code>였어요. 이름이 비슷하다는 추측 대신 API에 기록된 소유 관계를 읽었어요.</p>
+<div class="obsv-code">kubectl -n app-capstone get pod deploy-board-7bf857644b-qz5n2 \
+  -o jsonpath='{.metadata.ownerReferences[0].kind}{" "}{.metadata.ownerReferences[0].name}{"\n"}'
+# ReplicaSet deploy-board-7bf857644b
+
+kubectl -n app-capstone get rs deploy-board-7bf857644b \
+  -o jsonpath='{.metadata.ownerReferences[0].kind}{" "}{.metadata.ownerReferences[0].name}{"\n"}'
+# Deployment deploy-board</div>
+<p>파드를 만든 컨트롤러가 어느 객체를 관리하는지 보여 줘요. 위 이름은 첫 생성 시점의 값이라 최종 상태에서는 이미 없을 수 있어요. 재현할 때는 <code>get pods</code>로 현재 이름을 먼저 찾아요. <a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/owners-dependents/">소유 관계</a>와 Service의 라벨 선택은 구분해야 해요. Service는 앱 파드를 소유하지 않아요.</p>
+<div class="obsv-fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 340" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="API 객체 소유 관계와 노드의 앱 실행 경로를 구분한 그림">
+<defs><marker id="a57-1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3,6 4,8.5 5 C6 6,4 7,1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" /></marker></defs>
+<g stroke-linecap="round" stroke-linejoin="round" font-family="'Nanum Pen Script',cursive" fill="#3d3a34" text-anchor="middle">
+<text x="350" y="30" font-size="24">API에 남은 객체의 소유 관계</text>
+<path d="M25 52 C85 50,145 54,205 52 C208 75,206 104,205 127 C146 130,86 126,25 128 C23 104,26 78,25 52Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5" />
+<text x="115" y="84" font-size="26">Deployment</text><text x="115" y="110" font-size="20">deploy-board</text>
+<path d="M260 52 C321 49,379 55,440 52 C443 77,438 102,440 128 C381 130,321 126,260 128 C258 102,262 76,260 52Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5" />
+<text x="350" y="84" font-size="26">ReplicaSet</text><text x="350" y="110" font-size="20">필요한 파드 수 유지</text>
+<path d="M495 52 C555 50,615 54,675 52 C678 77,673 102,675 128 C615 130,555 126,495 128 C493 102,497 77,495 52Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.5" />
+<text x="585" y="84" font-size="26">Pod</text><text x="585" y="110" font-size="20">worker1에 배정</text>
+<path d="M210 88 C225 86,239 90,253 88" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#a57-1)" />
+<path d="M445 88 C461 86,475 90,488 88" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#a57-1)" />
+<text x="350" y="178" font-size="23">노드에서 실행하고 네트워크를 구성하는 경로</text>
+<path d="M35 200 C239 197,456 204,665 200 C668 228,663 260,665 286 C455 289,242 283,35 286 C32 259,38 228,35 200Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5" />
+<text x="350" y="232" font-size="24">kubelet → CRI / containerd → Calico CNI</text>
+<text x="350" y="263" font-size="22">샌드박스와 앱의 netns · eth0 · Pod IP · 호스트 경로</text>
+<text x="350" y="321" font-size="23" fill="#b3502f">소유 관계는 API에서, 실행 결과는 노드에서 확인해요</text>
+</g></svg></div>
+<div class="obsv-figcap">그림 1. 위는 객체를 관리하는 관계이고, 아래는 배정된 노드에서 실행하는 과정이에요.</div>
+<p>스케줄러는 실행할 노드를 선택해 바인딩을 기록해요. 컨테이너를 실행하는 것은 노드의 kubelet과 런타임이에요. 이 환경에서는 kubelet이 CRI로 containerd에 요청하고, 런타임이 CNI를 통해 파드 네트워크를 구성해요. 이 호출 관계는 <a href="https://kubernetes.io/docs/concepts/containers/cri/">CRI 문서</a>와 <a href="https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/">네트워크 플러그인 문서</a>에 근거한 설명이에요. 이번에 모든 호출을 별도 추적기로 기록한 것은 아니에요.</p>
+<p>대신 최종 앱 파드에서 그 결과를 대조했어요. API의 <code>spec.nodeName</code>은 <code>k8s-worker1</code>, Pod IP는 <code>10.244.194.85</code>였어요. 같은 노드의 CRI에서 찾은 샌드박스 PID는 250522, 앱 PID는 250552였어요. 두 프로세스의 네트워크 네임스페이스는 <code>net:[4026532488]</code>로 같았고 호스트는 <code>net:[4026531840]</code>였어요.</p>
+<p>앱의 네트워크 공간에 들어가 확인한 eth0는 <code>10.244.194.85/32</code>와 MTU 1480을 가졌어요. worker1의 <code>ip route get 10.244.194.85</code>는 <code>cali01a59808126</code>으로 향했어요. 앞서 Calico에서 확인한 네트워크가 이번 앱에도 만들어진 거예요. PID·인터페이스 이름은 실행마다 달라지며, 이 숫자는 동일한 worker1 커널에서 비교한 값이에요.</p>
+<p>이제 API 객체의 소유 관계, 노드 배정, containerd의 실행 정보, 앱의 네트워크를 하나의 파드 이름과 UID(객체 식별자)로 연결할 수 있어요. 결과 원문은 <a href="https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/k8s-study/application-57/evidence/final-runtime.json">final-runtime.json</a>에 남겼어요.</p>
+
+<h2>3. Running인 앱도 Service의 준비된 대상은 아닐 수 있어요</h2>
+<p>실행만 확인하면 앱의 초기화가 끝나기 전에 요청을 받을 수 있어요. 그래서 이번 앱은 시작 후 8초 동안 <code>/readyz</code>에 HTTP 503을 반환하도록 했어요. 그동안에도 <code>/api/info</code>는 응답할 수 있게 만들었어요. 준비 검사와 실제 API가 다른 판단을 할 때 무엇이 달라지는지 보기 위한 의도적인 설정이에요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: readiness probe와 liveness probe</div>readiness는 컨테이너가 요청을 받을 준비가 됐는지 검사하고, liveness는 컨테이너를 재시작해야 할 상태인지 검사해요. readiness 실패만으로 컨테이너가 재시작되지는 않아요. 이 앱은 각각 <code>/readyz</code>와 <code>/healthz</code>를 사용해요.</div>
+<p>시작 직후 첫 앱 파드 <code>10.244.194.93</code>에 다른 노드에서 직접 접근했어요. 준비 경로는 503, 실제 API는 200이었어요. Mac에서 NodePort로 접근한 curl은 종료 코드 7로 실패했어요. 출력의 <code>HTTP 000</code>은 서버가 반환한 HTTP 상태 코드가 아니라 curl이 HTTP 응답을 받지 못했다는 표시예요.</p>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/57/02-readiness.png" alt="저장된 실습 출력의 렌더링, 직접 Pod IP 요청은 성공하지만 준비 실패 상태에서는 NodePort 요청이 실패한 결과" style="max-width:100%;height:auto;" /></div>
+<div class="obsv-figcap">실행 화면 2. 실제 실행 뒤 저장한 출력을 터미널 형태로 렌더링했어요. 원본 명령·응답도 함께 보관했어요.</div>
+<p>초기화가 끝나고 Service 요청이 성공한 뒤, 이번에는 실행 중인 앱 안에 <code>/tmp/not-ready</code> 파일을 만들었어요. 앱은 이 파일이 있으면 준비 검사에 503을 반환해요. kubelet이 이를 반영한 후에는 파드의 Ready가 False였지만 <code>restartCount</code>는 0이고 프로세스는 계속 실행 중이었어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: EndpointSlice</div>Service의 대상 주소와 포트, 준비 상태 등을 묶어 기록하는 자원이에요. 이 실습에서는 앱 파드의 IP가 남아 있어도 <code>ready: false</code>이면 일반적인 새 요청의 준비된 대상으로 사용되지 않았어요.</div>
+<div class="obsv-code"># 이 시점의 앱 파드 이름을 먼저 조회해요.
+kubectl -n app-capstone get pods -l app=deploy-board
+kubectl -n app-capstone exec APP_POD -- touch /tmp/not-ready
+kubectl -n app-capstone get endpointslice -o yaml
+
+# 실제 관측한 endpoint의 일부예요.
+addresses: [10.244.194.93]
+conditions:
+  ready: false
+  serving: false
+  terminating: false
+
+# 확인 뒤 준비 상태를 복구했어요.
+kubectl -n app-capstone exec APP_POD -- rm /tmp/not-ready</div>
+<p><code>APP_POD</code>에는 방금 조회한 이름을 넣어요. EndpointSlice에서 주소가 삭제된 것은 아니었어요. 주소는 남고 준비 상태가 바뀌었어요. 파일이 있는 동안에도 파드 IP의 API는 200이었지만 NodePort는 실패했고, 파일을 지운 뒤에는 다시 Service 경로로 응답했어요.</p>
+<div class="obsv-fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 260" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="readiness 실패 시 프로세스와 직접 요청은 유지되지만 준비된 Service 대상에서 제외되는 비교">
+<g font-family="'Nanum Pen Script',cursive" text-anchor="middle" fill="#3d3a34" stroke-linecap="round" stroke-linejoin="round">
+<path d="M25 28 C233 25,460 32,675 28 C678 55,673 97,675 123 C459 126,233 120,25 123 C22 96,28 56,25 28Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5" />
+<text x="350" y="60" font-size="27">프로세스는 살아 있어요</text><text x="350" y="92" font-size="23">Running · restartCount 0 · Pod IP의 API는 HTTP 200</text>
+<path d="M25 148 C234 145,460 152,675 148 C678 174,672 216,675 241 C460 244,233 238,25 241 C22 216,28 175,25 148Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5" />
+<text x="350" y="181" font-size="27">Service로 받을 준비는 안 됐어요</text><text x="350" y="214" font-size="23">Ready False · endpoint ready false · NodePort 요청 실패</text>
+</g></svg></div>
+<div class="obsv-figcap">그림 2. readiness 실패는 프로세스를 종료하거나 파드 IP 접근을 막는 기능이 아니에요.</div>
+<p><a href="https://kubernetes.io/docs/concepts/workloads/pods/probes/">probe 문서</a>의 역할 구분을 실제 앱에서 확인한 결과예요. 준비 검사 1초 주기로 설정했다고 모든 계층이 정확히 1초 안에 동시에 바뀌는 것은 아니에요. kubelet의 상태 보고, EndpointSlice 변경, 노드의 전달 규칙 반영은 각각 진행돼요. 그래서 스크립트는 상태를 기다린 뒤 HTTP를 확인했고, 개별 조회 결과를 하나의 원자적인 시점으로 취급하지 않았어요.</p>
+<p><span class="obsv-mark">Running·Ready·EndpointSlice·HTTP 응답은 서로 관련되지만 같은 확인은 아니에요.</span></p>
+
+<h2>4. DNS 이름으로 보낸 요청을 앱 로그까지 따라갔어요</h2>
+<p>파드 IP를 직접 적으면 파드가 교체될 때 호출 대상도 고쳐야 해요. 이번 Service는 <code>app=deploy-board</code> 라벨의 파드를 선택하고, 80번 포트로 받은 요청을 컨테이너의 이름 있는 포트 <code>http</code>, 즉 8080번으로 전달하도록 설정했어요. Service의 ClusterIP는 <code>10.98.233.106</code>이었어요.</p>
+<p>앱은 worker1에 있었고 임시 요청 클라이언트는 worker2의 <code>10.244.126.50</code>이었어요. 그 안에서 <code>deploy-board.app-capstone.svc.cluster.local</code>을 조회하니 DNS 서버 <code>10.96.0.10</code>이 Service의 ClusterIP를 반환했어요. DNS가 Pod IP를 반환한 것은 아니에요.</p>
+<p>같이 제공한 <code>client.json</code>으로 요청용 파드를 만들고 준비될 때까지 기다려요. 파일은 클라이언트를 <code>k8s-worker2</code>에 배정하도록 설정했어요. 다른 환경에서는 <code>spec.nodeSelector</code>의 노드 이름을 실제 이름으로 고쳐야 해요. 앱과 다른 노드의 통신을 확인하려면 <code>get pods -o wide</code>로 앱의 노드를 확인한 뒤 클라이언트의 노드를 선택해요.</p>
+<div class="obsv-code">kubectl -n app-capstone get pods -l app=deploy-board -o wide
+kubectl apply -f labs/devops/k8s-study/application-57/client.json
+kubectl -n app-capstone wait --for=condition=Ready pod/request-client --timeout=120s
+
+kubectl -n app-capstone exec request-client -- \
+  nslookup deploy-board.app-capstone.svc.cluster.local
+# Address: 10.98.233.106
+
+kubectl -n app-capstone exec request-client -- \
+  wget -qO- --header 'X-Request-ID: internal-first-57' \
+  http://deploy-board/api/info
+# version: v1, pod_ip: 10.244.194.93
+# request_id: internal-first-57
+
+# 같은 요청을 받은 앱의 실제 로그 일부예요.
+{"path":"/api/info","status":200,"version":"v1",
+ "request_id":"internal-first-57","peer":"10.244.126.50"}</div>
+<p>응답과 앱 로그의 요청 ID가 같았어요. <code>request-client → Service → 준비된 앱 파드</code> 경로로 요청이 도착했고, 앱 로그에는 실제 클라이언트의 Pod IP가 남았어요. 이 요청이 노드 간 통신까지 포함했다는 것은 클라이언트와 앱의 서로 다른 <code>nodeName</code>으로 확인했어요. 여기서는 같은 요청의 전체 패킷을 별도로 캡처했다고 주장하지 않아요.</p>
+<p>앱 응답의 파드 이름·노드·IP는 코드에 고정한 값이 아니에요. 컨테이너 환경 변수에 <code>metadata.name</code>, <code>spec.nodeName</code>, <code>status.podIP</code>를 연결했어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Downward API</div>파드 이름이나 배정된 노드 같은 자신의 정보를 컨테이너의 환경 변수나 파일로 전달하는 기능이에요. 이번 앱은 Kubernetes API에 조회 요청을 보내지 않고 주입된 환경 변수를 응답해요. <a href="https://kubernetes.io/docs/concepts/workloads/pods/downward-api/">공식 문서</a>에서 전달할 수 있는 필드를 확인할 수 있어요.</div>
+<p>Mac 브라우저에서 쓰는 경로는 내부 DNS 경로와 달라요. VM의 접근 가능한 주소 <code>192.168.64.3:30057</code>에 접속해 NodePort를 거쳐 같은 Service의 앱으로 들어가요.</p>
+<p><a href="https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport">NodePort 문서</a>가 설명하는 노출 경로를 실제 curl과 브라우저로 확인했어요. 이 실습에서는 port-forward를 사용하지 않았어요. port-forward는 별도의 전달 경로이므로 그것만 성공했다고 ClusterIP·DNS·NodePort까지 확인한 것으로 볼 수 없어요.</p>
+
+<h2>5. v2가 준비되기 전까지 v1이 요청을 받았어요</h2>
+<p>이번 업데이트는 같은 이미지와 같은 소스를 두고 환경 변수 <code>APP_VERSION</code>을 v1에서 v2로 바꿨어요. 앱의 표시와 응답 버전이 바뀌는 구성 변경이에요. 이미지 교체 실험은 아니지만, Pod 템플릿이 변경되므로 새 ReplicaSet과 새 파드가 만들어지는 rollout을 관찰할 수 있어요.</p>
+<div class="obsv-code"># application-v1.json Deployment 전략의 일부예요.
+replicas: 1
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+kubectl -n app-capstone set env deployment/deploy-board APP_VERSION=v2
+kubectl -n app-capstone rollout status deployment/deploy-board</div>
+<p>새 파드 하나를 추가할 수 있고, 업데이트 중 필요한 available 파드 수를 유지하도록 한 설정이에요. 정상 상태의 앱 파드 수는 한 개지만 업데이트 중에는 두 개가 있었어요. 새 파드를 놓을 자원이 있어야 하며, 종료 중인 파드까지 세면 일시적인 전체 개수는 더 늘어날 수도 있어요. 이번에는 <code>minReadySeconds</code>를 따로 설정하지 않았어요.</p>
+<p>수집한 타임라인에는 먼저 v1 <code>10.244.194.93</code>의 endpoint가 ready true이고, 새 v2 <code>10.244.194.86</code>은 ready false인 구간이 남았어요. v2가 Ready가 된 뒤에는 v2 endpoint가 ready true, 종료를 시작한 v1 endpoint가 <code>ready:false / serving:true / terminating:true</code>인 구간이 있었어요. 종료 시작과 프로세스 종료가 같은 순간은 아니었어요. <a href="https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/#conditions">EndpointSlice 조건 문서</a>도 준비·서비스 가능·종료 상태를 구분해요.</p>
+<p>이 전환 동안 Mac에서 NodePort로 약 35초간 새 curl 요청을 반복했어요. <b>129개 표본 모두 HTTP 200</b>이었고 응답은 v1 42개, v2 87개였어요. 요청이 끝난 뒤 0.25초를 기다리는 방식이라 정확히 초당 4회인 부하 실험은 아니에요. 타임아웃·명령 실행 시간도 표본 수에 영향을 줘요.</p>
+<div class="obsv-fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 300" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="새 버전을 먼저 준비하는 rollout과 실행 중 파드를 먼저 삭제한 교체 실험의 결과 비교">
+<g font-family="'Nanum Pen Script',cursive" text-anchor="middle" fill="#3d3a34" stroke-linecap="round" stroke-linejoin="round">
+<path d="M25 30 C234 27,459 34,675 30 C678 63,673 100,675 132 C460 135,235 129,25 132 C22 100,28 63,25 30Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.5" />
+<text x="350" y="63" font-size="27">업데이트: 기존 v1 유지 → v2 준비 → v1 종료</text><text x="350" y="99" font-size="25" fill="#2e6b41">129개 요청 표본 중 129개가 HTTP 200</text>
+<path d="M25 158 C234 155,459 162,675 158 C678 191,673 229,675 261 C460 264,235 258,25 261 C22 228,28 191,25 158Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.5" />
+<text x="350" y="191" font-size="27">직접 삭제: 기존 파드 종료 → 새 파드 준비</text><text x="350" y="228" font-size="25" fill="#b3502f">120개 요청 표본 중 12개가 통신 실패</text>
+<text x="350" y="290" font-size="22" fill="#8a8272">이번 관측 표본의 결과예요. 모든 요청의 성공을 보장하지는 않아요.</text>
+</g></svg></div>
+<div class="obsv-figcap">그림 3. 새 파드를 준비한 뒤 교체하는 것과, 현재 파드를 먼저 삭제하는 것은 다른 실험이에요.</div>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ HTTP 실패 0건의 범위</div>이 결과는 짧은 단일 클라이언트 표본에서 실패를 관측하지 않았다는 뜻이에요. RollingUpdate 설정만으로 무중단이 보장되지는 않아요. 종료 시 연결 처리, 준비 검사 정확도, 네트워크 반영 지연, 추가 용량도 영향을 줘요. 이번 앱에는 종료 전 3초 대기와 SIGTERM 처리도 넣었지만 이 설정의 적정성을 일반화할 수는 없어요.</div>
+<p><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#rolling-update-deployment">Deployment의 롤링 업데이트 동작</a>을 이해한 뒤에는 설정값뿐 아니라 <span class="obsv-mark">새 버전의 준비 상태·기존 버전의 종료·실제 요청 결과를 같이 확인해야 해요.</span></p>
+
+<h2>6. 파드는 복구됐지만 단일 파드의 빈 시간은 있었어요</h2>
+<p>이번에는 v2로 응답하던 파드를 직접 삭제했어요. 같은 ReplicaSet이 새 파드를 만들었고 최종적으로 다시 v2에 접속할 수 있었어요. 다만 그 사이의 HTTP 결과는 rollout과 달랐어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: UID와 파드 교체</div>UID는 Kubernetes 객체 하나의 식별자예요. 삭제된 파드를 대체해 만든 파드는 새로운 객체라 UID도 달라져요. 같은 파드 안에서 컨테이너만 재시작되는 경우와 구분할 수 있어요.</div>
+<div class="obsv-code"># 삭제 전 v2
+Pod: deploy-board-5f6f56c47c-zdns6
+UID: 7ad94d0a-9aae-4092-bc51-7af625f6444b
+IP:  10.244.194.86
+
+# 삭제 후 새로 생성된 v2
+Pod: deploy-board-5f6f56c47c-l2r9x
+UID: 7bc0916c-8ad3-4446-9829-ec580017379b
+IP:  10.244.194.85
+
+# 두 시점에 유지된 Service
+ClusterIP: 10.98.233.106
+NodePort: 30057</div>
+<p>파드 이름·UID·이번에 할당된 IP는 달라졌고, Service 주소와 포트는 그대로였어요. 새 파드가 준비된 뒤에는 같은 Service로 계속 호출할 수 있었어요. IP가 매번 반드시 바뀐다는 뜻은 아니에요. IP는 재사용될 수 있으므로 <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-lifetime">파드의 교체 여부</a>는 UID로 판단해요.</p>
+<p>삭제 전후 약 35초간 수집한 요청은 120개였어요. 그중 108개가 HTTP 200, <b>12개는 통신 실패</b>였어요. curl 종료 코드는 연결 실패를 나타낸 7이 8개, 시간 초과인 28이 3개, 수신 중 연결 리셋을 보고한 56이 1개였어요. 전부 HTTP 500이거나 전부 같은 실패 원인이었던 것은 아니에요.</p>
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/57/03-rollout-replacement.png" alt="저장된 요청 표본 집계의 렌더링, rollout은 129개 모두 HTTP 200이고 파드 직접 삭제는 120개 중 12개 통신 실패" style="max-width:100%;height:auto;" /></div>
+<div class="obsv-figcap">실행 화면 3. 실제 수집한 요청 표본을 집계해 렌더링했어요. 같은 앱이지만 업데이트와 직접 삭제의 결과가 달랐어요.</div>
+<p>타임라인에는 기존 파드의 종료와 새 파드의 Ready 사이에 준비된 endpoint가 없는 구간이 있었어요. 파드 수를 다시 맞추는 동작은 관측했지만 요청의 연속성까지 보장한 것은 아니었어요. 정상 상태의 파드가 한 개이므로 기존 파드를 먼저 없애면 새 파드가 준비될 때까지 요청을 처리할 여유가 없어요.</p>
+<p>메모리에 있던 요청 수와 실행 시간도 새 프로세스에서 다시 시작해요. 컨테이너의 프로세스·Pod 객체·사용자가 부르는 Service·저장해야 할 데이터는 각각 생명주기가 달라요. 화면의 요청 수는 브라우저와 curl 등 여러 클라이언트의 요청이 함께 증가시키므로, 이번 부하 표본 수와 일치할 필요도 없어요.</p>
+<p>마지막에는 <code>kubectl -n app-capstone delete pod request-client</code>로 임시 클라이언트를 삭제하고 앱 파드 하나만 Ready로 남겼어요. 내부 Service 요청과 Mac의 NodePort 요청 모두 최종 v2 파드 <code>10.244.194.85</code>의 응답을 확인했어요. Service의 endpoint도 이 IP 하나를 ready true로 가리켰어요. 전체 앱을 지우려면 실습을 마친 뒤 <code>kubectl delete namespace app-capstone</code>을 실행하면 돼요.</p>
+<p><span class="obsv-mark">컨트롤러가 앱을 다시 실행하는 것과, 사용자의 요청이 계속 성공하는 것은 별도로 검증해야 해요.</span></p>
+<p>재현 자료: <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/k8s-study/application-57">앱 소스·매니페스트·실험 스크립트와 원본 출력</a>, <a href="https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/k8s-study/application-57/evidence/summary.json">요청 결과 집계</a>, <a href="https://github.com/DDINGJOO/Platform-study/blob/main/labs/devops/k8s-study/application-57/evidence/timeline.jsonl">객체 상태 타임라인</a>을 함께 보관했어요. 객체 조회는 순차적으로 수행했고 모든 순간을 캡처한 것은 아니므로, 정확한 계층 간 지연이나 전체 요청의 무실패를 이 자료에서 계산하지는 않아요.</p>
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div>Deployment로 선언한 앱은 컨트롤러·스케줄러·노드 런타임·Calico를 거쳐 실행되고, 준비된 endpoint를 통해 Service 요청을 받아요. 실제로 앱을 업데이트하고 파드를 교체해 보니, 파드가 존재하는지와 사용자의 요청이 성공하는지는 다른 확인이었어요. 배포는 실행 상태와 요청 결과를 함께 확인해야 끝나요.</div>
+</div>

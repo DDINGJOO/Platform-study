@@ -1,0 +1,213 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "app-capstone"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "deploy-board-code",
+        "namespace": "app-capstone"
+      },
+      "immutable": true,
+      "data": {
+        "app.py": "\"\"\"One-process, memory-only HTTP app for the Kubernetes deployment capstone.\"\"\"\nimport json\nimport os\nimport signal\nimport threading\nimport time\nfrom datetime import datetime, timezone\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom urllib.parse import urlparse\n\nSTART = time.monotonic()\nVERSION = os.environ.get('APP_VERSION', 'v1')\nREADY_AFTER = float(os.environ.get('READY_AFTER_SECONDS', '8'))\nLOCK = threading.Lock()\nCOUNT = 0\nSTOPPING = False\n\nPAGE = '''<!doctype html><html lang=\"ko\"><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>배포 확인 보드</title><style>\nbody{font:17px/1.65 system-ui,sans-serif;background:#fdfaf3;color:#303e46;margin:0;padding:32px 18px}\nmain{max-width:780px;margin:auto}h1{font-size:30px}small{color:#66757a}\nsection{background:white;border:1px solid #d7dfdc;border-radius:16px;padding:20px;margin:18px 0}\ndl{display:grid;grid-template-columns:110px 1fr;gap:12px;margin:0}dt{color:#66757a}dd{margin:0;overflow-wrap:anywhere}\nbutton{background:#285c4e;color:white;border:0;border-radius:9px;padding:12px 18px;font-size:16px;cursor:pointer}\npre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}#status{color:#285c4e}\n</style><main><small>Kubernetes application capstone</small><h1>배포 확인 보드</h1>\n<p>지금 요청을 처리한 앱의 버전과 파드를 확인해요. 2초마다 새 HTTP 요청을 보내요.</p>\n<section><strong id=\"status\">요청 중</strong><dl id=\"facts\"></dl></section>\n<button id=\"refresh\">지금 요청하기</button><section><strong>마지막 응답</strong><pre id=\"raw\"></pre></section>\n<small>요청 수는 이 프로세스의 메모리에만 있어요. 프로세스나 파드가 바뀌면 초기화돼요.<br>\n이 화면은 학습용 상태 확인 앱이에요. 응답에는 실습 파드의 주소가 포함돼요.</small></main>\n<script>\nconst fields={version:'앱 버전',pod:'파드',node:'노드',pod_ip:'파드 IP',requests:'요청 수',uptime_seconds:'실행 초',request_id:'요청 ID'};\nasync function refresh(){const id='browser-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);try{const r=await fetch('/api/info',{cache:'no-store',headers:{'X-Request-ID':id},signal:AbortSignal.timeout(3000)});if(!r.ok)throw Error('HTTP '+r.status);const v=await r.json();document.querySelector('#status').textContent='HTTP '+r.status+' · '+new Date().toLocaleTimeString();const dl=document.querySelector('#facts');dl.replaceChildren();for(const [key,title]of Object.entries(fields)){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=title;dd.textContent=v[key];dl.append(dt,dd)}document.querySelector('#raw').textContent=JSON.stringify(v,null,2)}catch(e){document.querySelector('#status').textContent='요청 실패 · '+e.message}}\ndocument.querySelector('#refresh').onclick=refresh;refresh();setInterval(refresh,2000);\n</script></html>'''\n\n\nclass Handler(BaseHTTPRequestHandler):\n    def do_GET(self):\n        global COUNT\n        path = urlparse(self.path).path\n        request_id = self.headers.get('X-Request-ID', '-')[:128]\n        ready = not STOPPING and time.monotonic() - START >= READY_AFTER and not os.path.exists('/tmp/not-ready')\n        status, kind = 200, 'application/json; charset=utf-8'\n        if path == '/healthz':\n            body = {'healthy': True}\n        elif path == '/readyz':\n            status = 200 if ready else 503\n            body = {'ready': ready, 'version': VERSION}\n        elif path == '/api/info':\n            with LOCK:\n                COUNT += 1\n                count = COUNT\n            body = {'version': VERSION, 'pod': os.environ.get('POD_NAME'),\n                    'node': os.environ.get('NODE_NAME'), 'pod_ip': os.environ.get('POD_IP'),\n                    'requests': count, 'uptime_seconds': round(time.monotonic() - START, 3),\n                    'request_id': request_id}\n        elif path == '/':\n            kind, body = 'text/html; charset=utf-8', PAGE\n        else:\n            status, body = 404, {'error': 'not found'}\n        data = (body if isinstance(body, str) else json.dumps(body)).encode()\n        self.send_response(status)\n        self.send_header('Content-Type', kind)\n        self.send_header('Cache-Control', 'no-store')\n        self.send_header('Content-Length', str(len(data)))\n        self.end_headers()\n        self.wfile.write(data)\n        if path in ('/', '/api/info'):\n            print(json.dumps({'time': datetime.now(timezone.utc).isoformat(), 'path': path,\n                              'status': status, 'version': VERSION, 'request_id': request_id,\n                              'peer': self.client_address[0]}), flush=True)\n\n    def log_message(self, fmt, *args):\n        pass\n\n\nserver = ThreadingHTTPServer(('0.0.0.0', 8080), Handler)\n\n\ndef stop(signum, frame):\n    global STOPPING\n    STOPPING = True\n    threading.Thread(target=server.shutdown, daemon=True).start()\n\n\nsignal.signal(signal.SIGTERM, stop)\nprint(json.dumps({'event': 'listening', 'version': VERSION, 'ready_after_seconds': READY_AFTER}), flush=True)\nserver.serve_forever()\nserver.server_close()\n"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "deploy-board",
+        "namespace": "app-capstone"
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 3,
+        "selector": {
+          "matchLabels": {
+            "app": "deploy-board"
+          }
+        },
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "deploy-board"
+            }
+          },
+          "spec": {
+            "terminationGracePeriodSeconds": 20,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 10001,
+              "runAsGroup": 10001,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "containers": [
+              {
+                "name": "web",
+                "image": "docker.io/library/python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+                "imagePullPolicy": "IfNotPresent",
+                "command": [
+                  "python3",
+                  "-u",
+                  "/app/app.py"
+                ],
+                "env": [
+                  {
+                    "name": "APP_VERSION",
+                    "value": "v1"
+                  },
+                  {
+                    "name": "READY_AFTER_SECONDS",
+                    "value": "8"
+                  },
+                  {
+                    "name": "POD_NAME",
+                    "valueFrom": {
+                      "fieldRef": {
+                        "fieldPath": "metadata.name"
+                      }
+                    }
+                  },
+                  {
+                    "name": "POD_IP",
+                    "valueFrom": {
+                      "fieldRef": {
+                        "fieldPath": "status.podIP"
+                      }
+                    }
+                  },
+                  {
+                    "name": "NODE_NAME",
+                    "valueFrom": {
+                      "fieldRef": {
+                        "fieldPath": "spec.nodeName"
+                      }
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/readyz",
+                    "port": "http"
+                  },
+                  "periodSeconds": 1,
+                  "timeoutSeconds": 1,
+                  "failureThreshold": 1
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": "http"
+                  },
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 1,
+                  "failureThreshold": 3
+                },
+                "lifecycle": {
+                  "preStop": {
+                    "exec": {
+                      "command": [
+                        "python3",
+                        "-c",
+                        "import time; time.sleep(3)"
+                      ]
+                    }
+                  }
+                },
+                "securityContext": {
+                  "readOnlyRootFilesystem": true,
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "25m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "200m",
+                    "memory": "96Mi"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "code",
+                    "mountPath": "/app",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "code",
+                "configMap": {
+                  "name": "deploy-board-code"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {}
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "deploy-board",
+        "namespace": "app-capstone"
+      },
+      "spec": {
+        "type": "NodePort",
+        "selector": {
+          "app": "deploy-board"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 80,
+            "targetPort": "http",
+            "nodePort": 30057
+          }
+        ],
+        "externalTrafficPolicy": "Cluster"
+      }
+    }
+  ]
+}

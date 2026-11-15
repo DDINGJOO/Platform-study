@@ -1,0 +1,213 @@
+$ /Users/dding/orca/workspaces/k8s/tang/lab ssh worker1 -- sudo bash -s
+started=2026-11-14T23:35:10.962011+09:00
+2026-11-14T23:35:11+09:00
+
+$ ip netns add cb53-src
+
+$ ip netns add cb53-rtr
+
+$ ip netns add cb53-dst
+
+$ ip netns exec cb53-rtr sysctl -w net.ipv4.ip_forward=1
+net.ipv4.ip_forward = 1
+
+$ ip netns exec cb53-src sysctl -w net.ipv4.tcp_mtu_probing=0
+net.ipv4.tcp_mtu_probing = 0
+
+$ ip netns exec cb53-src ethtool -K cb53-sa tso off gso off gro off
+exit_code=0
+
+$ ip netns exec cb53-rtr ethtool -K cb53-rs tso off gso off gro off
+exit_code=0
+
+$ ip netns exec cb53-rtr ethtool -K cb53-rd tso off gso off gro off
+exit_code=0
+
+$ ip netns exec cb53-dst ethtool -K cb53-dr tso off gso off gro off
+exit_code=0
+
+$ ip -n cb53-src -br link
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> 
+tunl0@NONE       DOWN           0.0.0.0 <NOARP> 
+cb53-sa@if68     UP             86:fb:1d:93:eb:bd <BROADCAST,MULTICAST,UP,LOWER_UP> 
+
+$ ip -n cb53-src route
+default via 192.0.2.1 dev cb53-sa 
+192.0.2.0/24 dev cb53-sa proto kernel scope link src 192.0.2.2 
+
+$ ip -n cb53-rtr -br link
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> 
+tunl0@NONE       DOWN           0.0.0.0 <NOARP> 
+cb53-rs@if69     UP             56:2e:ec:a9:60:fe <BROADCAST,MULTICAST,UP,LOWER_UP> 
+cb53-rd@if70     UP             ea:13:5d:e8:5d:fe <BROADCAST,MULTICAST,UP,LOWER_UP> 
+
+$ ip -n cb53-rtr route
+192.0.2.0/24 dev cb53-rs proto kernel scope link src 192.0.2.1 
+198.51.100.0/24 dev cb53-rd proto kernel scope link src 198.51.100.1 
+
+$ ip -n cb53-dst -br link
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> 
+tunl0@NONE       DOWN           0.0.0.0 <NOARP> 
+cb53-dr@if71     UP             1a:c7:d1:4c:ce:0b <BROADCAST,MULTICAST,UP,LOWER_UP> 
+
+$ ip -n cb53-dst route
+default via 198.51.100.1 dev cb53-dr 
+198.51.100.0/24 dev cb53-dr proto kernel scope link src 198.51.100.2 
+
+$ ip netns exec cb53-rtr iptables -A OUTPUT -p icmp --icmp-type 3/4 -j DROP
+=== ICMP fragmentation-needed blocked ===
+
+$ ip netns exec cb53-src ping -4 -n -c 1 -W 1 -M do -s 100 198.51.100.2
+PING 198.51.100.2 (198.51.100.2) 100(128) bytes of data.
+108 bytes from 198.51.100.2: icmp_seq=1 ttl=63 time=0.065 ms
+
+--- 198.51.100.2 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.065/0.065/0.065/0.000 ms
+exit_code=0
+
+$ ip netns exec cb53-src ping -4 -n -c 1 -W 1 -M do -s 1400 198.51.100.2
+PING 198.51.100.2 (198.51.100.2) 1400(1428) bytes of data.
+
+--- 198.51.100.2 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 0ms
+
+exit_code=1
+
+$ ip netns exec cb53-src curl --noproxy \* --silent --show-error --max-time 4 -H Expect: --data-binary @/tmp/cb53-evidence/body.bin -w http=%\{http_code\}\ uploaded=%\{size_upload\}\ total=%\{time_total\}\\n http://198.51.100.2:18553/
+http=000 uploaded=65536 total=4.002032
+exit_code=28
+
+$ ip netns exec cb53-rtr iptables -nvL OUTPUT
+Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+   16  9216 DROP       1    --  *      *       0.0.0.0/0            0.0.0.0/0            icmptype 3 code 4
+
+$ ip -n cb53-src route get 198.51.100.2
+198.51.100.2 via 192.0.2.1 dev cb53-sa src 192.0.2.2 uid 0 
+    cache 
+=== allow feedback, same 1300-byte bottleneck ===
+
+$ ip netns exec cb53-rtr iptables -D OUTPUT -p icmp --icmp-type 3/4 -j DROP
+
+$ ip netns exec cb53-src curl --noproxy \* --silent --show-error --max-time 4 -H Expect: --data-binary @/tmp/cb53-evidence/body.bin -w http=%\{http_code\}\ uploaded=%\{size_upload\}\ total=%\{time_total\}\\n http://198.51.100.2:18553/
+received=65536
+http=200 uploaded=65536 total=0.001099
+exit_code=0
+
+$ ip -n cb53-src route get 198.51.100.2
+198.51.100.2 via 192.0.2.1 dev cb53-sa src 192.0.2.2 uid 0 
+    cache expires 599sec mtu 1300 
+
+$ ip netns exec cb53-src ping -4 -n -c 1 -W 1 -M do -s 1272 198.51.100.2
+PING 198.51.100.2 (198.51.100.2) 1272(1300) bytes of data.
+1280 bytes from 198.51.100.2: icmp_seq=1 ttl=63 time=0.016 ms
+
+--- 198.51.100.2 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.016/0.016/0.016/0.000 ms
+exit_code=0
+
+$ ip netns exec cb53-src ping -4 -n -c 1 -W 1 -M do -s 1273 198.51.100.2
+PING 198.51.100.2 (198.51.100.2) 1273(1301) bytes of data.
+
+--- 198.51.100.2 ping statistics ---
+1 packets transmitted, 0 received, +1 errors, 100% packet loss, time 0ms
+
+exit_code=1
+=== source capture excerpts ===
+reading from file /tmp/cb53-evidence/blocked.pcap, link-type EN10MB (Ethernet), snapshot length 262144
+2026-11-14 23:35:11.768402 IP (tos 0x0, ttl 64, id 0, offset 0, flags [DF], proto ICMP (1), length 128)
+    192.0.2.2 > 198.51.100.2: ICMP echo request, id 37390, seq 1, length 108
+2026-11-14 23:35:11.768446 IP (tos 0x0, ttl 63, id 50108, offset 0, flags [none], proto ICMP (1), length 128)
+    198.51.100.2 > 192.0.2.2: ICMP echo reply, id 37390, seq 1, length 108
+2026-11-14 23:35:11.769967 IP (tos 0x0, ttl 64, id 0, offset 0, flags [DF], proto ICMP (1), length 1428)
+    192.0.2.2 > 198.51.100.2: ICMP echo request, id 37391, seq 1, length 1408
+2026-11-14 23:35:12.774712 IP (tos 0x0, ttl 64, id 42625, offset 0, flags [DF], proto TCP (6), length 60)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [S], seq 4286112395, win 64240, options [mss 1460,sackOK,TS val 212988318 ecr 0,nop,wscale 7], length 0
+2026-11-14 23:35:12.774731 IP (tos 0x0, ttl 63, id 0, offset 0, flags [DF], proto TCP (6), length 60)
+    198.51.100.2.18553 > 192.0.2.2.43538: Flags [S.], seq 2988511971, ack 4286112396, win 65160, options [mss 1460,sackOK,TS val 3464798298 ecr 212988318,nop,wscale 7], length 0
+2026-11-14 23:35:12.774738 IP (tos 0x0, ttl 64, id 42626, offset 0, flags [DF], proto TCP (6), length 52)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286112396, ack 2988511972, win 502, options [nop,nop,TS val 212988318 ecr 3464798298], length 0
+2026-11-14 23:35:12.774771 IP (tos 0x0, ttl 64, id 42627, offset 0, flags [DF], proto TCP (6), length 206)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [P.], seq 4286112396:4286112550, ack 2988511972, win 502, options [nop,nop,TS val 212988318 ecr 3464798298], length 154
+2026-11-14 23:35:12.774776 IP (tos 0x0, ttl 63, id 16974, offset 0, flags [DF], proto TCP (6), length 52)
+    198.51.100.2.18553 > 192.0.2.2.43538: Flags [.], seq 2988511972, ack 4286112550, win 508, options [nop,nop,TS val 3464798298 ecr 212988318], length 0
+2026-11-14 23:35:12.774810 IP (tos 0x0, ttl 64, id 42628, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286112550:4286113998, ack 2988511972, win 502, options [nop,nop,TS val 212988318 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774811 IP (tos 0x0, ttl 64, id 42629, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286113998:4286115446, ack 2988511972, win 502, options [nop,nop,TS val 212988318 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774811 IP (tos 0x0, ttl 64, id 42630, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286115446:4286116894, ack 2988511972, win 502, options [nop,nop,TS val 212988318 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774812 IP (tos 0x0, ttl 64, id 42631, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286116894:4286118342, ack 2988511972, win 502, options [nop,nop,TS val 212988318 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774812 IP (tos 0x0, ttl 64, id 42632, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [P.], seq 4286118342:4286119790, ack 2988511972, win 502, options [nop,nop,TS val 212988318 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774832 IP (tos 0x0, ttl 64, id 42633, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286119790:4286121238, ack 2988511972, win 502, options [nop,nop,TS val 212988319 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774833 IP (tos 0x0, ttl 64, id 42634, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286121238:4286122686, ack 2988511972, win 502, options [nop,nop,TS val 212988319 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774833 IP (tos 0x0, ttl 64, id 42635, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286122686:4286124134, ack 2988511972, win 502, options [nop,nop,TS val 212988319 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774833 IP (tos 0x0, ttl 64, id 42636, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286124134:4286125582, ack 2988511972, win 502, options [nop,nop,TS val 212988319 ecr 3464798298], length 1448
+2026-11-14 23:35:12.774833 IP (tos 0x0, ttl 64, id 42637, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [P.], seq 4286125582:4286127030, ack 2988511972, win 502, options [nop,nop,TS val 212988319 ecr 3464798298], length 1448
+2026-11-14 23:35:12.779881 IP (tos 0x0, ttl 64, id 42638, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286127030:4286128478, ack 2988511972, win 502, options [nop,nop,TS val 212988324 ecr 3464798298], length 1448
+2026-11-14 23:35:12.984404 IP (tos 0x0, ttl 64, id 42639, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286112550:4286113998, ack 2988511972, win 502, options [nop,nop,TS val 212988528 ecr 3464798298], length 1448
+2026-11-14 23:35:13.392802 IP (tos 0x0, ttl 64, id 42640, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286112550:4286113998, ack 2988511972, win 502, options [nop,nop,TS val 212988936 ecr 3464798298], length 1448
+2026-11-14 23:35:14.208076 IP (tos 0x0, ttl 64, id 42641, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43538 > 198.51.100.2.18553: Flags [.], seq 4286112550:4286113998, ack 2988511972, win 502, options [nop,nop,TS val 212989752 ecr 3464798298], length 1448
+reading from file /tmp/cb53-evidence/allowed.pcap, link-type EN10MB (Ethernet), snapshot length 262144
+2026-11-14 23:35:17.100296 IP (tos 0x0, ttl 64, id 24849, offset 0, flags [DF], proto TCP (6), length 60)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [S], seq 3866841889, win 64240, options [mss 1460,sackOK,TS val 212992644 ecr 0,nop,wscale 7], length 0
+2026-11-14 23:35:17.100322 IP (tos 0x0, ttl 63, id 0, offset 0, flags [DF], proto TCP (6), length 60)
+    198.51.100.2.18553 > 192.0.2.2.43550: Flags [S.], seq 1899684899, ack 3866841890, win 65160, options [mss 1460,sackOK,TS val 3464802624 ecr 212992644,nop,wscale 7], length 0
+2026-11-14 23:35:17.100330 IP (tos 0x0, ttl 64, id 24850, offset 0, flags [DF], proto TCP (6), length 52)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866841890, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 0
+2026-11-14 23:35:17.100377 IP (tos 0x0, ttl 64, id 24851, offset 0, flags [DF], proto TCP (6), length 206)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [P.], seq 3866841890:3866842044, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 154
+2026-11-14 23:35:17.100430 IP (tos 0x0, ttl 63, id 4037, offset 0, flags [DF], proto TCP (6), length 52)
+    198.51.100.2.18553 > 192.0.2.2.43550: Flags [.], seq 1899684900, ack 3866842044, win 508, options [nop,nop,TS val 3464802624 ecr 212992644], length 0
+2026-11-14 23:35:17.100566 IP (tos 0x0, ttl 64, id 24852, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866842044:3866843492, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100570 IP (tos 0x0, ttl 64, id 24853, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866843492:3866844940, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100570 IP (tos 0x0, ttl 64, id 24854, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866844940:3866846388, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100571 IP (tos 0x0, ttl 64, id 24855, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866846388:3866847836, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100571 IP (tos 0x0, ttl 64, id 24856, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [P.], seq 3866847836:3866849284, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100585 IP (tos 0xc0, ttl 64, id 34904, offset 0, flags [none], proto ICMP (1), length 576)
+    192.0.2.1 > 192.0.2.2: ICMP 198.51.100.2 unreachable - need to frag (mtu 1300), length 556
+	IP (tos 0x0, ttl 64, id 24852, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866842044:3866843492, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100586 IP (tos 0xc0, ttl 64, id 34905, offset 0, flags [none], proto ICMP (1), length 576)
+    192.0.2.1 > 192.0.2.2: ICMP 198.51.100.2 unreachable - need to frag (mtu 1300), length 556
+	IP (tos 0x0, ttl 64, id 24853, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866843492:3866844940, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100587 IP (tos 0xc0, ttl 64, id 34906, offset 0, flags [none], proto ICMP (1), length 576)
+    192.0.2.1 > 192.0.2.2: ICMP 198.51.100.2 unreachable - need to frag (mtu 1300), length 556
+	IP (tos 0x0, ttl 64, id 24854, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866844940:3866846388, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100587 IP (tos 0xc0, ttl 64, id 34907, offset 0, flags [none], proto ICMP (1), length 576)
+    192.0.2.1 > 192.0.2.2: ICMP 198.51.100.2 unreachable - need to frag (mtu 1300), length 556
+	IP (tos 0x0, ttl 64, id 24855, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866846388:3866847836, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100588 IP (tos 0xc0, ttl 64, id 34908, offset 0, flags [none], proto ICMP (1), length 576)
+    192.0.2.1 > 192.0.2.2: ICMP 198.51.100.2 unreachable - need to frag (mtu 1300), length 556
+	IP (tos 0x0, ttl 64, id 24856, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [P.], seq 3866847836:3866849284, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100597 IP (tos 0x0, ttl 64, id 24857, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866849284:3866850732, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+2026-11-14 23:35:17.100598 IP (tos 0x0, ttl 64, id 24858, offset 0, flags [DF], proto TCP (6), length 1500)
+    192.0.2.2.43550 > 198.51.100.2.18553: Flags [.], seq 3866850732:3866852180, ack 1899684900, win 502, options [nop,nop,TS val 212992644 ecr 3464802624], length 1448
+cleanup: cb53-src cb53-rtr cb53-dst deleted
+curl: (28) Operation timed out after 4002 milliseconds with 0 bytes received
+ping: local error: message too long, mtu=1300
+
+exit_code=0

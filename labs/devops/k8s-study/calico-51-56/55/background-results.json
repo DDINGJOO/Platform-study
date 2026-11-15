@@ -1,0 +1,18 @@
+[
+  {
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab ssh worker2 -- timeout 25 python3 -u -c 'import http.server,json,datetime\nclass Handler(http.server.BaseHTTPRequestHandler):\n def do_GET(self):\n  result={\"time\":datetime.datetime.now(datetime.timezone.utc).isoformat(),\"client_ip\":self.client_address[0],\"client_port\":self.client_address[1],\"server_ip\":self.server.server_address[0],\"path\":self.path}\n  print(json.dumps(result),flush=True)\n  body=(json.dumps(result)+\"\\n\").encode();self.send_response(200);self.send_header(\"Content-Length\",str(len(body)));self.end_headers();self.wfile.write(body)\n def log_message(self,*args):pass\nprint(\"LISTEN 192.168.104.4:18555\",flush=True)\nhttp.server.HTTPServer((\"192.168.104.4\",18555),Handler).serve_forever()\n'",
+    "exit_code": 124
+  },
+  {
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab ssh worker1 -- sudo timeout 16 tcpdump -U -n -i cali31e758d2ea8 -s 0 -w - 'tcp and host 192.168.104.4 and port 18555'",
+    "exit_code": 124
+  },
+  {
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab ssh worker1 -- sudo timeout 16 tcpdump -U -n -i eth0 -s 0 -w - 'tcp and host 192.168.104.4 and port 18555'",
+    "exit_code": 124
+  },
+  {
+    "command": "/Users/dding/orca/workspaces/k8s/tang/lab ssh worker2 -- sudo timeout 16 tcpdump -U -n -i eth0 -s 0 -w - 'tcp and host 192.168.104.4 and port 18555'",
+    "exit_code": 124
+  }
+]

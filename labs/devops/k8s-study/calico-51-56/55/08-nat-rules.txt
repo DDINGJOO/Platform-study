@@ -1,0 +1,9 @@
+$ /Users/dding/orca/workspaces/k8s/tang/lab ssh worker1 -- sudo sh -c 'iptables-save -t nat | grep -E "cali-(nat-outgoing|POSTROUTING)|POSTROUTING.*cali"'
+:cali-POSTROUTING - [0:0]
+:cali-nat-outgoing - [0:0]
+-A POSTROUTING -m comment --comment "cali:0i8pjzKKPyA34aQD" -j cali-POSTROUTING
+-A cali-POSTROUTING -m comment --comment "cali:Z-c7XtVd2Bq7s_hA" -j cali-fip-snat
+-A cali-POSTROUTING -m comment --comment "cali:nYKhEzDlr11Jccal" -j cali-nat-outgoing
+-A cali-POSTROUTING -o tunl0 -m comment --comment "cali:SXWvdsbh4Mw7wOln" -m addrtype ! --src-type LOCAL --limit-iface-out -m addrtype --src-type LOCAL -j MASQUERADE --random-fully
+-A cali-nat-outgoing -m comment --comment "cali:W_qq_N2KSTWyCvrX" -m set --match-set cali40masq-ipam-pools src -m set ! --match-set cali40network-ip-pools dst -j MASQUERADE --random-fully
+# Warning: iptables-legacy tables present, use iptables-legacy-save to see them

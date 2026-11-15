@@ -1,0 +1,156 @@
+<!-- tags: IPIP, tcpdump, 패킷 캡처, Calico 데이터 경로 -->
+<!-- lead: 다른 노드의 파드 IP로 보낸 요청이 노드 NIC에서는 IPIP 패킷으로 보여요. 같은 노드와 다른 노드의 통신을 여덟 지점에서 캡처하고, 내부 Pod IP와 외부 노드 IP를 대조했어요. -->
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 52편</div>
+  51편. 파드의 eth0 반대편에는 무엇이 있을까, Calico의 netns와 veth 추적<br>
+  <b>52편. 다른 노드의 파드까지 패킷은 어떻게 갈까, Calico IPIP를 tcpdump로 보기</b> &larr; 지금 이 글<br>
+  53편. 작은 요청은 되는데 큰 요청은 왜 멈출까, Calico MTU와 PMTUD<br>
+  54편. NetworkPolicy를 적용했는데 왜 어떤 연결은 계속될까<br>
+  55편. 파드가 밖으로 나갈 때 출발지 IP는 어디서 바뀔까, Calico NAT와 conntrack<br>
+  56편. 파드 통신 장애는 어디부터 볼까, Calico 장애를 구간별로 좁히기<br>
+</div>
+
+
+<p>파드에서 다른 노드의 nginx로 curl을 보냈어요. 목적지는 10.244.126.10인데 노드의 eth0를 캡처하니 먼저 보이는 목적지는 192.168.104.4였어요. tcpdump는 한 패킷 안에서 IP를 두 번 출력했고 바깥쪽에는 <b>proto IPIP (4)</b>, 안쪽에는 <b>proto TCP (6)</b>가 붙었어요.</p>
+<p>51편에서 파드의 eth0와 노드의 cali 장치를 연결했어요. 이번에는 그 장치를 출발점으로, 같은 노드와 다른 노드의 파드까지 실제 요청이 지나는 지점을 대조해요. 라우팅 표만 읽는 것으로 끝내지 않고 TCP 연결 하나의 주소·포트·시퀀스 번호를 여덟 곳에서 맞춰 봤어요.</p>
+<p>2026년 11월 14일의 개인 Lima 실습 환경이에요. Kubernetes v1.37.2, Calico v3.33.0이고 파드 대역은 10.244.0.0/16이에요. 아래 주소와 장치 이름은 이 실행에서 얻은 값이며 다른 클러스터에서는 다시 조회해야 해요.</p>
+
+<h2>1. 목적지만 바꾸기 위해 파드 세 개를 두 노드에 고정했다</h2>
+<p>출발지는 worker1의 curl 파드 하나로 고정했어요. nginx 두 개 중 local은 같은 worker1, remote는 worker2에 배치했어요. Service나 DNS를 거치지 않고 각 Pod IP의 80번 포트를 직접 호출해요. 이번에 관측할 것은 kube-proxy의 변환이 아니라 파드 사이의 경로예요.</p>
+
+<div class="obsv-code">Pod      Node          Pod IP           역할
+client   k8s-worker1   10.244.194.75     curl 출발지
+local    k8s-worker1   10.244.194.78     같은 노드의 nginx
+remote   k8s-worker2   10.244.126.10     다른 노드의 nginx
+
+Node eth0: worker1=192.168.104.3, worker2=192.168.104.4
+IPPool: ipipMode=Always, vxlanMode=Never, blockSize=26</div>
+
+<p>Namespace는 calico-blog-52로 분리했어요. 노드의 경로나 정책을 변경하지 않고 해당 파드만 생성했어요. IPPool의 IPIP Always는 다른 노드로 가는 통신의 캡슐화 설정이에요. 같은 노드의 파드끼리도 반드시 터널을 탄다는 뜻은 아니에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: IPIP와 캡슐화</div>기존 IP 패킷 앞에 IP 헤더를 하나 더 붙여 노드 사이로 보내는 방식이에요. 안쪽에는 원래 Pod 주소를, 바깥쪽에는 터널 양 끝의 노드 주소를 넣어요. 이 글의 IPIP는 IPv4 안에 IPv4를 넣는 구성이에요.</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 5-tuple과 TCP 시퀀스 번호</div>출발지·목적지 IP, 출발지·목적지 포트, 전송 프로토콜 다섯 값으로 연결을 구분해요. TCP 시퀀스 번호는 TCP 바이트 흐름에서의 위치를 나타내요. SYN은 TCP 연결을 시작하는 패킷이고, 이번에는 그 첫 시퀀스 번호를 비교했어요. IPv4 헤더의 식별 필드인 IP ID도 보조로 대조했어요. 이 값 하나만으로 같은 패킷이라고 판단하지 않아요.</div>
+
+<p>같은 노드 요청에는 출발지 포트 45252, 다른 노드 요청에는 45253을 지정했어요. 캡처를 시작한 뒤 두 요청을 차례로 보냈고 모두 HTTP 200을 받았어요.</p>
+
+<div class="obsv-code"># client 파드 안에서 실행한 명령
+curl --noproxy &#x27;*&#x27; --local-port 45252 --connect-timeout 3 --max-time 5   -sS -o /dev/null -w &#x27;HTTP %{http_code}
+&#x27; http://10.244.194.78/
+curl --noproxy &#x27;*&#x27; --local-port 45253 --connect-timeout 3 --max-time 5   -sS -o /dev/null -w &#x27;HTTP %{http_code}
+&#x27; http://10.244.126.10/
+
+local:  HTTP 200  10.244.194.75:45252 → 10.244.194.78:80
+remote: HTTP 200  10.244.194.75:45253 → 10.244.126.10:80</div>
+
+<h2>2. 같은 노드의 파드는 cali 장치 두 개 사이로 전달됐다</h2>
+<p>worker1에서 client IP로 가는 호스트 경로는 cali0e224c51a15, local IP로 가는 경로는 calid971ba37c65를 가리켰어요. 각각 출발 파드와 도착 파드의 노드 쪽 veth예요. client 네트워크 네임스페이스 안의 eth0도 따로 캡처했어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 캡처 지점</div>tcpdump가 패킷을 관찰하는 네트워크 네임스페이스와 인터페이스의 조합이에요. 파드 안의 eth0와 노드의 eth0는 이름만 같고 다른 장치예요. 같은 노드에서도 어느 쪽 장치를 읽는지 명시해야 해요.</div>
+
+<p>45252 연결의 패킷은 client의 eth0, client 쪽 cali, local 쪽 cali에서 각각 12개 보였어요. 출발 SYN의 Pod 주소·포트·시퀀스 번호는 같았고 TTL(라우터를 거칠 때 줄어드는 IPv4 전달 한도)은 출발 쪽 64에서 local 쪽 63으로 줄었어요. 이 세 지점에서 본 해당 연결에는 바깥 노드 IP 헤더가 없었어요.</p>
+<p>양쪽 노드 eth0에서는 노드 간 IPIP를 따로 캡처했어요. 그 캡처 안에서도 45252 연결은 발견되지 않았어요. 이 관측은 이번 요청과 캡처 구간에 한정해요. 클러스터의 모든 동작을 이 한 번으로 보장하지는 않아요.</p>
+
+<div class="obsv-fig"><svg viewBox="0 0 700 315" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="같은 노드와 다른 노드 요청의 경로 비교">
+<defs><marker id="c52-path-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 Q5 3 8.5 5 Q5 7 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6"/></marker></defs>
+<g fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"><path d="M26 43 Q350 40 673 43 L675 133 Q350 136 25 133 Z"/><path d="M26 180 Q350 177 673 180 L675 282 Q350 285 25 282 Z"/></g>
+<g font-family="'Nanum Pen Script',cursive" font-size="24" fill="#3d3a34"><text x="45" y="72">같은 노드: worker1 안에서 라우팅</text><text x="45" y="210">다른 노드: 노드 사이 구간에 IPIP</text></g>
+<g fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#c52-path-arrow)"><path d="M166 103 Q185 101 205 103"/><path d="M348 103 Q367 105 387 103"/><path d="M511 103 Q528 101 548 103"/><path d="M121 245 Q139 243 157 245"/><path d="M280 245 Q298 247 318 245"/><path d="M454 245 Q473 243 494 245"/></g>
+<g font-family="Menlo,monospace" font-size="13" text-anchor="middle" fill="#3d3a34"><text x="101" y="108">client eth0</text><text x="276" y="108">client cali</text><text x="449" y="108">local cali</text><text x="605" y="108">local eth0</text><text x="77" y="250">client</text><text x="219" y="250">cali → tunl0</text><text x="389" y="250">eth0 ↔ eth0</text><text x="578" y="250">tunl0 → cali</text></g>
+<text x="350" y="163" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#8a8272">위쪽 local eth0는 경로 도식에만 표시했으며 직접 캡처하지 않았어요.</text>
+</svg></div><p class="obsv-figcap">그림 1. 같은 노드의 요청은 로컬 cali로, 다른 노드의 요청은 IPIP 구간으로 이어졌어요.</p>
+
+<h2>3. 다른 노드의 Pod IP는 tunl0 경로를 골랐다</h2>
+<p>이번에는 worker2의 remote로 목적지만 바꿔요. worker1에서 그 Pod IP의 경로를 조회하면 다음 결과가 나왔어요.</p>
+
+<div class="obsv-code">worker1$ ip route get 10.244.126.10
+10.244.126.10 via 192.168.104.4 dev tunl0 src 10.244.194.64 uid 501
+    cache mtu 1480</div>
+
+<p>목적지 Pod로 가려면 192.168.104.4 노드 쪽으로 tunl0를 사용하라는 결과예요. 이 명령은 패킷을 보내는 테스트가 아니라 경로 선택 조회예요. 특히 src 10.244.194.64는 이 조회 조건에서 노드가 직접 보낼 때 고를 출발 주소예요. client에서 전달되는 패킷의 주소가 이 값으로 바뀌었다는 증거가 아니에요. 실제 캡처에서는 출발 주소 10.244.194.75가 유지됐어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: underlay와 overlay</div>여기서 underlay는 노드 IP끼리 도달하는 네트워크예요. overlay는 그 위에서 Pod IP 패킷을 IPIP로 운반하는 구성이에요. 바깥 헤더는 노드 간 도달에, 안쪽 헤더는 최종 Pod 전달에 사용돼요.</div>
+
+<p>client의 eth0와 호스트 cali에서 보인 45253 SYN은 tunl0에서도 보였어요. 출발지·목적지·포트와 시퀀스 번호는 같았고 내부 IP의 TTL은 64에서 63으로 바뀌었어요. tunl0에서 tcpdump가 출력한 것은 아직 내부 Pod IP 패킷이었어요. 이 화면 하나만으로 외부 IP 헤더까지 확인했다고 쓰면 안 돼요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 숫자 80과 4는 같은 종류의 값이 아니에요</div>커널 경로의 proto 80은 경로 출처를 구분하는 메타데이터이고, TCP 목적지 포트 80은 nginx의 수신 포트예요. 다음 절의 IPIP (4)는 바깥 IP 헤더의 프로토콜 번호예요. IPIP를 허용할 때 TCP 4번 포트를 여는 것으로 바꾸어 읽으면 안 돼요.</div>
+
+<h2>4. eth0에서는 노드 헤더 안에 Pod 패킷이 들어 있었다</h2>
+<p>worker1의 노드 eth0에서 같은 SYN을 읽으면 IP 헤더가 두 겹으로 나와요. tcpdump -nn -vvv -S -r로 저장한 pcap을 읽었고, 아래는 첫 세 줄의 원문이에요.</p>
+
+<div class="obsv-code">2026-11-14 23:34:22.830996 IP (tos 0x0, ttl 63, id 53933, offset 0, flags [DF], proto IPIP (4), length 80)
+    192.168.104.3 &gt; 192.168.104.4: IP (tos 0x0, ttl 63, id 3100, offset 0, flags [DF], proto TCP (6), length 60)
+    10.244.194.75.45253 &gt; 10.244.126.10.80: Flags [S], cksum 0x3ab7 (correct), seq 3184915459, win 64800, options [mss 1440,sackOK,TS val 1556085327 ecr 0,nop,wscale 7], length 0</div>
+
+<p>첫 줄의 IP 길이는 80바이트이고 프로토콜은 IPIP 4예요. 둘째 줄 앞의 주소는 worker1 노드에서 worker2 노드로 가는 192.168.104.3 → 192.168.104.4예요. 그 안의 IP 길이는 60바이트, 프로토콜은 TCP 6이고 마지막 줄의 주소는 원래 Pod 쌍이에요. 이 SYN에서는 <b>바깥 IPv4 헤더 20바이트 + 안쪽 IP 패킷 60바이트 = 80바이트</b>였어요.</p>
+<p><a href="https://www.rfc-editor.org/rfc/rfc2003.html">RFC 2003의 IP-in-IP 정의</a>에서도 바깥 주소는 터널의 양 끝, 안쪽 주소는 원래 송수신자로 구분해요. 이 실행에서는 그 두 쌍을 실제로 함께 관찰했어요.</p>
+
+<div class="obsv-fig"><svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="외부 노드 IPv4 헤더와 내부 Pod IP TCP 패킷">
+<path d="M27 34 Q350 31 671 34 L673 271 Q350 274 26 271 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.5" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script',cursive" fill="#3d3a34"><text x="48" y="67" font-size="25">바깥 IPv4 헤더: 20 bytes</text><text x="48" y="100" font-size="21">노드 간 운반 · protocol = IPIP (4)</text></g>
+<text x="350" y="128" text-anchor="middle" font-family="Menlo,monospace" font-size="15" fill="#3d3a34">192.168.104.3 → 192.168.104.4</text>
+<path d="M47 150 Q350 147 651 150 L653 252 Q350 255 46 252 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script',cursive" fill="#3d3a34" font-size="23"><text x="66" y="180">안쪽 IPv4 + TCP SYN: 60 bytes</text></g>
+<g font-family="Menlo,monospace" font-size="14" text-anchor="middle" fill="#3d3a34"><text x="350" y="211">10.244.194.75:45253 → 10.244.126.10:80</text><text x="350" y="236">protocol = TCP (6), seq = 3184915459</text></g>
+<text x="350" y="298" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#b3502f">Pod 주소를 유지한 채 바깥 IP 헤더를 추가했어요.</text>
+</svg></div><p class="obsv-figcap">그림 2. 이 SYN의 안쪽 60바이트 앞에 노드 주소를 담은 헤더 20바이트가 추가됐어요.</p>
+
+<p>이 예는 주소를 다른 값으로 바꾸는 NAT와 달라요. 캡슐화 뒤에도 안쪽에는 Pod 주소가 남아 있었어요. IPPool에 natOutgoing=true가 있다고 해서 이 Pod 사이 요청도 노드 주소로 SNAT됐다고 판단하면 안 돼요.</p>
+<p>노드 eth0의 필터는 <code>ip proto 4 and host 192.168.104.3 and host 192.168.104.4</code>였어요. 바깥 헤더가 노드 IP인 패킷에 <code>host 10.244.194.75</code>만 적용하면 안쪽까지 의도대로 찾지 못할 수 있어요. 먼저 IPIP를 저장한 뒤 안쪽 주소와 출발지 포트로 실험 연결을 골랐어요.</p>
+
+<h2>5. 도착 노드에서는 바깥 헤더가 사라지고 Pod 경로로 이어졌다</h2>
+<p>worker2의 eth0에서도 같은 내부 SYN을 담은 IPIP가 보였어요. 반면 worker2의 tunl0에는 Pod IP 패킷이, remote 쪽 calic93d2b3627d에는 TTL이 62로 줄어든 Pod IP 패킷이 보였어요. 시퀀스 번호 3184915459와 내부 IP ID 3100이 각 지점에서 일치했어요.</p>
+<p>응답은 반대 방향이었어요. remote 쪽 cali에서는 10.244.126.10:80 → 10.244.194.75:45253이 보였고, 노드 eth0에서는 바깥 주소가 192.168.104.4 → 192.168.104.3인 IPIP 안에 그 응답이 들어 있었어요. client에서 HTTP 200을 받은 사실까지 함께 확인했어요. 도착 Pod 내부 eth0를 직접 캡처한 것은 아니므로 그 지점의 화면까지 확보했다고 주장하지는 않아요.</p>
+<p>저장한 pcap을 파싱해 해당 두 연결만 센 결과예요. 노드 eth0에는 다른 IPIP 트래픽도 있었으므로 전체 pcap의 패킷 수와 아래 수치는 달라요.</p>
+
+<div class="obsv-code">Capture point             local:45252  remote:45253  remote SYN TTL  outer IPIP
+client-eth0                   12            12              64          no
+client-cali                   12            12              64          no
+local-cali                    12             0               -          no
+worker1-tunl0                  0            12              63          no
+worker1-eth0                   0            12              63         yes
+worker2-eth0                   0            12              63         yes
+worker2-tunl0                  0            12              63          no
+remote-cali                    0            12              62          no</div>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/calico-52/capture-summary.png" alt="저장한 여덟 pcap의 분석 표. 같은 노드 연결은 세 지점에서 각 12개, 다른 노드 연결은 일곱 지점에서 각 12개이며 노드 eth0에서는 외부 IPIP 헤더가 확인됐다" style="width:100%;max-width:760px;border:2px solid #d8cfba;border-radius:10px;"></div>
+<p class="obsv-figcap">그림 3. 실제 pcap 분석 출력을 터미널 형태로 렌더링했어요. 새로 실행 중인 실시간 화면은 아니에요.</p>
+
+<p><span class="obsv-mark">같은 연결이라는 판단은 시각 하나가 아니라 주소·포트·시퀀스 번호·IP ID를 함께 대조해서 내려요.</span> 이 캡처에서는 노드별 시각도 어긋나 보였어요. 두 노드에 찍힌 시각을 단순히 빼서 전송 지연으로 발표하지 않았어요.</p>
+
+<h2>6. 캡처를 읽을 때는 BGP·체크섬·관측 범위를 따로 본다</h2>
+<p>패킷이 calico-node 프로세스 안으로 들어가 BIRD를 거쳐 나오는 모습을 찾는 것이 이번 실험의 목표는 아니에요. 캡처에서 연결한 것은 네트워크 장치와 커널 전달 경로예요. 경로 정보를 교환하는 BGP와 그 경로로 데이터를 전달하는 동작은 구분해야 해요. BIRD를 멈췄을 때 커널 경로가 남았던 이유와 Calico 3.33의 경로 작성 주체는 기존 30편에서 별도 실험으로 확인했어요. 이번 패킷 캡처로 그 작성 주체까지 새로 입증한 것은 아니에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: checksum offload</div>TCP 체크섬 계산을 전송 경로의 뒤 단계로 미룰 수 있는 기능이에요. 계산 완료 전 지점을 캡처하면 tcpdump가 incorrect로 표시할 수 있어요. 그 표시 하나로 수신 측이 손상 패킷을 받았다고 결론 내리지 않아요.</div>
+
+<p>실제로 client의 eth0와 worker1 tunl0에서는 이 SYN의 TCP 체크섬이 incorrect로 표시됐지만, 양쪽 노드 eth0와 도착 cali에서는 correct였어요. worker1 eth0의 ethtool -k 결과는 tx-checksumming: off, generic-receive-offload: on이었어요. 출발지 가상 장치의 미완성 체크섬이 뒤에서 완성될 가능성과 맞는 관측이에요. 다만 모든 장치의 offload 설정과 커널 경로를 추적한 것은 아니라서 정확히 어느 함수가 계산했는지까지 확정하지 않아요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 재현할 때는 인터페이스와 필터부터 다시 구해요</div>실험 스크립트는 새 Pod의 IP와 호스트 경로에서 cali 이름을 얻고, 샌드박스 PID의 netns에 nsenter로 들어가 eth0를 캡처해요. 10초 timeout으로 끝내며 snaplen은 256바이트라 큰 응답 본문 전체는 보존하지 않아요. 이번 비교는 SYN과 헤더·연결 상태에 집중했어요. 서비스 이름을 쓰면 DNS와 Service 변환이 추가되므로 재현 시 Pod IP 직접 요청을 유지해요.</div>
+
+<p>원문과 재현 코드는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/k8s-study/calico-51-56/52">52편 실험 자료</a>에 모았어요. experiment.py는 전용 namespace에 파드 세 개를 만들고 캡처를 수집한 뒤 삭제해요. analyze-pcap.py는 저장된 pcap에서 연결 연속성과 헤더를 검증해요. 여덟 캡처 모두 커널 드롭 카운터는 0이었지만 이것이 네트워크 전체의 무손실 보장은 아니에요. 종료 후 namespace가 NotFound인 것과 생성한 임시 pcap 파일 제거를 확인했어요.</p>
+<p>구성의 선택지는 <a href="https://docs.tigera.io/calico/latest/networking/configuring/vxlan-ipip">Calico 3.33 overlay 문서</a>, 호스트의 라우팅·정책 처리 원리는 <a href="https://docs.tigera.io/calico/latest/reference/architecture/data-path">Calico 데이터 경로 문서</a>와 대조했어요. 체크섬 해석은 <a href="https://docs.kernel.org/networking/checksum-offloads.html">Linux checksum offload 문서</a>를 참고했어요. 이 글의 실측은 IPv4 IPIP 구성에 한정하며 VXLAN이나 eBPF 데이터플레인에서 같은 장치·경로가 나온다고 일반화하지 않아요.</p>
+<div class="obsv-summary"><div class="obsv-st2">✍️ 오늘의 요약</div><b>같은 노드의 파드 사이에서는 로컬 cali 경로가, 다른 노드 사이에서는 노드 주소를 담은 IPIP 구간이 관찰됐어요.</b><br><br>노드 eth0의 바깥 헤더 안에서도 원래 Pod 주소와 TCP 연결 정보는 유지됐어요. 경로 표, 캡처 지점, 같은 연결의 헤더를 함께 읽어야 실제 전달 경로를 설명할 수 있어요.</div>
+</div>

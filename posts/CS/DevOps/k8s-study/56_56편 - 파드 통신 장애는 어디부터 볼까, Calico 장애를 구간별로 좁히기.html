@@ -1,0 +1,141 @@
+<!-- tags: 파드 통신 장애, EndpointSlice, curl 7, blackhole, 네트워크 진단 -->
+<!-- lead: 파드 IP로는 되는데 Service는 실패하고, 서로 다른 원인인데 curl 오류는 같았어요. Calico 실습 환경에서 포트·대상 선택·정책·이름을 하나씩 바꾸고 EndpointSlice와 경로를 읽어 장애 구간을 좁혔어요. -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 56편</div>
+  51편. 파드의 eth0 반대편에는 무엇이 있을까, Calico의 netns와 veth 추적<br>
+  52편. 다른 노드의 파드까지 패킷은 어떻게 갈까, Calico IPIP를 tcpdump로 보기<br>
+  53편. 작은 요청은 되는데 큰 요청은 왜 멈출까, Calico MTU와 PMTUD<br>
+  54편. NetworkPolicy를 적용했는데 왜 어떤 연결은 계속될까<br>
+  55편. 파드가 밖으로 나갈 때 출발지 IP는 어디서 바뀔까, Calico NAT와 conntrack<br>
+  <b>56편. 파드 통신 장애는 어디부터 볼까, Calico 장애를 구간별로 좁히기</b> &larr; 지금 이 글<br>
+</div>
+
+<p>Service의 목적지 포트를 틀리게 바꿨더니 curl이 7로 끝났어요. 원래대로 돌려놓고 이번에는 Service가 아무 파드도 고르지 못하게 바꿨어요. 똑같이 curl 7이 나왔어요. 두 경우 모두 파드 IP로 직접 보낸 요청은 HTTP 200이었어요.</p>
+<p>반대로 목적지 파드에 수신 차단 정책을 적용하자 파드 IP와 Service 요청이 함께 시간 초과됐어요. 에러 한 줄에서 Calico나 BGP를 장애 원인으로 단정할 수는 없어요. <span class="obsv-mark">실패하는 요청과 성공하는 대조 요청을 나란히 놓아야 조사할 구간이 좁아져요.</span></p>
+<p>51~55편에서 본 인터페이스·터널·MTU·정책·NAT를 장애 조사에 연결해 볼게요. Kubernetes v1.37.2, Calico v3.33.0, IPIP Always인 Lima 4노드 클러스터에 전용 namespace <code>calico-blog-56</code>을 만들었어요. 기존 경로와 노드 설정은 바꾸지 않았고, 새 자원에만 한 번에 원인 하나를 넣었어요.</p>
+
+<h2>1. 원인을 넣기 전에 네 가지 정상 요청부터 남긴다</h2>
+<p>client는 worker1에, nginx 서버는 worker1과 worker2에 하나씩 뒀어요. 같은 노드 서버는 네트워크 전체가 멈춘 것인지 비교하는 대조 대상이에요. Service <code>web</code>은 worker2의 서버 하나만 선택해요. 같은 노드와 다른 노드 서버가 서로 다른 파드이므로, 둘의 결과만으로 노드 간 경로 문제를 확정할 수는 없어요.</p>
+<div class="obsv-code">client(worker1)   10.244.194.80
+local(worker1)    10.244.194.84:80
+remote(worker2)   10.244.126.28:80
+web Service       10.104.230.204:80
+DNS               web.calico-blog-56.svc.cluster.local</div>
+<p>이 주소들은 개인 Lima 실습 환경에서 실제로 할당된 값이에요. 재현할 때는 자신의 파드와 Service 주소로 바꿔야 해요. 다른 노드 nginx 안에서 <code>netstat -lnt</code>로 80번 listen을 확인했고 localhost HTTP 요청도 성공했어요. 정상 상태의 네 요청은 모두 HTTP 200이었어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: listen</div>프로세스가 특정 주소와 포트에서 새 연결을 받을 준비를 한 상태예요. 파드가 Running이어도 요청한 포트에 서버가 listen하지 않으면 연결은 실패할 수 있어요.</div>
+<p>한 프로세스에서 연결을 재사용하면 이전 연결 상태가 섞일 수 있어요. 이번에는 매번 새 curl 프로세스를 실행했고 프록시 우회를 명시했어요. 연결 시간 제한은 2초, 전체 시간 제한은 3초로 고정했어요. 이 제한값이 기본 네트워크 장애 판정 시간이라는 뜻은 아니에요.</p>
+<div class="obsv-code">kubectl -n calico-blog-56 exec client -- \
+  curl --noproxy '*' --connect-timeout 2 --max-time 3 \
+  -sS -o /dev/null \
+  -w 'http=%{http_code} remote=%{remote_ip} connect=%{time_connect}\n' \
+  http://10.244.126.28/</div>
+<p>본문에는 일반 kubectl 명령으로 적었어요. 실제 수집기는 이 실습 저장소의 <code>./lab kubectl</code> 래퍼를 썼고 실행 인자·시각·종료 코드·원문을 모두 보관했어요.</p>
+
+<h2>2. 요청 비교표는 조사 순서이며 원인 판정표가 아니다</h2>
+<p>파드 IP로 통하면 Service를 거치지 않은 연결이 성공했다는 뜻이에요. ClusterIP로 통하고 이름으로 실패하면 이름 해석부터 살펴볼 근거가 생겨요. 다만 부하 분산 대상, 재시도, 시간 차이가 있으면 비교 조건도 달라져요. 이번에는 단일 Service 대상과 같은 요청 조건으로 차이를 줄였어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: ClusterIP</div>클러스터 안에서 Service를 부르는 가상 주소예요. 이번 실험에서는 이 주소의 80번 포트로 들어간 연결을 선택된 nginx 파드로 전달해요. 규칙과 연결 추적은 28·47편에서 자세히 봤어요.</div>
+<p>표의 숫자는 <b>curl 종료 코드 / HTTP 응답 코드</b>예요. HTTP 000은 서버가 보낸 상태 코드가 아니라 HTTP 응답 코드를 얻지 못했다는 curl 표시예요. 각 칸은 시간 차이를 두고 실행한 별도 요청이며 동시 관측은 아니에요.</p>
+<table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:18px;">
+<thead><tr style="background:#fdf3dd;"><th style="padding:8px;text-align:left;">상태</th><th>같은 노드 IP</th><th>다른 노드 IP</th><th>ClusterIP</th><th>Service 이름</th></tr></thead>
+<tbody>
+<tr><td style="padding:8px;">정상</td><td>0 / 200</td><td>0 / 200</td><td>0 / 200</td><td>0 / 200</td></tr>
+<tr><td style="padding:8px;">목적지 포트 오류</td><td>0 / 200</td><td>0 / 200</td><td>7 / 000</td><td>7 / 000</td></tr>
+<tr><td style="padding:8px;">Service 대상 없음</td><td>0 / 200</td><td>0 / 200</td><td>7 / 000</td><td>7 / 000</td></tr>
+<tr><td style="padding:8px;">목적지 수신 차단</td><td>0 / 200</td><td>28 / 000</td><td>28 / 000</td><td>28 / 000</td></tr>
+<tr><td style="padding:8px;">정책 제거 후</td><td>0 / 200</td><td>0 / 200</td><td>0 / 200</td><td>0 / 200</td></tr>
+</tbody></table>
+<img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/calico-56/matrix.png" alt="실제 curl 24회 중 주요 단계의 결과 비교. 포트 오류와 대상 부재는 모두 종료 코드 7, 정책 차단은 28이었다" style="max-width:100%;height:auto;">
+<p class="obsv-figcap">실행 자료 1. 저장된 matrix.json의 주요 단계·종료 코드·HTTP 코드를 추려 터미널 형식으로 렌더링했어요. 현재 클러스터의 실시간 화면은 아니에요.</p>
+<p><a href="https://curl.se/libcurl/c/libcurl-errors.html">curl 공식 오류 목록</a>에서 6은 호스트 이름 해석 실패, 7은 연결 실패, 28은 지정한 제한 시간 도달이에요. <b>7을 봤다는 것만으로 connection refused나 특정 패킷의 RST를 확인했다고 말할 수는 없어요.</b> 그런 판단에는 상세 오류와 패킷 같은 추가 근거가 필요해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="파드 IP와 Service IP와 이름 요청을 비교해 조사 범위를 좁히는 순서">
+<defs><marker id="c56-a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M1 1.5 Q5 3 8.5 5 Q5 7 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.5"/></marker></defs>
+<path d="M28 36 Q120 33 217 36 L219 100 Q120 103 29 99 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M254 35 Q349 32 442 36 L444 100 Q350 103 253 98 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M482 35 Q577 33 670 36 L672 101 Q576 104 481 99 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M221 67 Q237 65 250 67" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#c56-a1)"/>
+<path d="M446 67 Q463 65 479 67" fill="none" stroke="#3d3a34" stroke-width="2" marker-end="url(#c56-a1)"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="24" fill="#3d3a34" text-anchor="middle"><text x="123" y="76">Pod IP 요청</text><text x="349" y="76">ClusterIP 요청</text><text x="576" y="76">DNS 이름 요청</text></g>
+<g font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34" text-anchor="middle"><text x="123" y="140">listen · 정책 · 경로</text><text x="349" y="140">대상 · 포트 · 규칙</text><text x="576" y="140">이름 · DNS 도달성</text></g>
+<path d="M43 180 Q348 176 656 181 L658 248 Q349 252 42 247 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.1"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="23" fill="#b3502f" text-anchor="middle"><text x="350" y="209">앞 단계가 성공할 때 다음 단계의 추가 조건을 조사해요.</text><text x="350" y="237">실패한 위치 하나가 원인 하나를 확정하지는 않아요.</text></g>
+</svg></div>
+<p class="obsv-figcap">그림 1. 같은 목적지와 포트를 유지하며 우회한 기능과 추가한 기능을 비교해요.</p>
+
+<h2>3. 똑같은 curl 7은 EndpointSlice를 읽어 구분했다</h2>
+<p>첫 실험에서는 Service의 <code>targetPort</code>만 80에서 8081로 바꿨어요. Service 주소의 포트는 여전히 80이에요. nginx가 여는 80번은 바꾸지 않았어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: targetPort</div>Service가 선택된 파드에 연결할 목적지 포트예요. Service의 port가 80이어도 targetPort가 8081이면 파드의 8081로 전달하도록 구성돼요.</div>
+<p>이때 다른 노드의 파드 IP 80번은 HTTP 200이었지만 Service는 실패했어요. 파드가 정상이라는 확인에서 멈추면 안 돼요. Service가 <b>같은 파드의 어느 포트</b>로 보내는지를 봐야 해요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: EndpointSlice</div>Service의 전달 대상 주소·포트·상태를 담는 Kubernetes 객체예요. selector가 있는 Service에서는 컨트롤러가 맞는 파드들을 찾아 이 객체에 반영해요.</div>
+<p>수집한 EndpointSlice에는 ready=true인 대상 하나와 port=8081이 있었어요. 숫자 targetPort를 지정했다고 컨트롤러가 앱의 listen 포트를 검사해 고쳐 주지는 않아요. 정상 readiness 검사는 nginx의 80번을 보고 있었으므로, 준비된 파드가 있어도 Service의 8081은 틀릴 수 있어요.</p>
+<p>복구 후 두 번째 실험에서는 selector를 <code>app=does-not-exist</code>로 바꿨어요. Service와 파드는 여전히 존재했지만 EndpointSlice의 endpoints는 null이었어요. 대상이 하나도 없었어요. 다시 app=web으로 돌리자 Service 요청은 200으로 복귀했어요.</p>
+<div class="obsv-code">kubectl -n calico-blog-56 get svc web -o yaml
+kubectl -n calico-blog-56 get pods --show-labels
+kubectl -n calico-blog-56 get endpointslices \
+  -l kubernetes.io/service-name=web -o yaml
+
+# 실제 수집 결과를 필요한 필드만 추린 비교
+목적지 포트 오류: 대상 1개, ready=true, port=8081
+selector 불일치: 대상 0개, endpoints=null</div>
+<p>두 경우는 같은 curl 7이었지만 첫 경우는 잘못된 포트로 보내려 했고 둘째는 보낼 대상이 없었어요. <a href="https://kubernetes.io/docs/tasks/debug/debug-application/debug-service/">Kubernetes Service 진단 문서</a>도 Service의 포트와 selector를 읽고 EndpointSlice 및 파드 직접 요청을 대조하도록 안내해요. kube-proxy 규칙을 조사하기 전에 API 객체가 의도와 맞는지 확인할 수 있어요.</p>
+<div class="obsv-callout"><div class="obsv-ct">💡 실무에서는</div>EndpointSlice 주소가 존재하는지만 보지 말고 포트와 ready·serving·terminating 조건도 같이 남겨요. 의도한 대상인지부터 확인한 뒤 28·47편의 노드 프록시 규칙과 연결 추적 조사로 넘어가요. API 객체가 맞아도 노드의 반영 상태까지 보장되지는 않아요.</div>
+
+<h2>4. 정책 차단과 잘못된 이름은 실패하는 요청이 달랐다</h2>
+<p>다음에는 worker2의 <code>app=web</code> 파드만 선택하는 수신 차단 정책을 만들었어요. 같은 노드 대조 서버는 선택하지 않았어요. 새 연결로 보낸 다른 노드 Pod IP·ClusterIP·올바른 Service 이름 요청이 모두 약 2초 뒤 curl 28로 끝났어요. 같은 노드 대조 서버는 200이었어요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: NetworkPolicy의 ingress 격리</div>대상 파드로 들어오는 연결을 허용 규칙에 따라 제한하는 상태예요. 이번에는 선택된 파드의 Ingress만 지정하고 허용 항목을 비워, 다른 파드에서 오는 요청을 차단했어요.</div>
+<p>정책을 지우자 네 경로 모두 200으로 돌아왔어요. <a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">NetworkPolicy 명세 설명</a>과 일치하는 격리 결과예요. 하지만 시간 초과만으로 정책 문제라고 판정하면 안 돼요. 경로 누락이나 방화벽도 비슷한 증상을 만들 수 있어요. 여기서는 정책 하나만 넣고 제거한 대조 실험이 원인을 좁히는 근거예요.</p>
+<p>잘못된 이름 실험에서는 어떤 DNS 설정도 바꾸지 않았어요. URL만 <code>web-typo.calico-blog-56.svc.cluster.local</code>로 바꾸자 curl 6, 이름을 web으로 되돌리자 200이었어요. 이름 해석 실패라는 증거이지 CoreDNS 장애를 재현한 것은 아니에요. 실제 장애라면 이름·namespace·search 목록과 DNS 서버까지의 정책·통신을 29·54편의 방법으로 구분해요.</p>
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 주의</div>HTTP 403이나 500을 받았다면 그 요청은 HTTP 응답을 얻은 것이에요. TCP 연결 단계의 시간 초과와 분리해 앱·인증·프록시를 조사해요. TLS 오류도 인증서·이름·핸드셰이크를 따로 봐야 해요. 이번 실험은 TLS나 기존 keep-alive 연결의 정책 변경 동작을 검증하지 않았어요.</div>
+
+<h2>5. blackhole이 보인다고 정상 파드가 버려지는 것은 아니다</h2>
+<p>정책을 제거한 뒤 목적지 worker2의 라우팅 표를 읽었어요. 아래 두 경로가 함께 있었어요. 첫 줄만 보고 파드 대역이 모두 차단됐다고 해석하면, 바로 아래 실제 파드 경로를 놓쳐요.</p>
+<div class="obsv-code">blackhole 10.244.126.0/26 proto 80
+10.244.126.28 dev cali98721e3d585 scope link
+
+$ ip -4 route get 10.244.126.28
+10.244.126.28 dev cali98721e3d585 src 192.168.104.4 uid 501
+    cache
+
+$ ip -4 route get 10.244.126.62
+RTNETLINK answers: Invalid argument</div>
+<p>두 번째 줄은 주소 하나를 가리키는 /32 경로예요. .28은 /26에도 속하지만 더 구체적인 /32가 선택됐어요. 반면 조회 당시 별도 호스트 경로가 없던 .62의 조회는 exit 2와 Invalid argument로 끝났어요. 그 주소가 IPAM에서 미할당이라는 판정까지 한 것은 아니에요.</p>
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 최장 접두사 일치</div>같은 라우팅 조회에서 목적지와 맞는 경로 중 주소 범위를 더 구체적으로 지정한 경로를 고르는 원칙이에요. 이 예에서는 26비트보다 32비트가 일치하는 파드 경로가 우선이에요. 다른 정책 라우팅 규칙까지 없다는 뜻은 아니에요.</div>
+<div class="obsv-fig">
+<svg viewBox="0 0 700 262" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="같은 블록에서 실제 파드 주소는 /32로 가고 별도 호스트 경로 없는 주소는 blackhole 경로에 걸리는 조회 결과">
+<path d="M29 28 Q349 25 669 29 L671 231 Q349 235 30 230 Z" fill="#fffdf7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="60" text-anchor="middle" font-family="Menlo,monospace" font-size="17" fill="#b3502f">blackhole 10.244.126.0/26</text>
+<path d="M58 86 Q191 83 325 87 L327 194 Q192 197 59 192 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2"/>
+<g font-family="'Nanum Pen Script',cursive" text-anchor="middle"><text x="192" y="122" font-size="25" fill="#3d6591">.28에는 /32 경로가 있어요</text><text x="192" y="158" font-size="22" fill="#2e6b41">cali 장치 선택</text><text x="192" y="184" font-size="18" fill="#8a8272">실제 HTTP 요청도 200</text><text x="499" y="124" font-size="24" fill="#3d3a34">.62에는 별도 호스트 경로 없음</text><text x="499" y="162" font-size="22" fill="#b3502f">route get: Invalid argument</text></g>
+</svg></div>
+<p class="obsv-figcap">그림 2. 블록의 blackhole과 실제 파드 경로는 함께 존재할 수 있어요.</p>
+<p><a href="https://man7.org/linux/man-pages/man8/ip-route.8.html">ip-route 매뉴얼</a>은 blackhole이 패킷을 조용히 버리고 로컬 발신자에는 EINVAL을 반환한다고 설명해요. <code>ip route get</code>은 경로 조회여서 패킷 전달을 직접 입증하지는 않아요. 여기서는 별도로 성공한 파드 HTTP 요청을 함께 봤어요. <code>proto 80</code>은 경로의 프로토콜 식별자이며 HTTP의 TCP 80번 포트가 아니에요. 경로를 누가 넣는지는 버전·설정을 대조한 30편과 연결해서 읽어야 해요.</p>
+
+<h2>6. 수정 전 상태를 남기고 같은 요청으로 복구를 확인한다</h2>
+<p>조사를 시작할 때 먼저 출발 파드·노드, 목적지 IP·이름·포트, 프로토콜, 시각, 새 연결 여부를 적어요. 같은 노드와 다른 노드 요청이 다르면 양쪽 앱 상태를 대조한 뒤 veth·호스트 경로·터널·정책을 살펴봐요. 파드 IP는 되고 Service만 실패하면 대상·포트·규칙을, IP는 되고 이름만 실패하면 DNS를 우선 조사해요. 이 순서는 증거를 모으기 위한 출발점이에요.</p>
+<p>수정 전에는 파드의 배치·라벨·상태, Service 전체 설정, 관련 EndpointSlice, 출발지와 목적지의 정책, 경로 조회와 curl 원문을 저장해요. 필요할 때 52편의 제한된 tcpdump와 53편의 크기별 검사를 추가해요. 이번 글은 라우팅 삭제나 터널 장애를 재현하지 않았으므로 그런 장애의 복구 결과까지 주장하지 않아요.</p>
+<p>총 24회 HTTP 요청을 기록했어요. 각 오류 조건을 되돌린 뒤 새 요청의 성공을 확인했고, 마지막에는 정책 제거 후 네 경로 모두 200, 잘못된 이름을 고친 뒤에도 200이었어요. 그다음 실험 namespace만 지웠고 API 조회에서 사라진 것과 노드 네 대가 Ready인 것을 확인했어요. 기존 장기 연결·TLS·복합 장애의 복구까지 확인한 것은 아니에요.</p>
+<p>재현용 스크립트와 매니페스트, 명령 원문, 결과 표는 <a href="https://github.com/DDINGJOO/Platform-study/tree/main/labs/devops/k8s-study/calico-51-56/56">실험 자료</a>에 모았어요. <code>run.py</code>는 같은 이름의 namespace가 이미 있으면 시작하지 않고, 생성한 namespace만 finally에서 정리해요. 이미지 캐시와 도구 등 환경 조건은 README에 적었어요.</p>
+<div class="obsv-summary"><div class="obsv-st2">정리</div>목적지 포트 오류와 Service 대상 부재는 같은 curl 7로 보였지만 EndpointSlice의 포트와 대상 수가 달랐어요. 정책 차단과 이름 오류도 성공하는 대조 요청·객체 상태·복구 결과를 함께 읽어 구분했어요. <b>통신 장애는 에러 한 줄의 이름을 붙이는 대신, 같은 조건의 요청과 실제 상태를 비교해서 좁혀 가요.</b></div>
+
+</div>

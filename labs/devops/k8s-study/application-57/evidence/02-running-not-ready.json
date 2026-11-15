@@ -1,0 +1,374 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "annotations": {
+      "cni.projectcalico.org/containerID": "93ce9cf8b165ec1402327cbddfbf877d370c5106753deab00c122c60fd234035",
+      "cni.projectcalico.org/podIP": "10.244.194.93/32",
+      "cni.projectcalico.org/podIPs": "10.244.194.93/32"
+    },
+    "creationTimestamp": "2026-11-14T15:07:23Z",
+    "generateName": "deploy-board-7bf857644b-",
+    "generation": 1,
+    "labels": {
+      "app": "deploy-board",
+      "pod-template-hash": "7bf857644b"
+    },
+    "name": "deploy-board-7bf857644b-qz5n2",
+    "namespace": "app-capstone",
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "ReplicaSet",
+        "name": "deploy-board-7bf857644b",
+        "uid": "6a1a9b82-922b-4ba7-ba18-d41bb7e59060"
+      }
+    ],
+    "resourceVersion": "1000194602",
+    "uid": "198e385b-7418-4cf2-9bdc-71fb29c690d8"
+  },
+  "spec": {
+    "containers": [
+      {
+        "command": [
+          "python3",
+          "-u",
+          "/app/app.py"
+        ],
+        "env": [
+          {
+            "name": "APP_VERSION",
+            "value": "v1"
+          },
+          {
+            "name": "READY_AFTER_SECONDS",
+            "value": "8"
+          },
+          {
+            "name": "POD_NAME",
+            "valueFrom": {
+              "fieldRef": {
+                "apiVersion": "v1",
+                "fieldPath": "metadata.name"
+              }
+            }
+          },
+          {
+            "name": "POD_IP",
+            "valueFrom": {
+              "fieldRef": {
+                "apiVersion": "v1",
+                "fieldPath": "status.podIP"
+              }
+            }
+          },
+          {
+            "name": "NODE_NAME",
+            "valueFrom": {
+              "fieldRef": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.nodeName"
+              }
+            }
+          }
+        ],
+        "image": "docker.io/library/python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+        "imagePullPolicy": "IfNotPresent",
+        "lifecycle": {
+          "preStop": {
+            "exec": {
+              "command": [
+                "python3",
+                "-c",
+                "import time; time.sleep(3)"
+              ]
+            }
+          }
+        },
+        "livenessProbe": {
+          "failureThreshold": 3,
+          "httpGet": {
+            "path": "/healthz",
+            "port": "http",
+            "scheme": "HTTP"
+          },
+          "periodSeconds": 5,
+          "successThreshold": 1,
+          "timeoutSeconds": 1
+        },
+        "name": "web",
+        "ports": [
+          {
+            "containerPort": 8080,
+            "name": "http",
+            "protocol": "TCP"
+          }
+        ],
+        "readinessProbe": {
+          "failureThreshold": 1,
+          "httpGet": {
+            "path": "/readyz",
+            "port": "http",
+            "scheme": "HTTP"
+          },
+          "periodSeconds": 1,
+          "successThreshold": 1,
+          "timeoutSeconds": 1
+        },
+        "resources": {
+          "limits": {
+            "cpu": "200m",
+            "memory": "96Mi"
+          },
+          "requests": {
+            "cpu": "25m",
+            "memory": "32Mi"
+          }
+        },
+        "securityContext": {
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "readOnlyRootFilesystem": true
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+          {
+            "mountPath": "/app",
+            "name": "code",
+            "readOnly": true
+          },
+          {
+            "mountPath": "/tmp",
+            "name": "tmp"
+          },
+          {
+            "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "name": "kube-api-access-5tmdm",
+            "readOnly": true
+          }
+        ]
+      }
+    ],
+    "dnsPolicy": "ClusterFirst",
+    "enableServiceLinks": true,
+    "nodeName": "k8s-worker1",
+    "preemptionPolicy": "PreemptLowerPriority",
+    "priority": 0,
+    "restartPolicy": "Always",
+    "schedulerName": "default-scheduler",
+    "securityContext": {
+      "runAsGroup": 10001,
+      "runAsNonRoot": true,
+      "runAsUser": 10001,
+      "seccompProfile": {
+        "type": "RuntimeDefault"
+      }
+    },
+    "serviceAccount": "default",
+    "serviceAccountName": "default",
+    "terminationGracePeriodSeconds": 20,
+    "tolerations": [
+      {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+      },
+      {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+      }
+    ],
+    "volumes": [
+      {
+        "configMap": {
+          "defaultMode": 420,
+          "name": "deploy-board-code"
+        },
+        "name": "code"
+      },
+      {
+        "emptyDir": {},
+        "name": "tmp"
+      },
+      {
+        "name": "kube-api-access-5tmdm",
+        "projected": {
+          "defaultMode": 420,
+          "sources": [
+            {
+              "serviceAccountToken": {
+                "expirationSeconds": 3607,
+                "path": "token"
+              }
+            },
+            {
+              "configMap": {
+                "items": [
+                  {
+                    "key": "ca.crt",
+                    "path": "ca.crt"
+                  }
+                ],
+                "name": "kube-root-ca.crt"
+              }
+            },
+            {
+              "downwardAPI": {
+                "items": [
+                  {
+                    "fieldRef": {
+                      "apiVersion": "v1",
+                      "fieldPath": "metadata.namespace"
+                    },
+                    "path": "namespace"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "status": {
+    "allocatedResources": {
+      "cpu": "25m",
+      "memory": "32Mi"
+    },
+    "conditions": [
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-14T15:07:23Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-14T15:07:23Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-14T15:07:23Z",
+        "message": "containers with unready status: [web]",
+        "observedGeneration": 1,
+        "reason": "ContainersNotReady",
+        "status": "False",
+        "type": "Ready"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-14T15:07:23Z",
+        "message": "containers with unready status: [web]",
+        "observedGeneration": 1,
+        "reason": "ContainersNotReady",
+        "status": "False",
+        "type": "ContainersReady"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-14T15:07:23Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+      }
+    ],
+    "containerStatuses": [
+      {
+        "allocatedResources": {
+          "cpu": "25m",
+          "memory": "32Mi"
+        },
+        "containerID": "containerd://998c3c3bbdeae514d311d8d642b191435b5381c38bd61239331376866f303cf6",
+        "image": "docker.io/library/python:3.13-alpine",
+        "imageID": "docker.io/library/python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+        "lastState": {},
+        "name": "web",
+        "ready": false,
+        "resources": {
+          "limits": {
+            "cpu": "200m",
+            "memory": "96Mi"
+          },
+          "requests": {
+            "cpu": "25m",
+            "memory": "32Mi"
+          }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+          "running": {
+            "startedAt": "2026-11-14T15:07:23Z"
+          }
+        },
+        "user": {
+          "linux": {
+            "gid": 10001,
+            "supplementalGroups": [
+              10001
+            ],
+            "uid": 10001
+          }
+        },
+        "volumeMounts": [
+          {
+            "mountPath": "/app",
+            "name": "code",
+            "readOnly": true,
+            "recursiveReadOnly": "Disabled"
+          },
+          {
+            "mountPath": "/tmp",
+            "name": "tmp"
+          },
+          {
+            "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "name": "kube-api-access-5tmdm",
+            "readOnly": true,
+            "recursiveReadOnly": "Disabled"
+          }
+        ]
+      }
+    ],
+    "hostIP": "192.168.104.3",
+    "hostIPs": [
+      {
+        "ip": "192.168.104.3"
+      }
+    ],
+    "observedGeneration": 1,
+    "phase": "Running",
+    "podIP": "10.244.194.93",
+    "podIPs": [
+      {
+        "ip": "10.244.194.93"
+      }
+    ],
+    "qosClass": "Burstable",
+    "resources": {
+      "limits": {
+        "cpu": "200m",
+        "memory": "96Mi"
+      },
+      "requests": {
+        "cpu": "25m",
+        "memory": "32Mi"
+      }
+    },
+    "startTime": "2026-11-14T15:07:23Z"
+  }
+}
