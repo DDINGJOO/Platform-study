@@ -1,0 +1,314 @@
+<!-- ============================================================
+  k8s 스터디 64편: sleep infinity 파드는 왜 지우는 데 30초가 걸릴까, 컨테이너 PID 1과 커널 규칙
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: sleep infinity 파드를 지우면 매번 30초 넘게 Terminating에 머물다 exit 137로 끝나요. 컨테이너의 첫 프로세스가 PID 네임스페이스의 init이라서 걸리는 커널 규칙을 v6.8 소스와 kill 실험으로 확인했어요. -->
+<!-- tags: PID 1, SIGTERM, PID 네임스페이스, exit code 137, pause 컨테이너, 신호 핸들러 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 64편</div>
+  62편. kubectl rollout status가 성공했는데 파드는 왜 죽어 있을까<br>
+  63편. 파드 phase와 conditions는 어떤 순서로 바뀌고 Terminating은 왜 phase가 아닐까<br>
+  <b>64편. sleep infinity 파드는 왜 지우는 데 30초가 걸릴까, 컨테이너 PID 1과 커널 규칙</b> &larr; 지금 이 글<br>
+  65편. sh -c로 감싼 컨테이너는 왜 SIGTERM에 반응하지 않을까, exec와 trap<br>
+  66편. 쿠버네티스에는 왜 docker run --init이 없을까, 좀비와 tini와 pause
+</div>
+
+<p><code style="font-family:Menlo,monospace;font-size:14px;">busybox:1.37</code> 이미지로 <code style="font-family:Menlo,monospace;font-size:14px;">sleep infinity</code>만 도는 파드를 세 번 만들고 세 번 지웠어요. 세 번 모두 Terminating에 30초 넘게 머물렀고 kubectl get이 NotFound를 돌려준 시각은 삭제 요청 뒤 +32.5초, +31.7초, +31.7초였어요. 노드의 로그에는 +31.2초, +30.5초, +30.4초에 <code style="font-family:Menlo,monospace;font-size:14px;">Kill container</code>가 찍혔고 파드는 Error로 끝났어요. 원본은 63편과 같은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/63-termination-timing.txt</code>예요.</p>
+<p>같은 날 같은 30초를 두 번 더 봤어요. 앱이 끝나면 사이드카도 멈추는 네이티브 사이드카 파드에서 신호를 처리하지 않는 사이드카(<code style="font-family:Menlo,monospace;font-size:14px;">while true; do sleep 1; done</code>)는 앱이 끝난 11:30:43에서 31초 뒤인 11:31:14에 exit 137로 끝났어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/64-native-sidecar-finish.txt</code>). 노드에서 파드의 pause 프로세스에 SIGTERM을 보냈을 때는 pause가 0.2초 만에 사라졌는데, kubelet이 샌드박스를 다시 만들려고 앱 컨테이너를 멈추는 데 다시 30초가 걸렸어요.</p>
+<p>파드 삭제, 사이드카 종료, 샌드박스 재생성은 서로 다른 경로인데 셋 다 30초에 SIGKILL로 끝났어요. <b>PID 1 문제는 왜 이렇게 여기저기서 나올까요?</b> 이 글은 sleep이 SIGTERM을 받고도 살아남는 이유를 커널 소스에서 찾고, 컨테이너 안과 노드에서 kill을 직접 보내 확인해요. 클러스터는 Lima VM 4대의 kubeadm v1.37.2, containerd 2.4.1이고 노드 커널은 Ubuntu 6.8.0-149(arm64)예요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 30초는 누가 세고 30초 뒤 SIGKILL은 누가 보낼까?<br>
+&middot; SIGTERM의 기본 동작은 종료인데 sleep은 왜 살아 있을까?<br>
+&middot; 커널은 언제부터, 어떤 조건으로 PID 1에게 온 신호를 버릴까?<br>
+&middot; kill이 0을 돌려줬는데 프로세스는 왜 그대로일까?<br>
+&middot; pause는 같은 SIGTERM에 어떻게 바로 끝났을까?</p>
+
+<h2>1. 30초는 SIGTERM을 보내고 SIGKILL까지 기다리는 시간이다</h2>
+
+<p>파드를 지우면 API 서버는 객체에 삭제 예정 시각을 적어요. 노드의 kubelet이 그걸 보고 컨테이너를 멈추는데, 직접 신호를 보내지는 않아요. kubelet은 컨테이너 런타임에 CRI <code style="font-family:Menlo,monospace;font-size:14px;">StopContainer</code>를 부르고 이 요청에는 컨테이너 ID와 <code style="font-family:Menlo,monospace;font-size:14px;">timeout</code> 두 필드만 있어요(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto">v1.37.2 cri-api api.proto</a>의 <code style="font-family:Menlo,monospace;font-size:14px;">StopContainerRequest</code>). timeout에는 파드의 grace period가 들어가요. 기본값은 30초예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: terminationGracePeriodSeconds (grace period)</div>
+파드가 스스로 정리하고 끝날 수 있게 기다려 주는 시간이에요. 파드 spec에 적고 기본값은 30초예요. 이 시간이 지나도 컨테이너가 살아 있으면 런타임이 SIGKILL로 끝내요. preStop 훅이 있으면 이 시간을 세는 기준이 달라지고 그 계산은 67편에 있어요.</div>
+
+<p>신호를 고르고 보내는 쪽은 containerd예요. <a href="https://github.com/containerd/containerd/blob/v2.4.1/internal/cri/server/container_stop.go">containerd v2.4.1의 container_stop.go</a>에서 흐름에 필요한 줄만 옮기면 이래요.</p>
+<div class="obsv-code">if timeout &gt; 0 {
+    stopSignal := "SIGTERM"
+    if signal := container.Config.GetStopSignal(); signal != runtime.Signal_SIGNAL_RUNTIME_DEFAULT {
+        stopSignal, err = criSignalToOCIStopSignal(signal)
+        ...
+    } else if container.StopSignal != "" {
+        stopSignal = container.StopSignal
+    }
+    ...
+    log.G(ctx).Infof("Stop container %q with signal %v", id, sig)
+    if err = task.Kill(ctx, sig); err != nil &amp;&amp; !errdefs.IsNotFound(err) {
+    ...
+    sigTermCtx, sigTermCtxCancel := context.WithTimeout(ctx, timeout)
+    ...
+    err = c.waitContainerStop(sigTermCtx, container)
+    if err == nil {
+        // Container stopped on first signal no need for SIGKILL
+        return nil
+    }
+}
+log.G(ctx).Infof("Kill container %q", id)
+if err = task.Kill(ctx, syscall.SIGKILL); err != nil &amp;&amp; !errdefs.IsNotFound(err) {
+...</div>
+<p>&rarr; timeout이 0보다 크면 정지 신호를 한 번 보내고 timeout 동안 컨테이너가 끝나기를 기다린다는 뜻이에요. 정지 신호는 파드 스펙의 값, 이미지의 STOPSIGNAL, 기본값 SIGTERM 순으로 정해져요. 그 안에 끝나지 않으면 <code style="font-family:Menlo,monospace;font-size:14px;">Kill container</code> 로그를 남기고 SIGKILL을 보내요. 그러니 30초는 컨테이너가 SIGTERM에 반응하지 않았을 때 SIGKILL을 받기까지 기다린 시간이에요.</p>
+<p>노드 로그도 이 순서를 그대로 보여 줘요. 5절의 실험에서 kubelet이 sleep 컨테이너를 멈출 때 containerd는 +0.3초에 <code style="font-family:Menlo,monospace;font-size:14px;">Stop container "&lt;cid&gt;" with signal terminated</code>를, +30.3초에 <code style="font-family:Menlo,monospace;font-size:14px;">Kill container "&lt;cid&gt;"</code>를 남겼어요. <code style="font-family:Menlo,monospace;font-size:14px;">terminated</code>는 SIGTERM의 이름이에요. 처음에 본 세 번의 삭제에서도 Kill container가 +30.4~31.2초에 찍혔고 kubelet의 <code style="font-family:Menlo,monospace;font-size:14px;">Pod removed broadcasted</code>는 그 약 1초 뒤인 +31.5~32.3초였어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 종료 코드 137</div>
+신호로 죽은 프로세스의 종료 코드를 셸과 런타임은 128 + 신호 번호로 적어요. SIGKILL은 9번이라 137이고 SIGTERM은 15번이라 143이에요. 쿠버네티스는 137로 끝난 컨테이너의 reason을 Error로 기록해요. 137을 보면 컨테이너가 스스로 끝나지 않고 SIGKILL로 끝났다는 뜻으로 읽으면 돼요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="sleep infinity 파드 삭제 시 SIGTERM이 버려지고 30초 뒤 SIGKILL로 끝나는 흐름">
+<defs><marker id="k64-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">sleep infinity 파드를 지울 때 노드에서 일어나는 일</text>
+<path d="M44 62 C 110 59, 190 63, 262 60 C 264 76, 263 96, 262 112 C 190 115, 110 111, 45 113 C 43 96, 44 78, 44 62 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="153" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d6591">SIGTERM → PID 1(sleep)</text>
+<text x="153" y="105" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d6591">Stop container ... terminated</text>
+<path d="M462 61 C 530 58, 600 62, 676 60 C 678 76, 677 96, 676 112 C 600 115, 530 111, 463 113 C 461 96, 462 78, 462 61 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="569" y="84" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">SIGKILL → exit 137</text>
+<text x="569" y="105" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#b3502f">Kill container</text>
+<path d="M40 160 C 250 158, 450 162, 662 160" fill="none" stroke="#3d3a34" stroke-width="2.4" stroke-linecap="round" marker-end="url(#k64-arr1)"/>
+<path d="M60 150 C 61 155, 59 165, 60 170 M560 150 C 561 155, 559 165, 560 170 M622 150 C 623 155, 621 165, 622 170" fill="none" stroke="#3d3a34" stroke-width="2"/>
+<path d="M78 143 C 220 140, 400 145, 540 142" fill="none" stroke="#e5a33c" stroke-width="2.6" stroke-dasharray="8 8" stroke-linecap="round"/>
+<text x="310" y="134" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">기다림 30초 (grace period)</text>
+<g font-family="Menlo, monospace" font-size="13" fill="#3d3a34" text-anchor="middle"><text x="60" y="190">0s</text><text x="556" y="190">+30s</text><text x="628" y="190">+31.5s</text></g>
+<path d="M120 116 C 128 150, 140 185, 150 208" fill="none" stroke="#e5533c" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="60" y="232" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">커널이 버림 · sleep은 그대로 돈다</text>
+<text x="470" y="232" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">약 1초 뒤 객체 삭제</text>
+<text x="350" y="278" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">= SIGTERM에 반응하지 않으면 grace를 다 쓰고 SIGKILL로 끝나요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 1. kubelet은 timeout만 넘기고, containerd가 SIGTERM 뒤 30초를 기다렸다가 SIGKILL을 보내요.</p>
+
+<h2>2. SIGTERM의 기본 동작은 종료인데 sleep은 살아 있었다</h2>
+
+<p>여기서 이상한 점이 하나 있어요. 리눅스에서 프로세스가 SIGTERM을 받았을 때 따로 처리하는 함수를 걸어 두지 않았다면 커널은 기본 동작을 해요. SIGTERM의 기본 동작은 프로세스를 끝내는 거예요. 그래서 노트북 터미널에서 띄운 sleep은 <code style="font-family:Menlo,monospace;font-size:14px;">kill -TERM</code> 한 번에 끝나요. 그런데 컨테이너의 sleep은 SIGTERM을 받고도 30초를 버텼어요.</p>
+<p>먼저 컨테이너마다 첫 프로세스가 어떤 신호를 직접 처리하는지 봤어요. 리눅스는 <code style="font-family:Menlo,monospace;font-size:14px;">/proc/&lt;PID&gt;/status</code>에 신호 상태를 비트 마스크로 보여 줘요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 신호 핸들러와 SigCgt·SigIgn</div>
+신호 핸들러는 프로세스가 특정 신호를 받으면 실행하라고 커널에 등록해 둔 함수예요. <code style="font-family:Menlo,monospace;font-size:14px;">/proc/&lt;PID&gt;/status</code>의 SigCgt는 핸들러를 건 신호, SigIgn은 일부러 무시하기로 한 신호, SigBlk는 잠시 막아 둔 신호를 16진수 비트로 보여 줘요. 신호 번호 n이 비트 n-1에 대응해서 SIGTERM(15)은 0x4000이에요.</div>
+
+<p>여러 모양의 파드를 띄워 PID 1의 마스크를 읽은 결과예요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/64-pid1-sigmask.txt</code>이고 스크립트는 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">64-pid1-sigmask.sh</code>예요. 마스크 뒤 괄호는 스크립트가 비트를 신호 이름으로 풀어 적은 거예요.</p>
+<div class="obsv-code">## a-sleep  command: ["sleep","infinity"]
+    PID   PPID  STAT COMMAND
+        1     0 S    sleep infinity
+  PID 1   sleep  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000000 (없음)
+                    SigCgt=0000000000000000 (없음)
+
+## f-nginx  command: ["/docker-entrypoint.sh","nginx","-g","daemon off;"]
+        1     0 S    nginx: master process nginx -g daemon off;
+  PID 1   nginx  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000040001000 (PIPE SYS)
+                    SigCgt=0000000018016a07 (HUP INT QUIT USR1 USR2 ALRM TERM CHLD WINCH IO)</div>
+<p>&rarr; sleep은 어떤 신호에도 핸들러를 걸지 않았고 nginx는 TERM을 포함해 신호 열 개에 핸들러를 걸었다는 뜻이에요. 같은 실험에서 <code style="font-family:Menlo,monospace;font-size:14px;">shareProcessNamespace: true</code> 파드의 PID 1로 보인 pause는 INT, TERM, CHLD에 핸들러를 걸었어요. 핸들러가 없는 sleep에게는 SIGTERM의 기본 동작이 적용돼야 해요. 그런데 적용되지 않았어요. 차이는 sleep이 그 컨테이너에서 PID 1이라는 점에 있어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: PID 네임스페이스와 init(PID 1)</div>
+PID 네임스페이스는 프로세스 번호를 따로 매기는 공간이에요. 새 네임스페이스에서 처음 만들어진 프로세스가 그 안의 PID 1이 되고 init 역할을 맡아요. 쿠버네티스 기본 설정에서는 컨테이너마다 PID 네임스페이스가 따로 있어서 컨테이너의 첫 프로세스가 곧 그 컨테이너의 PID 1이에요. 노드에서는 같은 프로세스가 노드의 번호로 따로 보여요.</div>
+
+<p>노드에서 보면 이 이중 번호가 그대로 드러나요. 5절의 실험에서 sleep의 <code style="font-family:Menlo,monospace;font-size:14px;">/proc/58133/status</code>에는 <code style="font-family:Menlo,monospace;font-size:14px;">NSpid: 58133 1</code>이 있었어요. 노드에서는 58133번이고 자기 네임스페이스에서는 1번이라는 뜻이에요. 같은 파드의 pause도 <code style="font-family:Menlo,monospace;font-size:14px;">58105 1</code>이었어요. 43편에서 본 것과 같이 기본 파드에서는 pause와 앱이 각자 자기 PID 네임스페이스의 PID 1이에요.</p>
+
+<h2>3. 커널은 2009년부터 컨테이너 init에게 온 신호를 걸러 왔다</h2>
+
+<p>PID 1을 보호하는 규칙은 원래 호스트의 init을 위한 것이었어요. <a href="https://man7.org/linux/man-pages/man2/kill.2.html">kill(2)</a>의 NOTES는 이렇게 적어요.</p>
+<div class="obsv-code">The only signals that can be sent to process ID 1, the init process, are those
+for which init has explicitly installed signal handlers. This is done to assure
+the system is not brought down accidentally.</div>
+<p>&rarr; init이 핸들러를 건 신호만 PID 1에게 보낼 수 있고, 시스템이 실수로 내려가지 않게 하려는 장치라는 뜻이에요. 호스트에서 systemd가 아무 신호에나 죽으면 기계 전체가 멈추니 이해가 가는 규칙이에요.</p>
+<p>PID 네임스페이스가 생긴 뒤에는 네임스페이스마다 init이 생겼어요. 2009-04-02 Sukadev Bhattiprolu의 커밋 세 개가 이 init(커밋 메시지는 container-init, 줄여서 cinit이라 불러요)에도 같은 보호를 넣었어요. 핵심은 <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=921cf9f63089c7442d44083477620132f4cea066">921cf9f63089</a>의 첫 문단이에요.</p>
+<div class="obsv-code">Drop early any SIG_DFL or SIG_IGN signals to container-init from within
+the same container.  But queue SIGSTOP and SIGKILL to the container-init
+if they are from an ancestor container.</div>
+<p>&rarr; 같은 컨테이너 안에서 container-init에게 보낸 신호 중 핸들러가 없는(SIG_DFL) 신호와 무시하기로 한(SIG_IGN) 신호는 일찍 버리고, 조상 컨테이너에서 온 SIGSTOP과 SIGKILL만 대기열에 넣는다는 뜻이에요. 이어진 <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=b3bfa0cba867f23365b81658b47efd906830879b">b3bfa0cba867</a>은 이미 대기열에 들어온 신호도 꺼낼 때 다시 걸러 SIGKILL과 SIGSTOP 말고는 기본 동작을 하지 않게 했고, 마지막에 "set SIGNAL_UNKILLABLE for container-inits"로 컨테이너 init에 보호 표시를 켰어요. 두 커밋은 v2.6.29에는 없고 v2.6.30에는 있어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: SIG_DFL과 기본 동작</div>
+SIG_DFL은 "이 신호에 대해 아무 핸들러도 등록하지 않았다"는 상태예요. 이때 커널은 신호마다 정해진 기본 동작을 해요. SIGTERM과 SIGKILL은 종료, SIGSTOP은 멈춤, SIGCHLD는 아무것도 하지 않음이 기본이에요. 컨테이너 init에서는 이 기본 동작이 막혀요.</div>
+
+<p>2018년에는 Eric Biederman의 <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=3597dfe01d12f570bc739da67f857fd222a3ea66">3597dfe01d12</a>가 커널 자신이 보낸 SIGKILL과 SIGSTOP은 늘 전달되게 보정했어요. 커밋 메시지는 원칙을 "A pid namespace init is only supposed to be able to ignore signals sent from itself and children with SIG_DFL."로 적었어요. PID 네임스페이스의 init이 무시할 수 있는 신호는 자기 자신과 자식이 보낸, 핸들러 없는 신호뿐이라는 뜻이에요.</p>
+
+<h3>지금 코드에서는 한 줄의 조건이다</h3>
+<p>우리 노드 커널의 기준인 upstream <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/kernel/signal.c?h=v6.8">v6.8의 signal.c</a>와 fork.c를 읽으면 규칙은 세 군데에 나뉘어 있어요. 첫째, fork.c의 <code style="font-family:Menlo,monospace;font-size:14px;">copy_process()</code>는 새 PID 네임스페이스의 첫 프로세스를 만들 때 <code style="font-family:Menlo,monospace;font-size:14px;">p-&gt;signal-&gt;flags |= SIGNAL_UNKILLABLE;</code>을 켜요. 둘째, <code style="font-family:Menlo,monospace;font-size:14px;">send_signal_locked()</code>는 보낸 프로세스가 받는 쪽 네임스페이스에서 PID를 갖지 않으면, 즉 조상 네임스페이스에 있으면 <code style="font-family:Menlo,monospace;font-size:14px;">force</code>를 참으로 둬요. 셋째, 신호를 버릴지 정하는 함수가 이 둘을 같이 봐요.</p>
+<div class="obsv-code">static bool sig_task_ignored(struct task_struct *t, int sig, bool force)
+{
+	void __user *handler;
+
+	handler = sig_handler(t, sig);
+
+	/* SIGKILL and SIGSTOP may not be sent to the global init */
+	if (unlikely(is_global_init(t) &amp;&amp; sig_kernel_only(sig)))
+		return true;
+
+	if (unlikely(t-&gt;signal-&gt;flags &amp; SIGNAL_UNKILLABLE) &amp;&amp;
+	    handler == SIG_DFL &amp;&amp; !(force &amp;&amp; sig_kernel_only(sig)))
+		return true;
+	...</div>
+<p>&rarr; 보호 표시가 켜진 프로세스에서 그 신호의 핸들러가 SIG_DFL이면 버린다는 뜻이에요. 예외는 "조상 네임스페이스에서 왔고(force) 신호가 SIGKILL이나 SIGSTOP(sig_kernel_only)인 경우" 하나뿐이에요. include/linux/signal.h의 <code style="font-family:Menlo,monospace;font-size:14px;">SIG_KERNEL_ONLY_MASK</code>에는 SIGKILL과 SIGSTOP 두 개만 들어 있어요. 이 조건을 풀어 쓰면 네 경우로 갈려요.</p>
+<p>&middot; SIGTERM은 컨테이너 안에서 보내든 노드에서 보내든 sig_kernel_only가 아니라서 버려져요.<br>
+&middot; SIGKILL을 컨테이너 안에서 보내면 force가 거짓이라 버려져요.<br>
+&middot; SIGKILL을 노드에서 보내면 force와 sig_kernel_only가 모두 참이라 통과하고 프로세스가 죽어요.<br>
+&middot; 핸들러를 건 신호는 이 조건에 걸리지 않아서 어디서 보내든 핸들러가 실행돼요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 조상 PID 네임스페이스</div>
+PID 네임스페이스는 부모와 자식으로 이어져요. 컨테이너의 네임스페이스는 노드(호스트)의 네임스페이스 아래에 만들어지므로 노드가 조상이에요. 조상 쪽 프로세스는 자식 네임스페이스의 프로세스를 볼 수 있지만 반대로는 볼 수 없어요. containerd와 shim도 노드 쪽에 있어서 그들이 보낸 신호는 조상에서 온 신호로 취급돼요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="컨테이너 PID 1에 온 신호를 커널이 전달할지 버릴지 정하는 순서">
+<defs><marker id="k64-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M200 22 C 300 19, 400 23, 500 21 C 502 36, 501 52, 500 66 C 400 69, 300 65, 201 67 C 199 52, 200 36, 200 22 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="51" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">신호가 컨테이너 PID 1에 도착</text>
+<path d="M350 70 C 352 82, 349 94, 350 104" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k64-arr2)"/>
+<path d="M190 110 C 300 107, 400 111, 510 109 C 512 125, 511 142, 510 157 C 400 160, 300 156, 191 158 C 189 142, 190 125, 190 110 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="140" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d6591">그 신호에 핸들러를 걸었나? (SigCgt)</text>
+<path d="M230 162 C 205 180, 175 196, 150 214" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k64-arr2)"/>
+<text x="168" y="186" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">예</text>
+<path d="M30 220 C 100 217, 180 221, 250 219 C 252 238, 251 258, 250 276 C 180 279, 100 275, 31 277 C 29 258, 30 238, 30 220 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="140" y="244" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">핸들러 실행</text>
+<text x="140" y="266" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">nginx·pause의 SIGTERM</text>
+<path d="M470 162 C 495 175, 515 186, 532 198" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k64-arr2)"/>
+<text x="512" y="182" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">아니오 (SIG_DFL)</text>
+<path d="M360 204 C 460 201, 580 205, 686 203 C 688 220, 687 238, 686 254 C 580 257, 460 253, 361 255 C 359 238, 360 220, 360 204 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="523" y="235" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#c07f18">노드(조상)에서 온 SIGKILL·SIGSTOP?</text>
+<path d="M440 259 C 425 276, 410 290, 398 304" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k64-arr2)"/>
+<text x="436" y="292" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">예</text>
+<path d="M280 310 C 340 307, 420 311, 490 309 C 492 326, 491 342, 490 356 C 420 359, 340 355, 281 357 C 279 342, 280 326, 280 310 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="385" y="340" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">기본 동작 (죽음·멈춤)</text>
+<path d="M610 259 C 612 274, 609 290, 610 304" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k64-arr2)"/>
+<text x="620" y="290" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">아니오</text>
+<path d="M520 310 C 570 307, 640 311, 690 309 C 692 326, 691 342, 690 356 C 640 359, 570 355, 521 357 C 519 342, 520 326, 520 310 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="6 5"/>
+<text x="605" y="340" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#8a8272">버림 (kill은 0)</text>
+<text x="40" y="330" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">SIGTERM은 어디서 보내도</text>
+<text x="40" y="354" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">'아니오'에서 버려져요</text>
+<text x="350" y="392" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#8a8272">v6.8 sig_task_ignored(): SIGNAL_UNKILLABLE &amp;&amp; SIG_DFL &amp;&amp; !(force &amp;&amp; sig_kernel_only)</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 2. 핸들러가 없는 컨테이너 PID 1이 받는 신호는 노드에서 온 SIGKILL·SIGSTOP뿐이에요.</p>
+
+<p><a href="https://man7.org/linux/man-pages/man7/pid_namespaces.7.html">pid_namespaces(7)</a>도 같은 내용을 사람 말로 적어요. 같은 네임스페이스의 다른 프로세스는 init이 핸들러를 건 신호만 init에게 보낼 수 있고 이 제한은 권한이 있는 프로세스에도 적용된다고 해요. 조상 네임스페이스의 프로세스도 마찬가지인데 "SIGKILL or SIGSTOP are treated exceptionally: these signals are forcibly delivered when sent from an ancestor PID namespace."라고 덧붙여요. 조상에서 온 SIGKILL과 SIGSTOP만은 강제로 전달된다는 뜻이에요.</p>
+<p>왜 컨테이너 init까지 이렇게 보호했는지는 커밋 메시지에 동작만 있고 동기 서술은 없어요. man 페이지에는 kill(2)의 "not brought down accidentally"와 pid_namespaces(7)의 "prevents other members of the PID namespace from accidentally killing the "init" process"가 남아 있어요. 당시 메일링 리스트 논의는 이 글에서 읽지 않았으니 동기는 여기까지만 적을게요. 또 인용한 소스는 upstream v6.8이고 Ubuntu의 6.8.0-149 패치본 소스는 보지 않았어요. 실제 동작은 다음 절의 실험으로 확인했어요.</p>
+
+<h2>4. 컨테이너 안과 노드에서 보낸 kill은 네 번 모두 0을 돌려줬다</h2>
+
+<p>그림 2의 네 갈래를 실제로 밟아 봤어요. SigCgt가 0인 sleep infinity 파드 k-sleep을 띄우고 컨테이너 안(같은 PID 네임스페이스)과 노드(조상 네임스페이스)에서 SIGTERM과 SIGKILL을 차례로 보냈어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/64-kill-pid1-inside-vs-node.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">64-kill-pid1-inside-vs-node.sh</code>예요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/64/01-kill-inside-vs-node.png" alt="sleep infinity가 PID 1인 파드에 컨테이너 안과 노드에서 kill -TERM, kill -KILL을 보낸 결과. 네 번 모두 kill 종료코드 0이고 노드의 kill -KILL에서만 프로세스가 사라지며 137/Error" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 3. kill은 매번 성공을 돌려줬고 프로세스는 노드에서 보낸 SIGKILL에만 죽었어요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">보낸 곳과 신호</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">kill 종료 코드</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">1~2초 뒤 sleep</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">그림 2의 갈래</th></tr></thead>
+<tbody><tr><td style="padding:9px;border:1px solid #d8cfba;">컨테이너 안 <code style="font-family:Menlo,monospace;font-size:14px;">kill -TERM 1</code></td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">살아 있음, Running</td><td style="padding:9px;border:1px solid #d8cfba;">SIG_DFL, 조상 아님 &rarr; 버림</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">컨테이너 안 <code style="font-family:Menlo,monospace;font-size:14px;">kill -KILL 1</code></td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">살아 있음, Running</td><td style="padding:9px;border:1px solid #d8cfba;">SIGKILL이지만 조상 아님 &rarr; 버림</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">노드 <code style="font-family:Menlo,monospace;font-size:14px;">kill -TERM 57872</code></td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">살아 있음, Running</td><td style="padding:9px;border:1px solid #d8cfba;">조상이지만 SIGTERM &rarr; 버림</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">노드 <code style="font-family:Menlo,monospace;font-size:14px;">kill -KILL 57872</code></td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">호스트 PID 없음, terminated 137/Error</td><td style="padding:9px;border:1px solid #d8cfba;">조상에서 온 SIGKILL &rarr; 죽음</td></tr></tbody></table></div>
+
+<p>네 결과가 <code style="font-family:Menlo,monospace;font-size:14px;">sig_task_ignored()</code>의 조건과 정확히 맞아요. 삭제 때 containerd가 보낸 SIGTERM은 세 번째 줄에 해당하고 30초 뒤의 SIGKILL은 네 번째 줄에 해당해요. 컨테이너가 끝난 이유도 커널에 있어요. pid_namespaces(7)은 "If the "init" process of a PID namespace terminates, the kernel terminates all of the processes in the namespace via a SIGKILL signal."이라고 적어요. v6.8의 <code style="font-family:Menlo,monospace;font-size:14px;">zap_pid_ns_processes()</code>가 남은 프로세스마다 SIGKILL을 보내는 코드예요. PID 1이 죽으면 그 네임스페이스의 나머지도 같이 끝나요.</p>
+<p>네 번 모두 kill이 0을 돌려준 것은 디버깅할 때 가장 헷갈리는 부분이에요. v6.8의 <code style="font-family:Menlo,monospace;font-size:14px;">__send_signal_locked()</code>는 <code style="font-family:Menlo,monospace;font-size:14px;">prepare_signal()</code>이 거짓을 돌려주면 반환값 <code style="font-family:Menlo,monospace;font-size:14px;">ret</code>을 처음 값 0으로 둔 채 빠져나가요. 신호를 버리는 판단이 이 안에서 일어나니 kill 쪽에는 실패가 돌아오지 않아요. 그래서 저는 kill의 성공을 "보낼 권한이 있고 대상이 있다"까지만 알려 주는 값으로 읽어요. 프로세스가 신호에 반응했는지는 따로 확인해야 해요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ kubectl exec로 kill 1을 해도 컨테이너는 재시작되지 않을 수 있어요</div>
+컨테이너를 다시 띄우려고 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl exec &lt;파드&gt; -- kill 1</code>을 쓰는 경우가 있어요. PID 1이 SIGTERM에 핸들러를 걸었으면 끝나지만 sleep, 셸 루프 같은 PID 1은 표의 첫째 줄과 같이 아무 일도 없어요. <code style="font-family:Menlo,monospace;font-size:14px;">kill -9 1</code>도 둘째 줄과 같이 버려져요. 둘 다 종료 코드 0이라 명령은 성공한 것으로 보여요. 확실히 재시작해야 하면 파드를 지우거나 노드에서 컨테이너 호스트 PID에 SIGKILL을 보내야 해요.</div>
+
+<h2>5. pause는 SIGTERM 핸들러를 달고 있어서 0.2초 만에 끝났다</h2>
+
+<p>같은 파드에 PID 1이 하나 더 있어요. pause예요. pause가 파드의 네임스페이스를 쥐고 있다는 것은 43편에서 봤고, 같은 파드의 컨테이너가 그 네임스페이스로 무엇을 함께 쓰는지는 61편에서 봤어요. pause도 자기 PID 네임스페이스의 PID 1이니 같은 커널 규칙을 받아요. 그런데 <a href="https://github.com/kubernetes/kubernetes/blob/master/build/pause/linux/pause.c">build/pause/linux/pause.c</a>는 처음부터 핸들러를 걸어요.</p>
+<div class="obsv-code">static void sigdown(int signo) {
+  psignal(signo, "Shutting down, got signal");
+  exit(0);
+}
+
+static void sigreap(int signo) {
+  while (waitpid(-1, NULL, WNOHANG) &gt; 0)
+    ;
+}
+...
+  if (sigaction(SIGINT, &amp;(struct sigaction){.sa_handler = sigdown}, NULL) &lt; 0)
+    return 1;
+  if (sigaction(SIGTERM, &amp;(struct sigaction){.sa_handler = sigdown}, NULL) &lt; 0)
+    return 2;
+  if (sigaction(SIGCHLD, &amp;(struct sigaction){.sa_handler = sigreap,
+                                             .sa_flags = SA_NOCLDSTOP},
+                NULL) &lt; 0)
+    return 3;
+
+  for (;;)
+    pause();</div>
+<p>&rarr; SIGINT나 SIGTERM을 받으면 sigdown이 <code style="font-family:Menlo,monospace;font-size:14px;">exit(0)</code>으로 스스로 끝내고 SIGCHLD를 받으면 끝난 자식을 거두며, 그 밖에는 신호가 올 때까지 잠들어 있다는 뜻이에요. 핸들러를 걸었으니 그림 2에서 왼쪽 갈래로 가요.</p>
+<p>이걸 같은 파드에서 비교했어요. 기본 파드 하나를 띄우고 노드에서 pause와 sleep의 신호 마스크를 읽은 뒤, 같은 <code style="font-family:Menlo,monospace;font-size:14px;">kill -TERM</code>을 sleep에 먼저, pause에 다음으로 보냈어요. 그 뒤 60초 동안 샌드박스와 컨테이너를 지켜봤어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/64-pause-vs-sleep-sigterm.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">64-pause-vs-sleep-sigterm.sh</code>예요. 처음 읽은 마스크는 pause가 호스트 PID 58105, NSpid 58105/1, SigCgt INT TERM CHLD였고 sleep이 호스트 PID 58133, NSpid 58133/1, SigCgt 없음이었어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/64/02-pause-vs-sleep-sigterm.png" alt="노드에서 sleep과 pause에 kill -TERM을 보낸 결과. sleep은 그대로이고 pause는 0.2초 뒤 사라짐. 이어 SandboxChanged 뒤 containerd가 +0.3초에 SIGTERM, +30.3초에 SIGKILL을 보내고 +45초에 새 샌드박스가 READY, restartCount 1" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 4. 같은 SIGTERM에 pause는 바로 끝났고, sleep을 멈추는 데는 다시 30초가 걸렸어요.</p>
+
+<p>sleep은 kill이 0을 돌려준 1초 뒤에도 그대로였어요. pause는 kill 0.2초 뒤에 호스트 PID가 사라졌어요. 이어서 kubelet이 샌드박스가 죽은 것을 알아채고 <code style="font-family:Menlo,monospace;font-size:14px;">SandboxChanged</code>("Pod sandbox changed, it will be killed and re-created.")와 <code style="font-family:Menlo,monospace;font-size:14px;">Killing</code> 이벤트를 남겼어요. 샌드박스를 새로 만들려면 그 안의 앱 컨테이너부터 멈춰야 해요. containerd는 pause를 죽인 시각 기준 +0.3초에 sleep에 SIGTERM을 보냈고 +30.3초에 SIGKILL을 보냈어요. +30초 관측에서 sleep의 호스트 PID가 사라졌고 +45초에는 새 샌드박스가 SANDBOX_READY, restartCount가 1이었어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="같은 파드의 pause와 sleep에 노드에서 SIGTERM을 보낸 결과 비교">
+<defs><marker id="k64-arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">노드에서 똑같이 kill -TERM, 결과는 달랐어요</text>
+<path d="M30 52 C 110 49, 250 53, 330 51 C 332 80, 331 118, 330 146 C 250 149, 110 145, 31 147 C 29 118, 30 80, 30 52 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="180" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d6591">pause (호스트 PID 58105)</text>
+<text x="180" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d6591">NSpid 58105/1</text>
+<text x="180" y="130" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d6591">SigCgt: INT TERM CHLD</text>
+<path d="M370 51 C 450 48, 590 52, 670 50 C 672 80, 671 118, 670 146 C 590 149, 450 145, 371 147 C 369 118, 370 80, 370 51 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="520" y="80" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">sleep (호스트 PID 58133)</text>
+<text x="520" y="106" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">NSpid 58133/1</text>
+<text x="520" y="130" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">SigCgt: 없음</text>
+<path d="M180 152 C 182 166, 179 178, 180 190" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k64-arr3)"/>
+<path d="M520 152 C 522 166, 519 178, 520 190" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k64-arr3)"/>
+<text x="180" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#2e6b41">0.2초 뒤 사라짐 (sigdown → exit)</text>
+<text x="520" y="214" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">그대로 (kill 종료코드 0)</text>
+<path d="M60 238 C 250 235, 450 239, 640 237 C 642 255, 641 278, 640 296 C 450 299, 250 295, 61 297 C 59 278, 60 255, 60 238 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#c07f18">샌드박스를 다시 만들려고 kubelet이 sleep 컨테이너를 멈춤</text>
+<text x="350" y="286" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#c07f18">+0.3s SIGTERM (버려짐) → +30.3s SIGKILL → +45s 새 샌드박스</text>
+<text x="350" y="322" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">= 핸들러가 있으면 바로, 없으면 어느 경로든 30초</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 5. pause와 sleep은 같은 규칙을 받았고, 갈린 것은 핸들러 하나였어요.</p>
+
+<p>pause에 SIGTERM 핸들러가 들어간 것은 Go로 쓰던 시절인 2014-10-03의 커밋 9b747c3a9d예요. 그 커밋이 남긴 동기 서술은 이 글에서 확인하지 않았어요. 다만 이 글의 규칙을 적용하면 핸들러가 없는 pause가 어떻게 될지는 분명해요. sleep과 똑같이 SIGTERM을 버리고 노드에서 온 SIGKILL에만 끝났을 거예요. pause가 아무 일도 하지 않는 프로그램인데도 SIGTERM과 SIGINT 핸들러를 거는 이유를 이 규칙으로 읽을 수 있어요.</p>
+
+<h3>그래서 PID 1 문제는 여러 곳에서 나온다</h3>
+<p>이제 도입의 질문에 답할 수 있어요. 기본 파드에서는 모든 컨테이너의 첫 프로세스가 자기 PID 네임스페이스의 PID 1이에요. 그리고 kubelet이 컨테이너를 멈추는 경로는 파드 삭제, 롤링 업데이트, 샌드박스 재생성, 사이드카 종료처럼 여러 가지인데 모두 같은 StopContainer로 끝나요. 런타임은 그 컨테이너의 PID 1에 정지 신호를 한 번 보내고 grace만큼 기다려요. PID 1이 그 신호에 핸들러를 걸지 않았으면 경로가 무엇이든 grace를 다 쓰고 SIGKILL로 끝나요. 도입의 사이드카는 명령이 <code style="font-family:Menlo,monospace;font-size:14px;">sh -c 'while true; do sleep 1; done'</code>이라 셸이 PID 1로 남는 모양이에요. 그 사이드카의 마스크는 따로 읽지 않았지만, 같은 busybox sh가 PID 1로 남은 c-sh-c-2cmds 파드에서 셸의 SigCgt는 INT와 CHLD뿐이고 TERM은 없었어요. <span class="obsv-mark">30초는 경로마다 따로 생긴 문제가 아니라 "PID 1이 정지 신호를 처리하는가" 하나의 질문이 여러 번 드러난 결과예요.</span></p>
+<p>해결책도 결국 PID 1이 신호를 처리하게 만드는 쪽이에요. 앱이 직접 SIGTERM 핸들러를 걸거나, 셸로 감쌌다면 exec로 앱에게 PID 1을 넘기거나, 신호를 전달해 주는 작은 init을 PID 1로 두는 방법이 있어요. grace를 줄이는 것은 SIGKILL을 앞당길 뿐이고 앱이 정리할 기회도 같이 줄여요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 내 컨테이너의 PID 1이 SIGTERM을 처리하는지 확인하는 법</div>
+&bull; 이미지에 cat이 있으면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl exec &lt;파드&gt; -c &lt;컨테이너&gt; -- cat /proc/1/status</code>에서 SigCgt를 봐요. 16진수 값에서 0x4000 비트(SIGTERM)가 켜져 있으면 핸들러가 있어요. 열여섯 자리가 모두 0이면 핸들러가 하나도 없다는 뜻이에요.<br>
+&bull; 셸이 없는 이미지는 노드에서 봐요. <code style="font-family:Menlo,monospace;font-size:14px;">crictl inspect &lt;컨테이너 ID&gt;</code>의 <code style="font-family:Menlo,monospace;font-size:14px;">info.pid</code>가 호스트 PID이고 <code style="font-family:Menlo,monospace;font-size:14px;">/proc/&lt;호스트 PID&gt;/status</code>를 읽으면 돼요.<br>
+&bull; 지운 파드가 grace만큼 Terminating에 머물고 종료 코드가 137이면 이 문제부터 의심해요. 0이나 143이면 컨테이너의 첫 프로세스가 정지 신호에 끝난 거예요.</div>
+
+<p><b>출처</b><br>
+&middot; 커널 커밋: <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=7978b567d31555fc828b8f945c605ad29e117b22">7978b567d315</a>, <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=921cf9f63089c7442d44083477620132f4cea066">921cf9f63089</a>, <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=b3bfa0cba867f23365b81658b47efd906830879b">b3bfa0cba867</a>(2009, v2.6.30), <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=3597dfe01d12f570bc739da67f857fd222a3ea66">3597dfe01d12</a>(2018)<br>
+&middot; 커널 소스 v6.8: <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/kernel/signal.c?h=v6.8">kernel/signal.c</a>, <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/kernel/fork.c?h=v6.8">kernel/fork.c</a>, <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/kernel/pid_namespace.c?h=v6.8">kernel/pid_namespace.c</a>, <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/include/linux/signal.h?h=v6.8">include/linux/signal.h</a><br>
+&middot; man 페이지: <a href="https://man7.org/linux/man-pages/man7/pid_namespaces.7.html">pid_namespaces(7)</a>, <a href="https://man7.org/linux/man-pages/man2/kill.2.html">kill(2)</a><br>
+&middot; 런타임과 쿠버네티스: <a href="https://github.com/containerd/containerd/blob/v2.4.1/internal/cri/server/container_stop.go">containerd v2.4.1 container_stop.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto">cri-api api.proto (v1.37.2)</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/build/pause/linux/pause.c">pause.c</a><br>
+&middot; 실험 원본: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/</code>의 63-termination-timing, 64-pid1-sigmask, 64-kill-pid1-inside-vs-node, 64-pause-vs-sleep-sigterm, 64-native-sidecar-finish (.sh/.txt)</p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<p>파드를 지우면 kubelet은 StopContainer에 timeout 30초만 넘기고 containerd가 PID 1에 SIGTERM을 보낸 뒤 30초를 기다렸다가 SIGKILL을 보내요. sleep infinity 파드가 31초쯤 걸리고 137로 끝나는 것은 SIGTERM이 아무 효과를 내지 못했다는 뜻이에요.</p>
+<p>효과가 없던 이유는 커널에 있어요. 2.6.30(2009)부터 PID 네임스페이스의 init에는 SIGNAL_UNKILLABLE이 켜지고, 핸들러를 걸지 않은 신호는 버려져요. 예외는 조상 네임스페이스에서 온 SIGKILL과 SIGSTOP뿐이에요. 실험에서 컨테이너 안의 kill -TERM 1·kill -KILL 1과 노드의 kill -TERM은 모두 0을 돌려주고도 아무 일이 없었고, 노드의 kill -KILL에만 sleep이 죽었어요.</p>
+<p style="margin-bottom:0;">pause는 SIGTERM 핸들러를 걸어서 같은 SIGTERM에 0.2초 만에 끝났고, 핸들러가 없는 sleep을 멈추는 데는 어느 경로든 30초가 걸렸어요. 컨테이너가 늦게 지워지면 grace를 늘리거나 줄이기 전에 PID 1이 누구이고 정지 신호에 핸들러를 걸었는지부터 봐야 해요.</p>
+</div>
+</div>

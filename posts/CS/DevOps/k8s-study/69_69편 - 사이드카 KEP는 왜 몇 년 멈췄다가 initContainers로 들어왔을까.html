@@ -1,0 +1,341 @@
+<!-- ============================================================
+  k8s 스터디 69편: 사이드카 KEP는 왜 몇 년 멈췄다가 initContainers로 들어왔을까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 2018년 sidecar: true로 시작한 사이드카 KEP는 네 번 미뤄진 뒤 2020년에 닫혔어요. 반대 원문과 2022년 워킹 그룹이 버린 대안을 읽고 initContainers의 restartPolicy: Always가 된 이유를 v1.37.2로 확인했어요. -->
+<!-- tags: KEP-753, 사이드카 컨테이너, initContainers restartPolicy, startupProbe, SIG Node -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 69편</div>
+  67편. preStop과 terminationGracePeriodSeconds는 어디서부터 세고 stopSignal은 왜 안 먹을까<br>
+  68편. 쿠버네티스 Job에 사이드카를 붙이면 왜 끝나지 않을까<br>
+  <b>69편. 사이드카 KEP는 왜 몇 년 멈췄다가 initContainers로 들어왔을까</b> &larr; 지금 이 글<br>
+  70편. 네이티브 사이드카는 어떤 순서로 뜨고 어떤 순서로 죽을까<br>
+  71편. 컨테이너마다 restartPolicy를 주면 사이드카가 될까, restartPolicyRules
+</div>
+
+<p>2018년 첫 KEP의 모양대로 containers 안의 컨테이너에 <code style="font-family:Menlo,monospace;font-size:14px;">sidecar: true</code>를 붙여 v1.37.2 API 서버에 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=server</code>로 보냈어요. 돌아온 답은 <code style="font-family:Menlo,monospace;font-size:14px;">strict decoding error: unknown field "spec.containers[1].sidecar"</code>였어요. 2019년 implementable 판의 <code style="font-family:Menlo,monospace;font-size:14px;">lifecycle.type: Sidecar</code>도 같은 오류로 거절됐어요. 받아들여진 것은 initContainers 안에 <code style="font-family:Menlo,monospace;font-size:14px;">restartPolicy: Always</code>를 준 파드였어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/69/01-api-shape.png" alt="v1.37.2 API 서버가 containers의 sidecar: true와 lifecycle.type: Sidecar는 unknown field로 거절하고 initContainers의 restartPolicy: Always는 받아들이며, restartPolicy 없는 init 컨테이너의 startupProbe는 Forbidden으로 거절한 dry-run 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 1. 2018년과 2019년의 필드는 API에 흔적이 없어요. 들어온 것은 init 컨테이너 목록 안의 필드 하나예요.</p>
+
+<p>68편에서 본 것처럼 Job이 끝나지 않는 문제는 2016년에 이슈로 올라왔고 2018년에 KEP가 나왔어요. 그런데 알파는 2023년 7월에 병합되어 1.28에 들어갔어요. 그 사이 설계는 containers 안의 표시에서 initContainers 안의 restartPolicy로 옮겨 갔어요. 이번 글은 KEP-753의 판본들과 PR 코멘트, 2022년 SIG Node 사이드카 워킹 그룹의 회의록을 읽고 무엇이 멈춰 세웠고 왜 그 자리로 들어왔는지 따라가요. 위 실험의 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/69-api-shape.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">69-api-shape.sh</code>예요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 2019년의 lifecycle.type: Sidecar는 무엇을 일부러 보통 컨테이너와 같게 뒀을까?<br>
+&middot; 1.15부터 1.18까지 네 번은 각각 어디서 멈췄을까?<br>
+&middot; 2020년 3월의 반대 원문은 무엇을 걱정했을까?<br>
+&middot; 2022년 워킹 그룹은 어떤 대안을 왜 버렸을까?<br>
+&middot; 사이드카를 이런 식으로도 쓸 수 있나? 왜 하필 initContainers에 넣었을까?<br>
+&middot; 1.27을 놓친 뒤 1.28 알파부터 1.37의 게이트 제거까지는 어떻게 갔을까?</p>
+
+<h2>1. 2019년 판은 containers 안의 lifecycle.type이었다</h2>
+
+<p>2018년 원안의 <code style="font-family:Menlo,monospace;font-size:14px;">sidecar: true</code>는 오래가지 않았어요. 2019년 2월 14일 Joseph-Irving은 <a href="https://github.com/kubernetes/enhancements/issues/753#issuecomment-463610216">추적 이슈 #753</a>에 SIG Node의 derekwaynecarr, dchen1107과 이야기했고 둘 다 큰 우려를 밝히지 않았다고 적었어요. 다만 불리언은 확장하기 어려우니 <code style="font-family:Menlo,monospace;font-size:14px;">containerLifecycle: Sidecar</code> 같은 값이 낫겠다고 했어요.</p>
+<p>같은 날 luksa가 <a href="https://github.com/kubernetes/enhancements/issues/753#issuecomment-463670342">이 설계의 약점</a>을 짚었어요.</p>
+<div class="obsv-code">it's wrong to have sidecars that run parallel to init containers specified under
+`pod.spec.containers`. So if you really want to be able to extend this to init
+containers eventually, you should find an alternative solution ... something like
+`pod.spec.sidecarContainers`</div>
+<p>&rarr; init 컨테이너와 나란히 돌아야 하는 사이드카를 containers 아래에 적는 것은 틀렸고 언젠가 init 단계까지 넓히려면 sidecarContainers 같은 다른 자리를 찾아야 한다는 뜻이에요. 이 지적은 4년 뒤 설계의 출발점이 돼요.</p>
+<p>그래도 KEP는 containers 안에 표시를 두는 쪽으로 나아갔어요. 2019년 3월 26일 올라온 <a href="https://github.com/kubernetes/enhancements/pull/919">enhancements PR #919</a>가 API를 불리언에서 enum으로 바꿨고 2019년 6월 KEP가 implementable이 됐어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: KEP의 provisional과 implementable</div>
+provisional은 방향에 합의한 초안 상태이고 implementable은 승인자들이 구현을 시작해도 된다고 표시한 상태예요. 구현 PR을 어느 릴리스에 넣으려면 그 KEP가 implementable이어야 해요. 당시 KEP 템플릿의 체크리스트에도 "KEP approvers have set the KEP status to implementable" 항목이 있었어요.</div>
+
+<p><a href="https://github.com/kubernetes/enhancements/blob/d4277c2d61/keps/sig-apps/sidecarcontainers.md">implementable 판</a>은 Lifecycle 구조체에 Type 필드를 더했어요.</p>
+<div class="obsv-code">type Lifecycle struct {
+  // Type
+  // One of Standard, Sidecar.
+  // Defaults to Standard
+  // +optional
+  Type LifecycleType `json:"type,omitempty" ...`
+}</div>
+<p>&rarr; 컨테이너의 lifecycle에 <code style="font-family:Menlo,monospace;font-size:14px;">type: Sidecar</code>를 적으면 사이드카가 되는 설계예요. 시작 순서에는 "Sidecars become ready" 단계가 들어갔어요. 사이드카가 ready가 되어야 보통 컨테이너를 띄운다는 뜻이에요.</p>
+<p>이 판은 사이드카를 일부러 보통 컨테이너와 최대한 같게 뒀어요. 원문은 "Sidecars are just normal containers in almost all respects, they have all the same attributes, they are included in pod state, obey pod restart policy etc. The only differences are lifecycle related."라고 적었어요. Joseph-Irving은 2019년 4월 30일 "the general feeling was that we should diverge from a normal container as little as possible"이라고 설명했어요. 그래서 사이드카도 파드의 restartPolicy를 따랐어요. Never 파드에서 죽은 사이드카는 68편의 옛 방식처럼 그대로 죽는 설계였어요.</p>
+<p>2019년 5월 smarterclayton은 사이드카 KEP가 implementable이 되려면 파드 phase와 restart policy를 다뤄야 한다고 했어요. 그해 11월 <a href="https://github.com/kubernetes/enhancements/pull/1344">enhancements PR #1344</a>에서 SIG Node와 합의한 변경은 사이드카를 phase 계산에서 빼는 것 하나였어요. implementable 판의 Risks 절은 노드가 꺼질 때의 순서를 미리 적어 뒀어요. 노드 종료 때는 kubelet이 아니라 systemd가 컨테이너를 멈추므로 파드 안의 종료 순서를 보장할 수 없다는 내용이에요. init 단계에서 사이드카를 함께 돌리는 일은 여전히 Non-Goals였어요. 이 두 메모가 2020년에 그대로 반대 이유로 돌아와요.</p>
+
+<h2>2. 1.15부터 1.18까지 네 번 미뤄졌다</h2>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: enhancement freeze와 code freeze</div>
+쿠버네티스 릴리스 주기의 마감 두 개예요. enhancement freeze까지 KEP가 implementable이어야 그 릴리스의 추적 대상이 되고 code freeze까지 구현 PR이 병합되어야 그 릴리스에 들어가요. 하나라도 놓치면 다음 릴리스로 넘어가요.</div>
+
+<p>추적 이슈 #753의 코멘트를 날짜순으로 놓으면 네 번의 연기가 보여요.</p>
+<div class="obsv-code">1.15  2019-04-12 milestone v1.15
+      2019-04-29 implementable 로 만드는 PR 들이 움직이지 않아 1.16 으로 (enhancement freeze)
+1.16  2019-08-23 code freeze 일주일 전, kubelet PR #80744 와 API PR #79649 에 리뷰가 없음
+1.17  2019-11-13 code freeze 전에 병합될 가능성이 매우 낮음
+1.18  2020-03-04 API 쪽 hold 해제 → 03-05·06 kubelet 생명주기 우려 → 03-06 1.19 로 연기</div>
+<p>&rarr; 앞의 세 번은 리뷰가 붙지 않아서였어요. 마지막 1.18은 리뷰가 붙은 뒤 반대가 나온 경우예요.</p>
+<p>2020년 3월 4일 Joseph-Irving은 <a href="https://github.com/kubernetes/enhancements/issues/753#issuecomment-594483715">긴 코멘트</a>를 남겼어요.</p>
+<div class="obsv-code">This KEP has been in flight for almost two years (original alpha target was 1.15),
+the PRs in question have been open for almost 1 year, there's never any "reviewer
+bandwidth" for them.</div>
+<p>&rarr; KEP는 2년 가까이 진행 중이고 PR은 1년 가까이 열려 있는데 리뷰할 여력은 한 번도 없었다는 뜻이에요. 그는 받은 리뷰도 작은 수정 요청뿐이었다고 덧붙였고 이 일이 오랫동안 자신을 갉아먹었다는 말로 코멘트를 끝냈어요. 같은 날 thockin은 <a href="https://github.com/kubernetes/kubernetes/pull/80744#issuecomment-594894169">kubelet PR #80744</a>에 API는 괜찮다며 자신의 hold를 풀었고 노드 쪽 승인자가 코드를 승인해야 한다고 적었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: SIG Node</div>
+kubelet, 컨테이너 런타임 연동, 파드 생명주기를 맡는 쿠버네티스 특별 관심 그룹(SIG)이에요. 사이드카의 시작·종료 순서는 kubelet 코드에 들어가므로 이 그룹의 승인이 필요했어요. 첫 KEP의 담당 SIG는 sig-apps였고 2020년 8월 KEP 파일이 sig-node 디렉터리로 옮겨졌어요.</div>
+
+<p>다음 이틀 동안 노드 쪽 리뷰어들의 코멘트가 이어졌어요. 셋 다 이 PR이 아니라 kubelet의 파드 생명주기 코드를 걱정했어요.</p>
+<div class="obsv-code">derekwaynecarr (03-05)
+  For this particular PR, I am having to find every reference to init containers or
+  containers and ask "what about a side car container"?. That includes code that is
+  not present in this PR.
+liggitt (03-05)
+  I think the existing container lifecycle support needs to be rock solid before
+  expanding the surface area.
+smarterclayton (03-06)
+  I just spent a couple of weeks in the Kubelet, and it's dark and scary in there.</div>
+<p>&rarr; derekwaynecarr는 init 컨테이너나 컨테이너를 다루는 모든 코드에서 "사이드카면 어떻게 되나"를 물어야 하고 그 코드는 이 PR 밖에도 있다고 했어요. liggitt은 kubelet에 이미 생명주기 문제(#88766)가 있으니 기존 지원이 단단해진 뒤에 기능을 넓히자고 했어요. smarterclayton은 리뷰 시간, 테스트 범위, 복잡도 모두 부족하다고 덧붙였어요. 릴리스 팀이 기한 연장 신청까지 받아 준 상태였지만 3월 6일 1.19로 미루기로 했어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="2016년 이슈부터 2026년 게이트 제거까지 사이드카 기능의 연대표">
+<defs><marker id="k69-a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="28" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">containers 안의 표시(2016~2020) → initContainers 안의 필드(2022~)</text>
+<path d="M25 110 C 200 108, 420 112, 670 109" fill="none" stroke="#4a7fb5" stroke-width="2.6" stroke-linecap="round" marker-end="url(#k69-a1)"/>
+<path d="M300 110 C 340 108, 380 112, 425 110" fill="none" stroke="#e5533c" stroke-width="6" stroke-linecap="round" opacity="0.55"/>
+<g stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round"><path d="M45 101 C 46 106, 44 114, 45 119"/><path d="M140 101 C 141 106, 139 114, 140 119"/><path d="M230 101 C 231 106, 229 114, 230 119"/><path d="M480 101 C 481 106, 479 114, 480 119"/><path d="M565 101 C 566 106, 564 114, 565 119"/><path d="M645 101 C 646 106, 644 114, 645 119"/></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">
+<text x="45" y="90">2016-05</text><text x="45" y="140">#25908</text>
+<text x="140" y="74">2018-05 첫 KEP</text><text x="140" y="92">sidecar: true</text>
+<text x="230" y="140">2019-06</text><text x="230" y="158">lifecycle.type</text>
+<text x="362" y="92" fill="#b3502f">1.15 1.16 1.17 1.18</text><text x="362" y="140" fill="#b3502f">네 번 연기</text>
+<text x="480" y="74">2020-03-10</text><text x="480" y="92">멈추자는 코멘트</text>
+<text x="565" y="140">2020-06</text><text x="565" y="158">provisional</text>
+<text x="645" y="74" fill="#b3502f">2020-10</text><text x="645" y="92" fill="#b3502f">닫힘</text>
+</g>
+<path d="M25 250 C 200 248, 420 252, 670 249" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" marker-end="url(#k69-a1)"/>
+<g stroke="#3d3a34" stroke-width="2" fill="none" stroke-linecap="round"><path d="M45 241 C 46 246, 44 254, 45 259"/><path d="M135 241 C 136 246, 134 254, 135 259"/><path d="M225 241 C 226 246, 224 254, 225 259"/><path d="M315 241 C 316 246, 314 254, 315 259"/><path d="M395 241 C 396 246, 394 254, 395 259"/><path d="M470 241 C 471 246, 469 254, 470 259"/><path d="M540 241 C 541 246, 539 254, 540 259"/><path d="M605 241 C 606 246, 604 254, 605 259"/><path d="M660 241 C 661 246, 659 254, 660 259"/></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34" text-anchor="middle">
+<text x="45" y="214">2021-08</text><text x="45" y="232">Keystone</text>
+<text x="135" y="280">2022-10</text><text x="135" y="298">TerminatePod</text>
+<text x="225" y="214">2022-11</text><text x="225" y="232">워킹 그룹</text>
+<text x="315" y="280">2023-02</text><text x="315" y="298">새 KEP 병합</text>
+<text x="395" y="214" fill="#b3502f">1.27</text><text x="395" y="232" fill="#b3502f">놓침</text>
+<text x="470" y="280" fill="#2e6b41">1.28 알파</text>
+<text x="540" y="214" fill="#2e6b41">1.29 베타</text>
+<text x="605" y="280" fill="#2e6b41">1.33 GA</text>
+<text x="660" y="214" fill="#2e6b41">1.37</text><text x="660" y="232" fill="#2e6b41">게이트 제거</text>
+</g>
+<text x="350" y="324" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">첫 이슈부터 알파까지 7년, 알파부터 게이트 제거까지 3년 가까이</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 2. 위 줄은 containers에 표시를 붙이던 시기, 아래 줄은 initContainers로 옮긴 뒤의 시기예요.</p>
+
+<h2>3. 2020년 3월 10일의 코멘트는 "아직 밀어붙이지 말자"였다</h2>
+
+<p>1.18 연기 나흘 뒤 thockin이 추적 이슈에 <a href="https://github.com/kubernetes/enhancements/issues/753#issuecomment-597372056">긴 코멘트</a>를 올렸어요. 첫 문장은 "A group of us have been discussing this topic over the last week."이고 끝의 서명은 "Clayton, David, Dawn, Derek, John, Tim" 여섯 이름이에요. 일주일 동안의 논의 내용은 공개된 원문이 없어서 여기서는 코멘트에 적힌 것만 옮겨요.</p>
+<p>코멘트는 문제를 사회, 절차, 기술로 나눴어요. 사회 쪽으로는 SIG 안에 유보 의견이 있었는데도 Clayton과 Tim이 밀었기 때문에 Derek이 KEP를 승인했다고 적었어요. 그리고 결국 문제를 떠안을 sig-node에 아직 지원할 준비가 안 된 기능을 받으라고 압박해서는 안 된다고 했어요. 절차 쪽으로는 KEP 리뷰어가 코드 리뷰까지 맡아야 하는지, 여러 릴리스와 여러 SIG에 걸친 KEP의 리뷰 시간을 누가 배정하는지 불분명하다고 했어요. 기술 쪽 결론은 이 문장이에요.</p>
+<div class="obsv-code">We think we need to do a bit of first-principles thinking around Pod lifecycle.
+... we fear we merely broke that complexity up into multiple phases, and the net
+result may be MORE complex than just tackling it head-on.
+...
+It probably means we should NOT push this through yet, though.</div>
+<p>&rarr; 파드 생명주기를 처음부터 다시 생각해야 하고 복잡함을 여러 단계로 쪼갰을 뿐 결과는 정면으로 푸는 것보다 더 복잡할 수 있으니 아직 밀어붙이지 말자는 뜻이에요.</p>
+<p>코멘트는 구체적인 걱정도 두 가지 적었어요. 하나는 종료 순서였어요.</p>
+<div class="obsv-code">We already don't respect graceful termination on node shutdown, and that has surprised
+many users. ... If anyone uses sidecars to "clean up" their pods (e.g. to drain cached
+logs into a logging service), they will expect (reasonably) some clear and useful
+semantics around shutdown, which this KEP doesn't guarantee.</div>
+<p>&rarr; 노드가 꺼질 때는 지금도 정상 종료를 지키지 못하는데 사이드카로 로그를 비우는 사용자는 종료 때 분명한 동작을 기대할 것이고 이 KEP는 그것을 보장하지 않는다는 뜻이에요. 다른 하나는 구조였어요. "Tim has concerns that init-sidecars will need to become a thing, and that doesn't feel right." containers 안에 표시를 붙이면 init 단계용 사이드카가 따로 필요해질 텐데 그게 마음에 걸린다는 내용이에요. 1절에서 본 luksa의 지적과 같은 자리예요.</p>
+<p>그 뒤 일은 빠르게 정리됐어요. 2020년 5월 thockin은 sig-node에 일보다 사람이 부족해서 이 기능을 검토할 준비가 안 됐다고 적었어요. 6월 23일 SIG Node 회의에서 graceful node shutdown을 선행조건으로 정했고 다음 날 rata가 KEP를 provisional로 되돌리는 <a href="https://github.com/kubernetes/enhancements/pull/1874">enhancements PR #1874</a>를 올렸어요. <a href="https://github.com/kubernetes/enhancements/blob/8c3cfd00db/keps/sig-apps/0753-sidecarcontainers.md">그 판</a>은 이유를 이렇게 적었어요.</p>
+<div class="obsv-code">The main reason for this is to avoid users relying on something we can't guarantee
+(like the pod shutdown sequence in case the node shutdowns).</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: graceful node shutdown</div>
+노드가 꺼질 때 kubelet이 이를 알아채고 파드를 정상 종료 절차(preStop, 유예 시간)로 내리게 하는 기능이에요. 2019년 implementable 판 KEP는 노드 종료 때 kubelet이 아니라 systemd가 컨테이너를 멈춘다고 적었고 2020년 판은 노드가 꺼질 때 kubelet이 컨테이너를 정상 종료하지 않는다고 적었어요. 이 기능은 1.20에 GracefulNodeShutdown 알파로 들어왔어요.</div>
+
+<p>2020년 10월 21일 Joseph-Irving이 #753을 닫았어요.</p>
+<div class="obsv-code">This KEP will not be progressing, Sig-node and others feel that this is not an
+incremental step in the right direction so they've gone back to the drawing board
+... I've already spent over two years trying to get this through so I think this a
+good time for me to move on</div>
+<p>&rarr; SIG Node와 다른 사람들이 이것을 올바른 방향의 점진적 한 걸음으로 보지 않아 설계를 처음부터 다시 하기로 했고 자신은 2년 넘게 들였으니 이제 떠난다는 뜻이에요.</p>
+<p>원문들을 모으면 멈춘 이유는 하나가 아니었어요. 리뷰할 사람이 없었고 kubelet 생명주기 코드가 이미 불안해서 새 모드를 더하기 어려웠고 노드가 꺼질 때는 순서를 지킬 수 없으니 순서를 약속하면 안 됐어요. 그리고 containers 안에 둔 설계로는 init 단계의 사이드카를 풀 수 없어 두 번째 장치가 필요해 보였어요. 마지막 이유가 2022년 설계의 출발점이 돼요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 노드가 꺼질 때의 사이드카 순서는 확인하지 않았어요</div>
+2020년의 선행조건이 "해결됐다"고 선언한 원문은 찾지 못했어요. GracefulNodeShutdown은 1.20에 알파로 들어왔지만 v1.37.2에서 노드 종료 때도 사이드카가 보통 컨테이너 뒤에 역순으로 끝나는지는 코드로도 실험으로도 확인하지 않았어요. 70편의 종료 순서 실험은 모두 파드 삭제와 앱 종료로 확인한 결과예요. 노드 종료에 기대는 정리 작업이 있다면 그 환경에서 따로 시험해야 해요.</div>
+
+<h2>4. 2022년 워킹 그룹은 버릴 것부터 정했다</h2>
+
+<p>KEP가 닫힌 뒤에도 문제는 그대로였어요. 2021년 8월 adisky의 Keystone containers KEP-2872는 반대 방향을 시도했어요. 사이드카를 표시하는 대신 주인공(keystone) 컨테이너를 표시하고 그 컨테이너가 끝나면 파드를 끝내는 안이었어요. 2022년 10월 6일 thockin은 그 PR에 Derek, Dawn, Mrunal, Sergey와 며칠 논의한 결과를 <a href="https://github.com/kubernetes/enhancements/pull/2869#issuecomment-1270508226">이렇게</a> 정리했어요.</p>
+<div class="obsv-code">There is some reluctance to endorse something that leaves the door open to further
+"semantic creep" ... without ALSO addressing the need to have "sidecars" for
+init-containers. In fact, we're trying to avoid the word "sidecar" for now because
+of the baggage.</div>
+<p>&rarr; init 컨테이너용 사이드카 문제를 함께 풀지 않고 뜻을 계속 넓힐 여지만 남기는 안을 지지하기 꺼려진다는 뜻이에요. "사이드카"라는 말은 지난 일 때문에 당분간 피한다고까지 적었어요. 그가 비교한 세 안은 <code style="font-family:Menlo,monospace;font-size:14px;">lifecycle.onCompletion: TerminatePod</code>(그런 컨테이너를 하나만 둘 수 있음), init 컨테이너보다 앞선 단계까지 포함하는 "runlevels"(좋아 보이지만 해낼 만큼 안다고 확신하지 못함), <code style="font-family:Menlo,monospace;font-size:14px;">lifecycle.endOfLife: Coerced</code>(이름이 끔찍함)였어요. 그리고 알파에 넣을 수 있는 작은 안으로 대화를 돌렸지만 "it doesn't feel right"라고 덧붙였어요.</p>
+<p>같은 시기 SergeyKanzhelev는 "Terminate pod on container completion"(enhancements #3582)을 올렸어요. 함께 쓴 컨테이너별 restartPolicy 문서는 약점을 스스로 적었어요. 주 컨테이너가 둘이면 어느 쪽에 TerminatePod를 붙일지 애매하고 그래서 아무 파드에나 사이드카를 자동으로 끼워 넣을 수 없다는 내용이에요.</p>
+<p>2022년 11월 15일 SIG Node 사이드카 워킹 그룹이 첫 회의를 열었어요. <a href="https://docs.google.com/document/d/1E1guvFJ5KBQIGcjCrQqFywU9_cBQHRtHvjuqcVbCXvU">회의록</a>은 버린 설계와 요구사항을 먼저 적었어요.</p>
+<div class="obsv-code">Rejected designs:
+ 1. Not the graph (systemd-like before and after)
+ 2. Not the per-container termination/restartPolicy control
+ 3. Not regular containers with the sidecar "flag", must cover the Init containers
+Requirements:
+ 1. Will not block pod termination even when running
+ 2. Can start before Init containers, allow Init-like behavior before sidecars
+ 3. Restart behavior can be different from the pod restartPolicy
+ 4. Semantically different enough to allow future scope expansion
+    ...
+ 5. Establishes the pattern to follow that will not bloat Pod yaml on every new use case
+    - Sidecars can reliably be injected by webhooks
+ 6. Termination ordering - sidecars last</div>
+<p>&rarr; 그래프는 안 하고 컨테이너별 restartPolicy 제어도 안 하고 containers에 플래그를 붙이는 것도 안 한다는 결정이에요. 요구사항 2번은 사이드카가 init 컨테이너보다 먼저, 또는 init 컨테이너 사이에도 뜰 수 있어야 한다는 뜻이고 5번은 웹훅이 어느 파드에든 사이드카를 끼워 넣을 수 있어야 한다는 뜻이에요. 같은 회의에서 Mike Brown은 그래프를 피해 쉬워 보이지만 실제로는 하나의 큰 일렬 그래프를 만드는 셈이라고 짚었어요.</p>
+<p>11월 22일 회의록에는 순서 요구가 구체적으로 남았어요. Tim의 요약은 "nothing can run before network proxy is set up"이었고 Felix는 "all scenarios are A -&gt; B -&gt; C. Vault, than Cloud API, than setting up proxy"라고 했어요. 비밀 값을 받아 오는 Vault 컨테이너가 프록시보다 먼저 떠야 하는 경우가 실제로 있다는 뜻이에요. Tim은 80%에 집중하고 나머지에는 분명한 탈출구를 남기자고 했어요.</p>
+<p>12월 6일 회의록에 지금 모양이 처음 나와요.</p>
+<div class="obsv-code">initContainers:
+- name: vault-agent
+  image: hashicorp/vault:1.12.1
+  restartPolicy: OnFailure
+- name: istio-proxy
+  image: istio/proxyv2:1.16.0
+  args: ["proxy", "sidecar"]
+  restartPolicy: Always</div>
+<p>&rarr; 보통 init 컨테이너(vault-agent) 다음에 사이드카(istio-proxy)를 같은 목록에 적는 모양이에요. jpbetz는 "interleaving normal and sidecar init containers is a very nice feature"라고 했어요. 동시에 "Always may not be the right word"라며 Ambient, background, sidecar 같은 이름을 꺼냈고 회의록은 기존 init 컨테이너에 이 필드를 실수로 붙이면 나쁜 결과가 나니 특별한 이름을 주는 이유가 된다고 적었어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="2022년부터 2023년까지 버린 사이드카 대안 여섯 가지와 남은 설계">
+<defs><marker id="k69-a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">버린 대안과 이유, 그리고 남은 하나</text>
+<g fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round">
+<path d="M25 52 C 150 50, 280 53, 420 51 C 422 67, 421 82, 420 96 C 280 98, 150 95, 26 97 C 24 82, 25 67, 25 52 Z"/>
+<path d="M25 104 C 150 102, 280 105, 420 103 C 422 119, 421 134, 420 148 C 280 150, 150 147, 26 149 C 24 134, 25 119, 25 104 Z"/>
+<path d="M25 156 C 150 154, 280 157, 420 155 C 422 171, 421 186, 420 200 C 280 202, 150 199, 26 201 C 24 186, 25 171, 25 156 Z"/>
+<path d="M25 208 C 150 206, 280 209, 420 207 C 422 223, 421 238, 420 252 C 280 254, 150 251, 26 253 C 24 238, 25 223, 25 208 Z"/>
+<path d="M25 260 C 150 258, 280 261, 420 259 C 422 275, 421 290, 420 304 C 280 306, 150 303, 26 305 C 24 290, 25 275, 25 260 Z"/>
+<path d="M25 312 C 150 310, 280 313, 420 311 C 422 327, 421 342, 420 356 C 280 358, 150 355, 26 357 C 24 342, 25 327, 25 312 Z"/>
+</g>
+<g font-family="'Nanum Pen Script', cursive">
+<text x="38" y="72" font-size="18" fill="#3d3a34">의존 그래프·dependsOn</text><text x="38" y="91" font-size="16" fill="#b3502f">웹훅이 아무 파드에나 끼워 넣을 수 없음</text>
+<text x="38" y="124" font-size="18" fill="#3d3a34">sidecarContainers 새 목록</text><text x="38" y="143" font-size="16" fill="#b3502f">시작 위치가 하나로 고정, OpenAPI 스키마가 커짐</text>
+<text x="38" y="176" font-size="18" fill="#3d3a34">containers 안의 플래그 (2018~2020)</text><text x="38" y="195" font-size="16" fill="#b3502f">init 단계의 사이드카를 다루지 못함</text>
+<text x="38" y="228" font-size="18" fill="#3d3a34">TerminatePod·keystone</text><text x="38" y="247" font-size="16" fill="#b3502f">주인공이 둘이면 애매, 자동 주입이 어려움</text>
+<text x="38" y="280" font-size="18" fill="#3d3a34">새 필드 ambient, 새 enum WithPod</text><text x="38" y="299" font-size="16" fill="#b3502f">같은 성질은 restartPolicy가 이미 다룸</text>
+<text x="38" y="332" font-size="18" fill="#3d3a34">다음 시작 기준을 ready로</text><text x="38" y="351" font-size="16" fill="#b3502f">"준비 안 됐지만 시작됨"을 표현 못 함</text>
+</g>
+<path d="M470 150 C 540 147, 610 151, 680 149 C 682 190, 681 230, 680 268 C 610 271, 540 267, 471 269 C 469 230, 470 190, 470 150 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.8" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" text-anchor="middle"><text x="575" y="178" font-size="21" fill="#2e6b41">남은 설계 ✅</text><text x="575" y="204" font-size="18" fill="#3d3a34">initContainers 안에</text><text x="575" y="228" font-size="18" fill="#3d3a34">restartPolicy: Always</text><text x="575" y="252" font-size="17" fill="#3d3a34">기준은 started</text></g>
+<g fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="4 5">
+<path d="M424 74 C 445 110, 450 160, 466 190" marker-end="url(#k69-a2)"/>
+<path d="M424 336 C 445 300, 450 250, 466 230" marker-end="url(#k69-a2)"/>
+</g>
+<text x="350" y="388" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 새 목록·새 필드·새 값 대신 이미 있는 목록과 필드를 빌렸다</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 3. 이유는 회의록과 2023년 KEP의 Alternatives 절, PR #3761 리뷰에서 옮겼어요.</p>
+
+<h2>5. initContainers에 넣는다고? 순서가 이미 있는 목록을 빌렸다</h2>
+
+<p>여기서 처음 이 설계를 보는 사람은 이렇게 물어요. 사이드카를 이런 식으로도 쓸 수 있나요? init 컨테이너는 한 번 돌고 끝나야 다음으로 넘어가는 컨테이너인데, 파드가 끝날 때까지 도는 컨테이너를 거기에 넣는다고요? 2023년 1월 새 KEP(<a href="https://github.com/kubernetes/enhancements/pull/3761">enhancements PR #3761</a>)의 리뷰에서 smarterclayton이 답한 이유는 순서였어요.</p>
+<div class="obsv-code">initContainers have order, and we can reuse the ordering semantics to say that sidecar
+containers are started in FIFO order, and shut down in LIFO order</div>
+<p>&rarr; initContainers에는 이미 순서가 있으니, 사이드카는 적힌 순서대로 시작하고 반대 순서로 종료한다는 의미를 그대로 빌려 쓸 수 있다는 뜻이에요. 그는 init 컨테이너와 인프라 컨테이너를 서로 다른 목록으로 나누는 것에도 반대했어요. 인프라 컨테이너가 init 컨테이너를 필요로 하는 경우가 있으니 목록 사이의 순서를 따로 정하고 싶지 않고 둘 다 init 컨테이너의 한 종류로 두자는 이유였어요.</p>
+<p><a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/753-sidecar-containers">KEP 본문</a>의 Naming 절도 같은 이유를 적었어요. 사이드카를 다른 init 컨테이너들 사이에 적어야 초기화 순서를 표현할 수 있다고 했고 동시에 "The name initContainers is not a good fit for sidecar containers"라고 인정했어요. infrastructureContainers라는 새 목록 이름은 알파 뒤로 결정을 미뤘어요. 따로 된 sidecarContainers 목록을 버린 이유는 세 가지였어요. 목록 전체에 시작 위치 하나를 정해야 하는데 init 컨테이너 앞인지 뒤인지, 특정 init 컨테이너 앞인지 뒤인지를 한 번에 정할 수 없었어요. 목록 하나에 뜻 하나를 묶으면 새 속성을 넣기 어려웠어요. 그리고 목록을 더할 때마다 파드와 PodTemplate을 품은 모든 리소스, PodTemplate을 품은 CRD의 OpenAPI 스키마가 크게 늘어나요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="initContainers 목록 안에서 보통 init 컨테이너와 사이드카가 섞여 시작하고 종료는 반대로 가는 모양">
+<defs><marker id="k69-a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">목록 하나, 컨테이너마다 다른 restartPolicy</text>
+<text x="30" y="64" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d6591">시작: 적힌 순서 (FIFO)</text>
+<path d="M30 78 C 90 76, 150 79, 200 77 C 202 100, 201 122, 200 142 C 150 144, 90 141, 31 143 C 29 122, 30 100, 30 78 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M255 77 C 320 79, 385 76, 445 78 C 447 100, 446 122, 445 143 C 385 141, 320 144, 256 142 C 254 122, 255 100, 255 77 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.6" stroke-linejoin="round"/>
+<path d="M500 78 C 560 76, 620 79, 670 77 C 672 100, 671 122, 670 142 C 620 144, 560 141, 501 143 C 499 122, 500 100, 500 78 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" text-anchor="middle">
+<text x="115" y="102" font-size="19" fill="#3d3a34">vault-agent</text><text x="115" y="124" font-size="16" fill="#8a8272">보통 init: 끝나야 다음</text>
+<text x="350" y="102" font-size="19" fill="#3d3a34">istio-proxy</text><text x="350" y="124" font-size="16" fill="#2e6b41">Always: 시작되면 다음</text>
+<text x="585" y="102" font-size="19" fill="#3d3a34">app (containers)</text><text x="585" y="124" font-size="16" fill="#8a8272">보통 컨테이너</text>
+</g>
+<path d="M205 110 C 225 108, 235 111, 249 110" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k69-a3)"/>
+<path d="M450 110 C 470 108, 480 111, 494 110" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k69-a3)"/>
+<path d="M350 148 C 352 175, 349 200, 351 228" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-dasharray="4 5" stroke-linecap="round"/>
+<path d="M585 148 C 580 190, 520 215, 440 236" fill="none" stroke="#b3502f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k69-a3)"/>
+<text x="470" y="175" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">종료: 반대 순서 (LIFO)</text>
+<path d="M255 230 C 320 228, 385 231, 435 229 C 437 242, 436 254, 435 266 C 385 268, 320 265, 256 267 C 254 254, 255 242, 255 230 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<text x="345" y="254" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d3a34">app이 끝난 뒤 SIGTERM</text>
+<text x="30" y="200" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">thockin의 조합표:</text>
+<text x="30" y="222" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">{blocking, Never·OnFailure}</text>
+<text x="30" y="244" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">{async, Always}</text>
+<text x="350" y="292" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">= 순서는 목록이, 기다릴지 말지는 restartPolicy가 정한다</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 4. 2022년 12월 6일 회의록의 예시 모양이에요. 지금 KEP 예시는 vault-agent의 restartPolicy를 비워 둬요.</p>
+
+<p>표시로는 기존 필드를 빌렸어요. KEP는 컨테이너별 restart policy가 커뮤니티의 오랜 요청이었다며 "Introducing this field on containers opens up opportunities to implement those long-standing requests from the community."라고 적었어요. 대안이던 <code style="font-family:Menlo,monospace;font-size:14px;">ambient: true</code>는 restartPolicy가 보통 다루는 성질에 새 개념을 하나 더 만드는 일이라 밀렸어요.</p>
+<p>값도 새로 만들지 않았어요. smarterclayton은 init 컨테이너에 Always가 붙으면 "성공해도 계속 다시 돈다"는 뜻으로 읽혀 헷갈릴 것이라며 <code style="font-family:Menlo,monospace;font-size:14px;">WithPod</code>나 <code style="font-family:Menlo,monospace;font-size:14px;">UntilPodShutdown</code> 같은 다른 상수를 권했어요. 2023년 1월 27일 SergeyKanzhelev의 답은 "this confusion is highlighted in the document and the agreement is to proceed with the Always while keep asking for additional feedback"이었어요. KEP는 Always가 사이드카에 필요한 뜻에 가장 가깝다고 보면서도 단점을 적어 뒀어요. init 컨테이너의 Always는 파드가 끝날 때 함께 끝나고 파드 생명주기에 영향을 주지 않는다는 점이 파드의 Always와 다르다는 내용이에요.</p>
+<p>thockin의 조합표가 이 선택을 정리해요. 그는 2023년 1월 23일 리뷰에서 "다음 컨테이너를 막는가"와 "끝나면 어떻게 하나"를 나눠 보고 실제로 필요한 조합은 셋이라고 했어요.</p>
+<div class="obsv-code">I think we probably want {blocking, Never}, {blocking, OnFailure}, {async, Always}.
+That suggests that we don't need an "extra bit" of information to specify async vs
+blocking.  Or rather, we have it - `initContainers` vs `containers`</div>
+<p>&rarr; 막는 컨테이너는 Never나 OnFailure, 막지 않는 컨테이너는 Always뿐이니 막을지 말지를 위한 비트를 따로 둘 필요가 없다는 뜻이에요. 같은 리뷰에서 그는 보통 컨테이너에 파드보다 "높은" 정책을 주는 조합은 뜻이 불분명해 막아야 할 것 같다고도 적었어요. 그 조합이 지금 어떻게 됐는지는 71편에서 실험해요.</p>
+
+<h3>"시작됐다"는 무엇으로 판단할까</h3>
+<p>사이드카를 init 목록에 넣으면 "언제 다음 컨테이너로 넘어가나"를 정해야 해요. thockin은 ready를 원했어요. 2023년 1월 26일 그는 "Readiness is there for a container to indicate that it is consumable. Moving ahead without waiting for that feels wrong."이라고 적고 startupProbe를 기준으로 삼으면 사이드카가 준비됐는지 신경 쓰는 사람은 startupProbe를 써야 한다는 말이 되는데 이상하지 않냐고 물었어요.</p>
+<p>반대쪽 근거는 실제 사이드카의 동작이었어요. Knative의 queue-proxy는 사용자 컨테이너의 readinessProbe를 지우고 자기 readiness가 사용자 컨테이너의 상태를 대신 보고하게 해요. evankanderson은 이 방식을 스스로 "It's disgusting"이라고 불렀어요. 이런 사이드카를 ready까지 기다리면 사용자 컨테이너가 영원히 뜨지 않아요. SergeyKanzhelev는 "the container will never get ready - no containers will be started before sidecar initialization complete"라고 정리했어요. 워킹 그룹 회의의 결론은 그가 2023년 2월 1일(UTC) <a href="https://github.com/kubernetes/enhancements/pull/3761#discussion_r1092674043">PR에 옮겼어요</a>.</p>
+<div class="obsv-code">The concern of not being able to express "not ready, but started" was dominant.
+@smarterclayton mentioned other prior KEPs trying to take dependency on Ready state
+that wasn't accepted. There was agreement on using the Startup probes</div>
+<p>&rarr; "준비는 안 됐지만 시작은 됐다"를 표현할 수 없다는 걱정이 컸고 Ready에 기대려던 이전 KEP들이 받아들여지지 않은 전례도 있어서 startupProbe를 쓰기로 했다는 뜻이에요. postStart만 기준으로 삼자는 안도 나왔지만 howardjohn은 훅의 로그가 보고되지 않아 디버깅이 어렵다고 했어요. 최종 KEP는 startupProbe 성공(없으면 생략)과 postStart 완료를 둘 다 시작 완료 조건으로 적었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: startupProbe</div>
+컨테이너가 시작을 마쳤는지 확인하는 프로브예요. 성공하기 전에는 liveness와 readiness 검사를 미루고 정해진 횟수만큼 실패하면 컨테이너를 다시 시작해요. 보통 컨테이너에서는 다른 컨테이너의 시작을 막지 않지만 사이드카에서는 다음 init 컨테이너의 시작 조건이 돼요.</div>
+
+<p>그래서 probe와 lifecycle이 init 컨테이너에 열린 것도 사이드카에만이에요. 그림 1의 (4)처럼 restartPolicy가 없는 보통 init 컨테이너에 startupProbe를 주면 v1.37.2는 "may not be set for init containers without restartPolicy=Always"로 거절해요(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/apis/core/validation/validation.go#L3931-L3978">validation.go</a>). 이 결정에 2020년의 걱정이 겹쳐 보여요. 2020년 3월 코멘트는 "Tim has concerns that init-sidecars will need to become a thing"이라고 적었는데 2023년 KEP의 kep.yaml 승인자 목록에는 mrunalp와 함께 thockin이 있어요. 두 사실을 나란히 놓으면 init 컨테이너용 사이드카를 따로 만드는 대신 사이드카를 init 목록 안에 넣어 그 걱정을 피해 간 모양이에요. 두 일을 직접 이어 설명한 원문은 찾지 못했어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 앱보다 먼저 준비돼야 하는 사이드카에는 startupProbe를 달아요</div>
+프록시처럼 앱이 뜨기 전에 준비가 끝나야 하는 사이드카라면 readinessProbe만으로는 앱의 시작을 붙잡지 못해요. 사이드카의 readiness는 파드의 Ready에만 들어가요. "준비됐다"를 확인하는 명령을 startupProbe에 넣어야 다음 init 컨테이너와 앱이 그 뒤에 떠요. 실제로 어떤 조건이 다음 컨테이너를 붙잡는지는 70편에서 한 파드로 비교해요.</div>
+
+<h2>6. 1.27을 놓치고 1.28 알파, 1.33 GA, 1.37에 게이트가 사라졌다</h2>
+
+<p>새 KEP는 2023년 2월 8일 mrunalp가 "I think this is a good design for an alpha to make progress on sidecar pattern."이라며 승인했고 같은 날 thockin이 API 쪽("/approve for API")을 승인했고 dchen1107도 승인했어요. 2월 9일 wojtek-t의 PRR 승인과 함께 병합됐어요. kep.yaml의 저자는 SergeyKanzhelev, matthyx, jpbetz, gjkim42예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: feature gate</div>
+쿠버네티스 구성 요소의 기능을 켜고 끄는 스위치예요. 알파 기능은 기본으로 꺼져 있고 베타는 보통 기본으로 켜져요. GA가 되면 켠 상태로 잠기고 몇 릴리스 뒤에는 게이트 이름 자체가 코드에서 지워져요.</div>
+
+<p>처음 목표는 1.27이었어요. 2023년 3월 15일 릴리스 팀은 구현 PR이 code freeze까지 병합되지 않았다며 1.27 마일스톤에서 뺐어요. 1.27 CHANGELOG에는 사이드카 항목이 하나도 없어요. 이후는 이렇게 흘렀어요.</p>
+<div class="obsv-code">2023-07-08  1.28 알파   #116429 (gjkim42)  SidecarContainers 게이트, 기본 꺼짐
+2023-10-31  1.29 베타   #120620 (tzneal)   사이드카 종료를 보통 컨테이너 뒤, 역순으로 하나씩
+                        #121579 (gjkim42)  베타, 기본 켜짐
+2024-01-30  종료 중 사이드카 재시작을 KEP-4438 로 분리 (enhancements #4324)
+2025-02-05  1.33 GA     #129731 (gjkim42)  게이트 잠금, "will be removed in v1.36"
+                        LegacySidecarContainers 는 1.33 에만 (1.34 에서 제거)
+2026-04-23  1.37        #137755            SidecarContainers 게이트 제거</div>
+<p>&rarr; 1.28 CHANGELOG는 이 기능을 "a new type of init container that starts before other containers but remains running for the full duration of the pod's lifecycle and will not block pod termination"이라고 소개했어요. 1.33 CHANGELOG는 게이트를 1.36에 지우겠다고 예고했는데 실제 제거는 한 릴리스 늦은 1.37이었어요. 늦어진 이유는 PR 본문을 읽지 않아 확인하지 못했어요. v1.37.2의 <code style="font-family:Menlo,monospace;font-size:14px;">pkg/features/kube_features.go</code>에는 SidecarContainers라는 이름이 더는 없어요.</p>
+<p>메시는 더 천천히 옮겨 갔어요. Istio는 2023년 7월 17일 병합된 <a href="https://github.com/istio/istio/pull/45959">istio#45959</a>에서 istio-proxy를 initContainers로 옮기는 기능을 기본 꺼짐으로 넣었고 2025년 7월 7일 병합된 <a href="https://github.com/istio/istio/pull/56428">istio#56428</a>에서 <code style="font-family:Menlo,monospace;font-size:14px;">ENABLE_NATIVE_SIDECARS</code>의 기본값을 false에서 auto로 바꿨어요. 그 사이 기본 설정의 Istio에서 순서와 Job 종료를 맞추는 방법은 68편의 holdApplicationUntilProxyStarts와 /quitquitquit 같은 우회였어요.</p>
+<p>설계가 남긴 것은 재사용이었어요. 새 목록 대신 initContainers를, 새 필드 대신 restartPolicy를, 새 값 대신 Always를 썼어요. 종료 순서도 KEP 표현으로 "an alternative that doesn't require additional fields or hooks"를 골라 파드의 유예 시간 하나를 앱과 사이드카가 나눠 쓰게 했어요. 그 재사용이 실제 동작에서 무엇을 뜻하는지가 남은 질문이에요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 같은 Always가 자리마다 뜻이 달라요</div>
+파드의 <code style="font-family:Menlo,monospace;font-size:14px;">restartPolicy: Always</code>는 계속 다시 띄워 파드가 끝나지 않는다는 뜻이에요. init 컨테이너의 <code style="font-family:Menlo,monospace;font-size:14px;">restartPolicy: Always</code>는 계속 다시 띄우되 파드의 종료는 막지 않는다는 뜻이에요. KEP도 이 차이를 단점으로 적어 뒀어요. 1.34 이후 보통 컨테이너에도 restartPolicy가 열렸는데 그 자리의 Always는 또 다르게 동작해요. 71편에서 실험해요.</div>
+
+<p><b>출처</b><br>
+&middot; <a href="https://github.com/kubernetes/enhancements/issues/753">enhancements#753</a> 코멘트(2019-02-14 luksa, 2020-03-04 Joseph-Irving, <a href="https://github.com/kubernetes/enhancements/issues/753#issuecomment-597372056">2020-03-10 thockin</a>, 2020-10-21 닫힘), <a href="https://github.com/kubernetes/kubernetes/pull/80744">kubernetes#80744</a> 코멘트(2020-03-05·06)<br>
+&middot; KEP 판본: <a href="https://github.com/kubernetes/community/blob/2321b9abeb/keps/sig-apps/sidecarcontainers.md">2018-05-14</a>, <a href="https://github.com/kubernetes/enhancements/blob/d4277c2d61/keps/sig-apps/sidecarcontainers.md">2019-06-19 implementable</a>, <a href="https://github.com/kubernetes/enhancements/blob/8c3cfd00db/keps/sig-apps/0753-sidecarcontainers.md">2020-06-24 provisional</a>, <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/753-sidecar-containers">현재 KEP-753</a><br>
+&middot; <a href="https://github.com/kubernetes/enhancements/pull/2869#issuecomment-1270508226">enhancements#2869 thockin 2022-10-06</a>, <a href="https://github.com/kubernetes/enhancements/issues/3582">enhancements#3582</a>, <a href="https://docs.google.com/document/d/1E1guvFJ5KBQIGcjCrQqFywU9_cBQHRtHvjuqcVbCXvU">SIG Node sidecar WG 회의록</a>, <a href="https://github.com/kubernetes/enhancements/pull/3761">enhancements#3761 리뷰</a><br>
+&middot; CHANGELOG 1.20, 1.27~1.37, <a href="https://github.com/kubernetes/kubernetes/pull/116429">#116429</a>, <a href="https://github.com/kubernetes/kubernetes/pull/120620">#120620</a>, <a href="https://github.com/kubernetes/kubernetes/pull/121579">#121579</a>, <a href="https://github.com/kubernetes/kubernetes/pull/129731">#129731</a>, <a href="https://github.com/kubernetes/kubernetes/pull/137755">#137755</a><br>
+&middot; 실험: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/69-api-shape.*</code></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">📝 정리</div>
+<p>2018년의 <code style="font-family:Menlo,monospace;font-size:14px;">sidecar: true</code>와 2019년의 <code style="font-family:Menlo,monospace;font-size:14px;">lifecycle.type: Sidecar</code>는 containers 안의 컨테이너에 표시를 붙이는 설계였어요. 1.15부터 1.18까지 네 번 미뤄졌고 앞의 세 번은 리뷰가 없어서, 마지막은 kubelet 생명주기 코드가 이미 불안하다는 반대 때문이었어요. 2020년 3월 여섯 이름이 서명한 코멘트는 노드 종료 때 순서를 보장할 수 없다는 점과 init 단계용 사이드카가 따로 필요해진다는 점을 들어 멈추자고 했고 KEP는 10월에 닫혔어요.</p>
+<p>2022년 워킹 그룹은 그래프, 컨테이너별 restartPolicy 제어, containers의 플래그를 먼저 버렸어요. 남은 설계는 이미 순서가 있는 initContainers 목록에 사이드카를 섞어 넣고 restartPolicy: Always로 표시하는 것이었고 다음으로 넘어가는 기준은 ready가 아니라 startupProbe와 postStart로 판단하는 started였어요.</p>
+<p style="margin-bottom:0;">v1.37.2 API는 옛 두 필드를 unknown field로 거절하고 initContainers의 restartPolicy: Always만 받아요. 1.27을 놓친 뒤 1.28 알파, 1.29 베타, 1.33 GA를 거쳐 1.37에 게이트까지 사라졌어요. 몇 년의 정체를 푼 것은 새 장치가 아니라 이미 있는 목록과 필드를 빌려 쓰는 결정이었어요.</p>
+</div>
+</div>

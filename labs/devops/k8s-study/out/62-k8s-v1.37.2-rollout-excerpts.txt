@@ -1,0 +1,102 @@
+# kubernetes v1.37.2 소스 발췌 (2026-11-15 받음): kubectl rollout status 의 성공 판정과 Deployment 컨트롤러의 Progressing 조건
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/staging/src/k8s.io/kubectl/pkg/polymorphichelpers/rollout_status.go
+	}
+	if deployment.Generation <= deployment.Status.ObservedGeneration {
+		cond := deploymentutil.GetDeploymentCondition(deployment.Status, appsv1.DeploymentProgressing)
+		if cond != nil && cond.Reason == deploymentutil.TimedOutReason {
+			return "", false, fmt.Errorf("deployment %q exceeded its progress deadline", deployment.Name)
+		}
+		if deployment.Spec.Replicas != nil && deployment.Status.UpdatedReplicas < *deployment.Spec.Replicas {
+			return fmt.Sprintf("Waiting for deployment %q rollout to finish: %d out of %d new replicas have been updated...\n", deployment.Name, deployment.Status.UpdatedReplicas, *deployment.Spec.Replicas), false, nil
+		}
+		if deployment.Status.Replicas > deployment.Status.UpdatedReplicas {
+			return fmt.Sprintf("Waiting for deployment %q rollout to finish: %d old replicas are pending termination...\n", deployment.Name, deployment.Status.Replicas-deployment.Status.UpdatedReplicas), false, nil
+		}
+		if deployment.Status.AvailableReplicas < deployment.Status.UpdatedReplicas {
+			return fmt.Sprintf("Waiting for deployment %q rollout to finish: %d of %d updated replicas are available...\n", deployment.Name, deployment.Status.AvailableReplicas, deployment.Status.UpdatedReplicas), false, nil
+		}
+		return fmt.Sprintf("deployment %q successfully rolled out\n", deployment.Name), true, nil
+	}
+	return fmt.Sprintf("Waiting for deployment spec update to be observed...\n"), false, nil
+}
+
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/controller/deployment/progress.go (syncRolloutStatus)
+	// If there is only one replica set that is active then that means we are not running
+	// a new rollout and this is a resync where we don't need to estimate any progress.
+	// In such a case, we should simply not estimate any progress for this deployment.
+	currentCond := util.GetDeploymentCondition(d.Status, apps.DeploymentProgressing)
+	isCompleteDeployment := newStatus.Replicas == newStatus.UpdatedReplicas && currentCond != nil && currentCond.Reason == util.NewRSAvailableReason
+	// Check for progress only if there is a progress deadline set and the latest rollout
+	// hasn't completed yet.
+	if util.HasProgressDeadline(d) && !isCompleteDeployment {
+		switch {
+		case util.DeploymentComplete(d, &newStatus):
+			// Update the deployment conditions with a message for the new replica set that
+			// was successfully deployed. If the condition already exists, we ignore this update.
+			msg := fmt.Sprintf("Deployment %q has successfully progressed.", d.Name)
+			if newRS != nil {
+				msg = fmt.Sprintf("ReplicaSet %q has successfully progressed.", newRS.Name)
+			}
+			condition := util.NewDeploymentCondition(apps.DeploymentProgressing, v1.ConditionTrue, util.NewRSAvailableReason, msg)
+			util.SetDeploymentCondition(&newStatus, *condition)
+
+		case util.DeploymentProgressing(d, &newStatus):
+			// If there is any progress made, continue by not checking if the deployment failed. This
+			// behavior emulates the rolling updater progressDeadline check.
+			msg := fmt.Sprintf("Deployment %q is progressing.", d.Name)
+			if newRS != nil {
+				msg = fmt.Sprintf("ReplicaSet %q is progressing.", newRS.Name)
+			}
+			condition := util.NewDeploymentCondition(apps.DeploymentProgressing, v1.ConditionTrue, util.ReplicaSetUpdatedReason, msg)
+			// Update the current Progressing condition or add a new one if it doesn't exist.
+			// If a Progressing condition with status=true already exists, we should update
+			// everything but lastTransitionTime. SetDeploymentCondition already does that but
+			// it also is not updating conditions when the reason of the new condition is the
+			// same as the old. The Progressing condition is a special case because we want to
+			// update with the same reason and change just lastUpdateTime iff we notice any
+			// progress. That's why we handle it here.
+			if currentCond != nil {
+				if currentCond.Status == v1.ConditionTrue {
+					condition.LastTransitionTime = currentCond.LastTransitionTime
+				}
+				util.RemoveDeploymentCondition(&newStatus, apps.DeploymentProgressing)
+			}
+			util.SetDeploymentCondition(&newStatus, *condition)
+
+		case util.DeploymentTimedOut(ctx, d, &newStatus):
+			// Update the deployment with a timeout condition. If the condition already exists,
+			// we ignore this update.
+			msg := fmt.Sprintf("Deployment %q has timed out progressing.", d.Name)
+			if newRS != nil {
+				msg = fmt.Sprintf("ReplicaSet %q has timed out progressing.", newRS.Name)
+			}
+			condition := util.NewDeploymentCondition(apps.DeploymentProgressing, v1.ConditionFalse, util.TimedOutReason, msg)
+			util.SetDeploymentCondition(&newStatus, *condition)
+		}
+	}
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/kubelet/prober/prober_manager.go (UpdatePodStatus, 앱 컨테이너)
+		if !started {
+			continue
+		}
+
+		var ready bool
+		if c.State.Running == nil {
+			ready = false
+		} else if result, ok := m.readinessManager.Get(kubecontainer.ParseContainerID(logger, c.ContainerID)); ok && result == results.Success {
+			ready = true
+		} else {
+			// The check whether there is a probe which hasn't run yet.
+			w, exists := m.getWorker(pod.UID, c.Name, readiness)
+			ready = !exists // no readinessProbe -> always ready
+			if exists {
+				// Trigger an immediate run of the readinessProbe to update ready state
+				select {
+				case w.manualTriggerCh <- struct{}{}:
+				default: // Non-blocking.
+					logger.Info("Failed to trigger a manual run", "probe", w.probeType.String())
+				}
+			}
+

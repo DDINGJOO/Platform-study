@@ -1,0 +1,33 @@
+# pause vs 앱 PID 1: 노드에서 보낸 SIGTERM (2026-11-15 21:43:15 KST)
+# 파드 ps-sleep, 노드 k8s-worker1 (노드 시계 - Mac = 0.081s)
+  pause 호스트 PID 58105: pause NSpid=58105/1 SigCgt=0000000000014002 (INT TERM CHLD)
+  sleep 호스트 PID 58133: sleep NSpid=58133/1 SigCgt=0000000000000000 (없음)
+  (NSpid 는 '호스트 PID/자기 네임스페이스 안의 PID'. 둘 다 끝이 1 이면 각자 자기 PID 네임스페이스의 PID 1)
+
+## 1. 노드에서 kill -TERM 58133 (앱 sleep)
+  kill 종료코드 0
+  1초 뒤 sleep: sleep NSpid=58133/1 SigCgt=0000000000000000 (없음)
+
+## 2. 노드에서 kill -TERM 58105 (pause)
+  kill 종료코드 0
+  +0.2s pause 호스트 PID 58105 없음
+  sleep: sleep NSpid=58133/1 SigCgt=0000000000000000 (없음)
+
+## 3. 그 뒤 60초 동안 이 파드의 샌드박스와 컨테이너 (kill -TERM pause 기준)
+  + 5s  3ea25b871f1c:SANDBOX_NOTREADY / restartCount=0 / 앱 sleep 호스트 PID 58133: sleep
+  +15s  3ea25b871f1c:SANDBOX_NOTREADY / restartCount=0 / 앱 sleep 호스트 PID 58133: sleep
+  +30s  3ea25b871f1c:SANDBOX_NOTREADY / restartCount=0 / 앱 sleep 호스트 PID 58133: 없음
+  +45s  b8ea022c6bd9:SANDBOX_READY 3ea25b871f1c:SANDBOX_NOTREADY / restartCount=1 / 앱 sleep 호스트 PID 58133: 없음
+  +60s  b8ea022c6bd9:SANDBOX_READY 3ea25b871f1c:SANDBOX_NOTREADY / restartCount=1 / 앱 sleep 호스트 PID 58133: 없음
+  이벤트:
+    Scheduled        1     Successfully assigned blog-64/ps-sleep to k8s-worker1
+    SandboxChanged   1     Pod sandbox changed, it will be killed and re-created.
+    Killing          1     Stopping container c
+    Pulled           2     Container image "busybox:1.37" already present on machine and can be accessed by the pod
+    Created          2     Container created
+    Started          2     Container started
+  containerd 로그(앱 컨테이너, kill -TERM pause 기준, 노드 시계 보정):
+    +  0.3s  Stop container "<cid>" with signal terminated
+    + 30.3s  Kill container "<cid>"
+
+# 네임스페이스 blog-64 삭제

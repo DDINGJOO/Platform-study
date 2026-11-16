@@ -1,0 +1,31 @@
+# 58 화살표마다 누가 쓰나 (2026-11-15 21:42:02 KST)
+
+## 1. kubectl scale --replicas=3 이 API 서버에 보내는 요청 (-v=6)
+  verb="GET" url="/apis/apps/v1/namespaces/blog-58/deployments/web" status="200 OK"
+  verb="PATCH" url="/apis/apps/v1/namespaces/blog-58/deployments/web/scale" status="200 OK"
+  Deployment spec.replicas=3  generation=2
+  ReplicaSet spec.replicas=3  파드 수=3
+
+## 2. 객체마다 누가 어느 칸을 썼나 (managedFields: 작성자 / 동작 / 하위 리소스 / 쓴 칸)
+  Deployment web
+    kubectl                  Update  scale    spec.{replicas}
+    kubectl-create           Update  -        metadata.{labels} spec.{progressDeadlineSeconds,revisionHistoryLimit,selector,strategy,...}
+    kube-controller-manager  Update  status   metadata.{annotations} status
+  ReplicaSet web-7c6cdd646
+    kube-controller-manager  Update  -        metadata.{annotations,labels,ownerReferences} spec.{replicas,selector,template}
+    kube-controller-manager  Update  status   status
+  Pod web-7c6cdd646-j5447
+    kube-controller-manager  Update  -        metadata.{generateName,labels,ownerReferences} spec.{containers,dnsPolicy,enableServiceLinks,restartPolicy,...}
+    calico                   Update  status   metadata.{annotations}
+    kubelet                  Update  status   status
+    (spec.nodeName 을 채운 쪽은 이벤트로: default-scheduler Scheduled)
+  EndpointSlice web-fnq68 (managed-by=endpointslice-controller.k8s.io)
+    kube-controller-manager  Update  -        addressType endpoints metadata.{annotations,generateName,labels,ownerReferences} ports
+
+## 3. CRD 는 종류를 등록하고 CR 은 그 종류의 객체다 (Calico IPPool)
+  CRD ippools.crd.projectcalico.org: group=crd.projectcalico.org kind=IPPool scope=Cluster versions=v1
+  CR                  CIDR            IPIP     BLOCKSIZE
+default-ipv4-ippool   10.244.0.0/16   Always   26
+  ippools 를 list·watch 할 수 있는 ClusterRole 과 그 역할을 받은 ServiceAccount:
+    ClusterRole calico-kube-controllers  <- ServiceAccount/kube-system/calico-kube-controllers
+    ClusterRole calico-node              <- ServiceAccount/kube-system/calico-node

@@ -1,0 +1,31 @@
+# preStop과 grace period (2026-11-15 21:20:32 KST)
+# 먼저: preStop sleep 액션을 grace보다 길게(45s) 주면 API 서버가 받아 주나 (server-side dry-run)
+#   The Pod "p45-sleep" is invalid: spec.containers[0].lifecycle.preStop.sleep: Invalid value: 45: must be non-negative and less than terminationGracePeriodSeconds (30)
+# 세 파드 모두 terminationGracePeriodSeconds: 30
+#   p10-sleep: preStop sleep 10s, PID 1 = sleep infinity(SIGTERM 무시)
+#   p45-exec : preStop exec "sleep 45"(grace보다 김, exec는 위 검증을 안 받는다), PID 1 = sleep infinity
+#   p10-trap : preStop sleep 10s, PID 1 = sh(trap TERM + wait, SIGTERM에 바로 exit 0)
+# +0.0s delete 요청
+# deletionTimestamp(API 서버가 정한 '이때까지') - 요청 시각:
+#   p10-sleep  deletionTimestamp=2026-11-15T12:21:05Z (요청 +29s), deletionGracePeriodSeconds=30
+#   p45-exec   deletionTimestamp=2026-11-15T12:21:05Z (요청 +29s), deletionGracePeriodSeconds=30
+#   p10-trap   deletionTimestamp=2026-11-15T12:21:05Z (요청 +29s), deletionGracePeriodSeconds=30
+# +33.1s 세 파드 모두 사라짐
+
+## p10-sleep (노드 k8s-worker3, 노드-Mac=0.022s)
+  node + 10.0s  StopContainer for "<cid>" with timeout 20 (s)
+  node + 10.0s  Stop container "<cid>" with signal terminated
+  node + 30.1s  Kill container "<cid>"
+  node + 30.1s  StopContainer for "<cid>" returns successfully
+
+## p45-exec (노드 k8s-worker1, 노드-Mac=0.049s)
+  node + 30.1s  StopContainer for "<cid>" with timeout 2 (s)
+  node + 30.1s  Stop container "<cid>" with signal terminated
+  node + 32.1s  Kill container "<cid>"
+  node + 32.1s  E1115 21:21:07.736829    1574 kuberuntime_container.go:794] "PreStop hook failed" err="command 'sleep 45' exited with 137: " pod="why-pid1/p45-exec" podUID="ace0e568-e6fe-4e37-9820-9ecfdd3d8
+  node + 32.1s  StopContainer for "<cid>" returns successfully
+
+## p10-trap (노드 k8s-worker3, 노드-Mac=0.022s)
+  node + 10.1s  StopContainer for "<cid>" with timeout 20 (s)
+  node + 10.1s  Stop container "<cid>" with signal terminated
+  node + 10.1s  StopContainer for "<cid>" returns successfully

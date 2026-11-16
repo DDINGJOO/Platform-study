@@ -1,0 +1,29 @@
+# Never 파드 + startupProbe가 늘 실패하는 사이드카 (2026-11-15 21:23:21 KST)
+
+## 생성 후 약 15초
+  phase=Pending
+  side: restartCount=0 state=running started=false lastExit=-
+  app: restartCount=0 state=waiting(PodInitializing) started=false lastExit=-
+  kubectl: READY=0/2 STATUS=Init:0/1 RESTARTS=0
+
+## 생성 후 약 45초
+  phase=Pending
+  side: restartCount=1 state=running started=false lastExit=137
+  app: restartCount=0 state=waiting(PodInitializing) started=false lastExit=-
+  kubectl: READY=0/2 STATUS=Init:0/1 RESTARTS=1
+
+## 이벤트
+  LAST                   COUNT   REASON      MSG
+  2026-11-15T12:23:55Z   2       Created     Container created
+  2026-11-15T12:23:55Z   2       Started     Container started
+  2026-11-15T12:23:59Z   4       Unhealthy   Startup probe failed: 
+  2026-11-15T12:23:59Z   2       Killing     Init container side failed startup probe
+
+# 읽는 법 (2026-11-15 추가)
+# - 파드 restartPolicy가 Never 인데도 파드는 Failed가 되지 않고 Pending(Init:0/1)으로 남는다. 사이드카만 죽였다 다시 띄운다(restartCount 1).
+#   app은 한 번도 시작하지 않았다. 2023 KEP 원문("Never면 시작 단계 실패 사이드카는 재시작 안 하고 파드 실패")이 아니라
+#   2024-10 고친 문장("Never·OnFailure 여도 사이드카는 다시 시작")대로 동작한다(sources/kep-753-2024-restart-never-startup-change.md).
+# - 첫 재시작이 약 34초 뒤인 것은 이 사이드카(sh가 PID 1, TERM 핸들러 없음)가 TERM을 무시해 유예 30초를 다 쓰고 SIGKILL(lastExit 137) 됐기 때문.
+#   computeInitContainerActions가 startupProbe 실패 시 kill + 재시작을 같이 넣는다(sources/k8s-v1.37.2-kubelet-sidecar-excerpts.txt).
+# - Job 이라면 이 파드는 activeDeadlineSeconds가 없으면 영원히 Pending 일 수 있다. "인증서를 못 받은 메시 사이드카 → 파드 전체 실패"를
+#   표현할 방법은 이 규칙에선 없다(#120234에서 SergeyKanzhelev가 꺼낸 시나리오). 해석이며, 이 결론을 적은 원문은 못 찾았다.

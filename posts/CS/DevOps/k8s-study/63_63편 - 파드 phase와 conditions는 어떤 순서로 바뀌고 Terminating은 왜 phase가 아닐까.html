@@ -1,0 +1,317 @@
+<!-- ============================================================
+  k8s 스터디 63편: 파드 phase와 conditions는 어떤 순서로 바뀌고 Terminating은 왜 phase가 아닐까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: kubectl get이 Terminating을 보여 준 30초 동안 phase는 Running이었어요. phase와 conditions의 순서, deletionTimestamp, 노드 시계가 늦을 때 뒤집힌 lastTransitionTime을 실험으로 확인했어요. -->
+<!-- tags: 파드 phase, Pod conditions, PodReadyToStartContainers, Terminating, deletionTimestamp, lastTransitionTime -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 63편</div>
+  61편. 한 파드의 컨테이너는 무엇을 공유하고 같은 포트를 쓰면 어떻게 될까<br>
+  62편. kubectl rollout status가 성공했는데 파드는 왜 죽어 있을까<br>
+  <b>63편. 파드 phase와 conditions는 어떤 순서로 바뀌고 Terminating은 왜 phase가 아닐까</b> &larr; 지금 이 글<br>
+  64편. sleep infinity 파드는 왜 지우는 데 30초가 걸릴까, 컨테이너 PID 1과 커널 규칙<br>
+  65편. sh -c로 감싼 컨테이너는 왜 SIGTERM에 반응하지 않을까, exec와 trap
+</div>
+
+<p>busybox로 <code style="font-family:Menlo,monospace;font-size:14px;">sleep infinity</code>만 실행하는 파드를 지웠어요. 1초 뒤 kubectl get의 STATUS 칸은 Terminating이었는데 같은 순간 <code style="font-family:Menlo,monospace;font-size:14px;">.status.phase</code>는 Running이었고 deletionGracePeriodSeconds는 30이었어요. 파드가 사라진 것은 삭제 요청 31.6초 뒤였어요. 같은 방식으로 지운 nginx 파드는 1.3초 만에 사라졌어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/63-pod-phases-clock-skew.txt</code> C절).</p>
+
+<div class="obsv-code">  [life-nginx] PID 1 = nginx: master process nginx -g daemon off;
+    +  1.0s kubectl get STATUS 열:  / .status.phase:  / deletionGracePeriodSeconds:
+    +  1.3s 객체 사라짐
+  [life-sleep] PID 1 = sleep infinity
+    +  1.1s kubectl get STATUS 열: Terminating / .status.phase: Running / deletionGracePeriodSeconds: 30
+    + 31.6s 객체 사라짐</div>
+
+<p>Terminating이 phase가 아니라면 무엇일까요? 그리고 왜 어떤 파드는 30초를 꼬박 채울까요? 이 글은 파드를 만들고, 스스로 끝나게 하고, 지우면서 phase·conditions·컨테이너 상태가 바뀌는 순서를 기록해요. 마지막에는 conditions의 시각을 비교할 때 빠지기 쉬운 함정도 봐요. 클러스터는 Lima VM 4대(마스터 1, 워커 3)에 kubeadm v1.37.2, containerd 2.4.1을 올린 실습 환경이에요.</p>
+
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 파드가 뜰 때 상태는 어떤 순서로 바뀔까?<br>
+&middot; 끝나는 파드는 언제 Succeeded나 Failed가 될까?<br>
+&middot; Terminating은 phase일까?<br>
+&middot; 왜 어떤 파드는 지우는 데 30초가 걸릴까?<br>
+&middot; conditions의 시각만 보고 순서를 판단해도 될까?</p>
+
+<h2>1. 파드가 뜰 때 phase는 Pending에서 Running으로, 조건은 다섯 개가 차례로 True가 된다</h2>
+
+<p>파드의 상태는 세 층으로 나뉘어 기록돼요. 파드 전체의 단계를 나타내는 phase, 단계 안의 확인 지점을 나타내는 conditions, 그리고 컨테이너마다 붙는 상태(waiting·running·terminated)예요. kubectl get의 STATUS 칸은 이 셋을 섞어 한 단어로 보여 주는 것이라서 그것만 보면 순서가 잘 안 보여요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: phase</div>
+파드의 <code style="font-family:Menlo,monospace;font-size:14px;">status.phase</code>예요. 값은 Pending, Running, Succeeded, Failed, Unknown 다섯 가지뿐이에요. Pending은 아직 컨테이너가 뜨지 않은 단계, Running은 노드에 배치되어 컨테이너가 하나 이상 실행 중이거나 시작·재시작 중인 단계, Succeeded와 Failed는 모든 컨테이너가 끝나서 다시 시작하지 않을 단계예요.</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 파드 conditions와 lastTransitionTime</div>
+<code style="font-family:Menlo,monospace;font-size:14px;">status.conditions</code>에 있는 확인 지점 목록이에요. PodScheduled, Initialized, PodReadyToStartContainers, ContainersReady, Ready가 각각 True·False를 갖고 lastTransitionTime에 마지막으로 값이 바뀐 시각을 적어요. 이 시각은 그 조건을 쓴 프로그램이 자기 시계로 찍어요.</div>
+
+<h3>파드가 뜰 때 상태는 어떤 순서로 바뀔까?</h3>
+<p>nginx 파드를 만들고 0.3초마다 phase, 조건, 컨테이너 상태를 읽어 바뀔 때만 한 줄씩 남겼어요. 경과 시간은 Mac에서 잰 값이에요. worker3에 이미지가 아직 없던 첫 실행이라 중간 단계가 잘 보여요(<code style="font-family:Menlo,monospace;font-size:14px;">63-pod-phases-clock-skew.txt</code> A절, 스크립트는 <code style="font-family:Menlo,monospace;font-size:14px;">63-pod-phases.sh</code>).</p>
+
+<div class="obsv-code">  표기: phase | conditions | 컨테이너 상태
+  +  0.1s Pending | PodReadyToStartContainers=False Initialized=True Ready=False ContainersReady=False PodScheduled=True | waiting(ContainerCreating)
+  +  0.9s Pending | PodReadyToStartContainers=True Initialized=True Ready=False ContainersReady=False PodScheduled=True | waiting(ContainerCreating)
+  +  6.7s Running | PodReadyToStartContainers=True Initialized=True Ready=True ContainersReady=True PodScheduled=True | running
+
+  이벤트: Pulled  Successfully pulled image "nginx:1.27-alpine" in 6.021s</div>
+
+<p>&rarr; 처음 본 순간 이미 PodScheduled와 Initialized가 True였어요. 0.9초에 PodReadyToStartContainers가 True가 됐는데 phase는 여전히 Pending이고 컨테이너는 ContainerCreating으로 기다리고 있었어요. 이미지를 받는 6.0초가 지난 6.7초에 컨테이너가 running이 되면서 ContainersReady와 Ready가 True, phase가 Running이 됐어요. 정리하면 순서는 이래요.</p>
+
+<p>&middot; <b>PodScheduled</b>: 스케줄러가 노드를 골라 바인딩을 마쳤어요(41편).<br>
+&middot; <b>Initialized</b>: init 컨테이너가 모두 끝났어요. init 컨테이너가 없는 파드는 kubelet이 그 파드를 처리하기 시작할 때 바로 True가 돼요.<br>
+&middot; <b>PodReadyToStartContainers</b>: 샌드박스와 네트워크가 준비돼 컨테이너를 시작할 수 있어요(27편의 RunPodSandbox가 끝난 뒤).<br>
+&middot; <b>ContainersReady</b>와 <b>Ready</b>: 모든 컨테이너가 준비됐어요. readinessProbe가 있으면 그 검사까지 통과해야 해요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: PodReadyToStartContainers</div>
+파드 샌드박스가 만들어져 컨테이너를 시작할 준비가 됐다는 조건이에요. <a href="https://github.com/kubernetes/enhancements/blob/master/keps/sig-node/3085-pod-conditions-for-starting-completition-of-sandbox-creation/README.md">KEP-3085</a>로 1.28에 알파, 1.29에 베타가 됐고 1.37에서 GA가 됐어요(<a href="https://github.com/kubernetes/kubernetes/pull/140488">PR #140488</a>). KEP는 SandboxReady라는 이름을 피한 이유를 "Kubernetes does not directly surface low level sandbox related concepts to all users"라고 적었어요.</div>
+
+<p>KEP-3085가 이 조건을 따로 만든 이유도 이 순서에 있어요. KEP는 init 컨테이너가 없는 파드에서 Initialized가 "when the Kubelet starts to process a pod before any sandbox creation activities start"에 True가 된다고 적었어요. 샌드박스를 만들기도 전이라서 Initialized만으로는 네트워크와 볼륨 준비가 끝났는지 알 수 없었다는 뜻이에요. 위 기록에서도 Initialized는 처음부터 True였고 샌드박스 준비는 0.9초에 따로 표시됐어요. 같은 파드를 이미지가 노드에 있는 상태로 다시 만들었을 때는 0.9초 만에 Running이 됐고 다섯 조건의 lastTransitionTime이 모두 같은 초(11:06:45)였어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-pod-phases.txt</code> A절).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 372" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="nginx 파드가 뜰 때 phase, conditions, 컨테이너 상태가 바뀌는 순서">
+<defs><marker id="k63-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">nginx 파드 하나가 뜰 때 (경과 시간은 Mac에서 잰 값)</text>
+<path d="M140 70 C 300 68, 480 72, 670 70" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k63-arr1)"/>
+<g font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle"><text x="160" y="58">+0.1s</text><text x="250" y="58">+0.9s</text><text x="560" y="58">+6.7s</text></g>
+<g fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="1 6" stroke-linecap="round"><path d="M160 76 C 161 160, 159 250, 160 320"/><path d="M250 76 C 251 160, 249 250, 250 320"/><path d="M560 76 C 561 160, 559 250, 560 320"/></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34"><text x="22" y="114">phase</text><text x="22" y="190">conditions</text><text x="22" y="284">컨테이너</text></g>
+<path d="M150 96 C 300 94, 450 98, 556 96 C 558 106, 557 116, 556 124 C 450 126, 300 122, 151 125 C 148 116, 149 106, 150 96 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M562 96 C 600 94, 640 98, 676 96 C 678 106, 677 116, 676 124 C 640 126, 600 122, 563 125 C 560 116, 561 106, 562 96 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" text-anchor="middle"><text x="350" y="117" fill="#a86b12">Pending</text><text x="619" y="117" fill="#2e6b41">Running</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41"><text x="166" y="160">PodScheduled ✓</text><text x="166" y="184">Initialized ✓</text><text x="256" y="212">PodReadyToStartContainers ✓</text><text x="566" y="160">ContainersReady ✓</text><text x="566" y="184">Ready ✓</text></g>
+<text x="300" y="240" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#3d6591">샌드박스·네트워크 준비 끝, 컨테이너는 아직</text>
+<path d="M150 266 C 300 264, 450 268, 556 266 C 558 276, 557 286, 556 294 C 450 296, 300 292, 151 295 C 148 286, 149 276, 150 266 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2" stroke-linejoin="round"/>
+<path d="M562 266 C 600 264, 640 268, 676 266 C 678 276, 677 286, 676 294 C 640 296, 600 292, 563 295 C 560 286, 561 276, 562 266 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle"><text x="350" y="287" fill="#3d6591">waiting (ContainerCreating), 이미지 받는 6.0초</text><text x="619" y="287" fill="#2e6b41">running</text></g>
+<text x="350" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">이미지가 노드에 있으면 0.9초에 Running, 다섯 조건이 같은 초 (63-pod-phases.txt)</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 1. PodReadyToStartContainers는 Pending 안에서 샌드박스 준비와 컨테이너 시작 사이를 나눠 줘요.</p>
+
+<h2>2. 끝나는 파드는 컨테이너가 끝난 뒤 Succeeded나 Failed가 되고 샌드박스가 정리된다</h2>
+
+<p>restartPolicy: Never로 3초 뒤 exit 0이나 exit 1로 끝나는 busybox 파드를 하나씩 만들었어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-pod-phases.txt</code> B절).</p>
+
+<div class="obsv-code">  [life-exit0] sh -c 'sleep 3; exit 0'
+  +  0.9s Running | PodReadyToStartContainers=True Initialized=True Ready=True ContainersReady=True PodScheduled=True | running
+  +  4.8s Running | PodReadyToStartContainers=True Initialized=True Ready=False ContainersReady=False PodScheduled=True | terminated(Completed)
+  +  6.0s Succeeded | PodReadyToStartContainers=False Initialized=True Ready=False ContainersReady=False PodScheduled=True | terminated(Completed)
+  [life-exit1] sh -c 'sleep 3; exit 1'
+  +  4.8s Running | ... Ready=False ContainersReady=False ... | terminated(Error) exit=1
+  +  5.6s Failed | PodReadyToStartContainers=False ... | terminated(Error) exit=1</div>
+
+<p>&rarr; 컨테이너가 끝난 4.8초에 Ready와 ContainersReady가 먼저 False가 됐고 phase는 잠깐 Running으로 남았어요. 1초 안팎 뒤 exit 0인 파드는 Succeeded, exit 1인 파드는 Failed가 됐고 그때 PodReadyToStartContainers도 False로 바뀌었어요. KEP-3085는 샌드박스가 더는 없으면 이 조건을 false로 바꾼다고 적었어요. 끝난 파드는 컨테이너 기록과 phase는 남지만 샌드박스(pause와 네트워크 네임스페이스)는 정리된 상태라는 뜻이에요.</p>
+
+<p>이 실험은 restartPolicy가 Never였어요. 기본값인 Always라면 kubelet이 끝난 컨테이너를 다시 띄우니 파드는 Succeeded나 Failed에 머물지 않아요. Job이 Never나 OnFailure를 쓰는 이유예요.</p>
+
+<h2>3. Terminating은 phase가 아니라 deletionTimestamp를 보고 붙는 표시다</h2>
+
+<h3>Terminating은 phase일까?</h3>
+<p>아니에요. 첫 장면을 더 자세히 보려고 sleep infinity 파드를 restartPolicy Never와 Always로 하나씩 만들어 지우고 STATUS 칸, phase, deletionTimestamp, 조건, 컨테이너 상태를 0.3초마다 함께 읽었어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-delete-sigkill-phase.txt</code>, 같은 이름의 .sh, 네임스페이스 blog-63).</p>
+
+<div class="obsv-code">## restartPolicy: Never (파드 sleep-never, 노드 k8s-worker3)
+  표기: 경과 STATUS열 | phase | deletionTimestamp deletionGracePeriodSeconds | 조건 | 컨테이너 상태
+  delete 요청 시각(Mac 시계, UTC): 12:46:35
+  +  0.3s Terminating | Running | del=2026-11-15T12:47:05Z grace=30 | PodReadyToStartContainers=True Ready=True | running
+  + 32.8s Error | Failed | del=2026-11-15T12:47:05Z grace=30 | PodReadyToStartContainers=False Ready=False | terminated(Error) exit=137
+  + 33.5s (객체 없음)
+
+## restartPolicy: Always (파드 sleep-always, 노드 k8s-worker3)
+  +  0.6s Terminating | Running | del=2026-11-15T12:47:40Z grace=30 | PodReadyToStartContainers=True Ready=True | running
+  + 31.5s Error | Failed | del=2026-11-15T12:47:40Z grace=30 | PodReadyToStartContainers=False Ready=False | terminated(Error) exit=137
+  + 31.9s (객체 없음)</div>
+
+<p>&rarr; 30초 남짓 동안 STATUS 칸은 Terminating이었지만 phase는 계속 Running이었어요. 컨테이너가 exit 137로 끝나자 phase가 Failed가 됐고 같은 순간 STATUS 칸은 Terminating이 아니라 Error로 바뀌었어요. restartPolicy가 Always여도 지우는 중에 끝난 파드는 다시 시작하지 않고 Failed가 됐어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/63/01-delete-sigkill-phase.png" alt="sleep infinity 파드를 지운 실행 화면: 30초 넘게 STATUS Terminating인데 phase Running, deletionTimestamp는 요청 30초 뒤 시각, 31.5~32.8초에 Failed와 exit 137" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 2. STATUS 칸이 Terminating인 동안 phase는 Running이었고 끝날 때는 Failed였어요.</p>
+
+<p>Terminating이라는 글자는 STATUS 칸을 만드는 코드가 붙여요. 이 칸은 kubectl이 계산하지 않고 API 서버가 표(Table) 형식으로 만들어 보내요. 파드 저장소가 쓰는 표 출력 코드인 v1.37.2의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/printers/internalversion/printers.go">printers.go</a>에 그 조건이 있어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-k8s-v1.37.2-pod-status-excerpts.txt</code>).</p>
+
+<div class="obsv-code">podPhase := pod.Status.Phase
+reason := string(podPhase)
+...
+if pod.DeletionTimestamp != nil &amp;&amp; pod.Status.Reason == node.NodeUnreachablePodReason {
+    reason = "Unknown"
+} else if pod.DeletionTimestamp != nil &amp;&amp; !podutilv1.IsPodPhaseTerminal(apiv1.PodPhase(podPhase)) {
+    reason = "Terminating"
+}</div>
+
+<p>&rarr; 파드에 deletionTimestamp가 있고 phase가 아직 Succeeded나 Failed가 아니면 STATUS 칸에 Terminating을 쓴다는 뜻이에요. phase를 바꾸는 코드가 아니라 화면에 보일 글자를 고르는 코드예요. 그래서 phase가 Failed가 되자 이 조건이 거짓이 되어 컨테이너의 종료 사유인 Error가 보였어요. <span class="obsv-mark">"지우는 중"이라는 정보의 원본은 phase가 아니라 metadata.deletionTimestamp예요.</span></p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: deletionTimestamp와 deletionGracePeriodSeconds</div>
+파드를 지우면 API 서버가 객체를 바로 없애지 않고 metadata에 이 두 값을 적어요. deletionGracePeriodSeconds는 컨테이너가 스스로 끝날 때까지 기다리는 유예 시간(파드의 terminationGracePeriodSeconds, 이 글의 파드는 모두 기본값인 30)이고 deletionTimestamp는 그 유예가 끝나는 시각이에요. 컨트롤러와 kubelet은 이 값을 보고 객체가 지워지는 중이라는 걸 알아요.</div>
+
+<h3>deletionTimestamp는 왜 미래 시각일까</h3>
+<p>Never 파드의 delete 요청은 Mac 시계로 12:46:35였는데 deletionTimestamp는 12:47:05였어요. 30초 뒤예요. API 서버의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/registry/rest/delete.go">delete.go</a>는 처음 삭제 요청을 받으면 <code style="font-family:Menlo,monospace;font-size:14px;">metav1Now().Add(time.Second * time.Duration(*options.GracePeriodSeconds))</code>, 즉 지금 시각에 유예를 더한 값을 적어요. 이 필드는 "삭제를 요청한 시각"이 아니라 "유예가 끝나는 시각"이에요.</p>
+<p>이 값은 나중에 바뀌어요. 컨테이너가 다 끝나면 kubelet이 유예 0으로 마지막 삭제를 요청하고 delete.go는 기존 시각에서 원래 유예를 빼고 새 유예를 더해요. 그 결과가 지금보다 과거면 지금 시각을 적어요. 지우는 중에 trap으로 exit 0하는 busybox 파드에서 확인한 기록이에요(<code style="font-family:Menlo,monospace;font-size:14px;">62-deleted-pod-phase.txt</code>).</p>
+
+<div class="obsv-code"># 62-deleted-pod-phase.txt, restartPolicy: Always 파드 (delete 뒤 바뀔 때마다 한 줄)
+  phase exitCode reason: Running   del=
+  phase exitCode reason: Running   del=2026-11-15T12:05:06Z
+  phase exitCode reason: Succeeded 0 Completed del=2026-11-15T12:05:06Z
+  phase exitCode reason: Succeeded 0 Completed del=2026-11-15T12:04:38Z</div>
+
+<p>&rarr; 처음에는 12:05:06이 찍혔다가 컨테이너가 exit 0으로 끝나고 객체가 지워지기 직전에 12:04:38로 당겨졌어요. 요청 시각에 30초를 더한 값에서 실제로 끝난 시각으로 바뀐 거예요. 이 파드는 깨끗하게 끝나서 Always든 Never든 Succeeded였어요. 앞의 sleep 파드는 SIGKILL로 끝나서 Failed였어요. 지우는 중인 파드의 phase는 Running을 지나 컨테이너가 어떻게 끝났는지에 따라 Succeeded나 Failed로 정해지고, Terminating이라는 phase는 거치지 않아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="sleep infinity 파드를 지울 때 STATUS 칸, phase, deletionTimestamp, 컨테이너 상태의 변화">
+<defs><marker id="k63-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">sleep infinity 파드를 지울 때 (63-delete-sigkill-phase, Never)</text>
+<path d="M150 70 C 300 68, 480 72, 672 70" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k63-arr2)"/>
+<g font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle"><text x="160" y="58">0s delete</text><text x="560" y="58">+30s</text><text x="622" y="58">+32.8s</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34"><text x="20" y="112">STATUS 칸</text><text x="20" y="166">.status.phase</text><text x="20" y="220">deletionTimestamp</text><text x="20" y="274">컨테이너</text></g>
+<path d="M160 94 C 300 92, 480 96, 604 94 C 606 104, 605 114, 604 122 C 480 124, 300 120, 161 123 C 158 114, 159 104, 160 94 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M610 94 C 630 93, 650 95, 672 94 C 674 104, 673 114, 672 122 C 650 124, 630 121, 611 123 C 608 114, 609 104, 610 94 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M160 148 C 300 146, 480 150, 604 148 C 606 158, 605 168, 604 176 C 480 178, 300 174, 161 177 C 158 168, 159 158, 160 148 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2" stroke-linejoin="round"/>
+<path d="M610 148 C 630 147, 650 149, 672 148 C 674 158, 673 168, 672 176 C 650 178, 630 175, 611 177 C 608 168, 609 158, 610 148 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle"><text x="382" y="115" fill="#a86b12">Terminating</text><text x="641" y="115" fill="#b3502f">Error</text><text x="382" y="169" fill="#3d6591">Running</text><text x="641" y="169" fill="#b3502f">Failed</text></g>
+<path d="M160 214 C 300 212, 450 216, 552 214" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="6 5" stroke-linecap="round" marker-end="url(#k63-arr2)"/>
+<path d="M560 200 C 561 210, 559 222, 560 232" fill="none" stroke="#b3502f" stroke-width="3" stroke-linecap="round"/>
+<text x="356" y="208" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">요청 순간에 이미 12:47:05 (요청 + 30초)가 적혀 있다</text>
+<path d="M160 256 C 300 254, 480 258, 604 256 C 606 266, 605 276, 604 284 C 480 286, 300 282, 161 285 C 158 276, 159 266, 160 256 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2" stroke-linejoin="round"/>
+<path d="M610 256 C 630 255, 650 257, 672 256 C 674 266, 673 276, 672 284 C 650 286, 630 283, 611 285 C 608 276, 609 266, 610 256 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle"><text x="382" y="277" fill="#3d6591">running (SIGTERM을 받고도 계속)</text><text x="641" y="277" fill="#b3502f" font-size="17">exit 137</text></g>
+<text x="350" y="322" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">Terminating = deletionTimestamp 있음 + phase가 아직 끝나지 않음 (printers.go)</text>
+<text x="350" y="348" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">30초 유예가 끝나 SIGKILL로 끝났고, 왜 SIGTERM에 반응하지 않았는지는 64편</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 3. 지우는 중이라는 정보는 deletionTimestamp에 있고 phase는 Running에서 바로 Failed로 갔어요.</p>
+
+<p>지우는 30초 동안 Ready도 True였어요. 이 파드에 들어오는 Service 요청을 끊는 판단은 Ready가 아니라 EndpointSlice가 deletionTimestamp를 보고 따로 해요. 57편에서 롤링 업데이트 때 종료를 시작한 파드의 엔드포인트가 <code style="font-family:Menlo,monospace;font-size:14px;">ready:false / serving:true / terminating:true</code>로 바뀐 것을 봤어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 스크립트에서 Terminating을 phase로 찾지 마요</div>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">.status.phase</code>에는 Terminating이라는 값이 없어요. 지우는 중인 파드는 phase=Running으로 나오니 <code style="font-family:Menlo,monospace;font-size:14px;">--field-selector=status.phase=Running</code>으로 고르면 종료 중인 파드도 섞여요<br>
+&bull; 지우는 중인지는 <code style="font-family:Menlo,monospace;font-size:14px;">.metadata.deletionTimestamp</code>가 비어 있는지로 판단해요<br>
+&bull; deletionTimestamp는 삭제 요청 시각이 아니라 "요청 + 유예"예요. 실제로 끝난 시각은 객체가 지워지기 직전에 다시 적히니, 요청 시각이 필요하면 감사 로그나 이벤트를 봐요<br>
+&bull; Deployment 단위로는 62편의 status.terminatingReplicas가 종료 중인 파드 수를 세어 줘요</div>
+
+<h2>4. 지우는 데 30초 걸린 파드는 유예 시간을 다 쓰고 SIGKILL로 끝났다</h2>
+
+<h3>왜 어떤 파드는 지우는 데 30초가 걸릴까?</h3>
+<p>같은 sleep infinity 파드를 세 번 만들고 세 번 지우면서 watch 이벤트, kubectl get이 NotFound를 돌려준 시각, 노드의 containerd·kubelet 로그를 함께 남겼어요. 노드 로그의 시각은 노드 시계와 Mac 시계의 차이를 빼서 Mac 기준으로 맞췄어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-termination-timing.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-code"># 63-termination-timing.txt 2회차 발췌
+## 2회차 노드 k8s-worker3 (노드 시계 - Mac = 2.109s)
+    watch +  0.1s  ADDED      life-sleep   1/1   Running   0     1s
+    +  0.0s delete 요청 보냄
+    watch +  0.6s  MODIFIED   life-sleep   1/1   Terminating   0     1s
+    watch + 31.1s  MODIFIED   life-sleep   1/1   Terminating   0     32s
+    watch + 31.2s  MODIFIED   life-sleep   0/1   Error         0     32s
+    watch + 32.1s  DELETED    life-sleep   0/1   Error         0     33s
+    + 31.7s get 이 NotFound
+    node + 30.5s  Kill container</div>
+
+<p>&rarr; 삭제를 요청한 지 0.6초 만에 Terminating이 됐고 30.5초에 노드에서 Kill container가 찍혔어요. 0.7초 뒤 STATUS가 Error로 바뀌었고 31.7초에 get이 NotFound를 돌려줬어요. 세 번의 NotFound 시각은 32.5초, 31.7초, 31.7초였고 Kill container는 31.2초, 30.5초, 30.4초였어요. 앞의 실험에서 본 대로 이렇게 끝난 컨테이너의 종료 코드는 137이에요. 신호로 죽은 프로세스의 종료 코드는 128에 신호 번호를 더한 값이라 SIGKILL(9번)이면 137이에요.</p>
+
+<p>흐름은 이래요. 삭제 요청을 받은 kubelet이 컨테이너 런타임에 30초 유예로 정지를 요청하고 런타임은 먼저 SIGTERM을 보내요. nginx는 SIGTERM을 받고 바로 끝나서 파드가 1.3초 만에 사라졌어요. sleep infinity는 PID 1로 돌면서 SIGTERM에 반응하지 않았고 런타임은 30초를 다 기다린 뒤 SIGKILL을 보냈어요. 그 뒤 phase가 Failed가 되고 kubelet이 마지막 삭제를 요청해 객체가 사라졌어요. sleep이 왜 SIGTERM에 반응하지 않는지는 컨테이너 PID 1에 적용되는 커널 규칙 때문이고 64편에서 커널 소스로 따라가요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 지우는 데 30초씩 걸리는 파드를 만나면</div>
+&bull; Terminating이 30초 남짓 이어진 뒤 컨테이너가 exit 137(Error)로 끝났다면 SIGTERM에 반응하지 않아 유예를 다 쓴 경우예요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pod &lt;파드&gt; -w</code>로 Terminating에서 Error로 바뀌는 시점을 봐요<br>
+&bull; 몇 초 만에 사라지고 exit 0(Completed)이나 143(128+15, SIGTERM)으로 끝났다면 SIGTERM을 받고 바로 끝난 거예요<br>
+&bull; 고칠 곳은 terminationGracePeriodSeconds를 줄이는 쪽이 아니라 컨테이너의 PID 1이 SIGTERM을 처리하게 만드는 쪽이에요(64·65편)</div>
+
+<h2>5. lastTransitionTime은 그 조건을 쓴 구성 요소의 시계로 찍힌다</h2>
+
+<h3>conditions의 시각만 보고 순서를 판단해도 될까?</h3>
+<p>1절의 nginx 파드를 처음 만들었을 때 conditions의 lastTransitionTime과 이벤트를 시각순으로 정렬하면 이상한 순서가 나왔어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-pod-phases-clock-skew.txt</code> A절).</p>
+
+<div class="obsv-code">  노드: k8s-worker3
+  conditions 의 lastTransitionTime (초 단위):
+    2026-11-15T11:05:05Z  Initialized=True
+    2026-11-15T11:05:06Z  PodReadyToStartContainers=True
+    2026-11-15T11:05:07Z  PodScheduled=True
+    2026-11-15T11:05:12Z  ContainersReady=True
+    2026-11-15T11:05:12Z  Ready=True
+  이벤트:
+2026-11-15T11:05:06Z   Pulling     kubelet             Pulling image "nginx:1.27-alpine"
+2026-11-15T11:05:07Z   Scheduled   default-scheduler   Successfully assigned ch05/life-nginx to k8s-worker3</div>
+
+<p>&rarr; 시각만 보면 Initialized(11:05:05)와 PodReadyToStartContainers(11:05:06), 이미지 받기 시작(Pulling, 11:05:06)이 스케줄링(PodScheduled·Scheduled, 11:05:07)보다 먼저예요. 그런데 kubelet은 바인딩되기 전에는 그 파드를 알 수 없으니 이 순서는 일어날 수 없어요. Mac에서 잰 1절의 경과 시간도 PodScheduled가 처음부터 True였고 PodReadyToStartContainers가 0.9초에 True가 됐다고 말해요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/63/02-clock-skew.png" alt="worker3 시계가 2.1초 늦던 때 nginx 파드를 만든 실행 화면: lastTransitionTime이 Initialized 11:05:05, PodReadyToStartContainers 11:05:06, PodScheduled 11:05:07 순서로 뒤집혀 찍히고 Pulling 이벤트가 Scheduled보다 먼저 보임" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 4. 같은 파드의 시각인데 kubelet이 찍은 값이 스케줄링보다 앞서 있었어요.</p>
+
+<p>원인은 시계였어요. 같은 순간 각 VM의 시각을 Mac과 비교했어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-node-clocks.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-code"># 03 노드 시계 차이 (2026-11-15 20:06:11 KST)
+  k8s-master   VM - Mac =  +2.112s  (왕복 0.07s)
+                NTP 켜짐·동기화: yes yes
+  k8s-worker1  VM - Mac =  +2.105s  (왕복 0.05s)
+                NTP 켜짐·동기화: yes yes
+  k8s-worker2  VM - Mac =  +2.094s  (왕복 0.04s)
+                NTP 켜짐·동기화: yes yes
+  k8s-worker3  VM - Mac =  +0.013s  (왕복 0.04s)
+                NTP 켜짐·동기화: yes no</div>
+
+<p>&rarr; 마스터와 worker1·2는 Mac보다 2.1초 빨랐고 worker3만 Mac과 같았어요. worker3는 NTP가 켜져 있었지만 동기화가 no였어요. NTP로 맞춘 세 노드를 기준으로 하면 worker3의 시계가 2.1초 늦었던 거예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: NTP 동기화 (NTPSynchronized)</div>
+NTP는 네트워크의 시간 서버와 시계를 맞추는 프로토콜이고 우리 VM(Ubuntu)에서는 systemd-timesyncd가 이 일을 해요. <code style="font-family:Menlo,monospace;font-size:14px;">timedatectl show -p NTP -p NTPSynchronized</code>의 앞 값은 NTP를 쓰도록 켜져 있는지, 뒤 값은 실제로 맞춰진 상태인지를 보여 줘요.</div>
+
+<p>조건마다 시각을 찍는 곳이 달라요. PodScheduled=True는 스케줄러가 보낸 바인딩 요청을 API 서버가 처리하면서 적어요. v1.37.2의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/registry/core/pod/storage/storage.go">storage.go</a>가 바인딩 때 <code style="font-family:Menlo,monospace;font-size:14px;">UpdatePodCondition</code>을 부르고 그 함수의 첫 줄이 <code style="font-family:Menlo,monospace;font-size:14px;">condition.LastTransitionTime = metav1.Now()</code>예요. API 서버가 도는 마스터의 시계예요. Scheduled 이벤트도 마스터의 스케줄러가 남겨요. 반면 Initialized, PodReadyToStartContainers, ContainersReady, Ready는 노드의 kubelet이 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/status/status_manager.go">status_manager.go</a>의 updateLastTransitionTime에서 <code style="font-family:Menlo,monospace;font-size:14px;">metav1.Now()</code>로 적고 Pulling 이벤트도 kubelet이 남겨요. <span class="obsv-mark">worker3의 kubelet은 2.1초 늦은 시계로 찍었어요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="마스터 시계와 2.1초 늦은 worker3 시계로 찍힌 조건 시각의 비교">
+<defs><marker id="k63-arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">lastTransitionTime은 찍은 쪽의 시계 (worker3가 2.1초 늦던 때)</text>
+<text x="22" y="76" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d6591">마스터 시계 (API 서버·스케줄러)</text>
+<path d="M60 112 C 250 110, 450 114, 672 112" fill="none" stroke="#4a7fb5" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k63-arr3)"/>
+<text x="22" y="206" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">worker3 시계 (kubelet), 2.1초 늦음</text>
+<path d="M60 242 C 250 240, 450 244, 672 242" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k63-arr3)"/>
+<g font-family="Menlo, monospace" font-size="12" fill="#8a8272" text-anchor="middle"><text x="120" y="132">:05</text><text x="240" y="132">:06</text><text x="360" y="132">:07</text><text x="480" y="132">:08</text><text x="600" y="132">:09</text><text x="120" y="262">:05</text><text x="240" y="262">:06</text><text x="360" y="262">:07</text><text x="480" y="262">:08</text><text x="600" y="262">:09</text></g>
+<path d="M366 100 C 367 106, 365 112, 366 120" fill="none" stroke="#4a7fb5" stroke-width="4" stroke-linecap="round"/>
+<text x="372" y="96" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d6591">PodScheduled 11:05:07</text>
+<path d="M126 230 C 127 236, 125 242, 126 250" fill="none" stroke="#e5533c" stroke-width="4" stroke-linecap="round"/>
+<path d="M246 230 C 247 236, 245 242, 246 250" fill="none" stroke="#e5533c" stroke-width="4" stroke-linecap="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f"><text x="72" y="290">Initialized :05</text><text x="196" y="314">PodReadyToStart · Pulling :06</text></g>
+<path d="M130 226 C 250 190, 330 170, 386 124" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="5 5" stroke-linecap="round" marker-end="url(#k63-arr3)"/>
+<path d="M250 226 C 370 190, 450 170, 506 124" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="5 5" stroke-linecap="round" marker-end="url(#k63-arr3)"/>
+<text x="470" y="186" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34">+2.1초 하면 PodScheduled 뒤로</text>
+<text x="350" y="346" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">timesyncd를 다시 시작한 뒤에는 다섯 조건이 모두 11:06:45로 같은 초</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 5. 조건 시각을 서로 비교하려면 찍은 프로그램이 어느 노드에서 도는지부터 봐야 해요.</p>
+
+<p>worker3의 systemd-timesyncd를 다시 시작하자 worker3도 Mac보다 2.089초 빠른 쪽으로 맞춰졌고 동기화가 yes가 됐어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-node-clocks-after-restart.txt</code>, 20:06:34). 그 직후 같은 파드를 다시 만들었을 때는 다섯 조건이 모두 11:06:45로 찍혔고 Scheduled와 Pulled 이벤트도 같은 초였어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-pod-phases.txt</code>). 한 시간 뒤에는 네 노드 모두 Mac과 0.05초 안으로 들어왔고 timesyncd가 보고한 오차는 마스터 -7.932ms, worker3 -10.323ms였어요(<code style="font-family:Menlo,monospace;font-size:14px;">63-node-clocks-1h-later.txt</code>). 이때는 VM들이 움직인 것이 아니라 Mac의 시계가 맞춰진 것으로 보여요. worker3의 timesyncd가 왜 그때까지 보정을 적용하지 않았는지는 찾지 못했어요.</p>
+
+<p>이 차이는 숫자 계산에서도 문제가 돼요. KEP-3085는 PodScheduled와 PodReadyToStartContainers의 lastTransitionTime 차이로 샌드박스를 만드는 데 걸린 시간을 재는 방법을 제안했어요. 시계가 어긋났던 이 파드로 계산하면 11:05:06 − 11:05:07로 −1초가 나와요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 조건 시각으로 순서나 걸린 시간을 계산하기 전에</div>
+&bull; 비교하려는 시각을 누가 찍었는지 봐요. PodScheduled와 Scheduled 이벤트는 마스터, 나머지 파드 조건과 kubelet 이벤트(source.component가 kubelet)는 파드가 도는 노드의 시계예요<br>
+&bull; 노드마다 <code style="font-family:Menlo,monospace;font-size:14px;">timedatectl show -p NTP -p NTPSynchronized</code>로 동기화 상태를 확인해요. NTP가 켜져 있어도 동기화가 no일 수 있어요<br>
+&bull; 순서를 알고 싶으면 한 곳에서 watch로 상태를 받아 그 관찰자의 시계로 경과 시간을 적어요. 이 글의 1절이 그렇게 잰 값이에요<br>
+&bull; 25·50편처럼 여러 구성 요소의 시각을 이어 붙여 장애 시간을 잴 때도 노드 시계부터 확인해요. 7편처럼 재부팅 직후에는 조건 값 자체가 옛 값일 수도 있어요</div>
+
+<p><b>출처와 원자료</b><br>
+&middot; PodReadyToStartContainers: <a href="https://github.com/kubernetes/enhancements/blob/master/keps/sig-node/3085-pod-conditions-for-starting-completition-of-sandbox-creation/README.md">KEP-3085</a>, GA <a href="https://github.com/kubernetes/kubernetes/pull/140488">PR #140488</a>(1.37), 베타 <a href="https://github.com/kubernetes/kubernetes/pull/119659">PR #119659</a>(1.29)<br>
+&middot; STATUS 칸의 Terminating: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/printers/internalversion/printers.go">printers.go (v1.37.2)</a><br>
+&middot; deletionTimestamp 계산: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/registry/rest/delete.go">delete.go (v1.37.2)</a><br>
+&middot; 조건 시각을 찍는 곳: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/registry/core/pod/storage/storage.go">storage.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/api/pod/util.go">pkg/api/pod/util.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/status/status_manager.go">status_manager.go</a> (v1.37.2), 발췌는 <code style="font-family:Menlo,monospace;font-size:14px;">63-k8s-v1.37.2-pod-status-excerpts.txt</code><br>
+&middot; 이 글의 실험: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/63-pod-phases</code>(.sh/.txt), <code style="font-family:Menlo,monospace;font-size:14px;">63-pod-phases-clock-skew.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">63-node-clocks</code>(.sh/.txt), <code style="font-family:Menlo,monospace;font-size:14px;">63-node-clocks-after-restart.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">63-node-clocks-1h-later.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">63-termination-timing</code>(.sh/.txt), <code style="font-family:Menlo,monospace;font-size:14px;">63-delete-sigkill-phase</code>(.sh/.txt), 62편의 <code style="font-family:Menlo,monospace;font-size:14px;">62-deleted-pod-phase.txt</code></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<p>파드가 뜰 때 phase는 Pending에서 Running으로 가고 그 안에서 PodScheduled, Initialized, PodReadyToStartContainers, ContainersReady·Ready가 차례로 True가 됐어요. 1.37에서 GA가 된 PodReadyToStartContainers는 샌드박스 준비(0.9초)와 이미지를 받은 뒤의 컨테이너 시작(6.7초)을 나눠 보여 줬어요. 끝나는 파드는 exit 0이면 Succeeded, exit 1이면 Failed가 됐고 그때 샌드박스가 정리되어 PodReadyToStartContainers가 False가 됐어요.</p>
+<p>Terminating은 phase가 아니에요. deletionTimestamp가 있고 phase가 아직 끝나지 않았을 때 API 서버가 STATUS 칸에 붙이는 글자이고, 그동안 phase는 Running이었어요. deletionTimestamp는 요청 시각에 유예 30초를 더한 미래 시각으로 적혔고, 유예 안에 끝난 파드에서는 마지막 삭제 때 그 시각으로 당겨졌어요. sleep infinity 파드는 그 30초를 다 쓰고 SIGKILL로 exit 137, Failed가 됐어요.</p>
+<p style="margin-bottom:0;">conditions의 시각은 찍은 프로그램이 도는 노드의 시계예요. worker3가 2.1초 늦자 kubelet이 찍은 조건이 스케줄링보다 앞서 보였어요. 상태는 phase가 아니라 deletionTimestamp와 conditions까지 함께 읽고, 시각을 비교하기 전에는 노드 시계부터 확인해야 해요.</p>
+</div>
+</div>

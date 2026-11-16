@@ -1,0 +1,97 @@
+# PID 1과 신호 마스크 (2026-11-15 21:11:04 KST)
+# 노드 커널 6.8.0-149-generic, 컨테이너 런타임 containerd://2.4.1
+
+## a-sleep  command: ["sleep","infinity"]  shareProcessNamespace=false
+  ps (컨테이너 안):
+    PID   PPID  STAT COMMAND
+        1     0 S    sleep infinity
+  PID 1   sleep  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000000 (없음)
+                    SigCgt=0000000000000000 (없음)
+
+## b-sh-c  command: ["sh","-c","sleep infinity"]  shareProcessNamespace=false
+  ps (컨테이너 안):
+    PID   PPID  STAT COMMAND
+        1     0 S    sleep infinity
+  PID 1   sleep  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000004 (QUIT)
+                    SigCgt=0000000000000000 (없음)
+
+## c-sh-c-2cmds  command: ["sh","-c","sleep infinity; echo bye"]  shareProcessNamespace=false
+  ps (컨테이너 안):
+    PID   PPID  STAT COMMAND
+        1     0 S    sh -c sleep infinity; echo bye
+        7     1 S    sleep infinity
+  PID 1   sh     SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000004 (QUIT)
+                    SigCgt=0000000000010002 (INT CHLD)
+  PID 7   sleep  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000000 (없음)
+                    SigCgt=0000000000000000 (없음)
+
+## d-trap-fg  command: ["sh","-c","trap \"exit 0\" TERM; sleep infinity; echo bye"]  shareProcessNamespace=false
+  ps (컨테이너 안):
+    PID   PPID  STAT COMMAND
+        1     0 S    sh -c trap "exit 0" TERM; sleep infinity; echo bye
+        7     1 S    sleep infinity
+  PID 1   sh     SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000004 (QUIT)
+                    SigCgt=0000000000014002 (INT TERM CHLD)
+  PID 7   sleep  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000000 (없음)
+                    SigCgt=0000000000000000 (없음)
+
+## e-trap-wait  command: ["sh","-c","trap \"exit 0\" TERM; sleep infinity \u0026 wait"]  shareProcessNamespace=false
+  ps (컨테이너 안):
+    PID   PPID  STAT COMMAND
+        1     0 S    sh -c trap "exit 0" TERM; sleep infinity & wait
+        7     1 S    sleep infinity
+  PID 1   sh     SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000004 (QUIT)
+                    SigCgt=0000000000014002 (INT TERM CHLD)
+  PID 7   sleep  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000006 (INT QUIT)
+                    SigCgt=0000000000000000 (없음)
+
+## f-nginx  command: ["/docker-entrypoint.sh","nginx","-g","daemon off;"]  shareProcessNamespace=false
+  ps (컨테이너 안):
+    PID   PPID  STAT COMMAND
+        1     0 S    nginx: master process nginx -g daemon off;
+       30     1 S    nginx: worker process
+       31     1 S    nginx: worker process
+  PID 1   nginx  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000040001000 (PIPE SYS)
+                    SigCgt=0000000018016a07 (HUP INT QUIT USR1 USR2 ALRM TERM CHLD WINCH IO)
+  PID 30  nginx  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000040001000 (PIPE SYS)
+                    SigCgt=0000000018016a07 (HUP INT QUIT USR1 USR2 ALRM TERM CHLD WINCH IO)
+
+## g-share  command: ["sleep","infinity"]  shareProcessNamespace=true
+  ps (컨테이너 안):
+    PID   PPID  STAT COMMAND
+        1     0 S    /pause
+        6     0 S    sleep infinity
+  PID 1   pause  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000000 (없음)
+                    SigCgt=0000000000014002 (INT TERM CHLD)
+  PID 6   sleep  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000000 (없음)
+                    SigCgt=0000000000000000 (없음)
+
+## h-tini  command: ["/shared/tini","--","sleep","infinity"]  shareProcessNamespace=false
+  ps (컨테이너 안):
+    PID   PPID  STAT COMMAND
+        1     0 S    /shared/tini -- sleep infinity
+        6     1 S    sleep infinity
+  PID 1   tini   SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000300000 (TTIN TTOU)
+                    SigCgt=0000000000000000 (없음)
+  PID 6   sleep  SigBlk=0000000000000000 (없음)
+                    SigIgn=0000000000000000 (없음)
+                    SigCgt=0000000000000000 (없음)
+
+## 이미지 설정의 STOPSIGNAL (노드 containerd가 본 값)
+  docker.io/library/busybox:1.37: StopSignal=(없음) Entrypoint=None Cmd=['sh']
+  docker.io/library/nginx:1.27-alpine: StopSignal=SIGQUIT Entrypoint=['/docker-entrypoint.sh'] Cmd=['nginx', '-g', 'daemon off;']
+
+# 파드 정리 완료

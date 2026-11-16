@@ -1,0 +1,368 @@
+<!-- ============================================================
+  k8s 스터디 59편: kubectl apply 전에 YAML 실수를 잡는 법, explain과 dry-run=server
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: imagePullPolicyy 오타를 --validate=false로 보내자 에러 없이 created가 나왔고 httpGet.protocol은 저장될 파드에서 사라졌어요. explain과 dry-run=server로 apply 전에 YAML 실수를 잡는 법을 봤어요. -->
+<!-- tags: kubectl explain, dry-run=server, apiVersion, unknown field, feature gate, kubectl -v -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 59편</div>
+  57편. 파드 하나를 배포하고 요청받기까지, 애플리케이션으로 확인하는 쿠버네티스<br>
+  58편. 쿠버네티스 오브젝트 관계도는 어떻게 읽을까, 화살표마다 일하는 컨트롤러<br>
+  <b>59편. kubectl apply 전에 YAML 실수를 잡는 법, explain과 dry-run=server</b> &larr; 지금 이 글<br>
+  60편. ReplicaSet은 왜 내가 만든 파드를 지울까, 라벨 셀렉터와 Deployment<br>
+  61편. 한 파드의 컨테이너는 무엇을 공유하고 같은 포트를 쓰면 어떻게 될까
+</div>
+
+<p>파드 YAML에 <code style="font-family:Menlo,monospace;font-size:14px;">imagePullPolicyy: Always</code>라고 y를 하나 더 쳤어요. 기본 설정으로 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply --dry-run=server</code>를 보내자 API 서버가 <code style="font-family:Menlo,monospace;font-size:14px;">strict decoding error: unknown field "spec.containers[0].imagePullPolicyy"</code>로 거절했어요. 그런데 같은 YAML에 <code style="font-family:Menlo,monospace;font-size:14px;">--validate=false</code>를 붙이자 결과는 <code style="font-family:Menlo,monospace;font-size:14px;">pod/typo created (server dry run)</code>였어요. 오타가 난 필드는 에러 없이 버려지고 파드는 만들어질 수 있는 상태였어요.</p>
+<p>조용히 사라진 필드는 하나 더 있었어요. readinessProbe의 httpGet에 <code style="font-family:Menlo,monospace;font-size:14px;">protocol: HTTP2</code>를 넣고 server dry-run 결과를 보니 저장될 httpGet은 <code style="font-family:Menlo,monospace;font-size:14px;">{"path":"/","port":80,"scheme":"HTTP"}</code>였어요. kubectl explain에는 분명히 protocol 필드와 <code style="font-family:Menlo,monospace;font-size:14px;">enum: HTTP1, HTTP2</code>가 보였는데도 결과에서는 빠졌고 경고도 없었어요. 마지막으로 같은 오타 YAML을 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=client</code>로 보내자 <code style="font-family:Menlo,monospace;font-size:14px;">pod/typo created (dry run)</code>가 나왔어요. 잘못된 restartPolicy 값도 client에서는 그대로 통과했어요.</p>
+<p>쿠버네티스는 YAML을 받으면 apiVersion과 kind로 요청 주소를 정하고, 필드 이름과 값을 검사하고, 꺼진 기능의 필드를 지운 뒤 저장해요. 이 글은 그 과정에서 실수가 어디서 걸리고 어디서 그냥 지나가는지를 v1.37.2 실습 클러스터(Lima VM 4대, containerd 2.4.1, Calico v3.33.0)에서 확인한 기록이에요. 58편의 관계도에서 상자 하나하나가 실제로 어떤 YAML이 되는지를 따라가는 글이기도 해요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; kind와 apiVersion은 왜 중요할까? api-versions와 api-resources는 무엇이 다를까?<br>
+&middot; kubectl explain은 어떻게 쓸까?<br>
+&middot; dry-run=client와 dry-run=server는 무엇을 잡고 무엇을 놓칠까?<br>
+&middot; 스키마에 보이는 필드는 다 쓸 수 있을까?<br>
+&middot; 결국 spec을 잘 쓰면 될까? 리스트의 순서는 상관없을까?<br>
+&middot; strace로 kubectl의 API 호출을 볼 수 있을까?<br>
+&middot; 명령형과 선언형 중 무엇으로 만들까?</p>
+
+<h2>1. apiVersion은 요청 주소가 되고 kind는 그 주소 아래의 종류다</h2>
+
+<p>매니페스트의 최상위에는 네 칸이 있어요. apiVersion과 kind는 이 오브젝트가 어느 API의 무슨 종류인지 정하고, metadata는 이름과 라벨을, spec은 원하는 상태를 담아요. 클러스터에서 다시 읽으면 다섯째 칸 status가 붙어요. status는 5절에서 따로 봐요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: API 그룹과 버전</div>
+apiVersion의 <code style="font-family:Menlo,monospace;font-size:14px;">apps/v1</code>에서 apps가 그룹, v1이 버전이에요. Pod, Service, ConfigMap처럼 오래된 종류는 이름 없는 core 그룹에 있어서 <code style="font-family:Menlo,monospace;font-size:14px;">v1</code>만 적어요. 같은 종류가 여러 버전으로 서빙될 수 있고 버전 이름의 alpha와 beta는 안정성 단계를 뜻해요.</div>
+
+<p>kind와 apiVersion은 왜 중요할까요? kubectl은 이 두 칸으로 요청을 보낼 주소를 만들어요. <code style="font-family:Menlo,monospace;font-size:14px;">-v=6</code>으로 실제 요청을 찍어 보면 core 그룹과 다른 그룹의 주소가 다르게 생겼어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-kind-apiversion.txt</code>).</p>
+
+<div class="obsv-code">## 요청 경로: core 그룹은 /api/v1, 나머지는 /apis/&lt;그룹&gt;/&lt;버전&gt;
+/api/v1/namespaces/ch05/pods?limit=500
+/apis/apps/v1/namespaces/ch05/deployments?limit=500</div>
+<p>&rarr; 파드는 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v1</code> 아래에, Deployment는 <code style="font-family:Menlo,monospace;font-size:14px;">/apis/apps/v1</code> 아래에 있어요. apiVersion을 틀리면 kubectl은 엉뚱한 주소를 만들거나 주소를 찾지 못해요. 옛 매니페스트의 <code style="font-family:Menlo,monospace;font-size:14px;">apiVersion: extensions/v1beta1</code>로 Deployment를 보내면 <code style="font-family:Menlo,monospace;font-size:14px;">no matches for kind "Deployment" in version "extensions/v1beta1"</code>로 보내기 전에 멈췄어요. 그 버전을 이 클러스터가 더는 서빙하지 않기 때문이에요(58편).</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 312" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="apiVersion과 kind가 kubectl이 보내는 요청 URL이 되는 과정">
+<defs><marker id="k59-url-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k59-url-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#3d3a34">apiVersion은 그룹/버전, 그 둘이 요청 주소가 돼요</text>
+<path d="M20 44 C 99 42.9, 179 45.7, 258 44.9 C 256.1 63, 259.4 81, 258.4 100 C 179 100.7, 99 98.0, 20.7 99.8 C 21.2 81, 20.1 63, 20 44 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="32" y="66" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">apiVersion: v1</text>
+<text x="32" y="86" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">kind: Pod</text>
+<path d="M264 72 C 281 68, 299 70, 316 72" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k59-url-arr1)"/>
+<text x="326" y="71" text-anchor="start" font-family="Menlo,monospace" font-size="11.5" fill="#2e6b41">/api/v1/namespaces/ch05/pods</text>
+<text x="326" y="94" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#8a8272">core 그룹은 그룹 이름 없이 /api</text>
+<path d="M20 134 C 99 135.0, 179 134.9, 258 133.7 C 258.7 153, 259.9 171, 258.8 190 C 179 191.6, 99 188.4, 20.3 190.7 C 19.2 171, 18.2 153, 20 134 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="32" y="156" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">apiVersion: apps/v1</text>
+<text x="32" y="176" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">kind: Deployment</text>
+<path d="M264 162 C 281 158, 299 160, 316 162" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k59-url-arr1)"/>
+<text x="326" y="161" text-anchor="start" font-family="Menlo,monospace" font-size="11.5" fill="#2e6b41">/apis/apps/v1/namespaces/ch05/deployments</text>
+<text x="326" y="184" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#8a8272">그 밖의 그룹은 /apis/그룹/버전</text>
+<path d="M20 224 C 99 225.0, 179 224.3, 258 224.9 C 257.0 243, 256.4 261, 258.2 280 C 179 281.4, 99 280.6, 19.2 279.7 C 18.5 261, 19.6 243, 20 224 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="32" y="246" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">apiVersion: extensions/v1beta1</text>
+<text x="32" y="266" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">kind: Deployment</text>
+<path d="M264 252 C 281 248, 299 250, 316 252" fill="none" stroke="#e5533c" stroke-width="2.1" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k59-url-arr2)"/>
+<text x="326" y="251" text-anchor="start" font-family="Menlo,monospace" font-size="11.5" fill="#b3502f">no matches for kind</text>
+<text x="326" y="274" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#8a8272">서빙하지 않는 그룹·버전 → 보내기 전에 멈춤</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 1. apiVersion을 바꾸면 YAML 한 줄이 아니라 요청 주소가 바뀌어요.</p>
+
+<h3>api-versions는 그룹/버전 전부, api-resources는 종류마다 하나</h3>
+<p>kubectl api-versions와 api-resources는 무엇이 다를까요? 같은 클러스터에서 둘을 나란히 보면 autoscaling에서 차이가 드러나요.</p>
+
+<div class="obsv-code">## kubectl api-resources (일부)
+NAME                       SHORTNAMES   APIVERSION       NAMESPACED   KIND
+horizontalpodautoscalers   hpa          autoscaling/v2   true         HorizontalPodAutoscaler
+
+## kubectl api-versions (일부)
+autoscaling/v1
+autoscaling/v2</div>
+<p>&rarr; api-versions는 API 서버가 서빙하는 그룹/버전 쌍을 전부 나열해요. autoscaling은 v1과 v2가 둘 다 있어요. api-resources는 종류마다 대표 버전 하나만 보여 주고 HPA는 autoscaling/v2로 나와요. 그래서 HPA를 autoscaling/v1로 써서 보내도 받아 줘요. 같은 HPA를 두 버전으로 동시에 읽을 수 있는 원리는 72편에서 다뤄요.</p>
+
+<p>버전 이름의 alpha와 beta는 기본으로 켜지느냐와 이어져요. 내장 alpha API 버전은 기본으로 꺼져 있고 API 서버의 <code style="font-family:Menlo,monospace;font-size:14px;">--runtime-config</code>로 켜야 해요. beta도 1.24부터 새로 나오는 것은 기본으로 꺼져요(<a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/3136-beta-apis-off-by-default">KEP-3136</a>). 그래서 v1.37.2를 기본 설정으로 띄운 우리 클러스터에서 서빙 중인 alpha·beta 버전을 찾자 하나만 나왔어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-alpha-beta-served.txt</code>).</p>
+
+<div class="obsv-code"># 07 지금 서빙 중인 alpha·beta API 버전
+policy.networking.k8s.io/v1alpha2   ← 내장 API 가 아니라 CRD(clusternetworkpolicies, Calico 가 설치)
+
+# kube-apiserver 의 --runtime-config / --feature-gates
+  (지정 없음 → 기본값)</div>
+<p>&rarr; 유일한 v1alpha2는 Calico 매니페스트가 함께 설치한 CRD였고 내장 API의 alpha·beta 버전은 0개였어요. 옛 글의 예제에서 내장 종류의 <code style="font-family:Menlo,monospace;font-size:14px;">v1beta1</code>을 그대로 가져오면 우리 클러스터에서는 앞의 extensions/v1beta1처럼 거절될 수 있다는 뜻이에요. beta 규칙이 생긴 과정은 73편에서 봐요.</p>
+
+<h2>2. 필드 이름과 위치는 kubectl explain으로 찾는다</h2>
+
+<p>kubectl explain은 어떻게 쓸까요? 이 명령은 지금 접속한 API 서버가 내려 준 스키마를 읽어서 필드를 보여 줘요. 인터넷의 문서는 다른 버전일 수 있지만 explain은 내 클러스터 버전의 필드를 보여 준다는 점이 가장 큰 장점이에요. 실습에서 쓴 방법은 세 가지예요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-explain-tips.txt</code>).</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: OpenAPI 스키마</div>
+API 서버가 종류마다 필드 이름, 타입, 필수 여부, 허용 값을 기계가 읽을 수 있게 내보내는 명세예요. kubectl explain과 서버 쪽 필드 검증이 이 명세를 써요. CRD도 스키마를 적어 두면 같은 방식으로 explain과 검증이 돼요.</div>
+
+<div class="obsv-code">## 점으로 파고들기: pod.spec.containers.livenessProbe.httpGet
+  host	&lt;string&gt;
+  httpHeaders	&lt;[]HTTPHeader&gt;
+  path	&lt;string&gt;
+  port	&lt;IntOrString&gt; -required-
+  protocol	&lt;string&gt;
+  enum: HTTP1, HTTP2
+  scheme	&lt;string&gt;
+  enum: HTTP, HTTPS
+
+## CRD 도 스키마가 있으면 explain 된다 (Calico IPPool)
+  assignmentMode	&lt;string&gt;
+  enum: Automatic, Manual
+  cidr	&lt;string&gt; -required-</div>
+<p>&rarr; 첫째, 점으로 경로를 이어 원하는 깊이까지 내려가요. <code style="font-family:Menlo,monospace;font-size:14px;">-required-</code>는 빠뜨리면 거절되는 필드이고 <code style="font-family:Menlo,monospace;font-size:14px;">enum</code>은 허용되는 값 목록이에요. httpGet의 port가 필수이고 scheme에는 HTTP와 HTTPS만 들어간다는 것을 YAML을 쓰기 전에 알 수 있어요. 둘째, Calico의 IPPool처럼 CRD로 들어온 종류도 같은 방식으로 볼 수 있어요. cidr가 필수라는 것도 explain이 알려 줬어요.</p>
+
+<p>셋째, 필드가 어디에 있는지 모를 때는 <code style="font-family:Menlo,monospace;font-size:14px;">--recursive</code>로 전체 트리를 펼치고 줄 번호와 함께 찾아요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl explain pod.spec --recursive | grep -n Probe</code>로 probe를 찾자 livenessProbe, readinessProbe, startupProbe가 세 벌 나왔어요. 줄 번호 195~304, 440~549, 691~800이에요. pod.spec의 필드는 알파벳순으로 나오므로 차례대로 containers, ephemeralContainers, initContainers 아래에 있는 거예요. 디버깅용 ephemeralContainers에도 probe 필드가 있지만 그 필드의 설명 첫 줄은 이랬어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-explain-and-verbose.txt</code>).</p>
+<div class="obsv-code">Probes are not allowed for ephemeral containers.</div>
+<p>&rarr; 타입을 컨테이너와 같이 쓰다 보니 필드는 있지만 쓸 수 없다는 뜻이에요. explain은 필드 목록만이 아니라 이런 제약도 DESCRIPTION에 적어 줘요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 explain을 이렇게 써요</div>
+&bull; 위치를 모를 때: <code style="font-family:Menlo,monospace;font-size:14px;">kubectl explain pod.spec --recursive | grep -n 필드이름</code>으로 줄 번호를 보고 들여쓰기로 부모를 찾아요.<br>
+&bull; 위치를 알 때: <code style="font-family:Menlo,monospace;font-size:14px;">kubectl explain deploy.spec.strategy.rollingUpdate</code>처럼 점으로 내려가 -required-와 enum을 확인해요.<br>
+&bull; 짧은 이름도 돼요: deploy, svc, hpa처럼 api-resources의 SHORTNAMES를 쓸 수 있어요.<br>
+&bull; DESCRIPTION을 끝까지 읽어요. 기능 게이트(4절)가 필요한 필드나 쓸 수 없는 조합이 여기에 적혀 있어요.</div>
+
+<h2>3. dry-run=server는 저장 직전까지 검사하고 --validate=false는 오타를 버린다</h2>
+
+<p>도입의 오타 실험은 dry-run=server로만 했어요. 같은 YAML을 client 쪽 dry-run과 비교하려고 blog-59 네임스페이스에서 다시 돌렸어요. 필드 이름 오타와 값 오류를 각각 네 가지 옵션 조합으로 보냈어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-client-vs-server.sh</code>, 원래 실험은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-spec-typo.txt</code>).</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: dry-run=client와 dry-run=server</div>
+<code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=client</code>는 kubectl이 만들 오브젝트를 화면에만 보여 주고 서버에 보내지 않아요. <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=server</code>는 요청을 실제로 API 서버에 보내서 검증, 기본값 채우기, 어드미션까지 거친 뒤 etcd에 저장하는 단계만 건너뛰어요. 그래서 응답에 저장될 오브젝트의 모습이 돌아와요.</div>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/59/01-client-vs-server.png" alt="59-client-vs-server.sh 실행 화면, 오타 imagePullPolicyy와 restartPolicy Sometimes가 dry-run=client에서는 모두 created, dry-run=server에서는 unknown field와 Unsupported value로 거절, --validate=false에서는 오타만 통과" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 2. client에서는 둘 다 통과했고 server에서는 둘 다 걸렸어요. --validate=false는 오타 검사만 껐어요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">보낸 방식</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">필드 이름 오타(imagePullPolicyy)</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">값 오류(restartPolicy: Sometimes)</th></tr></thead>
+<tbody>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">--dry-run=client</td><td style="padding:9px;border:1px solid #d8cfba;">created (dry run)</td><td style="padding:9px;border:1px solid #d8cfba;">created (dry run)</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">--dry-run=client --validate=false</td><td style="padding:9px;border:1px solid #d8cfba;">created (dry run)</td><td style="padding:9px;border:1px solid #d8cfba;">created (dry run)</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">--dry-run=server</td><td style="padding:9px;border:1px solid #d8cfba;">BadRequest: unknown field</td><td style="padding:9px;border:1px solid #d8cfba;">invalid: Unsupported value</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">--dry-run=server --validate=false</td><td style="padding:9px;border:1px solid #d8cfba;">created (server dry run)</td><td style="padding:9px;border:1px solid #d8cfba;">invalid: Unsupported value</td></tr>
+</tbody>
+</table></div>
+
+<p>client dry-run은 두 오류를 모두 놓쳤어요. kubectl의 기본 <code style="font-family:Menlo,monospace;font-size:14px;">--validate</code>는 strict인데도 그랬어요. kubectl 1.37.2의 도움말은 strict를 "서버에서 필드 검증을 하고, 서버가 지원하지 않을 때만 덜 믿을 만한 client 검증으로 대신한다"고 설명해요. 서버로 보내지 않는 client dry-run에서는 그 서버 검증이 일어나지 않았어요. 같은 도움말은 false를 이렇게 설명해요.</p>
+<div class="obsv-code">"false" or "ignore" will not perform any schema validation, silently dropping any unknown or duplicate fields.</div>
+<p>&rarr; false는 스키마 검증을 하지 않고 모르는 필드나 중복 필드를 조용히 버린다는 뜻이에요. 실제로 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=server --validate=false</code>로 받은 오브젝트의 컨테이너에는 imagePullPolicyy가 없었고 대신 기본값 <code style="font-family:Menlo,monospace;font-size:14px;">"imagePullPolicy":"IfNotPresent"</code>가 들어 있었어요. 제가 원한 Always는 오타와 함께 사라지고 기본값으로 만들어지는 거예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 서버 쪽 필드 검증 (strict decoding)</div>
+API 서버가 요청 본문을 오브젝트로 바꿀 때 스키마에 없는 필드나 같은 필드가 두 번 나오면 거절하는 검사예요. 에러 문구는 <code style="font-family:Menlo,monospace;font-size:14px;">strict decoding error: unknown field</code>이고 400 BadRequest로 돌아와요. kubectl의 --validate 값이 이 검사를 켜고 끄는 요청 옵션이 돼요.</div>
+
+<p>값 오류는 성격이 달랐어요. --validate=false여도 <code style="font-family:Menlo,monospace;font-size:14px;">spec.restartPolicy: Unsupported value: "Sometimes": supported values: "Always", "OnFailure", "Never"</code>로 거절됐어요. 필드 이름이 맞으면 디코딩은 통과하고 그다음에 종류마다 정해진 값 검증이 돌아요. 이 검증은 --validate로 끌 수 없었어요. 36편에서 컨테이너 이름 Bad_Name이 422 Unprocessable Entity로 거절된 것과 같은 종류의 검사예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="kubectl dry-run=client와 dry-run=server, --validate=false가 각각 어디까지 검사하는지 보여 주는 그림">
+<defs><marker id="k59-check-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="23" fill="#3d3a34">오류 세 가지는 각각 어디서 걸렸나</text>
+<path d="M20 60 C 77 58.3, 133 61.8, 190 59.3 C 188.6 123, 190.9 187, 190.4 250 C 133 251.0, 77 248.1, 19.7 250.9 C 19.1 187, 20.9 123, 20 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="105" y="88" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#3d3a34">kubectl</text>
+<text x="105" y="116" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">--dry-run=client</text>
+<text x="105" y="138" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#b3502f">서버로 보내지 않아요</text>
+<text x="105" y="172" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d3a34">오타 필드: 통과</text>
+<text x="105" y="196" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d3a34">잘못된 값: 통과</text>
+<text x="105" y="220" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d3a34">꺼진 기능 필드: 통과</text>
+<path d="M194 150 C 211 146, 229 148, 246 150" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k59-check-arr1)"/>
+<text x="220" y="132" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">요청</text>
+<path d="M250 60 C 343 59.2, 437 59.9, 530 59.2 C 531.1 150, 531.1 240, 529.1 330 C 437 328.5, 343 330.5, 250.1 329.8 C 251.5 240, 251.0 150, 250 60 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linejoin="round"/>
+<text x="390" y="86" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">API 서버 (dry-run=server도 여기까지)</text>
+<path d="M268 102 C 349 102.7, 431 101.5, 512 101.4 C 512.6 121, 510.9 141, 512.1 160 C 431 158.8, 349 158.4, 268.1 160.2 C 268.1 141, 269.0 121, 268 102 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="390" y="126" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">① 디코딩과 필드 이름 검사</text>
+<text x="390" y="148" text-anchor="middle" font-family="Menlo,monospace" font-size="11" fill="#b3502f">400 unknown field</text>
+<path d="M268 178 C 349 176.6, 431 179.2, 512 177.3 C 510.9 197, 511.7 217, 511.1 236 C 431 236.1, 349 237.3, 267.1 236.7 C 267.5 217, 266.5 197, 268 178 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="390" y="202" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">② 꺼진 기능 게이트의 필드</text>
+<text x="390" y="226" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#b3502f">에러 없이 지워요</text>
+<path d="M268 254 C 349 252.8, 431 255.0, 512 253.5 C 512.4 273, 510.8 293, 512.8 312 C 431 310.7, 349 311.7, 267.5 312.2 C 268.0 293, 268.2 273, 268 254 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="390" y="278" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">③ 값 검증</text>
+<text x="390" y="300" text-anchor="middle" font-family="Menlo,monospace" font-size="11" fill="#b3502f">Unsupported value</text>
+<path d="M390 162 C 392 166, 388 171, 390 175" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k59-check-arr1)"/>
+<path d="M390 238 C 388 242, 392 247, 390 251" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k59-check-arr1)"/>
+<path d="M578 150 C 612 151.4, 646 149.4, 680 149.5 C 680.4 177, 678.0 203, 679.1 230 C 646 228.8, 612 228.9, 578.3 230.7 C 577.8 203, 579.3 177, 578 150 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="629" y="186" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#3d3a34">etcd</text>
+<text x="629" y="210" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#8a8272">저장</text>
+<path d="M534 190 C 547 186, 561 188, 574 190" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" stroke-dasharray="5 5" marker-end="url(#k59-check-arr1)"/>
+<text x="556" y="250" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#2e6b41">dry-run=server는</text>
+<text x="556" y="270" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#2e6b41">저장하지 않아요</text>
+<text x="30" y="290" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d3a34">--validate=false:</text>
+<text x="30" y="312" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d3a34">①에서 오타를 거절하지 않고</text>
+<text x="30" y="334" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d3a34">버린 뒤 다음으로 넘겨요</text>
+<text x="350" y="382" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#b3502f">client 검사만으로는 오타도 잘못된 값도 걸러지지 않았어요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 3. 필드 이름은 디코딩에서, 값은 검증에서 걸리고, 꺼진 기능의 필드는 그 사이에서 에러 없이 지워져요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ --validate=false로 에러를 없애지 않아요</div>
+unknown field 에러가 귀찮아서 --validate=false를 붙이면 에러가 사라지는 대신 오타 난 설정이 사라져요. 이번처럼 imagePullPolicy 오타는 기본값으로 대체되고, 프로브나 리소스 제한 오타라면 그 설정 없이 파드가 떠요. apply 전 확인은 <code style="font-family:Menlo,monospace;font-size:14px;">--dry-run=server</code>로 하고, client dry-run은 YAML 뼈대를 뽑는 용도로만 써요.</div>
+
+<h2>4. 스키마에 있는 필드도 기능 게이트가 꺼져 있으면 조용히 사라진다</h2>
+
+<p>도입의 두 번째 장면으로 돌아가 볼게요. 2절에서 explain은 httpGet 아래에 protocol 필드와 <code style="font-family:Menlo,monospace;font-size:14px;">enum: HTTP1, HTTP2</code>를 보여 줬어요. 그래서 readinessProbe에 <code style="font-family:Menlo,monospace;font-size:14px;">protocol: HTTP2</code>를 넣고 server dry-run으로 저장될 httpGet만 뽑았어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-h2c-probe-alpha.sh</code>).</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/59/02-h2c-probe-alpha.png" alt="17-h2c-probe-alpha.sh 실행 화면, kube-apiserver feature-gates 0개 지정, protocol HTTP2를 넣었지만 저장될 httpGet은 path, port 80, scheme HTTP뿐" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 4. 보낸 protocol: HTTP2가 저장될 오브젝트에서 빠졌고 에러는 없었어요.</p>
+
+<p>API 서버의 <code style="font-family:Menlo,monospace;font-size:14px;">--feature-gates</code>는 하나도 지정돼 있지 않았고 저장될 httpGet에는 path, port, scheme만 남았어요. 이유는 v1.37.2 소스에 있어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-k8s-v1.37.2-h2c-probe-excerpts.txt</code>).</p>
+
+<div class="obsv-code">## staging/src/k8s.io/api/core/v1/types.go (HTTPGetAction.Protocol)
+	// +featureGate=H2CContainerProbe
+	Protocol *HTTPProtocol `json:"protocol,omitempty" ...`
+
+## pkg/features/kube_features.go (H2CContainerProbe)
+	// kep: https://kep.k8s.io/5999
+	H2CContainerProbe: {
+		{Version: version.MustParse("1.37"), Default: false, PreRelease: featuregate.Alpha},
+	},</div>
+<p>&rarr; protocol 필드는 H2CContainerProbe라는 기능 게이트에 묶여 있고 이 게이트는 1.37에 alpha로 들어와 기본값이 false예요. CHANGELOG-1.37은 이 필드를 HTTP/2 cleartext(H2C)로 프로브를 보내기 위해 추가했다고 적었어요(<a href="https://github.com/kubernetes/kubernetes/pull/139429">PR #139429</a>, <a href="https://kep.k8s.io/5999">KEP-5999</a>). 게이트가 꺼진 API 서버는 새로 만드는 오브젝트에서 이 필드를 지우고 나머지를 저장해요. 오류로 알려 주지 않아요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 기능 게이트 (feature gate)</div>
+구성 요소마다 새 기능을 켜고 끄는 스위치예요. alpha 기능은 기본으로 꺼져 있어서 <code style="font-family:Menlo,monospace;font-size:14px;">--feature-gates=이름=true</code>로 켜야 동작해요. 필드가 스키마와 explain에 보여도 게이트가 꺼져 있으면 그 필드에 넣은 값은 저장되지 않을 수 있어요.</div>
+
+<p>스키마에 있다는 것과 켜져 있다는 것은 다른 말이에요. v1.37.2의 explain으로 생명주기 관련 필드를 확인했을 때 initContainers.restartPolicy, containers.restartPolicyRules, lifecycle.preStop.sleep, lifecycle.stopSignal, status.observedGeneration이 모두 "있음"이었어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-fields-1.37.txt</code>). 그중 observedGeneration의 설명에는 <code style="font-family:Menlo,monospace;font-size:14px;">The PodObservedGenerationTracking feature gate must be enabled to use this field.</code>라고 게이트가 직접 적혀 있었어요. stopSignal도 우리 클러스터에서 같은 식으로 조용히 지워지는데 그 이야기는 67편에서 해요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 새 필드는 보낸 것과 저장된 것을 비교해요</div>
+최근 버전에 들어온 필드를 쓸 때는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply --dry-run=server -o yaml</code>의 결과에서 그 필드가 남았는지 확인해요. 빠졌다면 기능 게이트가 꺼진 거예요. 이미 만든 오브젝트라면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get -o yaml</code>로 같은 비교를 해요. 에러가 없다는 것만으로 설정이 들어갔다고 판단하면 안 돼요.</div>
+
+<h2>5. 리스트는 순서가 의미 있고 status는 사람이 쓰는 칸이 아니다</h2>
+
+<p>결국 spec을 잘 쓰면 될까요? 잘 쓰는 것만큼 확인하는 습관이 필요했어요. 1~4절에서 본 실수는 모두 YAML만 봐서는 드러나지 않았고 explain, dry-run=server, 저장된 결과를 볼 때 드러났어요. 확인할 거리가 하나 더 있어요. YAML의 맵은 키 순서가 상관없지만 리스트는 순서가 의미를 가져요. blog-59에서 init 컨테이너 두 개와 env 세 개를 일부러 순서를 섞어 적은 파드를 띄웠어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-list-order.sh</code>).</p>
+
+<div class="obsv-code">  initContainers:
+  - name: init-a            # 먼저 적었고 2초 걸린다
+    command: ["sh", "-c", "sleep 2; echo init-a &gt;&gt; /work/order"]
+  - name: init-b            # 나중에 적었고 바로 끝난다
+    command: ["sh", "-c", "echo init-b &gt;&gt; /work/order"]
+  containers:
+  - name: app
+    env:
+    - {name: BEFORE, value: "hello-$(NAME)"}   # NAME 보다 앞에서 참조
+    - {name: NAME,   value: "k8s"}
+    - {name: AFTER,  value: "hello-$(NAME)"}   # NAME 보다 뒤에서 참조
+
+## app 로그
+  order: init-a init-b
+  BEFORE=hello-$(NAME)
+  AFTER=hello-k8s
+
+## initContainerStatuses (시작 · 끝)
+  init-a  started=2026-11-15T12:42:48Z  finished=2026-11-15T12:42:50Z  exit=0
+  init-b  started=2026-11-15T12:42:51Z  finished=2026-11-15T12:42:51Z  exit=0</div>
+<p>&rarr; 바로 끝나는 init-b가 2초 걸리는 init-a보다 먼저 쓰지 못했어요. init-a가 끝난 다음 초에 init-b가 시작했어요. initContainers는 적힌 순서대로 하나씩 실행돼요. env에서는 NAME보다 아래에 있는 AFTER만 hello-k8s로 바뀌었고 위에 있는 BEFORE는 <code style="font-family:Menlo,monospace;font-size:14px;">$(NAME)</code> 글자가 그대로 남았어요. <code style="font-family:Menlo,monospace;font-size:14px;">$(VAR)</code> 참조는 리스트에서 앞에 정의된 변수만 풀려요(<a href="https://kubernetes.io/docs/tasks/inject-data-application/define-interdependent-environment-variables/">공식 문서</a>).</p>
+
+<p>같은 파드를 API에서 다시 읽으면 env의 세 값은 보낸 문자열 그대로였어요. API 서버는 이 참조를 풀지 않고 저장만 해요. 값이 바뀐 것은 컨테이너를 만들 때였어요. 그래서 dry-run=server는 이 실수를 잡아 주지 않아요. 순서는 YAML을 쓰는 사람이 챙겨야 해요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="initContainers 실행 순서와 env 참조 순서를 보여 주는 그림">
+<defs><marker id="k59-order-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k59-order-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#b3502f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k59-order-arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#5a9e6f" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="175" y="32" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">initContainers: 적은 순서대로 하나씩</text>
+<text x="525" y="32" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">env: 앞에 정의된 것만 참조돼요</text>
+<path d="M350 18 C 352 105, 351 191, 351 280" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="6 6"/>
+<path d="M30 70 C 73 71.9, 117 71.2, 160 70.4 C 159.5 87, 160.7 103, 160.2 120 C 117 121.9, 73 118.7, 31.0 120.8 C 29.1 103, 28.9 87, 30 70 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="95" y="94" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#3d3a34">init-a</text>
+<text x="95" y="112" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#8a8272">sleep 2</text>
+<path d="M190 70 C 233 68.8, 277 69.7, 320 70.5 C 318.4 87, 318.3 103, 319.0 120 C 277 121.7, 233 120.0, 189.3 119.9 C 188.2 103, 191.0 87, 190 70 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="255" y="94" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#3d3a34">init-b</text>
+<text x="255" y="112" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#8a8272">바로 끝남</text>
+<path d="M162 95 C 170 93, 178 97, 186 95" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k59-order-arr1)"/>
+<text x="95" y="140" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#3d3a34">12:42:48 → :50</text>
+<text x="255" y="140" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#3d3a34">12:42:51 → :51</text>
+<path d="M110 170 C 153 171.7, 197 170.9, 240 170.0 C 238.1 185, 238.9 201, 239.5 216 C 197 217.3, 153 215.5, 110.6 215.7 C 108.2 201, 109.2 185, 110 170 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="175" y="199" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34">app</text>
+<path d="M250 150 C 242 159, 231 164, 220 168" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k59-order-arr1)"/>
+<text x="175" y="240" text-anchor="middle" font-family="Menlo,monospace" font-size="11" fill="#2e6b41">order: init-a init-b</text>
+<text x="175" y="268" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#8a8272">init-b는 2초 걸리는 init-a를 기다렸어요</text>
+<text x="380" y="90" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">- BEFORE = hello-$(NAME)</text>
+<text x="380" y="130" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">- NAME = k8s</text>
+<text x="380" y="170" text-anchor="start" font-family="Menlo,monospace" font-size="12" fill="#3d3a34">- AFTER = hello-$(NAME)</text>
+<path d="M560 94 C 537 117, 508 122, 478 124" fill="none" stroke="#b3502f" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="4 4" marker-end="url(#k59-order-arr2)"/>
+<path d="M560 166 C 537 143, 508 138, 478 136" fill="none" stroke="#5a9e6f" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k59-order-arr3)"/>
+<text x="572" y="100" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#b3502f">✗ 아직 없음</text>
+<text x="572" y="166" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#2e6b41">✓ 위에 있음</text>
+<text x="380" y="215" text-anchor="start" font-family="Menlo,monospace" font-size="11.5" fill="#b3502f">BEFORE=hello-$(NAME)</text>
+<text x="380" y="237" text-anchor="start" font-family="Menlo,monospace" font-size="11.5" fill="#2e6b41">AFTER=hello-k8s</text>
+<text x="525" y="270" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#8a8272">컨테이너 안에서 본 값이에요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 5. 맵은 순서가 상관없지만 initContainers와 env 같은 리스트는 적은 순서대로 동작했어요.</p>
+
+<h3>status는 컨트롤러와 kubelet이 쓰는 칸이다</h3>
+<p>spec은 사람이 원하는 상태를 적는 칸이고 status는 컨트롤러와 kubelet이 관찰한 상태를 적는 칸이에요. 58편에서 managedFields를 보면 파드의 status는 kubelet이, Deployment와 ReplicaSet의 status는 kube-controller-manager가 썼어요. 사람이 YAML에 status를 적으면 어떻게 될까요? <code style="font-family:Menlo,monospace;font-size:14px;">status: {phase: Running, message: written-by-me}</code>를 붙인 파드를 server dry-run으로 보내자 저장될 status는 <code style="font-family:Menlo,monospace;font-size:14px;">{"phase":"Pending","qosClass":"BestEffort"}</code>였어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-status-on-create.txt</code>). 보낸 phase와 message는 버려졌고 API 서버가 정한 값만 남았어요. kubectl이 뽑아 주는 뼈대 YAML의 <code style="font-family:Menlo,monospace;font-size:14px;">status: {}</code>는 지워도 되는 칸이에요.</p>
+
+<h2>6. API 요청은 kubectl -v로 보고 빨리 만들 때는 명령형으로 뼈대를 뽑는다</h2>
+
+<h3>strace에는 시스템 콜이, kubectl -v에는 HTTP 요청이 보인다</h3>
+<p>strace로 kubectl의 API 호출을 볼 수 있을까요? 마스터 노드에서 <code style="font-family:Menlo,monospace;font-size:14px;">strace -f kubectl get pod -n ch05</code>를 돌려 봤어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-strace-vs-verbose.txt</code>). 명령 하나에 시스템 콜이 1,788번 나왔고 많은 순서로 fcntl 326번, read 318번, futex 269번, rt_sigaction 114번이었어요. API 서버의 6443 포트로 가는 connect는 보였지만 그 뒤에 오가는 바이트는 TLS로 암호화돼 있어서 평문 <code style="font-family:Menlo,monospace;font-size:14px;">GET /api</code>가 나오는 줄은 0줄이었어요. strace가 보여 주는 것은 커널에 들어간 호출이고 HTTP 요청의 내용은 아니에요.</p>
+<p>HTTP 요청은 kubectl이 스스로 찍어 줘요. 같은 명령에 <code style="font-family:Menlo,monospace;font-size:14px;">-v=6</code>을 붙이면 <code style="font-family:Menlo,monospace;font-size:14px;">verb="GET" url=".../api/v1/namespaces/ch05/pods?limit=500" status="200 OK"</code>처럼 요청마다 메서드와 주소, 응답 코드가 나와요. <code style="font-family:Menlo,monospace;font-size:14px;">-v=8</code>은 요청 헤더와 응답 본문 일부를, <code style="font-family:Menlo,monospace;font-size:14px;">-v=9</code>는 같은 요청을 <code style="font-family:Menlo,monospace;font-size:14px;">curl -v -XGET -H "Accept: …" -H "User-Agent: …" 'https://&lt;API 서버&gt;/api/v1/namespaces/default'</code> 모양으로 보여 줘요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-explain-and-verbose.txt</code>, 헤더 값은 줄였어요).</p>
+
+<div class="obsv-code">	Accept: application/json;as=Table;v=v1;g=meta.k8s.io,application/json;as=Table;v=v1beta1;g=meta.k8s.io,application/json
+	User-Agent: kubectl/v1.37.2 (linux/arm64) kubernetes/c50e539
+"Response Body" body="{\"kind\":\"Table\",\"apiVersion\":\"meta.k8s.io/v1\", ...</div>
+<p>&rarr; <code style="font-family:Menlo,monospace;font-size:14px;">-v=8</code>에서 하나 더 알 수 있었어요. kubectl get은 파드 오브젝트 자체가 아니라 <code style="font-family:Menlo,monospace;font-size:14px;">as=Table</code> 형식을 달라고 요청하고 서버는 <code style="font-family:Menlo,monospace;font-size:14px;">"kind":"Table"</code>로 답해요. kubectl get 화면의 NAME, READY, STATUS 같은 열은 kubectl이 아니라 서버가 정해서 보내 준 거예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: Table 응답</div>
+API 서버가 오브젝트 목록을 사람이 읽을 열과 행으로 바꿔 주는 응답 형식(meta.k8s.io/v1 Table)이에요. 클라이언트가 Accept 헤더에 as=Table을 넣으면 이 형식으로 받아요. CRD도 정의에 출력할 열(additionalPrinterColumns)을 적어 두면 kubectl get에 그 열이 나와요.</div>
+
+<h3>명령형으로 뼈대를 뽑고 YAML을 고쳐서 apply한다</h3>
+<p>명령형과 선언형 중 무엇으로 만들까요? 20편과 58편에서 봤듯이 API 서버 쪽에서는 둘 다 원하는 상태를 적는 요청이에요. 차이는 그 상태를 파일로 남기느냐에 있어요. 운영에서는 파일을 Git에 두고 apply하는 쪽이 변경 기록을 남기기 좋아요. 다만 CKA 같은 시험처럼 빨리 만들어야 할 때는 명령형으로 뼈대를 뽑아 파일로 고치는 방법이 빨라요. v1.37.2 kubectl로 뽑은 Deployment 뼈대는 이랬어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-imperative-skeleton.txt</code>).</p>
+
+<div class="obsv-code">$ kubectl create deployment web --image=nginx:1.27-alpine --replicas=2 --dry-run=client -o yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: web
+  name: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - image: nginx:1.27-alpine
+        name: nginx
+        resources: {}
+status: {}</div>
+<p>&rarr; apiVersion, 셀렉터와 템플릿 라벨의 짝, 컨테이너 목록 같은 틀린 데 없이 써야 하는 부분을 kubectl이 채워 줘요. 컨테이너 이름이 이미지 이름에서 온 nginx라는 점과 빈 <code style="font-family:Menlo,monospace;font-size:14px;">strategy</code>, <code style="font-family:Menlo,monospace;font-size:14px;">resources</code>, <code style="font-family:Menlo,monospace;font-size:14px;">status</code> 칸은 고칠 거리예요. 파드는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl run tmp --image=busybox:1.37 --restart=Never --dry-run=client -o yaml -- sleep 3600</code>으로 뽑을 수 있어요.</p>
+
+<p>명령이 없는 종류도 있어요. kubectl create의 하위 명령은 clusterrole, clusterrolebinding, configmap, cronjob, deployment, ingress, job, namespace, poddisruptionbudget, priorityclass, quota, role, rolebinding, secret, service, serviceaccount, token이었고 daemonset, statefulset, persistentvolumeclaim, networkpolicy는 없었어요. 프로브, 멀티 컨테이너, 볼륨 마운트도 명령 옵션으로는 넣을 수 없어요. 이런 것은 비슷한 종류의 뼈대를 뽑아 고치거나 explain을 보며 직접 써요. HPA를 만드는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl autoscale</code>은 kubectl 1.37.2에서 <code style="font-family:Menlo,monospace;font-size:14px;">--cpu-percent</code>가 deprecated로 나와요. 쓰면 <code style="font-family:Menlo,monospace;font-size:14px;">Flag --cpu-percent has been deprecated, Use --cpu with percentage or resource quantity format</code> 경고가 나오고, <code style="font-family:Menlo,monospace;font-size:14px;">--cpu=50%</code>로 바꿔도 같은 autoscaling/v2 HPA(averageUtilization 50)가 나왔어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 빨리 만들 때의 순서</div>
+&bull; 뼈대: <code style="font-family:Menlo,monospace;font-size:14px;">kubectl create deployment ... --dry-run=client -o yaml &gt; web.yaml</code><br>
+&bull; 고치기: 명령이 없는 필드(프로브, 볼륨, 두 번째 컨테이너)를 explain으로 위치를 찾아 넣어요.<br>
+&bull; 검사: <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply --dry-run=server -f web.yaml</code>로 오타와 값 오류를 잡고, 넣은 필드가 결과에 남았는지 봐요.<br>
+&bull; 적용과 확인: <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply -f web.yaml</code> 뒤에 status와 이벤트로 원하는 상태가 됐는지 봐요.<br>
+client dry-run은 뼈대를 뽑을 때만 써요. 3절에서 본 것처럼 client에서는 오타도 잘못된 값도 걸리지 않았어요.</div>
+
+<p><b>출처</b> &middot; <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/3136-beta-apis-off-by-default">KEP-3136 Beta APIs Are Off by Default</a> &middot; <a href="https://kep.k8s.io/5999">KEP-5999</a> &middot; <a href="https://github.com/kubernetes/kubernetes/pull/139429">PR #139429 (httpGet protocol 필드)</a> &middot; <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/features/kube_features.go">v1.37.2 kube_features.go</a> &middot; <a href="https://kubernetes.io/docs/reference/using-api/">Kubernetes API Overview</a> &middot; <a href="https://kubernetes.io/docs/reference/kubectl/generated/kubectl_apply/">kubectl apply</a> &middot; <a href="https://kubernetes.io/docs/tasks/inject-data-application/define-interdependent-environment-variables/">Define Dependent Environment Variables</a></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">📝 정리</div>
+<p>apiVersion과 kind는 kubectl이 요청을 보낼 주소를 정해요. core 그룹은 /api/v1, 나머지는 /apis/그룹/버전이고, 서빙하지 않는 버전은 보내기 전에 거절돼요. v1.37.2 기본 설정에서 서빙 중인 내장 alpha·beta 버전은 0개였어요.</p>
+<p>apply 전 검사는 explain으로 필드를 찾고 dry-run=server로 보내는 순서가 맞았어요. client dry-run은 오타 필드와 잘못된 값을 모두 통과시켰고, --validate=false는 오타 필드를 에러 없이 버렸어요. 기능 게이트가 꺼진 httpGet.protocol도 스키마에는 있었지만 저장될 오브젝트에서 조용히 빠졌어요.</p>
+<p style="margin-bottom:0;">initContainers와 env 같은 리스트는 적은 순서대로 동작하고 status는 사람이 써도 버려져요. 에러가 없다는 것은 저장될 수 있다는 뜻일 뿐이므로 보낸 것과 저장된 것을 비교해야 해요.</p>
+</div>
+</div>

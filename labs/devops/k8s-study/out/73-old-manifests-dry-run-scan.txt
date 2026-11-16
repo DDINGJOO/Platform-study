@@ -1,0 +1,50 @@
+# 75 업그레이드 전 매니페스트 점검과 deprecated 메트릭 (2026-11-15 21:43:32 KST)
+
+## 1. 매니페스트 6개(지금 버전 2, 서빙이 끝난 옛 버전 3, deprecated GA 1)를 한 번에 서버 dry-run
+  apiVersion: apps/v1	kind: Deployment
+  apiVersion: extensions/v1beta1	kind: Deployment
+  apiVersion: policy/v1beta1	kind: PodDisruptionBudget
+  apiVersion: autoscaling/v2beta2	kind: HorizontalPodAutoscaler
+  apiVersion: v1	kind: Endpoints
+  apiVersion: discovery.k8s.io/v1	kind: EndpointSlice
+  $ kubectl apply --dry-run=server -f manifests.yaml
+    deployment.apps/new-deploy created (server dry run)
+    Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+    endpoints/legacy-ep created (server dry run)
+    endpointslice.discovery.k8s.io/new-eps created (server dry run)
+    resource mapping not found for name: "old-deploy" namespace: "blog-75" from "manifests.yaml": no matches for kind "Deployment" in version "extensions/v1beta1"
+    ensure CRDs are installed first
+    resource mapping not found for name: "old-pdb" namespace: "blog-75" from "manifests.yaml": no matches for kind "PodDisruptionBudget" in version "policy/v1beta1"
+    ensure CRDs are installed first
+    resource mapping not found for name: "old-hpa" namespace: "blog-75" from "manifests.yaml": no matches for kind "HorizontalPodAutoscaler" in version "autoscaling/v2beta2"
+    ensure CRDs are installed first
+  종료 코드: 1
+
+## 2. 각 groupVersion을 discovery에 직접 물으면
+  GET /apis/apps/v1                → 서빙 중
+  GET /apis/extensions/v1beta1     → (NotFound): the server could not find the requested resource
+  GET /apis/policy/v1beta1         → (NotFound): the server could not find the requested resource
+  GET /apis/autoscaling/v2beta2    → (NotFound): the server could not find the requested resource
+  GET /apis/discovery.k8s.io/v1    → 서빙 중
+
+## 3. deprecated GA(v1 Endpoints)만 따로: 경고는 성공 응답에 붙고, --warnings-as-errors면 실패 코드
+  $ kubectl apply --dry-run=server -f endpoints.yaml
+    Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+    endpoints/legacy-ep created (server dry run)
+    종료 코드: 0
+  $ kubectl apply --dry-run=server -f endpoints.yaml --warnings-as-errors
+    Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+    endpoints/legacy-ep created (server dry run)
+    error: 1 warning received
+    종료 코드: 1
+
+## 4. 지금 apiserver_requested_deprecated_apis와 API 서버 프로세스 시작 시각
+  apiserver_requested_deprecated_apis{group="",removed_release="",resource="endpoints",subresource="",version="v1"} 1
+  apiserver_requested_deprecated_apis{group="why-api.example.com",removed_release="",resource="widgets",subresource="",version="v1"} 1
+  kube-apiserver process_start_time_seconds → 2026-11-15 19:58:25 (로컬 시각)
+  kube-apiserver 컨테이너 restartCount: 1
+  widgets CRD(앞 실험에서 지움) 존재 여부: NotFound
+  API 서버 --audit-policy-file 플래그 수: 0
+
+## 5. 정리
+  namespace "blog-75" deleted

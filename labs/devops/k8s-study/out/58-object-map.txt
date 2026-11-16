@@ -1,0 +1,51 @@
+# 05 오브젝트 관계도 화살표 확인 (2026-11-15 20:11:37 KST)
+
+## 1. Pod → Volume: Volume 은 따로 있는 오브젝트인가
+  api-resources 중 이름에 volume 이 들어간 종류(KIND):
+    PersistentVolumeClaim
+    PersistentVolume
+    VolumeAttachment
+    VolumeAttributesClass
+  파드 스펙 안의 필드: FIELD: volumes <[]Volume>
+
+## 2. Secret → ConfigMap (Extends?): 두 종류의 최상위 필드
+  configmap (v1): apiVersion binaryData data immutable kind metadata
+  secret (v1): apiVersion data immutable kind metadata stringData type
+
+## 3. Deployment → ReplicaSet → Pod: ownerReferences
+  ReplicaSet obj-demo-695b7659f6  owner=Deployment/obj-demo  selector={"app":"obj-demo","pod-template-hash":"695b7659f6"}
+  Pod obj-demo-695b7659f6-2txhh  owner=ReplicaSet/obj-demo-695b7659f6  ip=10.244.194.106  labels={"app":"obj-demo","pod-template-hash":"695b7659f6"}
+  Pod obj-demo-695b7659f6-nzlwr  owner=ReplicaSet/obj-demo-695b7659f6  ip=10.244.100.241  labels={"app":"obj-demo","pod-template-hash":"695b7659f6"}
+
+## 4. Service → Pod: 사이에 있는 EndpointSlice
+  Service selector: {"app":"obj-demo"}  clusterIP: 10.110.168.250
+  EndpointSlice obj-demo-g4cr9  owner=Service/obj-demo  managed-by=endpointslice-controller.k8s.io
+    address=10.244.100.241  pod=obj-demo-695b7659f6-nzlwr  ready=true
+    address=10.244.194.106  pod=obj-demo-695b7659f6-2txhh  ready=true
+
+## 5. HPA → Deployment: 무엇을 바꾸고, 무엇이 필요한가
+  autoscale: Flag --cpu-percent has been deprecated, Use --cpu with percentage or resource quantity format (e.g., '70%' for utilization or '500m' for milliCPU).
+  autoscale: horizontalpodautoscaler.autoscaling/obj-demo autoscaled
+  scaleTargetRef: {"apiVersion":"apps/v1","kind":"Deployment","name":"obj-demo"}
+  Deployment 의 scale 하위 리소스: {"kind":"Scale","apiVersion":"autoscaling/v1","metadata":{"name":"obj-demo","namespace":"ch05","uid":"c72d5c19-390e-4225-a5e9-f0b4b5291eac","resourceVersion":"1000243654","creationTimestamp":"2026-11-15T11:11:40Z"},"spec":{"replicas":2},"status":{"replicas":2,"selector":"app=obj-demo"}}
+  metrics API 등록 여부(apiservice): Error from server (NotFound): apiservices.apiregistration.k8s.io "v1beta1.metrics.k8s.io" not found
+  45초 뒤 HPA conditions:
+    AbleToScale=True SucceededGetScale: the HPA controller was able to get the target's current scale
+    ScalingActive=False FailedGetResourceMetric: the HPA was unable to compute the replica count: failed to get cpu utilization: unable to get metrics for resource cpu: unable to fetch metrics from resource metrics API: the server could not find the requested resource (get pods.metrics.k8s.io)
+
+## 6. Role → Pod (Controls operations?): 파드의 ServiceAccount 권한
+  파드의 serviceAccountName: default
+  Role 없이  can-i list pods (as SA): no
+  Role+RoleBinding 뒤 can-i list pods (as SA): yes
+  같은 SA 로 can-i delete pods: no
+
+## 7. StorageClass → PV (Creates?): 누가 PV 를 만드나
+  NAME       PROVISIONER             BINDING
+local-path   rancher.io/local-path   WaitForFirstConsumer
+  PV           STORAGECLASS   CLAIM
+portainer-pv   <none>         portainer
+
+## 8. Ingress → Service: 규칙만 만들면 트래픽이 가나
+  IngressClass: No resources found
+  NAME     CLASS    HOSTS        ADDRESS
+obj-demo   <none>   demo.local   <none>

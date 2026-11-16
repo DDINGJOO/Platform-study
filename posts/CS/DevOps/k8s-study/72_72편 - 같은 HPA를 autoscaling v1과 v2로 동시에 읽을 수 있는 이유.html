@@ -1,0 +1,284 @@
+<!-- ============================================================
+  k8s 스터디 72편: 같은 HPA를 autoscaling v1과 v2로 동시에 읽을 수 있는 이유
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: autoscaling/v1으로 만든 HPA를 v2로 읽어도 uid가 같았고 etcd에는 autoscaling/v2 한 벌만 있었어요. 내부 형태와 변환, 저장 버전, v1의 annotation 3개, hpa.v1.autoscaling 함정을 확인했어요. -->
+<!-- tags: apiVersion, HorizontalPodAutoscaler, autoscaling/v2, 저장 버전, storageVersionHash, api-versions -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 72편</div>
+  70편. 네이티브 사이드카는 어떤 순서로 뜨고 어떤 순서로 죽을까<br>
+  71편. 컨테이너마다 restartPolicy를 주면 사이드카가 될까, restartPolicyRules<br>
+  <b>72편. 같은 HPA를 autoscaling v1과 v2로 동시에 읽을 수 있는 이유</b> &larr; 지금 이 글<br>
+  73편. no matches for kind 에러는 왜 날까, API deprecation policy가 정해진 과정<br>
+  74편. API 버전을 지워도 etcd의 옛 데이터는 어떻게 될까, storage version과 StorageVersionMigration
+</div>
+
+<p>autoscaling/v1 매니페스트로 HPA를 하나 만들었어요. 이름은 web이고 목표는 <code style="font-family:Menlo,monospace;font-size:14px;">targetCPUUtilizationPercentage: 50</code> 한 줄이에요. 같은 객체를 <code style="font-family:Menlo,monospace;font-size:14px;">/apis/autoscaling/v1</code>과 <code style="font-family:Menlo,monospace;font-size:14px;">/apis/autoscaling/v2</code> 두 경로로 GET 했더니 두 응답의 uid와 resourceVersion이 같았어요. 다른 것은 모양뿐이었어요. v1 응답에는 targetCPUUtilizationPercentage가 50으로 있었고 v2 응답에는 같은 값이 metrics 배열 안의 cpu Utilization 50으로 있었어요.</p>
+<p>etcd에서 그 키를 직접 꺼내 보니 저장된 apiVersion은 autoscaling/v2였어요. v1으로 만들었는데 v2로 저장돼 있었어요. 이어서 v2로 memory 지표와 behavior를 넣고 v1으로 다시 읽자 v1 응답에 <code style="font-family:Menlo,monospace;font-size:14px;">autoscaling.alpha.kubernetes.io/</code>로 시작하는 annotation 3개가 생겼어요. etcd 값에는 그 annotation이 없었어요.</p>
+<p>kubectl api-resources는 HPA의 APIVERSION을 autoscaling/v2 하나로 보여 주는데 kubectl api-versions에는 autoscaling/v1과 autoscaling/v2가 둘 다 있어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-kind-apiversion.txt</code>). 이 글은 그 두 목록의 차이에서 출발해 한 객체가 여러 버전으로 보이는 구조를 Lima VM 4대, kubeadm v1.37.2 클러스터에서 확인해요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 매니페스트의 kind와 apiVersion은 왜 둘 다 중요할까?<br>
+&middot; kubectl api-versions는 무엇을 보여 주고 api-resources와 무엇이 다를까?<br>
+&middot; 한 객체를 여러 버전으로 읽게 해 주는 구조는 무엇일까?<br>
+&middot; etcd에는 어느 버전으로 저장되고 그것은 어디서 확인할까?<br>
+&middot; v1에 없는 v2 정보는 v1 응답에서 어디로 가고 언제 사라질까?<br>
+&middot; kubectl get hpa.v1.autoscaling은 왜 v2로 요청할까?</p>
+
+<h2>1. kind는 종류를 정하고 apiVersion은 그 종류를 어느 스키마로 읽을지 정한다</h2>
+
+<p>먼저 자주 나오는 질문부터 볼게요. <b>kind와 apiVersion이 왜 그렇게 중요하다고 할까요?</b> kind만 있어도 무엇을 만들지는 알 수 있을 것 같아요. 그런데 같은 HorizontalPodAutoscaler라도 apiVersion에 따라 받아 주는 칸이 달라요. kubectl explain에 버전을 붙여 spec 아래 필드 이름만 뽑아 봤어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/72-apiversion-schema-dry-run.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">72-apiversion-schema-dry-run.sh</code>예요.</p>
+
+<div class="obsv-code">$ kubectl explain horizontalpodautoscalers.spec --api-version=autoscaling/v1
+    maxReplicas
+    minReplicas
+    scaleTargetRef
+    targetCPUUtilizationPercentage
+$ kubectl explain horizontalpodautoscalers.spec --api-version=autoscaling/v2
+    behavior
+    maxReplicas
+    metrics
+    minReplicas
+    scaleTargetRef</div>
+
+<p>v1에는 CPU 사용률 목표 하나를 적는 targetCPUUtilizationPercentage가 있어요. v2에는 그 칸이 없고 여러 지표를 담는 metrics와 늘리고 줄이는 속도를 정하는 behavior가 있어요. 같은 본문을 apiVersion만 바꿔 서버 dry-run으로 보내면 차이가 바로 드러나요. 아래 본문은 v2 모양으로 spec.metrics에 CPU 지표를 적은 것이에요.</p>
+
+<div class="obsv-code">## 4. v2 모양 본문(spec.metrics)을 apiVersion만 바꿔 서버 dry-run
+  apiVersion: autoscaling/v2
+    → horizontalpodautoscaler.autoscaling/web created (server dry run)
+  apiVersion: autoscaling/v1
+    → Error from server (BadRequest): error when creating "STDIN": HorizontalPodAutoscaler in version "v1" cannot be handled as a HorizontalPodAutoscaler: strict decoding error: unknown field "spec.metrics"</div>
+
+<p>&rarr; 서버가 본문을 v1 HPA 스키마로 풀다가 v1에 없는 spec.metrics를 만나 요청을 거절했다는 뜻이에요. 반대로 v1 모양의 targetCPUUtilizationPercentage를 autoscaling/v2로 보내면 같은 모양의 오류가 <code style="font-family:Menlo,monospace;font-size:14px;">unknown field "spec.targetCPUUtilizationPercentage"</code>를 가리켰어요. 59편에서 다룬 strict decoding 오류와 같은 단계예요. kind는 무엇을 만들지 정하고 apiVersion은 그 본문을 어떤 필드 목록으로 읽을지 정해요. <span class="obsv-mark">둘 중 하나만 틀려도 서버는 요청을 받지 않거나 의도와 다른 스키마로 읽어요.</span></p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: API 그룹과 버전</div>
+apiVersion 값은 "그룹/버전" 모양이에요. autoscaling/v2는 autoscaling 그룹의 v2예요. 가장 오래된 core 그룹만 그룹 이름 없이 v1이라고 적고 REST 경로도 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v1</code>이에요. 나머지 그룹은 <code style="font-family:Menlo,monospace;font-size:14px;">/apis/&lt;그룹&gt;/&lt;버전&gt;</code> 아래에 있어요. 그룹마다 버전을 따로 올릴 수 있게 나눈 것이에요.</div>
+
+<p>두 번째 질문이에요. <b>kubectl api-versions는 무엇을 보여 줄까요?</b> 서버가 지금 서빙하는 group/version 목록이에요. 우리 클러스터에서는 25줄이었고 autoscaling은 v1과 v2가 둘 다 있었어요. kubectl api-resources는 리소스마다 한 줄을 보여 주고 APIVERSION 열에는 그 리소스의 preferred 버전 하나만 적어요. 그래서 HPA는 autoscaling/v2로만 보여요. discovery 문서를 직접 읽으면 두 정보가 함께 나와요.</p>
+
+<div class="obsv-code">$ kubectl api-versions | grep autoscaling        (전체 25줄 중)
+  autoscaling/v1
+  autoscaling/v2
+$ kubectl api-resources --api-group=autoscaling
+  NAME                       SHORTNAMES   APIVERSION       NAMESPACED   KIND
+  horizontalpodautoscalers   hpa          autoscaling/v2   true         HorizontalPodAutoscaler
+$ kubectl get --raw /apis/autoscaling        (JSON에서 두 필드만)
+  versions: ['autoscaling/v2', 'autoscaling/v1']
+  preferredVersion: autoscaling/v2</div>
+
+<p>api-resources에 v2만 보인다고 v1이 없는 것이 아니에요. 서빙 여부는 api-versions나 그룹의 versions 목록으로 보고 기본으로 무엇을 쓰는지는 preferredVersion으로 봐요. 마지막 출력은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/72-discovery-storage-version-hash.txt</code> 2절이에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 디스커버리(discovery) 문서</div>
+<code style="font-family:Menlo,monospace;font-size:14px;">/api</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">/apis</code> 아래에서 서버가 어떤 그룹, 버전, 리소스를 서빙하는지 알려 주는 JSON이에요. kubectl은 이 문서로 매니페스트의 kind와 apiVersion을 요청할 REST 경로로 바꿔요. api-versions와 api-resources도 이 문서를 읽어 보여 줘요.</div>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 apiVersion을 정할 때 보는 순서</div>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl api-resources</code>로 그 kind의 preferred 버전을 봐요<br>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl api-versions</code>로 쓰려는 group/version이 지금 서빙되는지 봐요<br>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl explain &lt;리소스&gt;.spec --api-version=&lt;그룹/버전&gt;</code>으로 그 버전의 필드를 봐요<br>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply --dry-run=server</code>로 서버가 실제로 받는지 확인해요</div>
+
+<h2>2. 서버 안에는 버전 없는 내부 형태가 하나 있고 모든 버전은 그것과만 변환된다</h2>
+
+<p>필드 목록이 이렇게 다른데 도입부의 HPA는 v1과 v2 두 경로에서 같은 uid로 나왔어요. 서버가 버전마다 객체를 따로 들고 있다면 버전이 늘 때마다 같은 객체가 여러 벌 생기고 한쪽을 고칠 때마다 다른 쪽을 맞춰야 해요. 쿠버네티스 API 변경 지침인 <a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api_changes.md">api_changes.md</a>는 그렇게 하지 않는다고 적어요.</p>
+
+<div class="obsv-code">The conversion process is logically a "star" with the internal form at the center.
+Every versioned API can be converted to the internal form (and vice-versa),
+but versioned APIs do not convert to other versioned APIs directly.</div>
+
+<p>&rarr; 변환은 내부 형태를 가운데 둔 별 모양이고 각 외부 버전은 내부 형태와만 오가며 외부 버전끼리는 직접 바꾸지 않는다는 뜻이에요.</p>
+<p>같은 문서는 가상의 예도 들어요. 사용자가 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v7beta1</code>로 Pod를 POST하면 서버는 본문을 v7beta1.Pod로 풀고 기본값을 채운 뒤 내부 형태인 api.Pod로 바꿔 검증해요. 저장할 때는 "가장 최근 stable 버전"인 v6.Pod로 바꿔 etcd에 써요. 다른 사용자가 <code style="font-family:Menlo,monospace;font-size:14px;">/api/v5</code>로 GET하면 etcd의 v6.Pod를 읽어 내부 형태로 올린 뒤 v5.Pod로 바꿔 돌려줘요. 버전끼리 직접 바꾸면 버전 쌍마다 변환 함수가 필요해서 버전 수의 제곱에 가깝게 늘어나요. 가운데에 내부 형태를 두면 버전마다 오가는 두 방향만 있으면 돼요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 내부 형태(internal version)</div>
+API 서버 코드가 기본값 처리와 검증에 쓰는 버전 없는 구조체예요. 사용자는 이 형태를 볼 수 없어요. 응답으로 나가거나 etcd에 저장될 때는 항상 v1, v2 같은 외부 버전으로 바뀌어요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 390" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="v1과 v2 요청이 내부 형태를 거쳐 etcd의 v2 한 벌과 오가는 구조">
+<defs><marker id="k72-star-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5 C4 3, 6 4, 8.5 5 C6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="32" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="25" fill="#3d3a34">HPA 하나를 두 버전으로 읽는 길</text>
+<path d="M28 62 C 90 59, 160 63, 222 60 C 225 84, 224 106, 223 130 C 160 133, 90 129, 30 131 C 27 108, 29 84, 28 62 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<path d="M478 60 C 540 63, 610 59, 672 62 C 674 86, 673 108, 671 131 C 610 129, 540 133, 480 130 C 477 108, 479 84, 478 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="23" text-anchor="middle" fill="#3d6591"><text x="125" y="92">autoscaling/v1</text><text x="575" y="92">autoscaling/v2</text></g>
+<g font-family="Menlo,monospace" font-size="11.5" text-anchor="middle" fill="#3d3a34"><text x="125" y="116">targetCPU...: 50</text><text x="575" y="116">metrics: [cpu 50]</text></g>
+<path d="M350 150 C 425 148, 462 170, 459 196 C 456 224, 414 240, 350 239 C 284 238, 242 222, 244 195 C 246 168, 282 151, 350 150 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linejoin="round"/>
+<text x="350" y="190" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="26" fill="#a86b12">내부 형태</text>
+<text x="350" y="216" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#8a8272">버전 없음 · 기본값 · 검증</text>
+<path d="M205 140 C 228 158, 244 168, 262 178" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-start="url(#k72-star-arrow)" marker-end="url(#k72-star-arrow)"/>
+<path d="M495 140 C 472 158, 456 168, 438 178" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-start="url(#k72-star-arrow)" marker-end="url(#k72-star-arrow)"/>
+<path d="M350 248 C 348 262, 352 272, 350 286" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-start="url(#k72-star-arrow)" marker-end="url(#k72-star-arrow)"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="19" fill="#8a8272"><text x="160" y="175">변환</text><text x="508" y="175">변환</text><text x="362" y="274">저장 버전 v2로 변환</text></g>
+<path d="M218 294 C 300 291, 400 295, 482 292 C 485 310, 484 328, 483 346 C 400 349, 300 345, 220 347 C 217 328, 219 310, 218 294 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="327" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="23" fill="#2e6b41">💾 etcd: autoscaling/v2 한 벌</text>
+<path d="M232 98 C 300 94, 400 94, 468 98" fill="none" stroke="#b3502f" stroke-width="1.8" stroke-dasharray="6 6"/>
+<text x="350" y="124" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#b3502f">v1과 v2를 직접 잇는 변환은 없어요</text>
+<text x="350" y="377" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#b3502f">= 어느 경로로 읽어도 같은 저장 값을 바꿔서 보여 줘요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 1. v1과 v2는 내부 형태하고만 오가고 etcd에는 저장 버전 하나만 있어요.</p>
+
+<p>이 구조에서 어느 외부 버전을 앞세울지는 그룹마다 코드로 정해요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/apis/autoscaling/install/install.go">v1.37.2의 autoscaling 설치 코드</a>는 <code style="font-family:Menlo,monospace;font-size:14px;">scheme.SetVersionPriority(v2.SchemeGroupVersion, v1.SchemeGroupVersion)</code>으로 v2를 앞에 둬요. discovery가 preferredVersion을 autoscaling/v2로 알려 준 이유예요.</p>
+<p>API 그룹을 처음 설계할 때부터 같은 종류를 여러 곳에 두는 일을 염두에 뒀어요. <a href="https://github.com/kubernetes/design-proposals-archive/blob/main/api-machinery/api-group.md">API 그룹 설계 문서</a>의 목표에는 "Supporting identically named kinds to exist in different groups"가 있어요. 새 그룹에서 기능을 실험하는 동안 원래 그룹의 stable API를 함께 지원하려는 목적이었어요. extensions 그룹과 apps 그룹의 Deployment, core 그룹과 events.k8s.io 그룹의 Event가 그 예예요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubeapiserver/default_storage_factory_builder.go">v1.37.2의 저장소 설정 코드</a>에도 <code style="font-family:Menlo,monospace;font-size:14px;">AddCohabitatingResources(apps.Resource("deployments"), extensions.Resource("deployments"))</code>처럼 두 그룹의 리소스를 같은 저장소로 묶은 줄이 남아 있어요.</p>
+<p>버전 사이를 오갈 때 정보를 잃으면 안 된다는 규칙도 있어요. <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/deprecation-policy.md">deprecation policy</a>의 Rule #2는 2017년 첫 판부터 같은 문장을 적고 있어요. "any new field added in v2 must be able to round-trip to v1 and back, which means v1 might have to add an equivalent field or represent it as an annotation." v2에 새로 생긴 칸은 v1으로 갔다가 돌아와도 잃지 않아야 하고 v1에 같은 칸이 없으면 annotation으로라도 담아야 한다는 뜻이에요. 도입부의 annotation 3개가 이 규칙에서 나왔어요. 4장에서 다시 봐요.</p>
+
+<h2>3. etcd에는 리소스마다 저장 버전 한 벌만 있고 discovery의 해시로 그 버전을 확인한다</h2>
+
+<p>저장 버전을 직접 확인했어요. 22편에서 쓴 방법대로 etcd 파드 안의 etcdctl로 HPA 키를 꺼내 값의 앞부분을 풀었어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/72-hpa-v1-v2-etcd.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">72-hpa-v1-v2-etcd.sh</code>예요. 실험 때 쓴 네임스페이스 이름은 why-api예요.</p>
+
+<div class="obsv-code">## 2. 같은 객체를 두 버전 경로로 GET
+  GET /apis/autoscaling/v1/namespaces/why-api/horizontalpodautoscalers/web
+    apiVersion: autoscaling/v1 | uid: 7b4c5407-0a88-4da6-836c-545d1073348d | resourceVersion: 1000251400
+    spec: {"minReplicas": 1, "maxReplicas": 3, "targetCPUUtilizationPercentage": 50}
+  GET /apis/autoscaling/v2/namespaces/why-api/horizontalpodautoscalers/web
+    apiVersion: autoscaling/v2 | uid: 7b4c5407-0a88-4da6-836c-545d1073348d | resourceVersion: 1000251400
+    spec: {"minReplicas": 1, "maxReplicas": 3, "metrics": [{"type": "Resource", "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": 50}}}]}
+
+## 3. etcd에 저장된 것 (/registry/horizontalpodautoscalers/why-api/web)
+  형식 protobuf | apiVersion=autoscaling/v2 kind=HorizontalPodAutoscaler | mod_revision=1000251400 | 778바이트
+    값 안에 'autoscaling.alpha.kubernetes.io'             없음
+    값 안에 'averageUtilization'                          없음
+    값 안에 'targetCPUUtilizationPercentage'              있음</div>
+
+<p>autoscaling/v1으로 만들었는데 etcd 값의 apiVersion은 autoscaling/v2였어요. 22편에서 기본 리소스의 etcd 값이 <code style="font-family:Menlo,monospace;font-size:14px;">k8s\0</code> 네 바이트로 시작하고 그 뒤에 apiVersion과 kind가 온다는 것을 봤어요. 2016년 <a href="https://github.com/kubernetes/design-proposals-archive/blob/main/api-machinery/protobuf.md">protobuf 설계 문서</a>는 그 봉투를 붙이는 이유를 "self identifying at rest, like JSON, in order for backwards compatibility in storage to work"라고 적어요. 값마다 어떤 버전으로 썼는지 적혀 있어야 나중에 저장 버전이 바뀌어도 옛 값을 옛 버전의 디코더로 읽어 내부 형태로 올릴 수 있어요. 응답의 resourceVersion과 etcd의 mod_revision이 같은 값인 것도 22편에서 본 그대로예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 저장 버전(storage version)</div>
+API 서버가 etcd에 쓸 때 고르는 외부 버전이에요. 리소스마다 하나이고 클라이언트가 어느 버전으로 요청했는지와 상관없이 이 버전으로 써요. 우리 클러스터에서 HPA의 저장 버전은 autoscaling/v2였어요.</div>
+
+<p>값 안에 averageUtilization은 없는데 targetCPUUtilizationPercentage는 있었어요. protobuf 본문에는 필드 이름 대신 번호가 들어가서 앞의 것이 없는 것은 자연스러워요. 뒤의 것은 managedFields에서 왔어요. kubectl create로 만든 항목은 <code style="font-family:Menlo,monospace;font-size:14px;">apiVersion=autoscaling/v1</code>로 기록됐고 필드 목록에 <code style="font-family:Menlo,monospace;font-size:14px;">f:targetCPUUtilizationPercentage</code>가 있었어요. kube-controller-manager의 항목은 autoscaling/v2로 기록됐어요. 저장은 v2 한 벌이지만 누가 어느 버전으로 어떤 칸을 썼는지는 그 사람이 쓴 버전의 이름으로 남아요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: managedFields</div>
+객체의 각 필드를 어느 관리자(kubectl, 컨트롤러 등)가 어떤 apiVersion으로 썼는지 기록하는 메타데이터예요. 필드 목록인 fieldsV1은 JSON이라 protobuf로 저장된 값 안에서도 필드 이름이 글자 그대로 보여요.</div>
+
+<p>etcd를 열지 않고 저장 버전을 확인하는 곳도 있어요. discovery 문서의 리소스마다 붙는 storageVersionHash예요. 1.14에 alpha 필드로 들어왔어요(<a href="https://github.com/kubernetes/kubernetes/pull/73191">#73191</a>). <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/endpoints/discovery/storageversionhash.go">v1.37.2 코드</a>는 "group/version/kind" 문자열의 SHA-256 앞 8바이트를 base64로 적어요. 같은 계산을 후보 문자열마다 해서 discovery 값과 맞춰 봤어요.</p>
+
+<div class="obsv-code">  discovery 경로 / 리소스                                 storageVersionHash
+  /apis/autoscaling/v1  horizontalpodautoscalers               qwQve8ut294=
+  /apis/autoscaling/v2  horizontalpodautoscalers               qwQve8ut294=
+  /api/v1  events                                              r2yiGXH7wu8=
+  /apis/events.k8s.io/v1  events                               r2yiGXH7wu8=
+  직접 계산:
+    autoscaling/v1/HorizontalPodAutoscaler                     oQlkt7f5j/A=
+    autoscaling/v2/HorizontalPodAutoscaler                     qwQve8ut294=
+    /v1/Event                                                  r2yiGXH7wu8=
+    events.k8s.io/v1/Event                                     x51sC10/5OA=</div>
+
+<p>HPA는 v1 경로로 물어도 v2 경로로 물어도 qwQve8ut294=였고 이 값은 autoscaling/v2로 계산한 값과 같았어요. v1으로 계산하면 oQlkt7f5j/A=라서 달라요. Event도 흥미로워요. events.k8s.io/v1 경로의 해시가 그 그룹 이름으로 계산한 x51sC10/5OA=가 아니라 core v1 Event로 계산한 r2yiGXH7wu8=였어요. events.k8s.io/v1으로 만든 Event도 core v1 Event로 저장된다는 뜻이에요. 앞에서 본 cohabitating 설정과 맞는 결과예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: storageVersionHash</div>
+discovery 문서가 리소스마다 알려 주는 저장 버전의 해시예요. 1.14 CHANGELOG는 "Its value must be treated as opaque by clients. Only equality comparison on the value is valid."라고 적어요. 값이 바뀌었는지 비교하는 용도이고 거꾸로 풀어 버전 이름을 얻을 수는 없어요.</div>
+
+<p>평문 대신 해시를 고른 이유는 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/2342-exposing-hashed-storage-versions-via-the-discovery-API">KEP-2342</a>에 있어요. 이 정보를 쓸 곳은 저장 버전 마이그레이션 도구뿐이고 그 도구는 같은지 다른지만 알면 되니 "we use the hash value instead of the plain text to avoid clients misusing the information"이라고 적었어요. v1.37.2의 해시 함수 주석도 이 계산 방식은 바뀔 수 있으니 클라이언트가 기대지 말라고 경고해요. 위처럼 계산해서 맞춰 보는 것은 확인용으로만 써야 해요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ preferred 버전과 저장 버전은 같은 말이 아니에요</div>
+2017년 deprecation policy 개정 리뷰(<a href="https://github.com/kubernetes/website/pull/5338">website #5338</a>)에서 lavalamp는 "The api-preferred and storage-default versions don't need to be the same."라고 적었어요. HPA는 둘 다 v2였지만 늘 그렇지는 않아요. 1.37에 GA 된 StorageVersionMigration은 api-resources의 APIVERSION이 storagemigration.k8s.io/v1인데 discovery 해시는 서빙하지 않는 v1beta1의 해시 pCjmmKOkLy4=와 같았어요(<code style="font-family:Menlo,monospace;font-size:14px;">72-discovery-storage-version-hash.txt</code> 4절). 기본으로 쓰는 버전을 보고 etcd의 버전을 짐작하면 틀릴 수 있어요.</div>
+
+<h2>4. v1에 자리가 없는 정보는 annotation으로 나오고 v1 매니페스트로 덮어쓰면 사라진다</h2>
+
+<p>이제 Rule #2를 확인할 차례예요. v2 경로(<code style="font-family:Menlo,monospace;font-size:14px;">horizontalpodautoscalers.v2.autoscaling</code>)에 merge patch로 memory 사용률 70% 지표와 <code style="font-family:Menlo,monospace;font-size:14px;">behavior.scaleDown.stabilizationWindowSeconds: 60</code>을 넣었어요. v1에는 둘 다 자리가 없어요. 그 뒤 같은 객체를 v1과 v2로 읽었어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/72/01-hpa-v1-annotations.png" alt="같은 HPA를 v1으로 읽으면 autoscaling.alpha.kubernetes.io annotation 3개가 생기고 v2로 읽으면 annotation 0개, metrics cpu 50과 memory 70이 보이는 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 2. v1 응답에만 annotation 3개가 생겼고 v2 응답의 annotation은 0개였어요.</p>
+
+<p>v1 응답의 targetCPUUtilizationPercentage는 50 그대로였어요. v1에 담을 수 없는 나머지가 annotation 세 개로 나왔어요. metrics annotation에는 memory 지표만 들어 있었어요. CPU 지표는 v1의 targetCPUUtilizationPercentage 칸으로 갔기 때문이에요. behavior와 conditions도 각각 JSON 문자열로 들어갔어요. conditions는 status 쪽 정보예요. 대상 Deployment를 일부러 만들지 않아서 AbleToScale이 False, 이유가 FailedGetScale이었어요.</p>
+<p>v2로 읽은 응답의 annotation은 0개였어요. 패치 뒤 etcd 값은 1184바이트로 커졌고 그 안에 memory는 있었지만 autoscaling.alpha.kubernetes.io는 없었어요. <span class="obsv-mark">annotation은 저장된 것이 아니라 v1으로 바꿔 내보낼 때마다 만들어져요.</span></p>
+<p>그 일을 하는 곳은 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/apis/autoscaling/v1/conversion.go">v1.37.2의 v1 변환 함수</a>예요. 먼저 객체에 남아 있던 왕복용 annotation을 지워서 이번 변환에서 만든 것만 남게 하고, v1으로 표현하지 못한 지표를 JSON으로 묶어 metrics annotation에 넣어요.</p>
+
+<div class="obsv-code">func Convert_autoscaling_HorizontalPodAutoscaler_To_v1_HorizontalPodAutoscaler(in *autoscaling.HorizontalPodAutoscaler, ...) error {
+	...
+	// clear any pre-existing round-trip annotations to make sure the only ones set are ones we produced during conversion
+	annotations, copiedAnnotations := autoscaling.DropRoundTripHorizontalPodAutoscalerAnnotations(out.Annotations)
+	...
+		out.Annotations[autoscaling.MetricSpecsAnnotation] = string(otherMetricsEnc)</div>
+
+<p><a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/apis/autoscaling/annotations.go">같은 패키지</a>에는 metrics, current-metrics, conditions, behavior, scale-down-tolerance, scale-up-tolerance 여섯 개의 annotation 키가 정의돼 있어요. 이번 실험에서 나온 것은 그중 세 개였어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 왕복 변환(round-trip)</div>
+객체를 한 버전으로 읽어 다른 버전으로 바꿨다가 원래 버전으로 돌아와도 내용이 같아야 한다는 요구예요. deprecation policy의 Rule #2가 이 요구를 정하고 HPA는 v1에 없는 칸을 annotation에 실어 지켜요.</div>
+
+<p>왕복이 실제로 지켜지는지 두 가지로 확인했어요. 첫째, v1으로 GET한 JSON을 그대로 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl replace</code>로 PUT 했어요. annotation까지 함께 돌려보낸 셈이에요. 다시 v2로 읽자 memory=70, cpu=50, behavior 60이 그대로였어요. 지표 순서만 cpu, memory에서 memory, cpu로 바뀌었어요.</p>
+<p>둘째, annotation 없이 targetCPUUtilizationPercentage만 적은 v1 매니페스트로 replace 했어요. v1만 아는 도구가 자기 파일로 객체 전체를 덮어쓰는 상황이에요. replace는 오류 없이 끝났어요. 다시 v2로 읽자 metrics에는 cpu=50만 남았고 behavior는 비어 있었어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/72/02-hpa-v1-overwrite-and-kubectl-url.png" alt="v1으로 읽은 그대로 PUT하면 memory 70과 behavior 60이 남고, annotation 없는 v1 매니페스트로 덮어쓰면 cpu 50만 남으며, hpa.v1.autoscaling 요청 URL이 autoscaling/v2인 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 3. 받은 그대로 돌려보내면 남았고 자기 v1 매니페스트로 덮어쓰면 memory와 behavior가 사라졌어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 370" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="v1으로 읽은 HPA를 그대로 돌려보낼 때와 annotation 없는 v1 매니페스트로 덮어쓸 때의 차이">
+<defs><marker id="k72-rt-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3, 6 4, 8.5 5 C6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="32" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="25" fill="#3d3a34">v1 클라이언트가 PUT 하는 두 가지 방법</text>
+<path d="M22 112 C 80 109, 150 113, 206 110 C 209 140, 208 172, 207 202 C 150 205, 80 201, 24 203 C 21 172, 23 140, 22 112 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="114" y="140" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#2e6b41">💾 etcd (v2)</text>
+<g font-family="Menlo,monospace" font-size="12" text-anchor="middle" fill="#3d3a34"><text x="114" y="164">cpu 50, memory 70</text><text x="114" y="186">behavior 60s</text></g>
+<path d="M246 110 C 300 107, 380 111, 438 108 C 441 140, 440 172, 439 204 C 380 207, 300 203, 248 205 C 245 172, 247 140, 246 110 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="342" y="140" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d6591">v1으로 GET한 모양</text>
+<g font-family="Menlo,monospace" font-size="12" text-anchor="middle" fill="#3d3a34"><text x="342" y="164">targetCPU...: 50</text><text x="342" y="186">annotation 3개</text></g>
+<path d="M480 58 C 540 55, 620 59, 678 56 C 681 84, 680 112, 679 140 C 620 143, 540 139, 482 141 C 479 112, 481 84, 480 58 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="20" text-anchor="middle"><text x="579" y="86" fill="#2e6b41">받은 그대로 PUT</text><text x="579" y="112" fill="#3d3a34">memory 70, cpu 50 ✔</text><text x="579" y="134" fill="#8a8272" font-size="17">behavior 남음, 순서만 바뀜</text></g>
+<path d="M480 186 C 540 183, 620 187, 678 184 C 681 212, 680 240, 679 268 C 620 271, 540 267, 482 269 C 479 240, 481 212, 480 186 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="20" text-anchor="middle"><text x="579" y="214" fill="#b3502f" font-size="19">자기 v1 매니페스트로 PUT</text><text x="579" y="240" fill="#3d3a34">cpu 50만 남음 ✘</text><text x="579" y="262" fill="#8a8272" font-size="17">behavior 비어 있음</text></g>
+<path d="M210 156 C 222 154, 232 156, 240 157" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k72-rt-arrow)"/>
+<path d="M444 140 C 455 122, 462 112, 474 104" fill="none" stroke="#5a9e6f" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k72-rt-arrow)"/>
+<path d="M444 175 C 455 196, 462 208, 474 218" fill="none" stroke="#e5533c" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k72-rt-arrow)"/>
+<text x="226" y="143" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#8a8272">변환</text>
+<text x="350" y="318" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#b3502f">= 왕복은 클라이언트가 annotation을 돌려줄 때만 지켜졌어요</text>
+<text x="350" y="350" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">annotation은 etcd에 없고 v1으로 내보낼 때마다 새로 만들어져요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 4. Rule #2의 왕복은 서버 변환이 annotation을 만들고 클라이언트가 그것을 돌려줄 때 지켜져요.</p>
+
+<p>Rule #2가 약속하는 "identical"은 서버의 변환 함수가 지키는 성질로 보는 것이 이 결과와 맞아요. 클라이언트가 annotation을 버리고 객체 전체를 다시 쓰면 서버는 그것을 사용자의 의도로 받아들여요. 실험에서 그렇게 받아들였어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 옛 버전으로 적힌 매니페스트로 객체 전체를 덮어쓰지 마세요</div>
+&bull; autoscaling/v1 매니페스트로 replace 하자 다른 사람이 v2로 넣은 memory 지표와 behavior가 오류 없이 사라졌어요<br>
+&bull; 한 객체를 여러 도구가 고친다면 매니페스트와 도구를 모두 같은 버전(HPA라면 preferred인 autoscaling/v2)으로 맞추는 편이 안전해요<br>
+&bull; 꼭 v1으로 다뤄야 한다면 GET한 객체를 고쳐 돌려보내서 annotation이 같이 가게 해요</div>
+
+<h2>5. kubectl get hpa.v1.autoscaling은 버전을 무시하고 v2로 간다</h2>
+
+<p>실험 중에 함정이 하나 더 있었어요. kubectl은 리소스를 "리소스.버전.그룹" 모양으로 쓰면 그 버전으로 요청해요. 그런데 짧은 이름으로 쓴 <code style="font-family:Menlo,monospace;font-size:14px;">hpa.v1.autoscaling</code>은 요청 URL이 v2였어요. 그림 3 아래쪽이 -v=6으로 찍은 요청 URL이에요.</p>
+
+<div class="obsv-code">## 9. kubectl 함정: 짧은 이름에 버전을 붙이면(hpa.v1.autoscaling) 버전이 무시되고 preferredVersion으로 간다
+  kubectl get hpa.v1.autoscaling                       → url="https://192.168.64.2:6443/apis/autoscaling/v2/namespaces/why-api/horizontalpodautoscalers?limit=500"
+  kubectl get horizontalpodautoscalers.v1.autoscaling  → url="https://192.168.64.2:6443/apis/autoscaling/v1/namespaces/why-api/horizontalpodautoscalers?limit=500"</div>
+
+<p>짧은 이름 hpa에 버전을 붙이면 버전 부분이 무시되고 preferred 버전인 v2로 갔어요. 전체 리소스 이름 horizontalpodautoscalers를 쓰니 v1으로 갔어요. 표 출력만 보면 둘 다 같은 HPA 목록이라 어느 버전으로 읽었는지 알아채기 어려워요. 4장의 patch와 get도 그래서 전체 이름으로 썼어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 특정 버전으로 읽고 쓰고 싶을 때</div>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">horizontalpodautoscalers.v1.autoscaling</code>처럼 전체 리소스 이름을 써요<br>
+&bull; 의심되면 <code style="font-family:Menlo,monospace;font-size:14px;">-v=6</code>을 붙여 요청 URL의 버전을 확인하거나 <code style="font-family:Menlo,monospace;font-size:14px;">-o yaml</code> 출력의 apiVersion 줄을 봐요<br>
+&bull; 경로를 직접 정하려면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get --raw /apis/autoscaling/v1/namespaces/&lt;ns&gt;/horizontalpodautoscalers/&lt;이름&gt;</code>을 써요</div>
+
+<p>여기까지 보면 서버는 버전 사이를 꽤 잘 이어 줘요. 그래서 남는 의문이 있어요. 서버 코드에는 extensions 그룹의 Deployment를 apps 그룹과 같은 저장소로 묶은 줄이 아직 있어요. 그런데 1.37 서버를 상대로 <code style="font-family:Menlo,monospace;font-size:14px;">apiVersion: extensions/v1beta1</code> Deployment를 kubectl apply 하면 <code style="font-family:Menlo,monospace;font-size:14px;">no matches for kind "Deployment" in version "extensions/v1beta1"</code> 메시지로 막혀요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-kind-apiversion.txt</code>). 서버가 어느 버전을 받아 주는지는 변환 구조와 따로 정해진다는 뜻이에요.</p>
+
+<p><b>출처</b><br>
+&middot; <a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api_changes.md">api_changes.md: 내부 형태를 가운데 둔 "star" 변환</a><br>
+&middot; <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/deprecation-policy.md">deprecation policy Rule #2</a>, <a href="https://github.com/kubernetes/website/pull/5338">website #5338 리뷰</a><br>
+&middot; <a href="https://github.com/kubernetes/design-proposals-archive/blob/main/api-machinery/api-group.md">API 그룹 설계 문서</a>, <a href="https://github.com/kubernetes/design-proposals-archive/blob/main/api-machinery/protobuf.md">protobuf 저장 설계 문서(2016)</a><br>
+&middot; <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/2342-exposing-hashed-storage-versions-via-the-discovery-API">KEP-2342</a>, <a href="https://github.com/kubernetes/kubernetes/pull/73191">PR #73191</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.14.md">CHANGELOG-1.14</a><br>
+&middot; v1.37.2 소스: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/apis/autoscaling/install/install.go">install.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubeapiserver/default_storage_factory_builder.go">default_storage_factory_builder.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/endpoints/discovery/storageversionhash.go">storageversionhash.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/apis/autoscaling/annotations.go">annotations.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/apis/autoscaling/v1/conversion.go">v1/conversion.go</a></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">📝 정리</div>
+<p>같은 HPA를 v1과 v2로 읽을 수 있는 것은 API 서버 안에 버전 없는 내부 형태가 하나 있고 모든 외부 버전이 그것과만 변환되기 때문이에요. etcd에는 리소스마다 저장 버전 한 벌만 있어요. autoscaling/v1으로 만든 HPA도 etcd에는 autoscaling/v2로 들어 있었고 discovery의 storageVersionHash도 두 경로 모두 v2의 해시 qwQve8ut294=였어요.</p>
+<p>v1에 자리가 없는 v2 정보는 v1 응답에서 annotation 3개로 나왔고 그 annotation은 저장되지 않았어요. 받은 그대로 돌려보내면 memory 지표와 behavior가 남았지만 annotation 없는 v1 매니페스트로 덮어쓰면 replace가 성공한 채로 사라졌어요.</p>
+<p style="margin-bottom:0;">kind는 만들 종류를, apiVersion은 그 본문을 읽을 스키마를 정해요. 버전을 지정해 읽을 때는 hpa.v1.autoscaling이 아니라 horizontalpodautoscalers.v1.autoscaling처럼 전체 이름을 써야 그 버전으로 요청이 가요.</p>
+</div>
+</div>

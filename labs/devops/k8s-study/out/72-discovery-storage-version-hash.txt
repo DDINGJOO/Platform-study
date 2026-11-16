@@ -1,0 +1,43 @@
+# 01 discovery의 preferredVersion과 storageVersionHash (2026-11-15 21:12:49 KST)
+
+## 1. API 서버 버전과 emulation / min-compatibility 버전 (/version)
+  gitVersion v1.37.2 | emulation 1.37 | minCompatibility 1.36
+
+## 2. autoscaling 그룹: 두 버전을 서빙하고 그중 하나가 preferredVersion (/apis/autoscaling)
+  versions: ['autoscaling/v2', 'autoscaling/v1']
+  preferredVersion: autoscaling/v2
+
+## 3. 같은 리소스를 다른 버전·다른 그룹 경로로 물어도 storageVersionHash는 같다
+   (해시 = base64(sha256("<group>/<version>/<Kind>")[:8]), v1.37.2 storageversionhash.go)
+  discovery 경로 / 리소스                                 storageVersionHash
+  /apis/autoscaling/v1  horizontalpodautoscalers               qwQve8ut294=
+  /apis/autoscaling/v2  horizontalpodautoscalers               qwQve8ut294=
+  /api/v1  events                                              r2yiGXH7wu8=
+  /apis/events.k8s.io/v1  events                               r2yiGXH7wu8=
+  직접 계산:
+    autoscaling/v1/HorizontalPodAutoscaler                     oQlkt7f5j/A=
+    autoscaling/v2/HorizontalPodAutoscaler                     qwQve8ut294=
+    /v1/Event                                                  r2yiGXH7wu8=
+    events.k8s.io/v1/Event                                     x51sC10/5OA=
+  → HPA는 v1으로 물어도 v2로 물어도 autoscaling/v2로 저장. events.k8s.io/v1 Event는 core v1 Event와 같은 저장소(/registry/events)를 쓴다.
+
+## 4. '서빙하지 않는 beta 버전'으로 저장되는 리소스: 1.37에 GA 된 것(Rule #4b) + CRD 객체 자체(1.22에 v1beta1 서빙 중단)
+  리소스                                          discovery      v1 해시      v1beta1 해시
+  storagemigration.k8s.io/storageversionmigrations   pCjmmKOkLy4=   fG8W2W0mBLo=   pCjmmKOkLy4=
+  certificates.k8s.io/podcertificaterequests         wYA9yXQH8fg=   y6DwA8NQC8M=   wYA9yXQH8fg=
+  certificates.k8s.io/clustertrustbundles            v5yhuVertL4=   R/wbJqMRFu8=   v5yhuVertL4=
+  apiextensions.k8s.io/customresourcedefinitions     jfWCUB31mvA=   M5uH+AlWATY=   jfWCUB31mvA=
+  그 beta 버전 경로는 서빙되지 않는다:
+    GET /apis/storagemigration.k8s.io/v1beta1      → (NotFound): the server could not find the requested resource
+    GET /apis/certificates.k8s.io/v1beta1          → (NotFound): the server could not find the requested resource
+    GET /apis/apiextensions.k8s.io/v1beta1         → (NotFound): the server could not find the requested resource
+    GET /apis/scheduling.k8s.io/v1beta1            → (NotFound): the server could not find the requested resource
+
+## 5. 저장 버전·마이그레이션 관련 feature gate (kube-apiserver /metrics의 kubernetes_feature_enabled)
+  kubernetes_feature_enabled{name="APIServerIdentity",stage="BETA"} 1
+  kubernetes_feature_enabled{name="StorageVersionAPI",stage="ALPHA"} 0
+  kubernetes_feature_enabled{name="StorageVersionHash",stage="BETA"} 1
+  kubernetes_feature_enabled{name="StorageVersionMigrator",stage=""} 1
+  storagemigration.k8s.io 리소스:
+    NAME                       SHORTNAMES   APIVERSION                   NAMESPACED   KIND
+    storageversionmigrations                storagemigration.k8s.io/v1   false        StorageVersionMigration

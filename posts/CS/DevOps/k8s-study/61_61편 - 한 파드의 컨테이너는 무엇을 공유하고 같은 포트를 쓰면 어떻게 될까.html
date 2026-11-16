@@ -1,0 +1,353 @@
+<!-- ============================================================
+  k8s 스터디 61편: 한 파드의 컨테이너는 무엇을 공유하고 같은 포트를 쓰면 어떻게 될까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 한 파드에 80번 포트 nginx 두 개를 넣자 API 서버는 경고 한 줄만 내고 만들었고 하나는 Address in use로 재시작을 반복했어요. 같은 파드의 컨테이너가 함께 쓰는 네임스페이스와 따로 쓰는 것을 실험으로 나눠 봤어요. -->
+<!-- tags: 멀티 컨테이너 파드, pause 컨테이너, 리눅스 네임스페이스, shareProcessNamespace, containerPort, Address in use -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 61편</div>
+  59편. kubectl apply 전에 YAML 실수를 잡는 법, explain과 dry-run=server<br>
+  60편. ReplicaSet은 왜 내가 만든 파드를 지울까, 라벨 셀렉터와 Deployment<br>
+  <b>61편. 한 파드의 컨테이너는 무엇을 공유하고 같은 포트를 쓰면 어떻게 될까</b> &larr; 지금 이 글<br>
+  62편. kubectl rollout status가 성공했는데 파드는 왜 죽어 있을까<br>
+  63편. 파드 phase와 conditions는 어떤 순서로 바뀌고 Terminating은 왜 phase가 아닐까
+</div>
+
+<p>같은 파드에 nginx:1.27-alpine 컨테이너 두 개를 넣고 둘 다 <code style="font-family:Menlo,monospace;font-size:14px;">containerPort: 80</code>을 적어 apply했어요. 이름만 web1과 web2로 다르게 줬어요. API 서버는 요청을 거절하지 않았어요. 경고 한 줄을 낸 뒤 파드를 만들었어요.</p>
+
+<div class="obsv-code">Warning: spec.containers[1].ports[0]: duplicate port definition with spec.containers[0].ports[0]
+pod/same-port created</div>
+
+<p>40초 뒤 파드는 <code style="font-family:Menlo,monospace;font-size:14px;">1/2 Error</code>였고 web2는 두 번 재시작한 상태였어요. web2의 마지막 로그에는 <code style="font-family:Menlo,monospace;font-size:14px;">bind() to [::]:80 failed (98: Address in use)</code>가 남아 있었어요. web1과 web2는 프로세스도 파일 시스템도 따로인 별개의 컨테이너인데 web2는 80번 포트를 이미 누군가 쓰고 있다는 오류로 죽었어요.</p>
+
+<p>43편에서는 쿠버네티스가 왜 컨테이너가 아니라 파드를 띄우고 pause 컨테이너가 왜 생겼는지를 역사로 따라갔어요. 이번에는 그 결과로 지금 한 파드의 컨테이너가 실제로 무엇을 함께 쓰고 무엇을 따로 쓰는지 컨테이너 안에서 확인해요. 클러스터는 Lima VM 4대(마스터 1, 워커 3, arm64)에 kubeadm v1.37.2, containerd 2.4.1, Calico v3.33.0을 올린 실습 환경이에요.</p>
+
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 같은 포트를 쓰는 컨테이너 둘을 한 파드에 넣으면 왜 API 서버는 막지 않을까?<br>
+&middot; 다른 컨테이너인데 localhost로 서로 닿고 호스트 이름이 같은 이유는 뭘까?<br>
+&middot; 함께 쓰는 리눅스 네임스페이스와 따로 쓰는 네임스페이스는 무엇일까?<br>
+&middot; pause 컨테이너는 무슨 일을 하고 컨테이너끼리는 누가 연결할까?<br>
+&middot; 같은 파드의 컨테이너끼리 파일은 어떻게 넘길까?</p>
+
+<h2>1. 같은 포트를 쓰는 컨테이너 둘을 한 파드에 넣으면 나중에 bind한 쪽이 죽는다</h2>
+
+<p>실험에 쓴 파드는 아래와 같아요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/61-same-port.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">61-same-port.sh</code>예요.</p>
+
+<div class="obsv-code">apiVersion: v1
+kind: Pod
+metadata: {name: same-port}
+spec:
+  containers:
+  - {name: web1, image: nginx:1.27-alpine, ports: [{containerPort: 80}]}
+  - {name: web2, image: nginx:1.27-alpine, ports: [{containerPort: 80}]}</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: containerPort</div>
+파드 스펙의 <code style="font-family:Menlo,monospace;font-size:14px;">containers[].ports[].containerPort</code> 필드예요. 이 컨테이너가 듣는 포트를 적어 두는 정보이고 name을 함께 주면 Service가 그 이름으로 포트를 가리킬 수 있어요. 커널에 포트를 예약하거나 다른 컨테이너의 bind를 막는 기능은 없어요.</div>
+
+<p>두 nginx는 같은 기본 설정으로 떠서 둘 다 80번 포트에 bind를 시도해요. 먼저 성공한 web1은 계속 돌았고 web2는 실패했어요. 40초 뒤의 상태와 web2가 마지막으로 죽은 실행의 로그는 이랬어요.</p>
+
+<div class="obsv-code">  same-port   1/2   Error   2 (34s ago)   40s
+  web1: ready=true restarts=0 running
+  web2: ready=false restarts=2 terminated(Error)
+
+  [web2] 마지막으로 죽은 실행의 로그
+    nginx: [emerg] bind() to [::]:80 failed (98: Address in use)
+    2026/11/15 11:49:00 [notice] 1#1: try again to bind() after 500ms
+    2026/11/15 11:49:00 [emerg] 1#1: still could not bind()
+    nginx: [emerg] still could not bind()</div>
+
+<p>&rarr; 98번 오류(EADDRINUSE)는 그 주소와 포트를 이미 다른 소켓이 쓰고 있다는 커널의 답이에요. nginx는 500ms 뒤 bind를 다시 시도했고 끝내 <code style="font-family:Menlo,monospace;font-size:14px;">still could not bind()</code>를 남기고 종료했어요. kubelet은 같은 파드 안에서 web2만 다시 띄웠지만 같은 이유로 또 실패했고 재시작 횟수만 올라갔어요. <span class="obsv-mark">컨테이너가 달라도 80번 포트를 둘이 가질 수 없었다는 것은 두 컨테이너가 포트 공간 하나를 함께 쓴다는 뜻이에요.</span></p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/61/01-same-port.png" alt="한 파드에 80번 포트 nginx 두 개를 apply한 실행 화면: duplicate port definition 경고 뒤 생성, 40초 뒤 1/2 Error와 web2 재시작 2회, Address in use 로그" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 1. API 서버는 경고만 냈고 충돌은 컨테이너가 실제로 bind할 때 드러났어요.</p>
+
+<h3>같은 포트를 쓰는 컨테이너 둘을 넣었는데 API 서버는 왜 막지 않았을까?</h3>
+<p>API 서버가 본 것은 포트 번호를 적은 명세뿐이에요. 같은 파드 안에 같은 containerPort가 두 번 나오는 것은 명세만 보고도 알 수 있어서 경고를 냈어요. 하지만 컨테이너 안의 프로세스가 실제로 어느 포트를 여는지는 실행해 봐야 알아요. containerPort가 무엇을 하는지는 API 서버가 내려 주는 필드 설명에 적혀 있어요(<code style="font-family:Menlo,monospace;font-size:14px;">61-containerport-explain.txt</code>).</p>
+
+<div class="obsv-code">$ kubectl explain pod.spec.containers.ports
+DESCRIPTION:
+    List of ports to expose from the container. Not specifying a port here DOES
+    NOT prevent that port from being exposed. Any port which is listening on the
+    default "0.0.0.0" address inside a container will be accessible from the
+    network.</div>
+
+<p>&rarr; 여기에 포트를 적지 않아도 그 포트가 열리는 것을 막지 못하고, 컨테이너 안에서 0.0.0.0으로 듣고 있는 포트는 모두 네트워크에서 닿는다는 뜻이에요. containerPort는 포트를 열거나 예약하는 설정이 아니라 이 컨테이너가 어느 포트를 쓰는지 적어 두는 정보예요. 그러니 두 컨테이너에서 containerPort를 지워도 nginx 둘은 똑같이 80번에서 부딪혀요. 경고만 사라질 뿐이에요. API 서버는 명세의 형식과 정적인 규칙만 확인할 수 있어요. 받아들인 명세가 실제로 동작하는지를 배포 도구가 어떻게 판단하는지는 62편에서 이어 가요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 사이드카를 붙일 때는 포트부터 확인해요</div>
+&bull; 같은 파드의 컨테이너는 포트를 하나씩 나눠 가져야 해요. 본 컨테이너와 사이드카 이미지가 기본으로 여는 포트가 겹치면 늦게 bind한 쪽이 이번 web2처럼 재시작을 반복해요<br>
+&bull; apply 때 나오는 <code style="font-family:Menlo,monospace;font-size:14px;">duplicate port definition</code> 경고는 명세에 같은 숫자를 두 번 적었을 때만 나와요. containerPort를 적지 않은 포트끼리의 충돌은 경고 없이 실행 중에만 드러나요<br>
+&bull; 재시작이 반복되면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs &lt;파드&gt; -c &lt;컨테이너&gt; --previous</code>로 직전에 죽은 실행의 로그를 봐요. 이번에는 거기서 Address in use를 찾았어요</div>
+
+<h2>2. 다른 컨테이너인데 localhost로 닿고 호스트 이름도 같았다</h2>
+
+<h3>결국 파드를 호스트처럼 관리하는 걸까?</h3>
+<p>파드라는 단위를 처음 설명한 2014년 10월의 <a href="https://github.com/kubernetes/kubernetes/blob/15706c72c4/docs/pods.md">docs/pods.md</a>는 첫 문장에서 파드를 이렇게 정의했어요.</p>
+
+<div class="obsv-code">A pod (as in a pod of whales or pea pod) models an application-specific
+"logical host" in a containerized environment.</div>
+
+<p>&rarr; pod라는 이름은 고래 무리(pod of whales)나 완두콩 꼬투리(pea pod)를 가리키는 영어 단어에서 왔고, 파드는 컨테이너 환경에서 애플리케이션 하나를 위한 "논리적인 호스트"를 나타낸다는 뜻이에요. 같은 문서는 컨테이너 이전에는 같은 물리 서버나 VM에서 돌았을 컨테이너들을 묶는다고 설명해요. 파드 안의 컨테이너는 "the same network namespace/IP and port space"를 쓰고 localhost로 서로를 찾을 수 있으며 호스트 이름은 파드 이름으로 정해진다고 적었어요.</p>
+
+<p>그 설명이 지금도 맞는지 busybox httpd 두 개로 확인했어요. c1은 8000번, c2는 8080번 포트에서 자기 포트 번호를 적은 페이지를 돌려줘요(<code style="font-family:Menlo,monospace;font-size:14px;">61-multi-container-pod.txt</code>).</p>
+
+<div class="obsv-code"># 61-multi-container-pod.txt 발췌
+  multi-container-pod 2/2 Running 10.244.100.233 k8s-worker3
+
+## c1 → localhost:8080
+  containerPort : 8080
+## c2 → localhost:8000
+  containerPort : 8000
+## c1 → 10.244.100.233:8080
+  containerPort : 8080
+
+## 두 컨테이너가 보는 네트워크 인터페이스와 호스트 이름
+  [c1] hostname=multi-container-pod  eth0=10.244.100.233/32
+  [c2] hostname=multi-container-pod  eth0=10.244.100.233/32
+
+## 파일 시스템은 따로: c1 이 /www 에 쓴 파일을 c2 에서
+  c2 의 /www: index.html</div>
+
+<p>&rarr; c1에서 localhost:8080을 부르면 c2의 페이지가 왔고 c2에서 localhost:8000을 부르면 c1의 페이지가 왔어요. 파드 IP로 불러도 같았어요. 두 컨테이너가 보는 eth0의 주소와 호스트 이름도 같았어요. 네트워크만 보면 두 프로세스는 서버 한 대에서 도는 프로그램 두 개와 다르지 않아요.</p>
+
+<p>파일은 달랐어요. 두 컨테이너는 시작할 때 각자 /www 디렉터리를 만들고 index.html을 썼어요. c1이 자기 /www에 only-c1.txt를 더 썼지만 c2의 /www에는 index.html 하나만 보였어요. 경로 이름이 같아도 두 컨테이너의 파일 시스템은 따로예요. 2014년 문서도 파일은 네트워크와 달리 파드에 "shared storage volumes"를 따로 정의해서 나눈다고 적었어요. 그러니 질문의 답은 네트워크에 대해서는 "그렇다"이고 파일과 프로세스에 대해서는 "아니다"예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 392" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="한 파드에서 함께 쓰는 네트워크와 컨테이너마다 따로인 파일 시스템">
+<defs><marker id="k61-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">같은 파드: 네트워크는 하나, 파일과 프로세스는 컨테이너마다</text>
+<path d="M25 52 C 200 49, 480 54, 675 51 C 678 140, 676 250, 674 342 C 480 345, 200 340, 27 343 C 24 250, 26 140, 25 52 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+<text x="45" y="80" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d6591">파드 multi-container-pod</text>
+<path d="M50 94 C 220 91, 460 96, 650 93 C 652 118, 651 145, 650 170 C 460 173, 220 168, 51 171 C 48 145, 49 118, 50 94 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="350" y="124" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">함께 쓰는 것: net · ipc · uts</text>
+<text x="350" y="155" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">파드 IP 하나 · 포트 공간 하나 · localhost · 호스트 이름 = 파드 이름</text>
+<path d="M55 196 C 130 193, 220 198, 300 195 C 302 230, 301 268, 300 300 C 220 303, 130 298, 56 301 C 53 268, 54 230, 55 196 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M400 195 C 480 198, 570 193, 645 196 C 647 230, 646 268, 645 301 C 570 298, 480 303, 401 300 C 398 268, 399 230, 400 195 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linejoin="round"/>
+<g font-family="Menlo, monospace" font-size="14" fill="#3d3a34" text-anchor="middle"><text x="177" y="222">c1: httpd :8000</text><text x="522" y="222">c2: httpd :8080</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34" text-anchor="middle"><text x="177" y="254">/www는 c1 것</text><text x="177" y="284">PID 1 = 자기 명령</text><text x="522" y="254">/www는 c2 것</text><text x="522" y="284">PID 1 = 자기 명령</text></g>
+<path d="M307 244 C 330 240, 370 241, 393 244" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-start="url(#k61-arr1)" marker-end="url(#k61-arr1)"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="18" text-anchor="middle"><text x="350" y="230" fill="#3d3a34">localhost</text><text x="350" y="268" fill="#2e6b41">서로 닿음 ✓</text></g>
+<text x="350" y="328" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">컨테이너마다 따로: mnt(파일) · pid(프로세스 번호) · cgroup</text>
+<text x="350" y="375" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">c1이 /www에 쓴 파일은 c2의 /www에 없었다 → 파일은 볼륨으로 넘긴다</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 2. 파드는 네트워크로 보면 호스트 하나이고 파일과 프로세스로 보면 컨테이너마다 따로예요.</p>
+
+<h3>컨테이너를 굳이 파드로 감싼 이유는?</h3>
+<p>이 묶음이 왜 필요했는지는 43편에서 1차 출처로 따라갔어요. 짧게 요약하면 이래요. 구글의 Borg에서는 한 기계의 작업들이 기계의 IP 하나를 함께 쓰느라 포트를 스케줄할 자원으로 다뤄야 했고, 쿠버네티스는 그 경험 때문에 파드마다 IP를 하나씩 주기로 했어요. 주 프로그램 옆에 로그 수집 같은 도우미 프로그램을 붙여 같은 기계에서 함께 돌리는 구성도 Borg에서 쓸모가 확인됐어요.</p>
+<p>같은 2014년 문서는 버린 대안 두 가지도 적었어요. 여러 프로그램을 Docker 컨테이너 하나에 넣으면 인프라가 각 프로그램을 따로 보고 관리할 수 없고 사용자가 프로세스 관리자와 신호·종료 코드 전달을 직접 챙겨야 해요. affinity로 같은 노드에 함께 배치하기만 하면 "resource sharing, IPC, guaranteed fate sharing"을 얻지 못해요. 컨테이너는 따로 빌드하고 따로 관리하되 네트워크와 IPC는 함께 쓰는 묶음이 필요했고 그게 파드예요. 컨테이너가 하나뿐이어도 파드로 감싸는 것은 실행 단위를 하나로 맞추기 위해서였어요(43편).</p>
+
+<h2>3. 함께 쓰는 것은 net·ipc·uts이고 pid·mnt·cgroup은 따로다</h2>
+
+<p>"네트워크를 같이 쓴다"를 정확히 말하면 리눅스 네트워크 네임스페이스를 같이 쓴다는 뜻이에요. 다른 네임스페이스는 어떨까요? 노드에 접속하지 않고 kubectl exec만으로 확인할 수 있어요. 컨테이너 안에서 <code style="font-family:Menlo,monospace;font-size:14px;">readlink /proc/self/ns/net</code>을 실행하면 그 프로세스가 속한 네트워크 네임스페이스의 번호가 나와요. 두 컨테이너에서 나온 번호가 같으면 같은 네임스페이스예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 리눅스 네임스페이스 (net, ipc, uts, pid, mnt, cgroup)</div>
+프로세스가 보는 시스템 자원을 나눠 주는 커널 기능이에요. net은 네트워크 인터페이스·IP·포트, ipc는 공유 메모리 같은 프로세스 간 통신 자원, uts는 호스트 이름, pid는 프로세스 번호, mnt는 마운트(파일 시스템), cgroup은 프로세스가 보는 cgroup 계층을 나눠요. <code style="font-family:Menlo,monospace;font-size:14px;">/proc/&lt;PID&gt;/ns/</code> 아래 링크의 번호가 같은 두 프로세스는 그 네임스페이스를 함께 써요.</div>
+
+<p>busybox 컨테이너 c1(sleep 3600)과 c2(sleep 3601)를 넣은 파드를 두 개 만들었어요. 하나는 기본값 그대로이고 다른 하나는 <code style="font-family:Menlo,monospace;font-size:14px;">shareProcessNamespace: true</code>를 줬어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/61-shared-namespaces.txt</code>와 같은 이름의 .sh예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: shareProcessNamespace</div>
+파드 스펙의 필드예요. true면 파드 안 모든 컨테이너가 PID 네임스페이스 하나를 함께 써서 서로의 프로세스를 보고 신호를 보낼 수 있어요. 기본값은 false이고 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/495-pod-pid-namespace">KEP-495</a>로 들어와 1.17에 GA가 됐어요.</div>
+
+<div class="obsv-code"># 61-shared-namespaces.txt (shareProcessNamespace: false, 기본값)
+  ns      c1                      c2                      같은가
+  net     net:[4026532383]        net:[4026532383]        같음
+  ipc     ipc:[4026532595]        ipc:[4026532595]        같음
+  uts     uts:[4026532594]        uts:[4026532594]        같음
+  pid     pid:[4026532598]        pid:[4026532601]        다름
+  mnt     mnt:[4026532597]        mnt:[4026532600]        다름
+  cgroup  cgroup:[4026532599]     cgroup:[4026532602]     다름
+  [c1] ps 로 보이는 프로세스(PID 명령, ps 자신 제외):  1 sleep 3600;
+  [c2] ps 로 보이는 프로세스(PID 명령, ps 자신 제외):  1 sleep 3601;</div>
+
+<p>&rarr; net·ipc·uts는 번호가 같고 pid·mnt·cgroup은 달랐어요. ps를 실행하면 c1에서는 자기 명령인 sleep 3600만, c2에서는 sleep 3601만 보였고 둘 다 자기 네임스페이스에서 PID 1이었어요. 43편에서 노드에 들어가 pause와 nginx의 /proc/&lt;PID&gt;/ns를 비교했을 때도 같은 세 가지만 같았어요(<code style="font-family:Menlo,monospace;font-size:14px;">43-pod-sandbox.txt</code> 3절).</p>
+
+<div class="obsv-code"># 61-shared-namespaces.txt (shareProcessNamespace: true, pid·mnt·cgroup 줄만)
+  pid     pid:[4026532528]        pid:[4026532528]        같음
+  mnt     mnt:[4026532529]        mnt:[4026532531]        다름
+  cgroup  cgroup:[4026532530]     cgroup:[4026532532]     다름
+  [c1] ps 로 보이는 프로세스(PID 명령, ps 자신 제외):  1 /pause ;  7 sleep 3600;  13 sleep 3601;
+  [c2] ps 로 보이는 프로세스(PID 명령, ps 자신 제외):  1 /pause ;  7 sleep 3600;  13 sleep 3601;</div>
+
+<p>&rarr; shareProcessNamespace를 켜자 pid 번호도 같아졌고 두 컨테이너 어디서든 c1과 c2의 프로세스가 함께 보였어요. 이때 PID 1은 앱이 아니라 /pause였어요. mnt와 cgroup은 여전히 달랐어요. PID 네임스페이스 공유는 기본값이 아니라 이 필드를 켤 때만 생겨요. 예전 버전에는 1.7에서 Docker 파드의 PID 네임스페이스 공유를 기본으로 켰다가(<a href="https://github.com/kubernetes/kubernetes/pull/45236">PR #45236</a>) 1.8에서 기본값을 되돌렸어요(<a href="https://github.com/kubernetes/kubernetes/pull/51634">PR #51634</a>). 자기가 PID 1이라고 가정하는 이미지가 깨진 일이 이유였고 이 이야기는 66편에서 이어 가요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/61/02-shared-namespaces.png" alt="61-shared-namespaces.sh 실행 화면: 기본값 파드(worker2)는 c1과 c2의 net·ipc·uts 번호가 같고 pid·mnt·cgroup이 다르며 ps에 각자 PID 1 sleep만 보임. shareProcessNamespace true 파드(worker3)는 pid 4026532528도 같고 ps에 1 /pause, 7 sleep 3600, 13 sleep 3601이 함께 보임" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 3. shareProcessNamespace를 켜면 pid만 같아지고 mnt와 cgroup은 그대로 따로였어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 372" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="네임스페이스별로 본 두 컨테이너의 공유 여부, 기본값과 shareProcessNamespace true 비교">
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">한 파드의 두 컨테이너, 네임스페이스마다 같은가</text>
+<path d="M240 88 C 330 86, 560 90, 668 87 C 670 125, 669 168, 668 206 C 560 209, 330 205, 241 207 C 238 168, 239 125, 240 88 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<path d="M466 212 C 530 210, 610 214, 668 211 C 670 225, 669 240, 668 252 C 610 255, 530 251, 467 253 C 464 240, 465 225, 466 212 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34"><text x="40" y="72">네임스페이스</text><text x="340" y="72" text-anchor="middle">기본값</text><text x="567" y="72" text-anchor="middle">shareProcessNamespace: true</text></g>
+<path d="M32 80 C 200 78, 480 82, 670 79" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34"><text x="40" y="115">net (IP · 포트)</text><text x="40" y="155">ipc (공유 메모리)</text><text x="40" y="195">uts (호스트 이름)</text><text x="40" y="240">pid (프로세스 번호)</text><text x="40" y="285">mnt (파일 시스템)</text><text x="40" y="325">cgroup</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="21" text-anchor="middle" fill="#2e6b41"><text x="340" y="115">같음 ✓</text><text x="340" y="155">같음 ✓</text><text x="340" y="195">같음 ✓</text><text x="567" y="115">같음 ✓</text><text x="567" y="155">같음 ✓</text><text x="567" y="195">같음 ✓</text><text x="567" y="240">같음 ✓ (PID 1 = /pause)</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="21" text-anchor="middle" fill="#b3502f"><text x="340" y="240">따로 (각자 PID 1)</text><text x="340" y="285">따로</text><text x="567" y="285">따로</text><text x="340" y="325">따로</text><text x="567" y="325">따로</text></g>
+<path d="M32 263 C 200 261, 480 265, 670 262" fill="none" stroke="#8a8272" stroke-width="1.4" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="350" y="360" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">hostNetwork: true를 준 파드만 net이 노드의 것이었다 (kube-proxy, 43편)</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 4. 기본으로 함께 쓰는 것은 세 가지이고 파일 시스템은 어떤 설정에서도 따로였어요.</p>
+
+<h3>흔한 설명 두 가지를 바로잡으면</h3>
+<p>파드 구조를 설명하는 자료에서 자주 보이는 문장 두 개가 이 결과와 맞지 않아요.</p>
+<p><b>"pause 컨테이너가 호스트 OS의 네임스페이스를 공유한다"</b>는 틀린 설명이에요. 앱 컨테이너가 pause를 거쳐 함께 쓰는 net·ipc·uts는 호스트 것이 아니라 그 파드를 위해 새로 만든 네임스페이스예요. 43편의 worker1 조회에서 일반 파드(myweb)의 pause는 net 번호가 4026532532였고, 호스트 네트워크를 쓰는 kube-proxy 파드의 pause는 net 번호가 노드의 PID 1과 같은 4026531840이었어요(<code style="font-family:Menlo,monospace;font-size:14px;">43-pod-sandbox.txt</code> 3·5절). 파드의 컨테이너가 노드의 네트워크 네임스페이스를 쓰는 것은 <code style="font-family:Menlo,monospace;font-size:14px;">hostNetwork: true</code>처럼 스펙에서 따로 요청했을 때뿐이에요.</p>
+<p><b>"파드의 컨테이너는 IPC·Network·PID·파일 시스템을 모두 공유한다"</b>도 기본값과 달라요. <span class="obsv-mark">기본으로 함께 쓰는 것은 net·ipc·uts 세 가지예요.</span> PID는 shareProcessNamespace를 켤 때만 함께 쓰고 파일 시스템(mnt)은 그 필드를 켜도 따로예요. 컨테이너끼리 파일을 나누려면 같은 볼륨을 양쪽에 마운트해야 하고 5절에서 확인해요.</p>
+
+<h3>파드마다 자기들만의 네임스페이스를 만드는 걸까?</h3>
+<p>네임스페이스라는 말이 두 가지 뜻으로 쓰여서 생기는 질문이에요. 리눅스 네임스페이스라면 답은 "그렇다"예요. 파드가 뜰 때마다 그 파드만의 net·ipc·uts 네임스페이스가 새로 생기고 컨테이너마다 pid·mnt·cgroup 네임스페이스가 또 생겨요. 그래서 파드마다 IP가 다르고 80번 포트를 파드마다 하나씩 쓸 수 있어요. 반면 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pods -n blog-61</code>의 네임스페이스는 커널 기능이 아니에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 쿠버네티스 네임스페이스</div>
+API 객체의 이름을 나누는 쿠버네티스의 묶음이에요(blog-61, kube-system 등). 네임스페이스마다 같은 이름의 객체를 따로 둘 수 있고 권한(Role)과 자원 할당량을 이 단위로 걸어요. 리눅스 네임스페이스를 만들지 않으므로 같은 쿠버네티스 네임스페이스에 있는 두 파드도 리눅스 네트워크 네임스페이스는 각자 따로예요.</div>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 노드에 들어가지 않고 확인하는 법</div>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl exec &lt;파드&gt; -c &lt;컨테이너&gt; -- readlink /proc/self/ns/net</code>을 컨테이너마다 실행해 번호를 비교해요. busybox처럼 readlink가 있는 이미지에서 돼요<br>
+&bull; ps로 다른 컨테이너의 프로세스가 보이면 그 파드는 PID 네임스페이스를 공유하고 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pod &lt;파드&gt; -o jsonpath='{.spec.shareProcessNamespace}'</code>로 설정도 확인해요<br>
+&bull; 네임스페이스 번호(inode)는 노드마다 따로 매겨져요. 다른 노드에 있는 파드끼리 번호를 비교하면 안 돼요</div>
+
+<h2>4. pause는 네임스페이스를 유지하고 연결은 런타임이 한다</h2>
+
+<h3>pause 컨테이너는 뭘까?</h3>
+<p>shareProcessNamespace를 켠 파드에서 PID 1로 보인 /pause는 원래 모든 파드에 하나씩 떠 있어요. 기본 설정에서는 PID 네임스페이스가 따로라서 앱 컨테이너 안에서 보이지 않을 뿐이에요. pause가 하는 일은 소스를 보면 바로 알 수 있어요(<a href="https://github.com/kubernetes/kubernetes/blob/master/build/pause/linux/pause.c">build/pause/linux/pause.c</a>, sigaction 줄은 인자를 줄여 옮김).</p>
+
+<div class="obsv-code">static void sigdown(int signo) {
+  psignal(signo, "Shutting down, got signal");
+  exit(0);
+}
+static void sigreap(int signo) {
+  while (waitpid(-1, NULL, WNOHANG) &gt; 0)
+    ;
+}
+int main(int argc, char **argv) {
+  ...
+  sigaction(SIGINT,  ...sigdown...);
+  sigaction(SIGTERM, ...sigdown...);
+  sigaction(SIGCHLD, ...sigreap...);
+  for (;;)
+    pause();
+}</div>
+
+<p>&rarr; SIGINT나 SIGTERM을 받으면 바로 exit(0)으로 끝나고 SIGCHLD를 받으면 끝난 자식 프로세스를 waitpid로 모두 거둬요. 그 밖의 시간에는 pause() 시스템 콜로 신호가 올 때까지 잠들어 있어요. 좀비를 거두는 처리기는 PID 네임스페이스를 공유해 pause가 파드 전체의 PID 1이 될 때 의미가 있어요. SIGTERM 처리기를 일부러 단 이유는 컨테이너의 PID 1이 신호를 다루는 커널 규칙과 관련이 있고 64편에서 다뤄요. 우리 노드의 pause도 이 소스로 만든 3.10.2예요(<code style="font-family:Menlo,monospace;font-size:14px;">43-pod-sandbox.txt</code> 1절).</p>
+
+<h3>pause는 containerd-shim 아래에 있을까?</h3>
+<p>맞아요. 26편에서 마스터의 pstree를 봤을 때 containerd-shim마다 자식이 pause 하나와 앱 프로세스 하나였어요.</p>
+
+<div class="obsv-code"># 26-pstree.txt 3절 발췌 (마스터)
+shim(8636) kube-apiserver-k8s-master            자식: pause(8661) kube-apiserver(8689)
+shim(9068) kube-scheduler-k8s-master            자식: pause(9093) kube-scheduler(9117)
+shim(9612) kube-controller-manager-k8s-master   자식: pause(9639) kube-controller(9677)</div>
+
+<p>&rarr; 파드 하나에 shim 하나가 있고 그 아래에 pause와 앱이 형제로 붙어 있다는 뜻이에요. worker1에서 잰 <code style="font-family:Menlo,monospace;font-size:14px;">26-restart-runtime.txt</code>의 첫 줄은 shim의 부모가 containerd가 아니라 1(systemd)이라고 적었어요. 그래서 containerd와 kubelet을 차례로 재시작해도 nginx 마스터 프로세스의 PID는 10360과 10492 그대로였고 curl도 계속 200이었어요. pause도 앱도 런타임 프로세스의 자식이 아니라서 런타임을 재시작해도 함께 죽지 않아요.</p>
+
+<h3>pause가 먼저 떠서 컨테이너끼리 연결해 주는 걸까?</h3>
+<p>pause가 먼저 뜨는 것은 맞지만 연결하는 주체는 pause가 아니에요. 위 소스대로 pause는 신호를 기다리는 일 말고는 아무것도 하지 않아요. 네트워크를 만들고 컨테이너를 그 안에 넣는 일은 런타임(containerd)과 CNI 플러그인이 해요. 43편에서 worker1의 myweb 파드를 만들 때 containerd가 runc에 넘긴 OCI 설정을 읽었어요.</p>
+
+<div class="obsv-code"># 43-pod-sandbox.txt 4절 발췌 (worker1, myweb 파드, pause PID 10332)
+  pause spec namespace: pid (새로 만듦)
+  pause spec namespace: ipc (새로 만듦)
+  pause spec namespace: uts (새로 만듦)
+  pause spec namespace: mount (새로 만듦)
+  pause spec namespace: network /var/run/netns/cni-0099a4f1-67e2-12c5-5900-c6cd6da46675
+  nginx 컨테이너 spec 의 네임스페이스 경로 (pause PID 의 /proc 경로로 들어간다):
+    pid (새로 만듦)
+    ipc /proc/10332/ns/ipc
+    uts /proc/10332/ns/uts
+    mount (새로 만듦)
+    network /proc/10332/ns/net
+    cgroup (새로 만듦)</div>
+
+<p>&rarr; containerd는 네트워크 네임스페이스를 먼저 만들어 /var/run/netns/ 아래 파일로 유지하고 CNI(Calico)가 그 안에 eth0과 파드 IP를 설정해요. 그다음 pause를 그 네트워크 네임스페이스와 새로 만든 ipc·uts·pid·mnt 네임스페이스로 띄워요. 앱 컨테이너를 만들 때는 OCI 설정의 ipc·uts·network 항목에 pause 프로세스의 <code style="font-family:Menlo,monospace;font-size:14px;">/proc/10332/ns/...</code> 경로를 적고 runc가 그 경로로 네임스페이스에 들어가요. pid·mount·cgroup은 컨테이너마다 새로 만들어요. 3절에서 본 "세 가지만 같다"는 결과가 이 설정에서 나와요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 파드 샌드박스 (PodSandbox)</div>
+kubelet과 런타임 사이의 규약(CRI)이 파드 안 컨테이너들이 함께 쓰는 실행 환경에 붙인 이름이에요. kubelet은 RunPodSandbox로 샌드박스를 먼저 만들고 그 안에 컨테이너를 만들어요(27편). containerd의 기본 구현은 네임스페이스 묶음과 pause 컨테이너로 샌드박스를 만들어요.</div>
+
+<p>pause가 먼저 떠야 하는 이유도 여기에 있어요. 앱 컨테이너의 설정에 적을 경로가 pause의 PID로 만들어지기 때문이에요. pause가 살아 있는 동안에는 앱 컨테이너가 모두 재시작하는 순간에도 ipc·uts 네임스페이스가 남아 있고, 네트워크 네임스페이스는 pause와 /var/run/netns의 파일 두 곳에서 유지돼요. <span class="obsv-mark">그래서 pause의 역할은 연결이 아니라 이 네임스페이스들이 앱 컨테이너의 재시작과 상관없이 남아 있게 하는 거예요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 418" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="containerd와 CNI가 네임스페이스를 만들고 앱 컨테이너를 pause의 proc 경로로 넣는 순서">
+<defs><marker id="k61-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">연결은 containerd와 CNI가, pause는 기다리기만</text>
+<path d="M28 52 C 150 49, 300 54, 430 51 C 432 72, 431 94, 430 114 C 300 117, 150 112, 29 115 C 26 94, 27 72, 28 52 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M28 140 C 150 137, 300 142, 430 139 C 432 160, 431 182, 430 202 C 300 205, 150 200, 29 203 C 26 182, 27 160, 28 140 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M28 228 C 150 225, 300 230, 430 227 C 432 248, 431 270, 430 290 C 300 293, 150 288, 29 291 C 26 270, 27 248, 28 228 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M28 316 C 150 313, 300 318, 430 315 C 432 336, 431 358, 430 378 C 300 381, 150 376, 29 379 C 26 358, 27 336, 28 316 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34"><text x="44" y="78">① containerd: net 네임스페이스를 만들고</text><text x="72" y="104">/var/run/netns/cni-… 파일로 유지</text><text x="44" y="166">② Calico CNI: 그 안에 eth0과 파드 IP 설정</text><text x="72" y="192">(RunPodSandbox 안에서)</text><text x="44" y="254">③ pause 시작: 그 net + 새 ipc·uts·pid·mnt</text><text x="72" y="280">그다음은 pause()로 신호만 기다림</text><text x="44" y="342">④ 앱 컨테이너 설정에 /proc/&lt;pause PID&gt;/ns/</text><text x="72" y="368">net·ipc·uts 경로 → runc가 그 안으로</text></g>
+<path d="M229 118 C 231 124, 228 130, 230 136" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k61-arr2)"/>
+<path d="M229 206 C 231 212, 228 218, 230 224" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k61-arr2)"/>
+<path d="M229 294 C 231 300, 228 306, 230 312" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k61-arr2)"/>
+<path d="M465 205 C 530 202, 610 206, 676 203 C 678 238, 677 274, 676 306 C 610 309, 530 305, 466 307 C 463 274, 464 238, 465 205 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2" stroke-linejoin="round" stroke-dasharray="8 6"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34" text-anchor="middle"><text x="570" y="230">pause.c가 하는 일</text><text x="570" y="256">SIGTERM·SIGINT → exit(0)</text><text x="570" y="279">SIGCHLD → 좀비 거두기</text><text x="570" y="300">그 밖에는 pause()</text></g>
+<path d="M434 258 C 445 256, 452 256, 461 257" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-dasharray="1 6" stroke-linecap="round"/>
+<text x="570" y="335" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">연결하는 코드는 없다</text>
+<text x="350" y="406" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">앱이 재시작하면 ④만 다시 한다. 같은 샌드박스, 같은 네임스페이스로</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 5. pause가 먼저 뜨는 것은 앱 컨테이너 설정에 적을 /proc 경로를 만들기 위해서예요.</p>
+
+<p>그래서 pause가 죽는 것과 앱이 죽는 것은 결과가 달라요. 43편에서 worker1의 nginx 프로세스만 kill -9 했을 때는 같은 샌드박스에서 컨테이너만 다시 떠서 1.3초 만에 다시 Ready였어요. pause를 kill -9 했을 때는 샌드박스가 통째로 다시 만들어졌고 다시 Ready가 되기까지 12.4초가 걸렸어요(<code style="font-family:Menlo,monospace;font-size:14px;">43-pause-vs-app-kill.txt</code>). 그 12.4초의 대부분이 컨테이너 재시작 백오프였다는 로그 분석은 43편에 있어요.</p>
+
+<h2>5. 같은 파드의 컨테이너끼리 포트는 나눠 쓰고 파일은 볼륨으로 넘긴다</h2>
+
+<p>2절에서 c2는 c1이 쓴 파일을 보지 못했어요. 두 컨테이너가 파일을 주고받으려면 볼륨 하나를 양쪽에 마운트해요. emptyDir 볼륨을 c1과 c2의 /shared에 마운트하고 c1에서 /www와 /shared에 각각 파일을 썼어요(<code style="font-family:Menlo,monospace;font-size:14px;">61-emptydir-share.txt</code>).</p>
+
+<div class="obsv-code">volumes:
+- {name: shared, emptyDir: {}}
+containers:
+- name: c1
+  volumeMounts: [{name: shared, mountPath: /shared}]
+- name: c2
+  volumeMounts: [{name: shared, mountPath: /shared}]
+
+$ kubectl exec share-files -c c1 -- sh -c "echo from-c1 &gt; /www/a.txt; echo from-c1 &gt; /shared/a.txt"
+  c2 의 /www   : []
+  c2 의 /shared: [a.txt ]  내용: from-c1
+  [c1] /dev/vda1 /shared ext4
+  [c2] /dev/vda1 /shared ext4</div>
+
+<p>&rarr; c2의 /www는 비어 있었고 /shared에는 c1이 쓴 a.txt가 내용까지 그대로 보였어요. 두 컨테이너의 마운트 표에서 /shared는 같은 장치(노드 디스크 /dev/vda1)에서 온 마운트였어요. mnt 네임스페이스는 따로지만 kubelet이 노드에 만든 같은 디렉터리를 양쪽에 마운트해 준 거예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: emptyDir</div>
+파드가 노드에 배치될 때 빈 디렉터리로 만들어지고 파드가 그 노드에서 지워질 때 함께 지워지는 볼륨이에요. 컨테이너가 재시작해도 내용이 남아서 같은 파드의 컨테이너끼리 파일을 넘기는 데 써요. 기본으로는 노드의 디스크에 만들어져요.</div>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 같은 파드에 컨테이너를 여럿 둘 때 정할 것</div>
+&bull; <b>포트</b>: 컨테이너마다 다른 포트를 정해요. 같은 포트를 쓰면 1절의 web2처럼 늦게 bind한 쪽이 Address in use로 재시작을 반복해요<br>
+&bull; <b>파드 안에서만 쓰는 포트</b>: 관리용이나 사이드카 전용 포트는 127.0.0.1에 열어요. <a href="https://github.com/kubernetes/design-proposals-archive/blob/main/network/networking.md">파드 네트워크 설계 문서</a>는 "ports bound to localhost are visible within the pod but never outside it"라고 적었어요<br>
+&bull; <b>파일</b>: 같은 경로를 쓴다고 공유되지 않아요. emptyDir 같은 볼륨을 양쪽에 마운트해요<br>
+&bull; <b>프로세스</b>: 다른 컨테이너의 프로세스를 봐야 하는 디버깅 도구가 있을 때만 shareProcessNamespace를 켜요. 켜면 PID 1이 pause가 되고 다른 컨테이너의 /proc도 보여요(43편)<br>
+&bull; <b>장애 읽기</b>: RESTARTS만 오르면 같은 샌드박스에서 컨테이너만 다시 뜬 것이고 SandboxChanged 이벤트가 보이면 파드의 모든 컨테이너가 다시 만들어진 거예요(43편)</div>
+
+<p><b>출처와 원자료</b><br>
+&middot; 파드의 정의와 버린 대안: <a href="https://github.com/kubernetes/kubernetes/blob/15706c72c4/docs/pods.md">docs/pods.md (2014-10)</a>, 파드 네트워크: <a href="https://github.com/kubernetes/design-proposals-archive/blob/main/network/networking.md">design-proposals-archive network/networking.md</a><br>
+&middot; pause 소스: <a href="https://github.com/kubernetes/kubernetes/blob/master/build/pause/linux/pause.c">build/pause/linux/pause.c</a><br>
+&middot; PID 공유 기본값의 변경: <a href="https://github.com/kubernetes/kubernetes/pull/45236">PR #45236</a>(1.7), <a href="https://github.com/kubernetes/kubernetes/pull/51634">PR #51634</a>(1.8), <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/495-pod-pid-namespace">KEP-495</a><br>
+&middot; 이 글의 실험: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/61-same-port</code>, <code style="font-family:Menlo,monospace;font-size:14px;">61-containerport-explain</code>, <code style="font-family:Menlo,monospace;font-size:14px;">61-multi-container-pod</code>, <code style="font-family:Menlo,monospace;font-size:14px;">61-shared-namespaces</code>, <code style="font-family:Menlo,monospace;font-size:14px;">61-emptydir-share</code>(.sh/.txt), 앞 편의 <code style="font-family:Menlo,monospace;font-size:14px;">43-pod-sandbox.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">43-pause-vs-app-kill.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">26-pstree.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">26-restart-runtime.txt</code></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<p>한 파드에 80번 포트 nginx 둘을 넣자 API 서버는 duplicate port definition 경고만 내고 파드를 만들었고 web2는 Address in use로 재시작을 반복했어요. containerPort는 포트를 예약하지 않는 정보라서 충돌은 실행 중에만 드러나요.</p>
+<p>같은 파드의 컨테이너는 net·ipc·uts 네임스페이스를 함께 써서 IP·포트 공간·localhost·호스트 이름이 같고, pid·mnt·cgroup은 따로라서 프로세스와 파일이 따로 보였어요. PID는 shareProcessNamespace: true일 때만 함께 쓰고 그때 PID 1은 /pause였어요. pause는 그 파드를 위해 새로 만든 네임스페이스를 유지할 뿐이고, 네임스페이스를 만들고 앱 컨테이너를 pause의 /proc 경로로 들여보내는 일은 containerd와 CNI가 해요.</p>
+<p style="margin-bottom:0;">파드는 네트워크로 보면 호스트 하나이고 파일과 프로세스로 보면 컨테이너마다 따로예요. 그래서 같은 파드의 컨테이너끼리는 포트를 나눠 정하고 파일은 볼륨으로 넘겨야 해요.</p>
+</div>
+</div>

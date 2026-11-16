@@ -1,0 +1,262 @@
+<!-- ============================================================
+  k8s 스터디 65편: sh -c로 감싼 컨테이너는 왜 SIGTERM에 반응하지 않을까, exec와 trap
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: PID 1 모양이 다른 파드 9개를 한꺼번에 지웠더니 trap으로 SIGTERM을 잡은 셸도 31초를 다 채웠어요. sh -c가 PID 1로 남는 조건, POSIX가 정한 trap 지연, exec와 & wait의 차이를 실측으로 정리했어요. -->
+<!-- tags: sh -c, exec form, shell form, trap, busybox, STOPSIGNAL -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 65편</div>
+  63편. 파드 phase와 conditions는 어떤 순서로 바뀌고 Terminating은 왜 phase가 아닐까<br>
+  64편. sleep infinity 파드는 왜 지우는 데 30초가 걸릴까, 컨테이너 PID 1과 커널 규칙<br>
+  <b>65편. sh -c로 감싼 컨테이너는 왜 SIGTERM에 반응하지 않을까, exec와 trap</b> &larr; 지금 이 글<br>
+  66편. 쿠버네티스에는 왜 docker run --init이 없을까, 좀비와 tini와 pause<br>
+  67편. preStop과 terminationGracePeriodSeconds는 어디서부터 세고 stopSignal은 왜 안 먹을까
+</div>
+
+<p>파드 9개를 한꺼번에 지웠어요. 모두 busybox나 nginx로 오래 도는 파드였고 다른 점은 컨테이너의 첫 프로세스 모양뿐이었어요. 결과는 두 무리로 깔끔하게 갈렸어요. 네 개는 30.8~31.0초 뒤에 exit 137로 사라졌고 네 개는 0.6~0.7초 만에 사라졌어요. grace를 5초로 준 나머지 하나는 5.7초였어요.</p>
+<p>느린 쪽에 <code style="font-family:Menlo,monospace;font-size:14px;">sh -c 'trap "exit 0" TERM; sleep infinity; echo bye'</code>가 있었어요. SIGTERM을 받으면 exit 0을 하라고 trap까지 걸었는데 30.8초를 다 채우고 SIGKILL로 끝났어요. 빠른 쪽에는 같은 trap을 걸고 뒷부분만 <code style="font-family:Menlo,monospace;font-size:14px;">sleep infinity &amp; wait</code>로 바꾼 파드가 있었고 0.7초에 exit 0으로 끝났어요.</p>
+<p>64편에서는 핸들러가 없는 PID 1이 SIGTERM을 버린다는 커널 규칙을 봤어요. 그러면 셸로 감싸고 trap을 걸면 해결될 것 같은데 실제로는 그렇지 않았어요. <b>sh -c로 감싼 컨테이너는 왜 SIGTERM에 반응하지 않을까요?</b> 클러스터는 v1.37.2, containerd 2.4.1이고 셸은 busybox 1.37의 sh예요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; sh -c로 감싸면 셸이 PID 1이 될까?<br>
+&middot; 셸이 PID 1이면 왜 SIGTERM이 앱에 닿지 않을까?<br>
+&middot; trap을 걸었는데 왜 30초를 기다렸을까?<br>
+&middot; exec와 &amp; wait는 각각 무엇을 고칠까?<br>
+&middot; nginx를 sh -c로 감싸면 무엇이 달라질까?</p>
+
+<h2>1. 아홉 가지 PID 1 모양은 31초와 0.7초로 갈렸다</h2>
+
+<p>실험은 파드 9개를 띄우고 Ready가 된 뒤 하나의 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl delete</code>로 같이 지웠어요. watch로 각 파드가 사라진 시각과 컨테이너 종료 코드를 받고 노드의 containerd 로그에서 보낸 신호를 읽었어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/65-delete-timing.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">65-delete-timing.sh</code>예요. 같은 모양의 파드로 PID 1과 신호 마스크를 읽은 결과는 64편의 <code style="font-family:Menlo,monospace;font-size:14px;">64-pid1-sigmask.txt</code>에 있어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/65/01-delete-timing.png" alt="PID 1 모양이 다른 파드 9개를 한꺼번에 지운 결과. a-sleep, b-sh-c, c-sh-c-2cmds, d-trap-fg는 30.8~31.0초에 137, e-trap-wait와 f-nginx는 0.7초에 0, g-share와 h-tini는 0.6~0.7초에 143, grace 5초 파드는 5.7초에 137" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 1. containerd는 모든 파드에 +0.1초에 신호를 보냈고, 결과를 가른 것은 그 신호를 받은 PID 1이었어요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">파드</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">command</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">PID 1 (SigCgt)</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">사라짐 / 종료</th></tr></thead>
+<tbody>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">a-sleep</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">sleep infinity</code></td><td style="padding:9px;border:1px solid #d8cfba;">sleep (없음)</td><td style="padding:9px;border:1px solid #d8cfba;">+31.0초 / 137</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">b-sh-c</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">sh -c "sleep infinity"</code></td><td style="padding:9px;border:1px solid #d8cfba;"><b>sleep</b> (없음)</td><td style="padding:9px;border:1px solid #d8cfba;">+30.9초 / 137</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">c-sh-c-2cmds</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">sh -c "sleep infinity; echo bye"</code></td><td style="padding:9px;border:1px solid #d8cfba;">sh (INT CHLD)</td><td style="padding:9px;border:1px solid #d8cfba;">+31.0초 / 137</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">d-trap-fg</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">trap "exit 0" TERM; sleep infinity; echo bye</code></td><td style="padding:9px;border:1px solid #d8cfba;">sh (INT <b>TERM</b> CHLD)</td><td style="padding:9px;border:1px solid #d8cfba;">+30.8초 / 137</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">e-trap-wait</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">trap "exit 0" TERM; sleep infinity &amp; wait</code></td><td style="padding:9px;border:1px solid #d8cfba;">sh (INT TERM CHLD)</td><td style="padding:9px;border:1px solid #d8cfba;">+0.7초 / 0</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">f-nginx</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">/docker-entrypoint.sh nginx -g "daemon off;"</code></td><td style="padding:9px;border:1px solid #d8cfba;">nginx master (TERM, QUIT 포함 10개)</td><td style="padding:9px;border:1px solid #d8cfba;">+0.7초 / 0</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">g-share</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">sleep infinity</code> + shareProcessNamespace</td><td style="padding:9px;border:1px solid #d8cfba;">/pause (sleep은 PID 6)</td><td style="padding:9px;border:1px solid #d8cfba;">+0.6초 / 143</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">h-tini</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">tini -- sleep infinity</code></td><td style="padding:9px;border:1px solid #d8cfba;">tini (없음, 66편)</td><td style="padding:9px;border:1px solid #d8cfba;">+0.7초 / 143</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">i-sleep-grace5</td><td style="padding:9px;border:1px solid #d8cfba;"><code style="font-family:Menlo,monospace;font-size:13px;">sleep infinity</code>, grace 5초</td><td style="padding:9px;border:1px solid #d8cfba;">sleep (없음)</td><td style="padding:9px;border:1px solid #d8cfba;">+5.7초 / 137</td></tr>
+</tbody></table></div>
+
+<p>containerd 로그를 보면 모든 파드가 삭제 요청 뒤 +0.1초에 정지 신호를 받았어요. 느린 다섯 개는 +30.1초(grace 5초 파드는 +5.1초)에 SIGKILL을 한 번 더 받았어요. nginx만 신호 이름이 <code style="font-family:Menlo,monospace;font-size:14px;">quit</code>였고 나머지는 <code style="font-family:Menlo,monospace;font-size:14px;">terminated</code>(SIGTERM)였어요. 종료 코드는 셋으로 나뉘었어요. 137은 SIGKILL로 죽은 것, 143은 SIGTERM의 기본 동작으로 죽은 것, 0은 프로세스가 스스로 exit 0을 한 거예요.</p>
+<p>표에서 바로 보이는 것이 하나 있어요. grace를 5초로 줄인 파드는 빨리 끝났지만 종료 코드는 여전히 137이에요. 신호를 처리하게 된 것이 아니라 SIGKILL이 25초 앞당겨졌을 뿐이에요. 이 글은 표의 위쪽 다섯 줄, 그중에서도 셸이 끼어 있는 b, c, d, e를 따라가요. g와 h는 66편에서 다시 봐요.</p>
+
+<h2>2. sh -c 하나짜리는 셸이 남지 않았고 둘짜리는 셸이 PID 1로 남았다</h2>
+
+<p>Docker를 써 본 사람에게는 익숙한 경고가 있어요. Dockerfile의 ENTRYPOINT를 문자열로 쓰면 신호가 앱에 닿지 않는다는 경고예요. <a href="https://docs.docker.com/reference/dockerfile/">Dockerfile reference</a>는 이렇게 적어요.</p>
+<div class="obsv-code">The shell form of ENTRYPOINT ... starts your ENTRYPOINT as a subcommand of
+/bin/sh -c, which does not pass signals. This means that the executable will
+not be the container's PID 1, and will not receive Unix signals. In this case,
+your executable doesn't receive a SIGTERM from docker stop &lt;container&gt;.</div>
+<p>&rarr; 문자열로 쓴 ENTRYPOINT는 <code style="font-family:Menlo,monospace;font-size:14px;">/bin/sh -c</code>의 하위 명령으로 실행되고, sh는 신호를 넘겨주지 않으므로 앱은 PID 1이 아니고 docker stop의 SIGTERM도 받지 못한다는 뜻이에요. 같은 문서의 예에서 <code style="font-family:Menlo,monospace;font-size:14px;">ENTRYPOINT top -b</code>는 PID 1이 <code style="font-family:Menlo,monospace;font-size:14px;">/bin/sh -c top -b</code>였고 docker stop에 10.19초가 걸렸어요. Docker의 기본 grace인 10초를 다 쓴 거예요. <code style="font-family:Menlo,monospace;font-size:14px;">ENTRYPOINT exec top -b</code>로 바꾸자 top이 PID 1이 됐고 0.20초에 멈췄어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: shell form과 exec form</div>
+Dockerfile에서 <code style="font-family:Menlo,monospace;font-size:14px;">CMD nginx -g "daemon off;"</code>처럼 문자열로 쓰면 shell form이고 <code style="font-family:Menlo,monospace;font-size:14px;">/bin/sh -c</code>가 그 문자열을 실행해요. <code style="font-family:Menlo,monospace;font-size:14px;">["nginx", "-g", "daemon off;"]</code>처럼 배열로 쓰면 exec form이고 그 프로그램이 셸 없이 바로 실행돼요. 쿠버네티스의 <code style="font-family:Menlo,monospace;font-size:14px;">command</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">args</code>는 언제나 배열이라 exec form이에요.</div>
+
+<p>쿠버네티스에는 shell form이 없어요. 그런데 셸 문법(파이프, &amp;&amp;, 변수)을 쓰고 싶으면 <code style="font-family:Menlo,monospace;font-size:14px;">command: ["sh", "-c", "..."]</code>로 쓰고, 이게 Docker의 shell form과 같은 모양이에요. 그러니 셸이 PID 1이 될 거라고 예상했어요. 실제로는 명령 개수에 따라 달랐어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: busybox sh (ash)</div>
+busybox는 ls, sleep, sh 같은 유닉스 도구를 바이너리 하나에 모은 프로그램이에요. busybox 이미지의 <code style="font-family:Menlo,monospace;font-size:14px;">/bin/sh</code>는 busybox에 든 ash라는 셸이고, nginx:1.27-alpine 이미지에서도 <code style="font-family:Menlo,monospace;font-size:14px;">/bin/sh</code>는 <code style="font-family:Menlo,monospace;font-size:14px;">/bin/busybox</code>를 가리켰어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/65-alpine-sh.txt</code>). bash나 dash와는 다른 구현이라서 아래에서 본 동작이 그 셸들에도 같다고 볼 수는 없어요.</div>
+
+<p>b-sh-c(<code style="font-family:Menlo,monospace;font-size:14px;">sh -c "sleep infinity"</code>)의 컨테이너 안 ps에는 sh가 없었어요. PID 1이 <code style="font-family:Menlo,monospace;font-size:14px;">sleep infinity</code>였어요. 셸이 sleep을 자식으로 띄우지 않고 자기 자신을 sleep으로 바꿨다는 뜻이에요. c-sh-c-2cmds(<code style="font-family:Menlo,monospace;font-size:14px;">sh -c "sleep infinity; echo bye"</code>)에서는 PID 1이 sh였고 sleep은 PID 7, 부모가 1인 자식이었어요.</p>
+<div class="obsv-code">## b-sh-c  command: ["sh","-c","sleep infinity"]
+    PID   PPID  STAT COMMAND
+        1     0 S    sleep infinity
+
+## c-sh-c-2cmds  command: ["sh","-c","sleep infinity; echo bye"]
+    PID   PPID  STAT COMMAND
+        1     0 S    sh -c sleep infinity; echo bye
+        7     1 S    sleep infinity</div>
+<p>&rarr; 명령이 하나면 셸이 남지 않았고, 뒤에 실행할 명령이 남아 있으면 셸이 PID 1로 남았다는 뜻이에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: exec (셸 내장 명령)</div>
+셸에서 <code style="font-family:Menlo,monospace;font-size:14px;">exec 명령</code>을 쓰면 셸이 새 프로세스를 만들지 않고 자기 프로세스를 그 명령으로 바꿔요. PID는 그대로이고 셸은 사라져요. PID 1인 셸이 exec를 하면 그 명령이 PID 1을 이어받아요. b-sh-c에서는 exec를 쓰지 않았는데도 같은 결과가 나왔어요.</div>
+
+<p>두 파드는 모양이 달랐지만 결과는 같았어요. b는 sleep이 PID 1이니 64편의 규칙대로 SIGTERM이 버려져요. c는 PID 1인 sh가 TERM에 핸들러를 걸지 않았으니(SigCgt INT CHLD) sh에게 온 SIGTERM이 버려져요. 그리고 sh는 받은 신호를 자식에게 넘겨주지 않아요. 자식 sleep은 PID 1이 아니라서 SIGTERM을 받았다면 기본 동작으로 죽었을 텐데, 31.0초가 걸린 것을 보면 받지 못한 거예요. sleep이 죽었다면 sh는 다음 명령 <code style="font-family:Menlo,monospace;font-size:14px;">echo bye</code>를 실행하고 끝났을 거예요. 여기서 정지 신호가 컨테이너의 첫 프로세스 하나에만 간다고 읽었어요. containerd가 옵션 없이 <code style="font-family:Menlo,monospace;font-size:14px;">task.Kill(ctx, sig)</code>를 부르는 것까지는 소스에서 봤지만, 그 아래 shim과 runc가 첫 프로세스에만 보내는지는 소스로 확인하지 않았어요. 이 결론은 c의 결과에서 끌어낸 추론이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="sleep 단독, sh -c 명령 하나, sh -c 명령 둘일 때의 프로세스 모양과 SIGTERM이 닿는 곳">
+<defs><marker id="k65-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#e5533c" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<g font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34" text-anchor="middle"><text x="115" y="30">a. sleep infinity</text><text x="350" y="30">b. sh -c "sleep infinity"</text><text x="585" y="30">c. sh -c "sleep; echo bye"</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f" text-anchor="middle"><text x="115" y="64">SIGTERM</text><text x="350" y="64">SIGTERM</text><text x="585" y="64">SIGTERM</text></g>
+<path d="M115 70 C 117 80, 114 90, 115 100" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr1)"/>
+<path d="M350 70 C 352 80, 349 90, 350 100" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr1)"/>
+<path d="M585 70 C 587 80, 584 90, 585 100" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr1)"/>
+<path d="M35 106 C 80 103, 150 107, 195 105 C 197 120, 196 138, 195 152 C 150 155, 80 151, 36 153 C 34 138, 35 120, 35 106 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="115" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">PID 1 sleep</text>
+<text x="115" y="146" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">SigCgt 없음</text>
+<path d="M270 106 C 315 103, 385 107, 430 105 C 432 120, 431 138, 430 152 C 385 155, 315 151, 271 153 C 269 138, 270 120, 270 106 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">PID 1 sleep</text>
+<text x="350" y="146" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">sh가 자신을 sleep으로 바꿈</text>
+<path d="M505 106 C 550 103, 620 107, 665 105 C 667 120, 666 138, 665 152 C 620 155, 550 151, 506 153 C 504 138, 505 120, 505 106 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="585" y="128" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">PID 1 sh</text>
+<text x="585" y="146" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">SigCgt INT CHLD</text>
+<path d="M585 158 C 587 172, 584 186, 585 198" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M515 202 C 555 199, 615 203, 655 201 C 657 215, 656 232, 655 246 C 615 249, 555 245, 516 247 C 514 232, 515 215, 515 202 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.2" stroke-linejoin="round" stroke-dasharray="6 5"/>
+<text x="585" y="229" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">PID 7 sleep</text>
+<text x="585" y="270" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#8a8272">신호를 넘겨받지 못함</text>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f" text-anchor="middle"><text x="115" y="190">버려짐 → 31.0초</text><text x="350" y="190">버려짐 → 30.9초</text><text x="440" y="236">sh에서 버려짐 → 31.0초</text></g>
+<text x="350" y="308" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= 신호는 PID 1에서 멈췄고 자식 sleep에는 닿지 않았어요 (c의 결과로 본 추론)</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 2. 셸이 남든 사라지든 PID 1이 SIGTERM을 처리하지 못하면 결과는 같았어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ busybox가 명령을 exec한 것은 관찰이지 확인된 규칙이 아니에요</div>
+b-sh-c의 PID 1이 sleep이었다는 것은 컨테이너 안 ps와 <code style="font-family:Menlo,monospace;font-size:14px;">/proc/1/status</code>로 본 사실이에요. busybox ash의 소스에서 이 동작을 찾아 확인하지는 않았고 dash와 bash에서는 시험하지 않았어요. 그러니 "sh -c에 명령 하나면 안전하다"고 일반화하면 안 돼요. 이미지의 셸이 바뀌거나 명령 뒤에 무언가 붙으면 결과가 달라질 수 있어요. 4절에서 실제로 그런 경우를 봐요.</div>
+
+<h2>3. trap을 걸어도 앞쪽 명령이 끝날 때까지 트랩이 미뤄졌다</h2>
+
+<p>셸이 PID 1로 남는다면 셸이 SIGTERM을 처리하게 하면 될 것 같아요. 셸에서 신호 핸들러를 거는 방법이 trap이에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: trap</div>
+<code style="font-family:Menlo,monospace;font-size:14px;">trap '명령' TERM</code>은 셸이 SIGTERM을 받으면 그 명령을 실행하라고 등록하는 셸 내장 명령이에요. 셸은 이때 커널에 실제 신호 핸들러를 걸어요. 그래서 trap을 건 셸의 SigCgt에는 TERM 비트가 켜지고, PID 1이어도 커널이 SIGTERM을 버리지 않아요.</div>
+
+<p>d-trap-fg의 PID 1 sh는 SigCgt가 INT TERM CHLD였어요. 64편의 그림 2로 보면 왼쪽 갈래, 즉 핸들러가 실행되는 쪽이에요. 신호는 분명히 sh에게 전달됐어요. 그런데도 30.8초 뒤 SIGKILL로 끝났어요. 이유는 셸 표준에 적혀 있어요. <a href="https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html">POSIX.1-2024 Shell Command Language</a> 2.12절이에요.</p>
+<div class="obsv-code">When a signal for which a trap has been set is received while the shell is
+waiting for the completion of a utility executing a foreground command, the
+trap associated with that signal shall not be executed until after the
+foreground command has completed. When the shell is waiting, by means of the
+wait utility, for asynchronous commands to complete, the reception of a signal
+for which a trap has been set shall cause the wait utility to return
+immediately with an exit status &gt;128, immediately after which the trap
+associated with that signal shall be taken.</div>
+<p>&rarr; 셸이 전경 명령이 끝나기를 기다리는 중에 trap을 건 신호가 오면 그 trap은 전경 명령이 끝난 뒤에야 실행된다는 뜻이에요. 반대로 wait 내장 명령으로 백그라운드 명령을 기다리는 중이면 wait가 128보다 큰 값으로 즉시 돌아오고 바로 trap이 실행돼요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 전경 명령과 비동기 명령, wait</div>
+셸은 보통 명령 하나를 실행하고 끝날 때까지 기다린 뒤 다음 줄로 가요. 이게 전경(foreground) 명령이에요. 명령 끝에 &amp;를 붙이면 셸은 기다리지 않고 다음으로 넘어가는데 이게 비동기(백그라운드) 명령이에요. wait는 백그라운드로 띄운 명령이 끝나기를 기다리는 셸 내장 명령이에요.</div>
+
+<p>d에서 sh는 전경 명령 <code style="font-family:Menlo,monospace;font-size:14px;">sleep infinity</code>를 기다리고 있었어요. SIGTERM은 도착했지만 trap의 <code style="font-family:Menlo,monospace;font-size:14px;">exit 0</code>은 sleep이 끝날 때까지 미뤄졌고, sleep은 끝나지 않으니 30초 뒤 SIGKILL이 먼저 왔어요. e는 <code style="font-family:Menlo,monospace;font-size:14px;">sleep infinity &amp; wait</code>로 sleep을 백그라운드로 보내고 wait로 기다렸어요. SIGTERM이 오자 wait가 바로 돌아오고 trap이 exit 0을 실행했어요. +0.7초, 종료 코드 0이에요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="전경 sleep을 기다리는 셸과 wait로 기다리는 셸에서 trap이 실행되는 시점 비교">
+<defs><marker id="k65-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="30" y="34" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">d. trap "exit 0" TERM; sleep infinity; echo bye</text>
+<path d="M40 82 C 250 80, 450 84, 640 82" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr2)"/>
+<path d="M60 64 C 220 61, 380 66, 545 63" fill="none" stroke="#e5a33c" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+<text x="300" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">전경 sleep infinity를 기다리는 중 (끝나지 않음)</text>
+<path d="M70 96 C 71 104, 69 112, 70 118" fill="none" stroke="#e5533c" stroke-width="2.2"/>
+<text x="70" y="136" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">+0.1s TERM</text>
+<text x="190" y="136" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">trap 실행은 sleep이 끝날 때까지 미뤄짐</text>
+<path d="M548 96 C 549 104, 547 112, 548 118" fill="none" stroke="#e5533c" stroke-width="2.2"/>
+<text x="560" y="136" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">+30.1s KILL → 137</text>
+<text x="30" y="186" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">e. trap "exit 0" TERM; sleep infinity &amp; wait</text>
+<path d="M40 234 C 250 232, 450 236, 640 234" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr2)"/>
+<path d="M60 216 C 64 215, 68 217, 72 216" fill="none" stroke="#4a7fb5" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+<text x="150" y="210" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d6591">wait 중 → TERM에 즉시 돌아옴</text>
+<path d="M70 248 C 71 256, 69 264, 70 270" fill="none" stroke="#e5533c" stroke-width="2.2"/>
+<text x="70" y="288" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#b3502f">+0.1s TERM</text>
+<text x="190" y="288" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">trap 실행 → exit 0, +0.7초에 사라짐</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 3. 같은 trap이라도 셸이 무엇을 기다리고 있었는지가 30초를 갈랐어요.</p>
+
+<p>e에서 한 가지 더 볼 것이 있어요. 2절의 추론대로라면 SIGTERM은 PID 1인 sh에게만 갔고 백그라운드 sleep에는 가지 않았어요. 이 실험만으로는 sleep이 SIGTERM을 받았는지 가릴 수 없어요. 64편의 신호 마스크 출력에서 e의 PID 7 sleep은 SigIgn이 INT QUIT였어요. POSIX 2.12의 첫 문단이 작업 제어가 꺼진 셸에서 비동기 명령은 SIGINT와 SIGQUIT을 무시 상태로 물려받는다고 정한 그대로이고, TERM은 무시 목록에 없어요. 어느 쪽이든 sleep은 곧바로 끝났어요. PID 1인 sh가 exit 0으로 끝나면 커널이 그 네임스페이스의 나머지 프로세스에 SIGKILL을 보내기 때문이에요(64편의 <code style="font-family:Menlo,monospace;font-size:14px;">zap_pid_ns_processes()</code>). 컨테이너의 종료 코드 0은 sh의 것이에요.</p>
+<p>이 점은 실제 앱에서 중요해요. sleep 자리에 정리 작업이 필요한 앱이 있다면 e의 모양은 앱을 정리 없이 SIGKILL로 끝내요. Dockerfile reference도 정리 작업이 필요하거나 여러 프로그램을 함께 돌린다면 진입점 스크립트가 "receives the Unix signals, passes them on, and then does some more work"해야 한다고 적어요. 신호를 받아서 자식에게 넘기고 그다음 일을 하라는 뜻이에요. tini를 만든 krallin도 <a href="https://github.com/krallin/tini/issues/8">tini 이슈 #8</a>에서 Bash를 PID 1로 쓰면 신호가 Bash에게만 가고 "does not forward them anywhere (unless you code it yourself)"라고 했어요. 직접 코드로 짜지 않으면 어디에도 넘기지 않는다는 뜻이에요. trap으로 자식에게 신호를 넘기는 스크립트는 이 글에서 시험하지 않았어요.</p>
+<p>네이티브 사이드카 실험에도 같은 규칙이 보여요. <code style="font-family:Menlo,monospace;font-size:14px;">trap "exit 0" TERM; while true; do sleep 1; done</code>을 쓴 사이드카는 앱이 끝난 11:31:23의 1초 뒤인 11:31:24에 exit 0으로 끝났어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/64-native-sidecar-finish.txt</code>). 전경 명령이 <code style="font-family:Menlo,monospace;font-size:14px;">sleep 1</code>이라 trap이 미뤄져도 최대 1초라고 읽을 수 있어요. 이 해석은 끝난 시각의 초 단위 기록에서 끌어낸 것이고 trap이 실행된 순간을 따로 재지는 않았어요.</p>
+
+<h2>4. exec는 PID 1을 앱에게 넘기지만 nginx 앞에 셸이 남으면 SIGQUIT이 버려졌다</h2>
+
+<p>셸이 PID 1로 남아서 생기는 문제라면 가장 단순한 처방은 셸이 남지 않게 하는 거예요. Dockerfile reference가 진입점 스크립트의 마지막 줄에 <code style="font-family:Menlo,monospace;font-size:14px;">exec "$@"</code>나 <code style="font-family:Menlo,monospace;font-size:14px;">exec gosu postgres "$@"</code>를 쓰는 예를 드는 이유예요. 준비 작업은 셸이 하고 마지막에 앱으로 자신을 바꾸면 앱이 PID 1이 되고 정지 신호를 직접 받아요. f-nginx가 그 예예요. command는 <code style="font-family:Menlo,monospace;font-size:14px;">/docker-entrypoint.sh</code>라는 셸 스크립트로 시작했는데 PID 1은 nginx master였어요. 같은 PID 1 자리가 스크립트에서 nginx로 바뀌었으니 스크립트가 마지막에 exec로 자리를 넘긴 거예요.</p>
+<p>다만 exec는 신호를 앱에게 보내는 길을 열 뿐이에요. b-sh-c도 결과적으로 sleep이 PID 1이었지만 sleep에는 핸들러가 없어서 30.9초가 걸렸어요. exec 뒤의 앱이 정지 신호에 핸들러를 걸어야 의미가 있어요.</p>
+<p>실제 앱으로 확인해 봤어요. nginx:1.27-alpine 이미지로 네 가지 command를 띄우고 같이 지웠어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/65-nginx-sh-wrapper.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">65-nginx-sh-wrapper.sh</code>예요.</p>
+<div class="obsv-code">w-direct     ["nginx","-g","daemon off;"]                         PID 1 = nginx master
+w-sh-exec    ["sh","-c","echo prep; exec nginx -g \"daemon off;\""]   PID 1 = nginx master
+w-sh-noexec  ["sh","-c","echo prep; nginx -g \"daemon off;\""]        PID 1 = nginx master
+w-sh-tail    ["sh","-c","nginx -g \"daemon off;\"; echo bye"]         PID 1 = sh -c nginx -g "daemon off;"; echo bye
+             (w-sh-tail의 PID 1 sh: SigIgn = QUIT, SigCgt = INT CHLD)</div>
+<p>&rarr; 출력에서 command와 PID 1만 모은 거예요. exec를 쓰지 않은 w-sh-noexec도 PID 1이 nginx였어요. busybox sh가 마지막 명령을 exec한 것으로 보여요. 셸이 남은 것은 nginx 뒤에 <code style="font-family:Menlo,monospace;font-size:14px;">echo bye</code>가 붙은 w-sh-tail 하나였어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/65/02-nginx-sh-wrapper.png" alt="nginx를 감싼 네 파드를 지운 결과. w-direct, w-sh-exec, w-sh-noexec는 3.2~3.4초에 exit 0이고 containerd가 신호 quit을 보냄. w-sh-tail은 32.3초에 137이고 +30.7초에 SIGKILL" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 4. 셸이 PID 1로 남은 w-sh-tail만 SIGQUIT을 버리고 30초를 기다렸어요.</p>
+
+<p>containerd가 보낸 신호는 네 파드 모두 <code style="font-family:Menlo,monospace;font-size:14px;">quit</code>(SIGQUIT)이었어요. nginx 공식 이미지에 <code style="font-family:Menlo,monospace;font-size:14px;">STOPSIGNAL SIGQUIT</code>이 들어 있기 때문이에요. 64편의 신호 마스크 실험에서 노드의 containerd가 본 nginx:1.27-alpine 이미지 설정도 <code style="font-family:Menlo,monospace;font-size:14px;">StopSignal=SIGQUIT</code>이었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: STOPSIGNAL</div>
+이미지를 멈출 때 보낼 신호를 정하는 Dockerfile 지시어예요. 적지 않으면 SIGTERM이에요. containerd는 파드 스펙에 정지 신호가 없으면 이미지의 STOPSIGNAL을, 그것도 없으면 SIGTERM을 보내요. 쿠버네티스 파드 스펙으로 이 값을 바꾸는 필드는 67편에서 봐요.</div>
+
+<p>nginx는 SIGTERM과 SIGINT를 빠른 종료(연결을 바로 끊음), SIGQUIT을 우아한 종료(처리 중인 요청을 마치고 끝남)로 다뤄요. 2019-11-15에 열린 <a href="https://github.com/nginx/docker-nginx/issues/377">docker-nginx 이슈 #377</a>은 "when Docker or Kubernetes decide to stop a container, nginx will die immediately, closing any connections straight away"라고 문제를 적었어요. 컨테이너가 멈출 때 nginx가 연결을 바로 끊는다는 뜻이에요. nginx의 관련 버그(trac #753)가 1.19.1에서 고쳐진 뒤 2020-11-24의 <a href="https://github.com/nginx/docker-nginx/commit/3fb70ddd7094c1fdd50cc83d432643dc10ab6243">커밋 3fb70ddd70</a>이 이미지의 STOPSIGNAL을 SIGTERM에서 SIGQUIT으로 바꿨어요.</p>
+<p>여기에 busybox sh가 끼면 문제가 하나 더 생겨요. w-sh-tail의 PID 1 sh는 SigIgn에 QUIT이 켜져 있었어요. 핸들러가 없는 것이 아니라 일부러 무시하는 상태예요. containerd가 보낸 SIGQUIT은 sh에서 버려졌고 +30.7초의 SIGKILL로 끝났어요. 사라진 시각은 +32.3초, 종료 코드는 137이에요. nginx가 PID 1이었던 세 파드는 SIGQUIT을 받아 우아한 종료를 하고 +3.2~3.4초에 exit 0으로 사라졌어요. 이번 실행에서 컨테이너 종료가 watch에 처음 보인 시각은 +2.3~2.4초였고 1절의 f-nginx는 +0.4초였어요. 그 차이는 따로 보지 않았어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ nginx 이미지를 sh -c로 감쌀 때는 TERM trap으로도 막을 수 없어요</div>
+nginx 이미지의 정지 신호는 SIGTERM이 아니라 SIGQUIT이에요. 셸이 PID 1로 남는 모양이면 containerd는 그 셸에 SIGQUIT을 보내고 busybox sh는 QUIT을 무시 상태로 두고 있어요. 그래서 <code style="font-family:Menlo,monospace;font-size:14px;">trap ... TERM</code>만 걸어서는 이 신호를 잡지 못해요(이 조합은 따로 시험하지 않았고 SigIgn과 STOPSIGNAL에서 끌어낸 결론이에요). nginx 앞에 설정 생성 같은 준비 작업을 넣는다면 마지막 명령을 <code style="font-family:Menlo,monospace;font-size:14px;">exec nginx -g "daemon off;"</code>로 쓰고 그 뒤에 아무것도 두지 마세요.</div>
+
+<h2>5. 셸로 감쌌다면 PID 1, 정지 신호, 마지막 명령 셋을 확인한다</h2>
+
+<p>지금까지의 결과를 순서로 묶으면 점검할 것은 세 가지예요. PID 1이 누구인지, 그 PID 1이 런타임이 보내는 정지 신호에 핸들러를 걸었는지, 셸이라면 앱이 마지막에 exec로 PID 1을 넘겨받는지예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="sh -c로 감싼 컨테이너의 PID 1과 정지 신호를 점검하는 순서">
+<defs><marker id="k65-arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M200 18 C 300 15, 400 19, 500 17 C 502 32, 501 48, 500 62 C 400 65, 300 61, 201 63 C 199 48, 200 32, 200 18 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="40" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d6591">1. PID 1은 누구인가</text>
+<text x="350" y="56" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#3d6591">cat /proc/1/cmdline</text>
+<path d="M260 66 C 220 86, 180 102, 150 118" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr3)"/>
+<text x="176" y="92" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">앱</text>
+<path d="M440 66 C 480 86, 520 102, 550 118" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr3)"/>
+<text x="508" y="92" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">셸</text>
+<path d="M30 124 C 110 121, 190 125, 270 123 C 272 140, 271 158, 270 174 C 190 177, 110 173, 31 175 C 29 158, 30 140, 30 124 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="150" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">2. 정지 신호에 핸들러?</text>
+<text x="150" y="166" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">SigCgt + 이미지 STOPSIGNAL</text>
+<path d="M430 124 C 510 121, 590 125, 670 123 C 672 140, 671 158, 670 174 C 590 177, 510 173, 431 175 C 429 158, 430 140, 430 124 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="550" y="146" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#c07f18">3. 앱을 exec로 넘길 수 있나?</text>
+<text x="550" y="166" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#8a8272">마지막 명령 뒤에 아무것도 없게</text>
+<path d="M100 180 C 90 200, 80 216, 74 232" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr3)"/>
+<path d="M200 180 C 210 200, 222 216, 230 232" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr3)"/>
+<path d="M500 180 C 490 200, 480 216, 474 232" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr3)"/>
+<path d="M600 180 C 610 200, 622 216, 630 232" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k65-arr3)"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="18"><text x="58" y="208" fill="#2e6b41">예</text><text x="222" y="208" fill="#b3502f">아니오</text><text x="458" y="208" fill="#2e6b41">예</text><text x="622" y="208" fill="#b3502f">아니오</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle"><text x="70" y="256" fill="#2e6b41">그대로 OK</text><text x="70" y="278" fill="#2e6b41">nginx, pause</text><text x="240" y="256" fill="#b3502f">grace마다 137</text><text x="240" y="278" fill="#b3502f">핸들러를 걸거나 init</text><text x="470" y="256" fill="#2e6b41">exec 앱</text><text x="470" y="278" fill="#2e6b41">→ 2번으로</text><text x="630" y="256" fill="#b3502f">trap + &amp; wait</text><text x="630" y="278" fill="#b3502f">+ 자식에게 전달</text></g>
+<text x="350" y="334" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">= exec는 2번을 대신해 주지 않아요. 앱이 신호를 처리해야 해요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 5. 셸을 없애는 것과 앱이 신호를 처리하는 것은 서로 다른 점검이에요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 실무에서는</div>
+&bull; 셸 문법이 필요 없으면 <code style="font-family:Menlo,monospace;font-size:14px;">command: ["nginx", "-g", "daemon off;"]</code>처럼 배열로 바로 써요. 그러면 셸이 끼지 않아요.<br>
+&bull; 준비 작업이 필요하면 <code style="font-family:Menlo,monospace;font-size:14px;">sh -c '준비 &amp;&amp; exec 앱'</code>처럼 마지막을 exec로 쓰고, 셸 동작에 기대지 말고 exec를 명시해요. 진입점 스크립트도 마지막 줄을 <code style="font-family:Menlo,monospace;font-size:14px;">exec "$@"</code>로 끝내요.<br>
+&bull; 배포 뒤에 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl exec &lt;파드&gt; -- cat /proc/1/cmdline</code>으로 PID 1을 보고 <code style="font-family:Menlo,monospace;font-size:14px;">/proc/1/status</code>의 SigIgn과 SigCgt를 같이 봐요.<br>
+&bull; 이미지의 정지 신호는 노드에서 <code style="font-family:Menlo,monospace;font-size:14px;">crictl inspecti &lt;이미지&gt;</code> 출력의 <code style="font-family:Menlo,monospace;font-size:14px;">info.imageSpec.config.StopSignal</code>로 확인해요. 비어 있으면 SIGTERM이에요.<br>
+&bull; grace를 줄이는 것은 해결이 아니에요. i-sleep-grace5와 같이 137이 빨리 올 뿐이에요.</div>
+
+<p><b>출처</b><br>
+&middot; <a href="https://docs.docker.com/reference/dockerfile/">Dockerfile reference</a>(ENTRYPOINT shell form과 exec form, STOPSIGNAL. 원본은 <a href="https://github.com/moby/buildkit/blob/master/frontend/dockerfile/docs/reference.md">moby/buildkit의 reference.md</a>)<br>
+&middot; <a href="https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html">POSIX.1-2024 Shell Command Language 2.12 Signals and Error Handling</a><br>
+&middot; <a href="https://github.com/krallin/tini/issues/8">krallin/tini 이슈 #8</a>, <a href="https://github.com/nginx/docker-nginx/issues/377">nginx/docker-nginx 이슈 #377</a>, <a href="https://github.com/nginx/docker-nginx/commit/3fb70ddd7094c1fdd50cc83d432643dc10ab6243">커밋 3fb70ddd70</a><br>
+&middot; <a href="https://github.com/containerd/containerd/blob/v2.4.1/internal/cri/server/container_stop.go">containerd v2.4.1 container_stop.go</a><br>
+&middot; 실험 원본: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/</code>의 65-delete-timing, 65-nginx-sh-wrapper, 65-alpine-sh, 64-pid1-sigmask, 64-native-sidecar-finish (.sh/.txt)</p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<p>sh -c로 감싼 컨테이너가 SIGTERM에 반응하지 않는 이유는 둘 중 하나였어요. 셸이 PID 1로 남으면 셸은 TERM 핸들러가 없고 받은 신호를 자식에게 넘기지도 않아요. 셸이 남지 않더라도 PID 1이 된 프로그램에 핸들러가 없으면 결과는 같아요. 우리 실험에서 두 경우 모두 31초 근처에서 137로 끝났어요.</p>
+<p>trap은 셸에 핸들러를 걸지만 POSIX 2.12에 따라 전경 명령이 끝날 때까지 실행이 미뤄져요. <code style="font-family:Menlo,monospace;font-size:14px;">sleep infinity; ...</code>는 30.8초, <code style="font-family:Menlo,monospace;font-size:14px;">sleep infinity &amp; wait</code>는 0.7초였어요. busybox sh는 마지막 명령을 exec해서 셸이 남지 않는 것으로 관찰됐지만, nginx 뒤에 명령 하나를 붙이자 셸이 PID 1로 남아 이미지의 정지 신호 SIGQUIT을 무시했고 32.3초가 걸렸어요.</p>
+<p style="margin-bottom:0;">셸로 감쌀 때는 마지막을 exec로 명시해 앱에게 PID 1을 넘기고, 그 앱이 런타임이 보내는 정지 신호를 실제로 처리하는지 /proc/1/status로 확인해야 해요.</p>
+</div>
+</div>

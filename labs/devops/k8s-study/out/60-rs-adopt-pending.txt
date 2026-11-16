@@ -1,0 +1,31 @@
+# 60 ReplicaSet 이 세는 것 (2026-11-15 21:43:57 KST)
+
+## 1. 라벨 app=adopt 인 단독 파드 early 를 먼저 만들고, 같은 셀렉터의 replicas=2 ReplicaSet 을 만들면
+  ReplicaSet 을 만들기 전 early 의 owner: (없음)
+    NAME      PHASE     NODE          APP     OWNER        OWNERNAME
+adopt-t7fch   Running   k8s-worker1   adopt   ReplicaSet   adopt
+early         Running   k8s-worker3   adopt   ReplicaSet   adopt
+  RS 이벤트:
+SuccessfulCreate   Created pod: adopt-t7fch
+
+## 2. 어느 노드에도 없는 라벨을 nodeSelector 로 준 replicas=2 ReplicaSet (15초 뒤)
+    NAME     PHASE     NODE     APP    OWNER        OWNERNAME
+pend-2kdhm   Pending   <none>   pend   ReplicaSet   pend
+pend-tvzwk   Pending   <none>   pend   ReplicaSet   pend
+  RS status: replicas=2 readyReplicas= availableReplicas=(빈칸=0)
+  RS 이벤트:
+SuccessfulCreate   Created pod: pend-2kdhm
+SuccessfulCreate   Created pod: pend-tvzwk
+  파드 이벤트(pend-2kdhm):
+FailedScheduling   0/4 nodes are available: 1 node(s) had untolerated taint(s), 3 node(s) didn't match Pod's node affinity/selector. preemption: 0/4 nodes are a
+
+## 3. adopt 를 Service 로 노출한 뒤 파드 하나의 라벨을 app=debug 로 바꾸면
+  바꾸기 전 Service 대상: early adopt-t7fch 
+  early 의 라벨을 바꾼 뒤 Service 대상: adopt-t7fch adopt-f4kp2 
+    NAME      PHASE     NODE          APP     OWNER        OWNERNAME
+adopt-f4kp2   Running   k8s-worker3   adopt   ReplicaSet   adopt
+adopt-t7fch   Running   k8s-worker1   adopt   ReplicaSet   adopt
+early         Running   k8s-worker3   debug   <none>       <none>
+
+## 4. Deployment 템플릿에 restartPolicy: Never 를 쓰면 (dry-run=server)
+  The Deployment "once" is invalid: spec.template.spec.restartPolicy: Unsupported value: "Never": supported values: "Always"

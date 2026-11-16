@@ -1,0 +1,86 @@
+# kubernetes v1.37.2 소스 발췌 (2026-11-15 받음): 파드 STATUS 열의 Terminating, 조건 시각을 찍는 곳, deletionTimestamp 계산
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/printers/internalversion/printers.go (printPod: API 서버가 kubectl get 에 돌려주는 표의 STATUS 칸)
+	podPhase := pod.Status.Phase
+	reason := string(podPhase)
+	if pod.Status.Reason != "" {
+		reason = pod.Status.Reason
+	}
+	...
+	if pod.DeletionTimestamp != nil && pod.Status.Reason == node.NodeUnreachablePodReason {
+		reason = "Unknown"
+	} else if pod.DeletionTimestamp != nil && !podutilv1.IsPodPhaseTerminal(apiv1.PodPhase(podPhase)) {
+		reason = "Terminating"
+	}
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/registry/core/pod/storage/storage.go (파드 표 출력은 API 서버가 위 printers 로 만든다)
+	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
+		TableConvertor: printerstorage.TableConvertor{TableGenerator: printers.NewTableGenerator().With(printersinternal.AddHandlers)},
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/registry/core/pod/storage/storage.go (바인딩 요청을 처리하며 PodScheduled=True 를 쓴다, API 서버)
+		pod.Spec.NodeName = machine
+		// Clear nomination hint to prevent stale information affecting external components.
+		...
+		podutil.UpdatePodCondition(&pod.Status, &api.PodCondition{
+			Type:   api.PodScheduled,
+			Status: api.ConditionTrue,
+		})
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/api/pod/util.go (위 UpdatePodCondition: 시각은 그 코드가 도는 곳의 metav1.Now())
+func UpdatePodCondition(status *api.PodStatus, condition *api.PodCondition) bool {
+	condition.LastTransitionTime = metav1.Now()
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/kubelet/status/status_manager.go (kubelet 이 조건 시각을 찍는다, 노드)
+	updateLastTransitionTime(&status, &oldStatus, v1.ContainersReady)
+
+	// Set ReadyCondition.LastTransitionTime.
+	updateLastTransitionTime(&status, &oldStatus, v1.PodReady)
+
+	// Set InitializedCondition.LastTransitionTime.
+	updateLastTransitionTime(&status, &oldStatus, v1.PodInitialized)
+
+	// Set PodReadyToStartContainersCondition.LastTransitionTime.
+	updateLastTransitionTime(&status, &oldStatus, v1.PodReadyToStartContainers)
+
+func updateLastTransitionTime(status, oldStatus *v1.PodStatus, conditionType v1.PodConditionType) {
+	_, condition := podutil.GetPodCondition(status, conditionType)
+	if condition == nil {
+		return
+	}
+	// Need to set LastTransitionTime.
+	lastTransitionTime := metav1.Now()
+	_, oldCondition := podutil.GetPodCondition(oldStatus, conditionType)
+	if oldCondition != nil && condition.Status == oldCondition.Status {
+		lastTransitionTime = oldCondition.LastTransitionTime
+	}
+	condition.LastTransitionTime = lastTransitionTime
+
+## https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/staging/src/k8s.io/apiserver/pkg/registry/rest/delete.go (deletionTimestamp = 지금 + 유예, 유예를 줄이면 앞으로 당긴다)
+		// only a shorter grace period may be provided by a user
+		if options.GracePeriodSeconds != nil {
+			period := int64(*options.GracePeriodSeconds)
+			if period >= *objectMeta.GetDeletionGracePeriodSeconds() {
+				return false, true, nil
+			}
+			// Move the existing deletionTimestamp back by existing object.DeletionGracePeriod, then forward by options.DeletionGracePeriod.
+			// This moves the deletionTimestamp back, since the grace period can only be shortened in this code path.
+			newDeletionTimestamp := metav1.NewTime(
+				objectMeta.GetDeletionTimestamp().Add(-time.Second * time.Duration(*objectMeta.GetDeletionGracePeriodSeconds())).
+					Add(time.Second * time.Duration(*options.GracePeriodSeconds)))
+			// Prevent shortening the grace period moving deletionTimestamp into the past
+			if now := metav1Now(); newDeletionTimestamp.Before(&now) {
+				newDeletionTimestamp = now
+				if period != 0 {
+					// Since a graceful deletion was requested (options.GracePeriodSeconds != 0), but the entire grace period has already expired,
+					// shorten to the minimum period possible while still treating this as a graceful delete.
+					// This means the API server updates the object, another actor observes the update
+					// and is still responsible for the final delete with options.GracePeriodSeconds == 0.
+					period = int64(1)
+				}
+			}
+			objectMeta.SetDeletionTimestamp(&newDeletionTimestamp)
+			objectMeta.SetDeletionGracePeriodSeconds(&period)
+	...
+	requestedDeletionTimestamp := metav1.NewTime(metav1Now().Add(time.Second * time.Duration(*options.GracePeriodSeconds)))
+	objectMeta.SetDeletionTimestamp(&requestedDeletionTimestamp)
+	objectMeta.SetDeletionGracePeriodSeconds(options.GracePeriodSeconds)

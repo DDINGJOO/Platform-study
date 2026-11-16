@@ -1,0 +1,35 @@
+# lifecycle.stopSignal 시험 (2026-11-15 21:17:46 KST)
+
+## 1. 기능 게이트 ContainerStopSignals (각 컴포넌트 /metrics의 kubernetes_feature_enabled)
+  kube-apiserver         kubernetes_feature_enabled{name="ContainerStopSignals",stage="ALPHA"} 0
+  kubelet@k8s-master     kubernetes_feature_enabled{name="ContainerStopSignals",stage="ALPHA"} 0
+  kubelet@k8s-worker1    kubernetes_feature_enabled{name="ContainerStopSignals",stage="ALPHA"} 0
+  kubelet@k8s-worker2    kubernetes_feature_enabled{name="ContainerStopSignals",stage="ALPHA"} 0
+  kubelet@k8s-worker3    kubernetes_feature_enabled{name="ContainerStopSignals",stage="ALPHA"} 0
+
+## 2. API 스키마에는 필드가 있다 (kubectl explain의 FIELD·DESCRIPTION. alpha라는 말은 없다)
+  FIELD: stopSignal <string>
+  DESCRIPTION:
+      StopSignal defines which signal will be sent to a container when it is being
+      stopped. If not specified, the default is defined by the container runtime
+      in use. StopSignal can only be set for Pods with a non-empty .spec.os.name
+      
+      Possible enum values:
+  (뒤로 SIGABRT ~ SIGXFSZ, SIGRTMIN+n, SIGRTMAX-n 열거값 65개)
+
+## 3. stopSignal: SIGKILL을 넣어 만들면 무엇이 저장되나
+  보낸 매니페스트의 lifecycle: stopSignal: SIGKILL
+  kubectl create 출력:
+    pod/s-kill created
+  저장된 .spec.containers[0].lifecycle = ''  (비어 있으면 API 서버가 버린 것)
+  저장된 .spec.os = {"name":"linux"}
+
+## 4. 검증도 안 하고 버리나: 리눅스에 없는 이름(SIGFOO) + spec.os 없이 server-side dry-run
+  결과: 생성 허용, lifecycle=''
+
+## 5. s-kill을 지우면 몇 초 걸리나 (stopSignal이 먹혔다면 SIGKILL로 바로 끝나야 한다)
+  status.containerStatuses[0].stopSignal = ''
+  +32.7s 객체 사라짐 (노드 k8s-worker2, 노드-Mac=0.118s)
+  node +  1.4s  StopContainer for "<cid>" with timeout 30 (s)
+  node +  1.4s  Stop container "<cid>" with signal terminated
+  node + 31.5s  Kill container "<cid>"

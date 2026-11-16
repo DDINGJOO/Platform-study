@@ -1,0 +1,26 @@
+# 16 strace vs kubectl -v (2026-11-15 20:56:39 KST), k8s-master 에서 실행
+
+## 1. strace -f kubectl get pod -n ch05 : 시스템 콜 개수 상위
+  % time     seconds  usecs/call     calls    errors syscall
+  ------ ----------- ----------- --------- --------- ------------------
+   52.83    0.017973          66       269        34 futex
+   26.82    0.009124          91       100           nanosleep
+  100.00    0.034020          19      1788       122 total
+  fcntl 326회
+  read 318회
+  futex 269회
+  rt_sigaction 114회
+  nanosleep 100회
+  openat 94회
+
+## 2. 네트워크 관련 콜만: API 서버에 붙는 connect, 오가는 바이트
+  connect(4, {sa_family=AF_INET, sin_port=htons(6443), sin_addr=inet_addr("192.168.104.1")}, 16) = -1 EINPROGRESS (Operation now in progress)
+  TLS 라 write/read 내용은 암호문. 평문 GET 이 보이는가: 0줄
+
+## 3. kubectl -v=6 : 실제 REST 요청
+  verb="GET" url="https://192.168.104.1:6443/api/v1/namespaces/ch05/pods?limit=500" status="200 OK"
+
+## 4. kubectl -v=8 : 요청·응답 헤더와 본문 일부
+  	Accept: application/json;as=Table;v=v1;g=meta.k8s.io,application/json;as=Table;v=v1beta1;g=meta.k8s.io,application/json
+  	User-Agent: kubectl/v1.37.2 (linux/arm64) kubernetes/c50e539
+  I1115 20:56:39.419749   41047 helper.go:113] "Response Body" body="{\"kind\":\"Table\",\"apiVersion\":\"meta.k8s.io/v1\",\"metadata\":{\"resourceVersion\":\"1000249171\"}

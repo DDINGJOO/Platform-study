@@ -1,0 +1,66 @@
+# 02 HPA를 v1으로 만들고 v1·v2로 읽고 etcd를 본다 (2026-11-15 21:11:37 KST)
+
+## 1. 21:11:37 autoscaling/v1으로 생성 (targetCPUUtilizationPercentage: 50, 대상 Deployment는 일부러 없음)
+    apiVersion: autoscaling/v1
+    kind: HorizontalPodAutoscaler
+    metadata: {name: web, namespace: why-api}
+    spec:
+      scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: web}
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 50
+  → horizontalpodautoscaler.autoscaling/web created
+
+## 2. 같은 객체를 두 버전 경로로 GET
+  GET /apis/autoscaling/v1/namespaces/why-api/horizontalpodautoscalers/web
+    apiVersion: autoscaling/v1 | uid: 7b4c5407-0a88-4da6-836c-545d1073348d | resourceVersion: 1000251400
+    spec: {"minReplicas": 1, "maxReplicas": 3, "targetCPUUtilizationPercentage": 50}
+  GET /apis/autoscaling/v2/namespaces/why-api/horizontalpodautoscalers/web
+    apiVersion: autoscaling/v2 | uid: 7b4c5407-0a88-4da6-836c-545d1073348d | resourceVersion: 1000251400
+    spec: {"minReplicas": 1, "maxReplicas": 3, "metrics": [{"type": "Resource", "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": 50}}}]}
+
+## 3. etcd에 저장된 것 (/registry/horizontalpodautoscalers/why-api/web)
+  형식 protobuf | apiVersion=autoscaling/v2 kind=HorizontalPodAutoscaler | mod_revision=1000251400 | 778바이트
+    값 안에 'autoscaling.alpha.kubernetes.io'             없음
+    값 안에 'averageUtilization'                          없음
+    값 안에 'targetCPUUtilizationPercentage'              있음
+  protobuf 본문에는 필드 이름이 없고 번호만 있다(averageUtilization 없음). 그런데도 targetCPUUtilizationPercentage가 보이는 건
+  managedFields(fieldsV1은 JSON) 때문이다. 관리자마다 자기가 쓴 apiVersion으로 필드 목록을 남긴다:
+    manager=kube-controller-manager operation=Update apiVersion=autoscaling/v2 fields=[]
+    manager=kubectl-create operation=Update apiVersion=autoscaling/v1 fields=['f:maxReplicas', 'f:minReplicas', 'f:scaleTargetRef', 'f:targetCPUUtilizationPercentage']
+
+## 4. 21:11:37 v2로만 표현되는 것 추가: memory 지표 + behavior (horizontalpodautoscalers.v2.autoscaling에 merge patch)
+  → horizontalpodautoscaler.autoscaling/web patched
+
+## 5. v1으로 읽으면: v1에 자리가 없는 정보가 annotation으로 나온다
+  apiVersion: autoscaling/v1 | targetCPUUtilizationPercentage: 50
+  annotation autoscaling.alpha.kubernetes.io/behavior = {"ScaleUp":{"StabilizationWindowSeconds":0,"SelectPolicy":"Max","Policies":[{"Type":"Pods","Value":4,"PeriodSeconds":15},{"Type":"Percent","Value":100...
+  annotation autoscaling.alpha.kubernetes.io/conditions = [{"type":"AbleToScale","status":"False","lastTransitionTime":"2026-11-15T12:11:37Z","reason":"FailedGetScale","message":"the HPA controller was unable...
+  annotation autoscaling.alpha.kubernetes.io/metrics = [{"type":"Resource","resource":{"name":"memory","targetAverageUtilization":70}}]
+  v2로 읽으면:
+  apiVersion: autoscaling/v2 | annotation 수: 0
+  spec.metrics: [('cpu', 50), ('memory', 70)]
+  spec.behavior.scaleDown.stabilizationWindowSeconds: 60
+  status.conditions: [('AbleToScale', 'False', 'FailedGetScale')]
+
+## 6. etcd는 여전히 v2 한 벌 (annotation은 저장되지 않고 v1으로 변환할 때 만들어진다)
+  형식 protobuf | apiVersion=autoscaling/v2 kind=HorizontalPodAutoscaler | mod_revision=1000251405 | 1184바이트
+    값 안에 'memory'                                      있음
+    값 안에 'autoscaling.alpha.kubernetes.io'             없음
+
+## 7. 21:11:40 v1 클라이언트의 왕복: v1으로 GET 한 것을 그대로 PUT (kubectl replace)
+  → horizontalpodautoscaler.autoscaling/web replaced
+  (PUT 전 v2 순서는 cpu, memory였다)
+  v2로 다시 읽은 metrics: memory=70 cpu=50 | behavior.scaleDown.stabilizationWindowSeconds=60
+
+## 8. 21:11:40 annotation을 모르는 v1 클라이언트가 자기 매니페스트로 덮어쓰면 (kubectl replace, annotation 없음)
+  → horizontalpodautoscaler.autoscaling/web replaced
+  v2로 다시 읽은 metrics: cpu=50 | behavior: 
+  (memory 지표와 behavior가 사라졌는지 위 줄로 판단)
+
+## 9. kubectl 함정: 짧은 이름에 버전을 붙이면(hpa.v1.autoscaling) 버전이 무시되고 preferredVersion으로 간다
+  kubectl get hpa.v1.autoscaling                       → url="https://192.168.64.2:6443/apis/autoscaling/v2/namespaces/why-api/horizontalpodautoscalers?limit=500"
+  kubectl get horizontalpodautoscalers.v1.autoscaling  → url="https://192.168.64.2:6443/apis/autoscaling/v1/namespaces/why-api/horizontalpodautoscalers?limit=500"
+
+## 10. 정리
+  horizontalpodautoscaler.autoscaling "web" deleted from why-api namespace

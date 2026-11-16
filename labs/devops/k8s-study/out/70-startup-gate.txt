@@ -1,0 +1,41 @@
+# 사이드카가 다음 컨테이너 시작을 붙잡는 조건 (2026-11-15 21:14:14 KST)
+
+## 컨테이너별 시작 시각 (startedAt, UTC) / started / ready
+  hook      startedAt=2026-11-15T12:14:14Z  started=true  ready=true
+  notready  startedAt=2026-11-15T12:14:19Z  started=true  ready=false
+  slow      startedAt=2026-11-15T12:14:19Z  started=true  ready=true
+  init2     startedAt=2026-11-15T12:14:30Z  started=false  ready=true  (terminated exit=0)
+  app       startedAt=2026-11-15T12:14:31Z  started=true  ready=true
+
+## 파드 조건 (lastTransitionTime, UTC)
+  2026-11-15T12:14:14Z  PodReadyToStartContainers=True
+  2026-11-15T12:14:14Z  Ready=False (ContainersNotReady)
+  2026-11-15T12:14:14Z  ContainersReady=False (ContainersNotReady)
+  2026-11-15T12:14:14Z  PodScheduled=True
+  2026-11-15T12:14:31Z  Initialized=True
+
+## kubectl get pod
+  NAME   READY   STATUS    RESTARTS   AGE
+  gate   3/4     Running   0          35s
+
+## 이벤트 (시간순)
+  TIME                   REASON      MSG
+  2026-11-15T12:14:14Z   Scheduled   Successfully assigned why-sidecar/gate to k8s-worker2
+  2026-11-15T12:14:14Z   Created     Container created
+  2026-11-15T12:14:14Z   Started     Container started
+  2026-11-15T12:14:19Z   Created     Container created
+  2026-11-15T12:14:19Z   Started     Container started
+  2026-11-15T12:14:19Z   Created     Container created
+  2026-11-15T12:14:19Z   Unhealthy   Readiness probe failed: 
+  2026-11-15T12:14:19Z   Started     Container started
+  2026-11-15T12:14:20Z   Unhealthy   Startup probe failed: 
+  2026-11-15T12:14:30Z   Created     Container created
+  2026-11-15T12:14:30Z   Started     Container started
+  2026-11-15T12:14:31Z   Created     Container created
+  2026-11-15T12:14:31Z   Started     Container started
+
+# 읽는 법 (2026-11-15 추가)
+# - hook 12:14:14 시작 → postStart(sleep 5)가 끝난 12:14:19 에야 다음 notready 시작. 훅이 다음 컨테이너를 붙잡는다.
+# - notready와 slow는 같은 12:14:19 시작. readinessProbe가 계속 실패해도(ready=false) 다음 컨테이너는 막히지 않는다.
+# - slow의 startupProbe가 성공한 뒤(약 11초) init2 12:14:30, app 12:14:31. Initialized=True도 12:14:31.
+# - 파드 Ready=False, READY 3/4: notready 사이드카의 readiness가 파드 Ready에 들어간다(app은 ready). 순서는 started, 트래픽은 ready.

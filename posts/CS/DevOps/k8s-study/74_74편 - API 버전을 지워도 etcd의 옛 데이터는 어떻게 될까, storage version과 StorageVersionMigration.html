@@ -1,0 +1,277 @@
+<!-- ============================================================
+  k8s 스터디 74편: API 버전을 지워도 etcd의 옛 데이터는 어떻게 될까, storage version과 StorageVersionMigration
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: etcd 키 893개를 풀어 보니 CRD 23개가 1.22에 서빙이 끝난 apiextensions.k8s.io/v1beta1로 저장돼 있었어요. 저장 버전이 늦게 바뀌는 이유와 StorageVersionMigration으로 옛 버전을 비우는 과정을 확인했어요. -->
+<!-- tags: storage version, StorageVersionMigration, storedVersions, etcd, CRD 버전, 52185 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 74편</div>
+  71편. 컨테이너마다 restartPolicy를 주면 사이드카가 될까, restartPolicyRules<br>
+  72편. 같은 HPA를 autoscaling v1과 v2로 동시에 읽을 수 있는 이유<br>
+  73편. no matches for kind 에러는 왜 날까, API deprecation policy가 정해진 과정<br>
+  <b>74편. API 버전을 지워도 etcd의 옛 데이터는 어떻게 될까, storage version과 StorageVersionMigration</b> &larr; 지금 이 글<br>
+  75편. 업그레이드 전에 deprecated API를 누가 쓰는지 찾는 법
+</div>
+
+<p>etcd의 <code style="font-family:Menlo,monospace;font-size:14px;">/registry</code> 아래 키 893개를 모두 꺼내 값마다 붙은 apiVersion을 셌어요. protobuf가 821개, JSON이 72개였어요. 대부분 v1, apps/v1처럼 지금 서빙하는 버전이었는데 두 줄이 달랐어요. CustomResourceDefinition 23개가 apiextensions.k8s.io/v1beta1로, ClusterTrustBundle 1개가 certificates.k8s.io/v1beta1로 저장돼 있었어요.</p>
+<p>두 버전은 지금 서빙 목록에 없어요. kubectl api-versions에는 apiextensions.k8s.io/v1과 certificates.k8s.io/v1만 있고 <code style="font-family:Menlo,monospace;font-size:14px;">/apis/apiextensions.k8s.io/v1beta1</code>을 직접 물으면 NotFound가 나와요. apiextensions.k8s.io/v1beta1은 1.22에 서빙이 끝난 버전이에요. 73편에서 서빙을 끊어도 저장된 적이 있는 버전은 서버가 계속 읽을 줄 알아야 한다는 규칙을 봤어요. 우리 etcd에는 그 버전으로 지금도 쓰이는 객체가 있었어요.</p>
+<p>이 글은 서빙하지 않는 버전으로 저장하는 두 가지 이유를 보고, 저장 버전을 바꾼 뒤 옛 버전 객체를 비우는 1.37의 StorageVersionMigration을 시험 CRD로 확인해요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; CRD 객체는 왜 서빙하지 않는 v1beta1로 저장될까?<br>
+&middot; 1.37에서 v1으로 서빙되는 API는 왜 v1beta1로 저장될까?<br>
+&middot; 저장 버전을 바꾸면 이미 저장된 객체도 바뀔까?<br>
+&middot; 옛 버전을 빼도 되는지는 무엇으로 알까?<br>
+&middot; StorageVersionMigration은 무엇을 하고 얼마나 걸렸을까?<br>
+&middot; 2017년에 열린 #52185는 왜 아직 열려 있을까?</p>
+
+<h2>1. 우리 etcd에는 서빙하지 않는 v1beta1로 저장된 객체가 24개 있다</h2>
+
+<p>22편과 같은 방법으로 etcd 파드 안의 etcdctl로 값을 읽었어요. API 서버에는 <code style="font-family:Menlo,monospace;font-size:14px;">--encryption-provider-config</code>가 없어서 값의 앞부분을 바로 풀 수 있었어요. 객체 이름은 찍지 않고 키 접두어별 개수만 셌어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/74-etcd-stored-versions.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">74-etcd-stored-versions.sh</code>예요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/74/01-etcd-stored-apiversions.png" alt="etcd에 저장된 apiVersion별 합계에서 apiextensions.k8s.io/v1beta1 23개와 certificates.k8s.io/v1beta1 1개가 alpha/beta 버전으로 저장된 것으로 나온 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 1. 저장 apiVersion 14종 가운데 두 개가 서빙하지 않는 beta 버전이었어요.</p>
+
+<p>events 키 404개는 모두 v1 Event였어요. 72편에서 events.k8s.io/v1의 저장 해시가 core v1 Event의 해시와 같았던 것과 맞는 결과예요. Calico가 만든 CRD 객체 25개는 JSON으로 crd.projectcalico.org/v1이었어요. 22편에서 본 대로 기본 리소스는 protobuf, CRD로 정의한 리소스는 JSON이에요.</p>
+<p>CRD 객체 자체가 v1beta1인 이유는 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/apiserver/apiextensions.go">v1.37.2 코드</a>의 주석에 있어요.</p>
+
+<div class="obsv-code">etcdOptions.StorageConfig.Codec = apiextensionsapiserver.Codecs.LegacyCodec(v1beta1.SchemeGroupVersion, v1.SchemeGroupVersion)
+// prefer the more compact serialization (v1beta1) for storage until https://issue.k8s.io/82292 is resolved
+// for objects whose v1 serialization is too big but whose v1beta1 serialization can be stored
+etcdOptions.StorageConfig.EncodeVersioner = runtime.NewMultiGroupVersioner(v1beta1.SchemeGroupVersion, ...)</div>
+
+<p>&rarr; v1 직렬화로는 너무 커서 저장할 수 없지만 v1beta1 직렬화로는 저장할 수 있는 객체가 있으니 이슈 #82292가 풀릴 때까지 더 작은 v1beta1로 저장한다는 뜻이에요.</p>
+<p><a href="https://github.com/kubernetes/kubernetes/issues/82292">#82292</a>는 2019년 9월 3일 DirectXMan12가 연 "Large CRDs go over size limits"예요. 검증 스키마가 큰 CRD가 크기 제한에 걸리는 문제를 다뤄요. 버전 하나에 700k인 CRD 사례가 있고 여러 버전이 생기면 1M 제한을 넘을 수 있다는 걱정이 적혀 있어요. 이 이슈는 지금도 열려 있어요. v1beta1 직렬화가 왜 더 작은지는 주석이 설명하지 않고 이 글에서도 확인하지 못했어요. 확인한 것은 API 서버가 1.22에 서빙을 끊은 v1beta1 CRD 타입을 저장 때문에 계속 들고 있다는 사실이에요. discovery의 CRD storageVersionHash인 jfWCUB31mvA=도 v1beta1로 계산한 값과 같았어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/72-discovery-storage-version-hash.txt</code> 4절).</p>
+
+<h2>2. 새 버전이 들어온 릴리스에서는 저장 버전을 바꾸지 않는다</h2>
+
+<p>ClusterTrustBundle은 이유가 달라요. 1.37에서 v1으로 서빙되는 다른 두 리소스도 같은 모습이었어요. discovery의 해시가 v1이 아니라 v1beta1로 계산한 값과 같았어요.</p>
+
+<div class="obsv-code">  리소스                                          discovery      v1 해시      v1beta1 해시
+  storagemigration.k8s.io/storageversionmigrations   pCjmmKOkLy4=   fG8W2W0mBLo=   pCjmmKOkLy4=
+  certificates.k8s.io/podcertificaterequests         wYA9yXQH8fg=   y6DwA8NQC8M=   wYA9yXQH8fg=
+  certificates.k8s.io/clustertrustbundles            v5yhuVertL4=   R/wbJqMRFu8=   v5yhuVertL4=
+  apiextensions.k8s.io/customresourcedefinitions     jfWCUB31mvA=   M5uH+AlWATY=   jfWCUB31mvA=
+  그 beta 버전 경로는 서빙되지 않는다:
+    GET /apis/storagemigration.k8s.io/v1beta1      → (NotFound): the server could not find the requested resource
+    GET /apis/certificates.k8s.io/v1beta1          → (NotFound): the server could not find the requested resource
+    GET /apis/apiextensions.k8s.io/v1beta1         → (NotFound): the server could not find the requested resource</div>
+
+<p>세 리소스 모두 v1 경로로 서빙되지만 저장 해시는 v1beta1이었고 그 v1beta1 경로는 NotFound였어요. 4장의 실험에서 storagemigration.k8s.io/v1으로 만든 객체를 etcd에서 꺼내 보니 실제로 storagemigration.k8s.io/v1beta1로 저장돼 있었어요.</p>
+<p>이유는 2017년 9월 deprecation policy에 Rule #4b를 넣을 때의 리뷰(<a href="https://github.com/kubernetes/website/pull/5338">website #5338</a>)에 있어요. Hockin은 이렇게 물었어요.</p>
+
+<div class="obsv-code">If I advance the storage version and then have to do a rollback, anything
+stored will no longer be readable, right?</div>
+
+<p>&rarr; 저장 버전을 새 버전으로 올린 뒤 이전 릴리스로 롤백하면 그동안 저장한 것을 이전 바이너리가 읽지 못하지 않느냐는 뜻이에요. 같은 리뷰에서 lavalamp가 Rule #4b가 꼭 필요한지 아직 고민 중이라고 하자 bgrant0607은 "For the storage version, it definitely is."라고 답했어요. 그렇게 들어간 Rule #4b는 지금 이렇게 적혀 있어요. "The "preferred" API version and the "storage version" for a given group may not advance until after a release has been made that supports both the new version and the previous version." 새 버전과 이전 버전을 둘 다 아는 릴리스가 한 번 나온 뒤에야 저장 버전을 올릴 수 있다는 뜻이에요. 문서는 그 이유를 "This is particularly evident in the stored representation of objects."라고 덧붙여요.</p>
+<p>v1.37.2는 이 규칙을 자동으로 계산해요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/server/storage/resource_encoding_config.go">저장 버전을 고르는 코드</a>의 첫 단계 주석은 "Find the highest-priority non-alpha version that is n-1 rollback safe (introduced at or before MinCompatibilityVersion)"예요. 우리 API 서버의 <code style="font-family:Menlo,monospace;font-size:14px;">/version</code>은 emulation 1.37, minCompatibility 1.36을 돌려줬어요. storagemigration.k8s.io/v1beta1은 1.35에 들어왔고 v1은 1.37에 GA가 됐어요. 1.36 이하에 들어온 버전 중에서 고르면 v1beta1이 남아요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: min-compatibility 버전</div>
+API 서버가 롤백해도 호환을 지켜야 하는 가장 낮은 릴리스예요. 우리 API 서버의 /version은 1.36이라고 알려 줘요. 저장 버전을 고를 때 이 릴리스가 모르는 버전은 후보에서 빠져요. 코드는 롤백 안전한 버전을 찾을 때 알파 버전을 빼요. 알파는 호환을 약속하지 않기 때문이에요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 350" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="StorageVersionMigration이 1.37에 v1이 되어도 1.36 롤백을 위해 v1beta1로 저장되는 이유">
+<defs><marker id="k74-roll-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3, 6 4, 8.5 5 C6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="24" fill="#3d3a34">StorageVersionMigration: 1.37에 v1이 생겨도 저장은 v1beta1</text>
+<path d="M30 62 C 90 59, 160 63, 210 60 C 213 90, 212 122, 211 152 C 160 155, 90 151, 32 153 C 29 122, 31 90, 30 62 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M260 60 C 320 63, 390 59, 440 62 C 442 92, 441 124, 440 153 C 390 151, 320 155, 262 152 C 259 124, 261 92, 260 60 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M490 62 C 550 59, 620 63, 670 60 C 673 90, 672 122, 671 152 C 620 155, 550 151, 492 153 C 489 122, 491 90, 490 62 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.3" stroke-linejoin="round"/>
+<g font-family="Menlo,monospace" font-size="18" text-anchor="middle" fill="#3d3a34"><text x="120" y="88">1.35</text><text x="350" y="88">1.36</text><text x="580" y="88">1.37</text></g>
+<g font-family="'Nanum Pen Script',cursive" font-size="19" text-anchor="middle" fill="#3d3a34"><text x="120" y="116">아는 버전: v1beta1</text><text x="350" y="116">아는 버전: v1beta1</text><text x="580" y="116">아는 버전: v1beta1, v1</text></g>
+<g font-family="'Nanum Pen Script',cursive" font-size="19" text-anchor="middle"><text x="120" y="141" fill="#3d6591">저장: v1beta1</text><text x="350" y="141" fill="#3d6591">저장: v1beta1</text><text x="580" y="141" fill="#2e6b41">저장: v1beta1 ✔</text></g>
+<path d="M214 105 C 228 103, 242 106, 254 105" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round" marker-end="url(#k74-roll-arrow)"/>
+<path d="M444 105 C 458 103, 472 106, 484 105" fill="none" stroke="#8a8272" stroke-width="2" stroke-linecap="round" marker-end="url(#k74-roll-arrow)"/>
+<path d="M560 166 C 520 205, 420 210, 372 170" fill="none" stroke="#5a9e6f" stroke-width="2.3" stroke-linecap="round" marker-end="url(#k74-roll-arrow)"/>
+<text x="465" y="225" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#2e6b41">1.36으로 롤백해도 v1beta1 값을 읽어요 ✔</text>
+<text x="350" y="265" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#b3502f">1.37이 v1으로 저장했다면 v1을 모르는 1.36은 그 값을 읽지 못해요 ✘</text>
+<text x="350" y="302" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">우리 API 서버 /version: emulation 1.37, minCompatibility 1.36</text>
+<text x="350" y="334" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#b3502f">= 새 버전과 옛 버전을 둘 다 아는 릴리스가 지나야 저장 버전이 바뀌어요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 2. GA 직후 한 릴리스 동안은 서빙하지 않는 beta로 저장해야 롤백이 안전해요.</p>
+
+<p><a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubeapiserver/default_storage_factory_builder.go">저장소 설정 코드</a>에는 명시적인 예외 목록도 있어요. 주석은 "Usually this is the case when a new version for a resource gets introduced and a downgrade to an older apiserver that doesn't know the new version still needs to be supported for one release."라고 적어요. 목록에 clustertrustbundles v1beta1(주석 "TODO: remove in 1.38"), podcertificaterequests v1beta1, storageversionmigrations v1beta1이 들어 있어요. 이 목록과 위의 자동 선택이 서로 겹치는 것인지는 확인하지 못했어요. 관측한 결과는 세 리소스 모두 v1beta1 저장이었어요.</p>
+
+<h2>3. 서빙을 끊어도 옛 버전 코드를 지울 수 없게 한 #52185는 2017년부터 열려 있다</h2>
+
+<p>저장 버전이 언젠가 바뀌면 그 전에 저장된 객체는 어떻게 될까요? 2017년 9월 8일 lavalamp가 연 <a href="https://github.com/kubernetes/kubernetes/issues/52185">#52185 "Storage upgrade mechanism"</a>이 이 질문에서 출발했어요.</p>
+
+<div class="obsv-code">Before we remove an API object version, we need to be certain that all stored objects have been
+upgraded to a version that will be readable in the future. The old plan for that was to run the
+cluster/upgrade-storage-objects.sh script after each upgrade.</div>
+
+<p>&rarr; API 버전을 지우기 전에 저장된 객체가 모두 앞으로도 읽을 수 있는 버전으로 바뀌었다고 확신해야 하는데, 지금까지는 업그레이드할 때마다 스크립트를 돌리는 계획에 기댔다는 뜻이에요. 이슈는 그 계획의 문제 셋을 적었어요. 스크립트가 낡고 불완전하다는 것, 릴리스 노트의 실행 안내가 들쭉날쭉하다는 것, "We believe not all distributions have been running the script after upgrades."라는 것이에요. 결론은 이랬어요.</p>
+
+<div class="obsv-code">In the mean time, it is not safe to remove API object versions, so we are instating a moratorium
+on API object version removal until this system is in place. (Deprecations are still fine.)</div>
+
+<p>&rarr; 제대로 된 장치가 생길 때까지 API 버전 제거를 멈추고 deprecated 표시는 계속해도 된다는 뜻이에요. Hockin은 같은 날 "It sucks to carry old APIs forward, but this is a liability I think we can't ignore. We've gotten lucky this far."라고 덧붙였어요.</p>
+<p>대안도 오갔어요. smarterclayton은 OpenShift가 업그레이드를 시작하기 전마다 모든 객체를 읽어 아무것도 바꾸지 않는 쓰기를 하는 마이그레이션을 강제한다고 소개했어요. lavalamp는 "it's good if you're going to run one or two of these things with super-well-trained humans doing the upgrade, but Kubernetes isn't installed like that"이라고 답했어요. 9월 14일 sig-api-machinery에서는 이 일을 컨트롤러가 맡는 편이 낫다는 쪽으로 의견이 모였어요(timothysc). 2018년 1월 liggitt는 "I haven't seen a better suggestion than a no-op read/write cycle via the API on the affected resources."라고 적고, 그동안은 옛 버전의 서빙만 기본으로 끄는 방법을 제안했어요. "The types still remain, so they can be read from storage". 73편에서 본 1.16의 서빙 중단이 이 방식이에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: no-op 쓰기</div>
+객체를 읽어 내용을 바꾸지 않고 그대로 다시 쓰는 요청이에요. API 서버는 쓸 때마다 지금의 저장 버전으로 직렬화하므로 옛 버전으로 저장된 값이 새 저장 버전으로 바뀌어요. 저장 버전 마이그레이션의 기본 동작이에요.</div>
+
+<p>2018년의 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/2330-migrating-api-objects-to-latest-storage-version">KEP-2330</a>은 위험을 구체적으로 적었어요. "Today it is possible to create API objects (e.g., HPAs) in one version of Kubernetes, go through multiple upgrade cycles without touching those objects, and eventually arrive at a version of Kubernetes that can't interpret the stored resource and crashes." 손대지 않은 객체가 여러 번의 업그레이드를 지나 서버가 해석할 수 없는 상태로 남을 수 있다는 뜻이에요. deprecation policy에도 2018년 5월 #8825 이후 "Until #52185 is resolved, no API versions that have been persisted to storage may be removed."라는 note가 붙어 있어요.</p>
+<p>그 뒤 이슈에는 2024년 4월 "The foundational pieces are being worked on here"라며 KEP-2339와 KEP-4192가 링크됐고, 2026년 8월 10일 michaelasp가 "Yep, we are moving this to GA in 1.37!"라고 적었어요. 2026년 11월 15일에 다시 확인했을 때 이슈는 열려 있었어요.</p>
+
+<h2>4. 시험 CRD로 저장 버전을 바꾸고 StorageVersionMigration으로 옛 객체를 다시 썼다</h2>
+
+<p>1.37에 GA 된 도구가 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/4192-svm-in-tree">KEP-4192</a>의 StorageVersionMigration이에요. 트리 밖의 kube-storage-version-migrator를 트리 안으로 옮긴 것이고 kep.yaml의 단계는 alpha 1.30, beta 1.35, stable 1.37이에요. KEP는 가장 단순한 방법인 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get &lt;resource&gt; | kubectl replace -</code>가 "problematic for any resource that can contain a large amount of data such as Kubernetes secrets and it is also impractical to perform without automation"이라고 적어요. <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/tasks/manage-kubernetes-objects/storage-version-migration.md">공식 문서</a>는 쓰임새로 저장 스키마가 v1에서 v2로 바뀌는 경우와 저장 데이터 암호화 키를 바꾼 뒤 다시 쓰는 경우를 들어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: StorageVersionMigration(SVM)</div>
+group과 resource를 지정하면 그 리소스의 객체를 모두 지금의 저장 버전으로 다시 쓰게 하는 API 객체예요. kube-controller-manager의 컨트롤러가 처리하고 끝나면 Succeeded 조건을 기록해요. 1.37에서 storagemigration.k8s.io/v1로 기본 켜졌어요.</div>
+
+<p>CRD로 전 과정을 따라갔어요. CRD는 버전과 저장 버전을 사용자가 정하고 etcd 값이 JSON이라 확인하기 쉬워요. 시험 CRD widgets.why-api.example.com에 v1(저장 버전)과 v2를 두고 두 버전의 스키마는 같게, 변환은 기본값인 None으로 했어요. None은 apiVersion만 바꿔 주는 변환이에요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/74-crd-storage-migration-and-deprecation.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">74-crd-storage-migration-and-deprecation.sh</code>예요.</p>
+
+<div class="obsv-code">## 2. 21:13:49 w1을 v1으로 생성 → etcd는 v1, v2 경로로 읽으면 v2
+  → widget.why-api.example.com/w1 created
+  /registry/why-api.example.com/widgets/why-api/w1        JSON     apiVersion=why-api.example.com/v1 (mod_revision 1000252150)
+  GET /apis/why-api.example.com/v1/.../w1 → apiVersion why-api.example.com/v1
+  GET /apis/why-api.example.com/v2/.../w1 → apiVersion why-api.example.com/v2
+  discovery storageVersionHash: v1 경로 0rzA46NRJVs=, v2 경로 0rzA46NRJVs= | 계산 v1=0rzA46NRJVs= v2=2DbIdfh8Ae4=
+
+## 3. 21:13:52 저장 버전을 v2로 바꾼다 (v1 storage=false, v2 storage=true)
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com patched
+  versions: v1(served=true,storage=false) v2(served=true,storage=true) 
+  status.storedVersions: ["v1","v2"]   ← etcd에 v1 객체가 남아 있을 수 있으니 v1을 지우지 않는다
+  discovery storageVersionHash: 2DbIdfh8Ae4= (계산 v2=2DbIdfh8Ae4=)
+  → w2를 v1으로 생성: widget.why-api.example.com/w2 created
+  /registry/why-api.example.com/widgets/why-api/w1        JSON     apiVersion=why-api.example.com/v1 (mod_revision 1000252150)
+  /registry/why-api.example.com/widgets/why-api/w2        JSON     apiVersion=why-api.example.com/v2 (mod_revision 1000252156)
+  → 같은 리소스인데 etcd에 v1 객체와 v2 객체가 섞여 있다. 저장 버전을 바꿔도 기존 객체는 다시 쓰이기 전까지 옛 버전 그대로.
+
+## 4. 21:13:55 이 상태에서 v1을 CRD에서 빼려고 하면
+  → The CustomResourceDefinition "widgets.why-api.example.com" is invalid: status.storedVersions[0]: Invalid value: "v1": missing from spec.versions; v1 was previously a storage version, and must remain in spec.versions until a storage migration ensures no data remains persisted in v1 and removes v1 from status.storedVersions</div>
+
+<p>v1으로 만든 w1은 etcd에 v1으로 들어갔고 v2 경로로 읽으면 v2로 나왔어요. 72편의 HPA와 같은 구조예요. 저장 버전을 v2로 바꾸자 discovery 해시가 v2의 해시로 바뀌었고 그 뒤에 v1 경로로 만든 w2는 etcd에 v2로 들어갔어요. w1은 v1 그대로였고 mod_revision도 그대로였어요. <span class="obsv-mark">저장 버전을 바꿔도 이미 저장된 객체는 누가 다시 쓰기 전까지 옛 버전으로 남아요.</span></p>
+<p>&rarr; 4절의 오류는 v1이 저장 버전이었던 적이 있으니 저장 마이그레이션이 v1으로 남은 데이터가 없다고 확인하고 status.storedVersions에서 v1을 뺄 때까지 spec.versions에 남겨야 한다는 뜻이에요. CRD는 #52185의 규칙을 API 수준에서 강제해요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: status.storedVersions</div>
+CRD가 저장 버전으로 지정된 적이 있는 버전을 모두 기록하는 필드예요. <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning.md">CRD 버전 문서</a>는 "Objects may have been stored at any version that has ever been designated as a storage version."라고 적어요. 이 목록에 남은 버전은 CRD에서 뺄 수 없어요.</div>
+
+<p>이 상태에서 v1을 deprecated로 표시하는 단계도 거쳤어요(같은 파일 5절). 그다음 StorageVersionMigration을 만들었어요. 본문은 대상 group과 resource 두 줄뿐이에요.</p>
+
+<div class="obsv-code">apiVersion: storagemigration.k8s.io/v1
+kind: StorageVersionMigration
+metadata: {name: why-api-widgets}
+spec:
+  resource: {group: why-api.example.com, resource: widgets}</div>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/74/02-svm-succeeded.png" alt="21:13:59에 만든 StorageVersionMigration이 21:14:20에 Succeeded True, Migration completed로 관측된 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 3. 21:13:59에 만든 마이그레이션이 21:14:20에 Succeeded로 관측됐어요.</p>
+
+<p>스크립트는 2초 간격으로 조건을 확인했고 21:14:20에 Succeeded True를 봤어요. 만든 지 약 20초 뒤예요. 객체 두 개짜리 리소스에서 관측한 시간이라 다른 리소스의 소요 시간으로 일반화할 수는 없어요. 마이그레이션 뒤 etcd를 다시 봤어요.</p>
+
+<div class="obsv-code">## 7. 마이그레이션 뒤 etcd와 storedVersions
+  /registry/why-api.example.com/widgets/why-api/w1        JSON     apiVersion=why-api.example.com/v2 (mod_revision 1000252517)
+  /registry/why-api.example.com/widgets/why-api/w2        JSON     apiVersion=why-api.example.com/v2 (mod_revision 1000252156)
+  status.storedVersions: ["v2"]
+  StorageVersionMigration 객체 자체는 어떤 버전으로 저장됐나 (v1으로 만들었지만):
+  /registry/storageversionmigrations/why-api-widgets      protobuf apiVersion=storagemigration.k8s.io/v1beta1 (mod_revision 1000252520)
+
+## 8. 21:14:21 이제 v1 서빙을 끄고 CRD에서 v1을 뺀다
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com patched
+  GET /apis/why-api.example.com/v1/namespaces/why-api/widgets → Error from server (NotFound): the server could not find the requested resource
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com patched
+  versions: v2(served=true,storage=true)  | storedVersions: ["v2"]
+  21:14:23 w1을 v2로 읽기: why-api.example.com/v2 size=small</div>
+
+<p>w1은 v2로 다시 쓰였고 mod_revision이 1000252150에서 1000252517로 바뀌었어요. 이미 v2였던 w2는 mod_revision이 1000252156 그대로였어요. 내용이 같은 쓰기를 건너뛴 것으로 보이지만 코드로 확인하지는 않았어요. storedVersions는 ["v2"]로 줄었고 그제야 v1 서빙을 끄고 CRD에서 v1을 뺄 수 있었어요. w1은 v2로 읽혔고 size=small도 그대로였어요. SVM 객체 자체는 v1으로 만들었는데 etcd에는 storagemigration.k8s.io/v1beta1로 저장됐어요. 2장에서 본 롤백 대비와 같은 결과예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="시험 CRD에서 저장 버전 변경, v1 제거 거부, 마이그레이션, v1 제거까지 etcd 안 버전의 변화">
+<defs><marker id="k74-svm-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M1 1.5 C4 3, 6 4, 8.5 5 C6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="24" fill="#3d3a34">시험 CRD widgets: etcd 안의 버전이 바뀐 순서</text>
+<path d="M14 58 C 60 56, 120 59, 163 57 C 165 110, 164 170, 163 232 C 120 234, 60 231, 15 233 C 13 170, 14 110, 14 58 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M183 57 C 230 59, 290 56, 333 58 C 335 110, 334 170, 333 233 C 290 231, 230 234, 184 232 C 182 170, 183 110, 183 57 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M352 58 C 400 56, 460 59, 502 57 C 504 110, 503 170, 502 232 C 460 234, 400 231, 353 233 C 351 170, 352 110, 352 58 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M521 57 C 570 59, 630 56, 672 58 C 674 110, 673 170, 672 233 C 630 231, 570 234, 522 232 C 520 170, 521 110, 521 57 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.3" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="17" text-anchor="middle" fill="#3d3a34"><text x="89" y="86">① 저장 버전 v1</text><text x="258" y="86">② 저장 버전 v2로</text><text x="427" y="86">③ SVM 약 20초</text><text x="597" y="86">④ v1 서빙 끄고 제거</text></g>
+<g font-family="Menlo,monospace" font-size="12" text-anchor="middle" fill="#3d3a34">
+<text x="89" y="122">w1: v1</text><text x="89" y="182" fill="#3d6591">[v1]</text>
+<text x="258" y="116">w1: v1 (그대로)</text><text x="258" y="138">w2: v2</text><text x="258" y="182" fill="#3d6591">[v1, v2]</text>
+<text x="427" y="116">w1: v2 (다시 씀)</text><text x="427" y="138">w2: v2 (그대로)</text><text x="427" y="182" fill="#3d6591">[v2]</text>
+<text x="597" y="116">v1 경로 NotFound</text><text x="597" y="138">w1을 v2로 읽음</text><text x="597" y="182" fill="#3d6591">[v2]</text></g>
+<g font-family="'Nanum Pen Script',cursive" font-size="16" text-anchor="middle" fill="#8a8272"><text x="89" y="162">storedVersions</text><text x="258" y="162">storedVersions</text><text x="427" y="162">storedVersions</text><text x="597" y="162">storedVersions</text></g>
+<g font-family="'Nanum Pen Script',cursive" font-size="19" text-anchor="middle"><text x="258" y="216" fill="#b3502f">v1 빼기 거부 ✘</text><text x="597" y="216" fill="#2e6b41">v1 빼기 성공 ✔</text></g>
+<path d="M165 145 C 170 144, 175 146, 180 145" fill="none" stroke="#3d3a34" stroke-width="1.8" marker-end="url(#k74-svm-arrow)"/>
+<path d="M335 145 C 340 144, 344 146, 349 145" fill="none" stroke="#3d3a34" stroke-width="1.8" marker-end="url(#k74-svm-arrow)"/>
+<path d="M504 145 C 509 144, 513 146, 518 145" fill="none" stroke="#3d3a34" stroke-width="1.8" marker-end="url(#k74-svm-arrow)"/>
+<text x="350" y="272" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">storedVersions = 저장 버전이었던 적이 있는 버전 목록, etcd에 남아 있을 수 있는 버전</text>
+<text x="350" y="304" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">마이그레이션은 옛 버전 객체만 다시 쓰고 storedVersions를 줄여요</text>
+<text x="350" y="342" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#b3502f">= 옛 버전을 빼려면 etcd에서 먼저 비우고 기록에서 지워야 해요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 4. 저장 버전 변경과 옛 버전 제거 사이에 마이그레이션이 있어야 했어요.</p>
+
+<p>38편에서 본 것처럼 etcd는 값을 덮어쓰지 않고 리비전을 하나 더 쌓아요. w1의 mod_revision이 바뀐 것은 새 리비전이 생겼다는 뜻이고 옛 v1 값은 컴팩션 전까지 이전 리비전으로 남아요. 마이그레이션이 다시 쓰는 대상은 지금 값이에요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 CRD의 옛 버전을 내리는 순서</div>
+&bull; 새 버전을 <code style="font-family:Menlo,monospace;font-size:14px;">storage: true</code>로 바꾸고 <code style="font-family:Menlo,monospace;font-size:14px;">status.storedVersions</code>에 두 버전이 함께 있는지 봐요<br>
+&bull; StorageVersionMigration을 만들어 Succeeded를 확인하고 storedVersions에서 옛 버전이 빠졌는지 봐요<br>
+&bull; 옛 버전을 <code style="font-family:Menlo,monospace;font-size:14px;">served: false</code>로 바꿔 쓰는 클라이언트가 없는지 확인한 뒤 spec.versions에서 빼요<br>
+&bull; CRD 버전 문서는 마이그레이션 없이 storedVersions를 status 서브리소스 패치로 직접 고치는 방법도 적지만, 그 전에 모든 객체를 같은 내용으로 다시 쓰는 절차가 먼저예요</div>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ SVM이 다시 쓰는 범위와 조건</div>
+&bull; 지정한 group과 resource의 객체만 다시 써요. 이번 실험의 대상은 widgets뿐이었어요<br>
+&bull; 공식 문서는 리소스가 정수 resourceVersion을 가져야 한다는 조건을 적고, 그렇지 않은 aggregated API에서는 마이그레이션이 실패한다고 해요<br>
+&bull; 1.37 CHANGELOG는 Workload와 PodGroup이 beta로 올라가면서 1.36의 v1alpha2 객체를 업그레이드 전에 지우라고 안내해요. 알파 버전으로 저장한 데이터는 이런 보호를 기대할 수 없어요</div>
+
+<h2>5. 남은 문제는 API 서버 여러 대가 서로 다른 저장 버전을 쓰는 순간이다</h2>
+
+<p>storageVersionHash는 API 서버 한 대가 무엇으로 저장하는지 알려 줘요. 컨트롤 플레인이 여러 대이면 이야기가 달라져요. <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/2339-storageversion-api-for-ha-api-servers">KEP-2339</a>의 Summary예요.</p>
+
+<div class="obsv-code">During the rolling upgrade of an HA master, the API server instances may
+use different storage versions encoding a resource. The storageVersionHash
+in the discovery document does not expose this disagreement.</div>
+
+<p>&rarr; HA 컨트롤 플레인을 하나씩 업그레이드하는 동안 API 서버끼리 같은 리소스를 서로 다른 저장 버전으로 쓸 수 있는데 discovery의 해시로는 그 불일치가 드러나지 않는다는 뜻이에요. KEP는 마이그레이션 도구가 모든 API 서버가 같은 버전으로 쓴다고 잘못 믿고 진행하면 결과가 오염될 수 있다고 적어요. 해결책으로 제안된 것이 서버마다 저장 버전을 기록하는 StorageVersion API예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: StorageVersion API</div>
+API 서버마다 리소스를 어떤 버전으로 저장하는지 클러스터 안의 객체로 기록하게 하는 API예요. KEP-2339가 제안했고 1.20에 StorageVersionAPI feature gate로 들어왔어요. 우리 클러스터의 지표에서는 ALPHA 단계, 값 0(꺼짐)이었어요.</div>
+
+<p>우리 API 서버의 feature gate 지표는 이랬어요(<code style="font-family:Menlo,monospace;font-size:14px;">72-discovery-storage-version-hash.txt</code> 5절).</p>
+
+<div class="obsv-code">  kubernetes_feature_enabled{name="APIServerIdentity",stage="BETA"} 1
+  kubernetes_feature_enabled{name="StorageVersionAPI",stage="ALPHA"} 0
+  kubernetes_feature_enabled{name="StorageVersionHash",stage="BETA"} 1
+  kubernetes_feature_enabled{name="StorageVersionMigrator",stage=""} 1</div>
+
+<p>마이그레이터는 켜져 있고 서버별 저장 버전을 기록하는 API는 꺼져 있어요. 1.37의 SVM이 StorageVersion API 없이 HA의 저장 버전 불일치를 어떻게 다루는지는 이 글에서 확인하지 못했어요. 우리 클러스터는 마스터가 한 대라 이 문제가 생기지 않아요. 21편에서 본 3대 컨트롤 플레인이라면 업그레이드 중에 생길 수 있는 문제예요. deprecation policy도 여전히 "Until #52185 is resolved"를 적고 있어요. 1.37에서 내장 도구가 생겼지만 "저장된 적이 있는 버전은 지우지 않는다"는 2017년의 결정은 문서에 그대로 남아 있어요.</p>
+
+<p><b>출처</b><br>
+&middot; <a href="https://github.com/kubernetes/kubernetes/issues/52185">#52185 Storage upgrade mechanism</a>, <a href="https://github.com/kubernetes/kubernetes/issues/82292">#82292 Large CRDs go over size limits</a><br>
+&middot; <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/deprecation-policy.md">deprecation policy Rule #4b</a>, <a href="https://github.com/kubernetes/website/pull/5338">website #5338</a>, <a href="https://github.com/kubernetes/website/pull/8825">website #8825</a><br>
+&middot; KEP: <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/2330-migrating-api-objects-to-latest-storage-version">KEP-2330</a>, <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/4192-svm-in-tree">KEP-4192</a>, <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-api-machinery/2339-storageversion-api-for-ha-api-servers">KEP-2339</a><br>
+&middot; 문서: <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning.md">CRD versioning</a>, <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/tasks/manage-kubernetes-objects/storage-version-migration.md">Storage Version Migration</a><br>
+&middot; <a href="https://github.com/kubernetes/kubernetes/pull/138560">PR #138560 Promote SVM to GA</a>, CHANGELOG <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.30.md">1.30</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.35.md">1.35</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.37.md">1.37</a><br>
+&middot; v1.37.2 소스: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/apiserver/apiextensions.go">apiextensions.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/server/storage/resource_encoding_config.go">resource_encoding_config.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubeapiserver/default_storage_factory_builder.go">default_storage_factory_builder.go</a></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">📝 정리</div>
+<p>API 버전의 서빙을 끊어도 etcd의 옛 데이터는 그대로 남아요. 우리 etcd에는 1.22에 서빙이 끝난 apiextensions.k8s.io/v1beta1로 CRD 23개가 저장돼 있었고 코드는 #82292가 풀릴 때까지 더 작은 v1beta1로 저장한다고 적어요. 1.37에서 v1으로 서빙되는 StorageVersionMigration, PodCertificateRequest, ClusterTrustBundle도 롤백 대비 예외 목록에 들어 있고 실제로 v1beta1로 저장됐어요. 새 버전과 옛 버전을 둘 다 아는 릴리스가 지나야 저장 버전을 올린다는 Rule #4b의 결과예요.</p>
+<p>저장 버전을 바꿔도 이미 저장된 객체는 다시 쓰기 전까지 옛 버전으로 남아요. 시험 CRD에서 옛 버전 v1은 storedVersions에 남아 있는 동안 뺄 수 없었고 StorageVersionMigration이 약 20초 만에 w1을 v2로 다시 쓰고 storedVersions를 ["v2"]로 줄인 뒤에야 뺄 수 있었어요.</p>
+<p style="margin-bottom:0;">2017년 #52185가 멈춘 것은 서빙이 아니라 저장된 버전의 제거였어요. 1.37에 내장 마이그레이터가 GA가 됐지만 이슈는 열려 있고 HA의 저장 버전 불일치를 드러낼 StorageVersion API는 아직 꺼져 있어요.</p>
+</div>
+</div>

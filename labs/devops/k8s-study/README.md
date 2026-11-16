@@ -110,6 +110,35 @@
 - 40편 복원은 `--bump-revision`과 `--mark-compacted`를 사용했다. 그 뒤 원자료의 큰 리비전 값은 이 복원 실험의 영향이다.
 - 50편의 전체 워커 정지 실험은 VM 전원이나 데이터 경로를 끊은 실험이 아니라 kubelet을 정지한 실험이다. 두 장애 방식의 차이는 본문에 적었다.
 
+## 58~75편 원자료 (2026-11-15)
+
+작성 계획·지시·감사 기록은 [ch05-58-75/](ch05-58-75/)에 있다(plan.md, writer-brief.md, audit-brief.md, review-*.md).
+
+| 편 | 출력 파일 (`out/`) | 확인한 내용 |
+|---|---|---|
+| 58편 | [58-calico-annotations.txt](out/58-calico-annotations.txt) · [58-kind-apiversion.txt](out/58-kind-apiversion.txt) · [58-object-map.txt](out/58-object-map.txt) · [58-who-writes.txt](out/58-who-writes.txt) | 관계도 화살표 8개를 클러스터에서 확인, api-resources 그룹별 개수와 CRD, managedFields 로 본 칸별 작성자, Calico 주석 |
+| 59편 | [59-alpha-beta-served.txt](out/59-alpha-beta-served.txt) · [59-client-vs-server.txt](out/59-client-vs-server.txt) · [59-explain-and-verbose.txt](out/59-explain-and-verbose.txt) · [59-explain-tips.txt](out/59-explain-tips.txt) · [59-fields-1.37.txt](out/59-fields-1.37.txt) · [59-h2c-probe-alpha.txt](out/59-h2c-probe-alpha.txt) · [59-imperative-skeleton.txt](out/59-imperative-skeleton.txt) · [59-k8s-v1.37.2-h2c-probe-excerpts.txt](out/59-k8s-v1.37.2-h2c-probe-excerpts.txt) · [59-list-order.txt](out/59-list-order.txt) · [59-spec-typo.txt](out/59-spec-typo.txt) · [59-status-on-create.txt](out/59-status-on-create.txt) · [59-strace-vs-verbose.txt](out/59-strace-vs-verbose.txt) | 서빙 중인 alpha·beta 0개, 필드 오타·값 오류의 client/server dry-run 차이, explain·kubectl -v, 리스트 순서, 알파 필드(httpGet.protocol)가 조용히 버려짐 |
+| 60편 | [60-k8s-v1.37.2-replicaset-excerpts.txt](out/60-k8s-v1.37.2-replicaset-excerpts.txt) · [60-rs-adopt-pending.txt](out/60-rs-adopt-pending.txt) · [60-rs-labels.txt](out/60-rs-labels.txt) · [60-rs-vs-deploy.txt](out/60-rs-vs-deploy.txt) | ReplicaSet 이 라벨로 파드를 세고 입양·삭제·해제, Pending 파드로도 replicas 충족, 템플릿 변경과 Deployment 의 RS 갈아타기 |
+| 61편 | [61-containerport-explain.txt](out/61-containerport-explain.txt) · [61-emptydir-share.txt](out/61-emptydir-share.txt) · [61-multi-container-pod.txt](out/61-multi-container-pod.txt) · [61-same-port.txt](out/61-same-port.txt) · [61-shared-namespaces.txt](out/61-shared-namespaces.txt) | 한 파드 컨테이너의 네임스페이스 공유(net·ipc·uts)와 shareProcessNamespace, localhost·파드 IP 통신, emptyDir, 같은 포트 충돌 |
+| 62편 | [62-deleted-pod-phase.txt](out/62-deleted-pod-phase.txt) · [62-deployment-fields-explain.txt](out/62-deployment-fields-explain.txt) · [62-k8s-v1.37.2-deployment-progress-excerpt.go](out/62-k8s-v1.37.2-deployment-progress-excerpt.go) · [62-k8s-v1.37.2-rollout-excerpts.txt](out/62-k8s-v1.37.2-rollout-excerpts.txt) · [62-progress-deadline-reset.txt](out/62-progress-deadline-reset.txt) · [62-readiness-shared-port.txt](out/62-readiness-shared-port.txt) · [62-rollout-minready.txt](out/62-rollout-minready.txt) · [62-rollout-status-false-success.txt](out/62-rollout-status-false-success.txt) · [62-rollout-terminating.txt](out/62-rollout-terminating.txt) · [62-wait-terminating.txt](out/62-wait-terminating.txt) | rollout status 의 거짓 성공, minReadySeconds, progress deadline 이 Ready 깜빡임으로 리셋, 공유 포트에서 readiness 가 대신 통과, 종료 중 파드 |
+| 63편 | [63-delete-sigkill-phase.txt](out/63-delete-sigkill-phase.txt) · [63-k8s-v1.37.2-pod-status-excerpts.txt](out/63-k8s-v1.37.2-pod-status-excerpts.txt) · [63-node-clocks-1h-later.txt](out/63-node-clocks-1h-later.txt) · [63-node-clocks-after-restart.txt](out/63-node-clocks-after-restart.txt) · [63-node-clocks.txt](out/63-node-clocks.txt) · [63-pod-phases-clock-skew.txt](out/63-pod-phases-clock-skew.txt) · [63-pod-phases.txt](out/63-pod-phases.txt) · [63-termination-timing.txt](out/63-termination-timing.txt) | 생성·종료 때 phase·conditions·컨테이너 상태 변화, Terminating 과 deletionTimestamp, 노드 시계 차이와 lastTransitionTime |
+| 64편 | [64-kill-pid1-inside-vs-node.txt](out/64-kill-pid1-inside-vs-node.txt) · [64-native-sidecar-finish.txt](out/64-native-sidecar-finish.txt) · [64-pause-vs-sleep-sigterm.txt](out/64-pause-vs-sleep-sigterm.txt) · [64-pid1-sigmask.txt](out/64-pid1-sigmask.txt) | PID 1 의 신호 마스크, 컨테이너 안·노드에서 보낸 TERM·KILL 결과, pause 와 sleep 의 SIGTERM 반응 |
+| 65편 | [65-alpine-sh.txt](out/65-alpine-sh.txt) · [65-delete-timing.txt](out/65-delete-timing.txt) · [65-nginx-sh-wrapper.txt](out/65-nginx-sh-wrapper.txt) | PID 1 모양 9가지별 삭제 시간과 종료 코드, sh 로 감싼 nginx, nginx 이미지의 /bin/sh |
+| 66편 | [66-zombie-pile.txt](out/66-zombie-pile.txt) | 고아 20개를 남겼을 때 sleep·tini·pause 가 PID 1 일 때 좀비 수 |
+| 67편 | [67-prestop-grace.txt](out/67-prestop-grace.txt) · [67-stopsignal-gate.txt](out/67-stopsignal-gate.txt) | preStop 길이에 따른 SIGTERM·SIGKILL 시각, stopSignal 필드가 게이트에 막혀 지워지는 것 |
+| 68편 | [68-init-sidecar.txt](out/68-init-sidecar.txt) · [68-job-completes.txt](out/68-job-completes.txt) · [68-old-workarounds.txt](out/68-old-workarounds.txt) · [68-restart-never.txt](out/68-restart-never.txt) | 옛 방식 사이드카의 Job 미완료와 우회책(끝남 파일, postStart 순서, preStop sleep), 네이티브 사이드카 Job 완료 |
+| 69편 | [69-api-shape.txt](out/69-api-shape.txt) | 사이드카 API 모양 dry-run(sidecar: true, lifecycle.type, initContainers restartPolicy: Always) |
+| 70편 | [70-shutdown-order.txt](out/70-shutdown-order.txt) · [70-startup-fail-never.txt](out/70-startup-fail-never.txt) · [70-startup-gate.txt](out/70-startup-gate.txt) | 네이티브 사이드카 종료 순서, 다음 컨테이너 시작을 막는 것과 안 막는 것, Never 파드의 사이드카 재시작 |
+| 71편 | [71-restart-combos.txt](out/71-restart-combos.txt) · [71-restart-rules.txt](out/71-restart-rules.txt) | 컨테이너별 restartPolicy·restartPolicyRules 조합과 파드가 끝나는지 |
+| 72편 | [72-apiversion-schema-dry-run.txt](out/72-apiversion-schema-dry-run.txt) · [72-discovery-storage-version-hash.txt](out/72-discovery-storage-version-hash.txt) · [72-hpa-v1-v2-etcd.txt](out/72-hpa-v1-v2-etcd.txt) | 같은 HPA 를 v1·v2 로 읽기, etcd 저장 버전과 annotation, apiVersion 별 스키마, discovery storageVersionHash |
+| 73편 | [73-old-manifests-dry-run-scan.txt](out/73-old-manifests-dry-run-scan.txt) | 옛 apiVersion 매니페스트 6개의 서버 dry-run 결과, deprecated 경고와 --warnings-as-errors |
+| 74편 | [74-crd-storage-migration-and-deprecation.txt](out/74-crd-storage-migration-and-deprecation.txt) · [74-etcd-stored-versions.txt](out/74-etcd-stored-versions.txt) | etcd 에 저장된 apiVersion 집계(CRD v1beta1 등), 시험 CRD 의 저장 버전 이전과 StorageVersionMigration |
+| 75편 | [75-deprecated-ga-endpoints.txt](out/75-deprecated-ga-endpoints.txt) | v1 Endpoints deprecated 경고, apiserver_requested_deprecated_apis·요청 수 메트릭 |
+
+- 같은 이름의 `.sh`는 출력을 만든 스크립트이며 실습 저장소 루트에서 실행한다. `*-excerpts.*` 는 v1.37.2 등 태그 소스에서 옮긴 발췌다.
+- 실험은 편마다 별도 네임스페이스에서 하고 끝나면 지웠다. 이날 실습과 무관한 워크로드는 replicas 0 으로 내려 두었다(실습 저장소 `shared/parked-20261115/`).
+- worker3 시계가 다른 노드보다 2.1초 늦었던 기간의 결과는 `63-pod-phases-clock-skew.txt` 하나다. 그 뒤 timesyncd 를 재시작해 맞췄다(`63-node-clocks*.txt`).
+
 ## 손댄 곳
 
 - 각 블록 첫 줄의 `노드$ 명령` 은 그 출력을 만든 명령을 그대로 적은 것이다. 실제로는 Mac 에서 `./lab ssh <노드> bash -c '<명령>'` 으로 실행했다.

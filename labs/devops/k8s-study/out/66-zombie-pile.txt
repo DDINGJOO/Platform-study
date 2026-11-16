@@ -1,0 +1,30 @@
+# 좀비 쌓이기: kubectl exec로 sh -c 'sleep 1 &'를 20번 (2026-11-15 21:15:25 KST)
+# exec 된 sh는 바로 끝나고, 1초 뒤 끝나는 sleep은 부모(sh)를 잃은 고아가 된다 → 커널이 그 PID 네임스페이스의 PID 1에게 넘긴다
+
+## 시작 전
+  z-sleep  좀비 0개 / pids.current 3
+  z-tini   좀비 0개 / pids.current 4
+  z-share  좀비 0개 / pids.current 3
+
+## 20번 뒤 (마지막 exec 후 3초)
+  z-sleep  좀비 20개 / pids.current 23
+  z-tini   좀비 0개 / pids.current 4
+  z-share  좀비 0개 / pids.current 3
+
+## z-sleep의 ps (앞 6줄)
+  PID   PPID  STAT COMMAND
+      1     0 S    sleep infinity
+     22     1 Z    [sleep]
+     29     1 Z    [sleep]
+     36     1 Z    [sleep]
+     43     1 Z    [sleep]
+     50     1 Z    [sleep]
+
+## 노드에서 본 z-sleep의 좀비 (호스트 PID, 부모 = 컨테이너의 sleep infinity)
+  k8s-worker3: 컨테이너 PID 1의 호스트 PID = 50858 (sleep), 그 자식 중 Z 상태: 20개
+        PID    PPID STAT COMMAND
+      51207   50858 Z    sleep
+      51226   50858 Z    sleep
+      51246   50858 Z    sleep
+
+# 파드 정리 완료

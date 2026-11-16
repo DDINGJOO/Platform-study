@@ -1,0 +1,301 @@
+<!-- ============================================================
+  k8s 스터디 60편: ReplicaSet은 왜 내가 만든 파드를 지울까, 라벨 셀렉터와 Deployment
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: replicas=3인 ReplicaSet 옆에 같은 라벨의 파드 bare를 직접 만들자 3초 뒤 사라지고 이벤트에 Deleted pod: bare가 남았어요. ReplicaSet이 라벨 셀렉터로 무엇을 세는지, Deployment는 무엇을 더하는지 실험으로 확인했어요. -->
+<!-- tags: ReplicaSet, 라벨 셀렉터, Deployment, ownerReferences, rollout undo, DaemonSet -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 60편</div>
+  58편. 쿠버네티스 오브젝트 관계도는 어떻게 읽을까, 화살표마다 일하는 컨트롤러<br>
+  59편. kubectl apply 전에 YAML 실수를 잡는 법, explain과 dry-run=server<br>
+  <b>60편. ReplicaSet은 왜 내가 만든 파드를 지울까, 라벨 셀렉터와 Deployment</b> &larr; 지금 이 글<br>
+  61편. 한 파드의 컨테이너는 무엇을 공유하고 같은 포트를 쓰면 어떻게 될까<br>
+  62편. kubectl rollout status가 성공했는데 파드는 왜 죽어 있을까
+</div>
+
+<p>replicas가 3인 ReplicaSet rs-demo를 만들고 파드 세 개가 Running이 되기를 기다렸어요. 그다음 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl run bare --image=nginx:1.27-alpine --labels=app=rs-demo</code>로 같은 라벨을 단 파드를 하나 직접 만들었어요. 3초 뒤 파드 목록에는 rs-demo 파드 세 개만 남아 있었고 bare는 없었어요. ReplicaSet의 이벤트 마지막 줄은 <code style="font-family:Menlo,monospace;font-size:14px;">SuccessfulDelete   Deleted pod: bare</code>였어요.</p>
+<p>제가 만든 파드를 ReplicaSet이 지운 거예요. bare에는 ReplicaSet과 연결된 정보가 하나도 없었고 라벨만 같았어요. 반대로 ReplicaSet이 만든 파드의 라벨을 바꾸자 그 파드는 지워지지 않고 Running으로 남았는데 ReplicaSet은 파드를 하나 더 만들었어요. 둘 다 같은 규칙에서 나온 결과예요. <b>ReplicaSet은 자기가 만든 파드가 아니라 라벨 셀렉터에 맞는 파드를 세요.</b></p>
+<p>이 글은 그 규칙을 v1.37.2 실습 클러스터(Lima VM 4대, containerd 2.4.1, Calico v3.33.0)에서 실험하고 v1.37.2 컨트롤러 소스로 확인한 기록이에요. 58편에서 Deployment → ReplicaSet → Pod 화살표를 ownerReferences로 확인했다면 이번에는 그 화살표를 잇는 컨트롤러가 무엇을 기준으로 움직이는지 봐요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; ReplicaSet은 무엇을 세서 개수를 맞출까?<br>
+&middot; 내가 만든 파드는 왜 지워졌고 먼저 만들어 둔 파드는 어떻게 될까?<br>
+&middot; 라벨을 바꾸면 파드는 어떻게 될까?<br>
+&middot; 선언형이라 알아서 맞춰 준다는 말은 어디까지 맞을까?<br>
+&middot; 보통은 ReplicaSet 말고 Deployment를 쓸까?<br>
+&middot; Deployment가 ReplicaSet과 파드를 자동으로 만드니 대부분 Deployment로 만들까?</p>
+
+<h2>1. ReplicaSet은 라벨이 맞는 파드를 세서 개수를 맞춘다</h2>
+
+<p>실험 스크립트는 ReplicaSet 하나로 세 가지를 했어요. 파드 하나를 지우고, 라벨만 같은 단독 파드를 만들고, ReplicaSet 파드 하나의 라벨을 바꿨어요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/60-rs-labels.sh</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/60-rs-labels.txt</code>예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 라벨과 라벨 셀렉터</div>
+라벨은 오브젝트에 붙이는 키와 값의 쌍(<code style="font-family:Menlo,monospace;font-size:14px;">app=rs-demo</code>)이에요. 라벨 셀렉터는 "이 라벨을 가진 오브젝트"를 고르는 조건이고 ReplicaSet, Deployment, Service가 이것으로 대상 파드를 골라요. 셀렉터는 이름도 만든 사람도 보지 않고 라벨만 봐요.</div>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/60/01-rs-labels.png" alt="10-rs-labels.sh 실행 화면, replicas 3 ReplicaSet에서 파드 하나를 지우면 다시 3개, 같은 라벨의 bare를 만들면 RS 이벤트 SuccessfulDelete Deleted pod bare, 라벨을 app=debug로 바꾼 파드는 owner 없이 Running이고 새 파드 생성" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 1. 지우면 새로 만들고, 같은 라벨이 끼어들면 지우고, 라벨을 바꾸면 놓아줬어요.</p>
+
+<p>파드 rs-demo-p4928을 지우자 3초 안에 rs-demo-wdnfr이 새로 생겨 다시 세 개가 됐어요. 여기까지는 "파드가 죽으면 다시 만든다"로 설명할 수 있어요. 다음 단계가 그 설명으로는 부족했어요. bare를 만들자 셀렉터 <code style="font-family:Menlo,monospace;font-size:14px;">app=rs-demo</code>에 맞는 파드가 네 개가 됐고, ReplicaSet은 원하는 3개보다 하나 많다고 보고 하나를 지웠어요. 지워진 것이 하필 bare였어요.</p>
+
+<p>어느 파드를 지울지는 v1.37.2 소스에 순서가 적혀 있어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/60-k8s-v1.37.2-replicaset-excerpts.txt</code>). 줄여야 할 때 ReplicaSet 컨트롤러는 후보를 정렬해 앞에서부터 지워요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/controller_utils.go#L843-L858">정렬 기준</a>의 처음 세 단계는 아직 노드에 배정되지 않은 파드, Pending 파드, 준비되지 않은 파드를 앞에 두고, 발췌한 8번째 단계는 더 최근에 만든 파드를 앞에 둬요. bare가 어느 단계에서 앞섰는지는 이번 실험에서 기록하지 않았어요. 다만 bare는 만든 뒤 3초 안에 목록에서 사라졌으니 지울 대상을 고를 때 아직 배정 전이거나 준비 전이었을 가능성이 커요. 그랬다면 이미 Running이던 기존 세 파드보다 처음 세 단계에서 먼저 와요. 이 부분은 측정이 아니라 정렬 기준에서 나온 추론이에요.</p>
+
+<h3>먼저 만들어 둔 파드는 ReplicaSet이 입양한다</h3>
+<p>bare를 지우려면 ReplicaSet이 먼저 bare를 자기 것으로 셀 수 있어야 해요. 그 과정을 따로 보려고 순서를 뒤집은 실험을 blog-60 네임스페이스에서 했어요. 라벨 <code style="font-family:Menlo,monospace;font-size:14px;">app=adopt</code>인 단독 파드 early를 먼저 띄우고 그다음 같은 셀렉터의 replicas=2 ReplicaSet을 만들었어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/60-rs-adopt-pending.txt</code>).</p>
+
+<div class="obsv-code">## 1. 라벨 app=adopt 인 단독 파드 early 를 먼저 만들고, 같은 셀렉터의 replicas=2 ReplicaSet 을 만들면
+  ReplicaSet 을 만들기 전 early 의 owner: (없음)
+    NAME      PHASE     NODE          APP     OWNER        OWNERNAME
+adopt-t7fch   Running   k8s-worker1   adopt   ReplicaSet   adopt
+early         Running   k8s-worker3   adopt   ReplicaSet   adopt
+  RS 이벤트:
+SuccessfulCreate   Created pod: adopt-t7fch</div>
+<p>&rarr; ReplicaSet을 만들기 전에 early의 owner는 비어 있었는데, 만든 뒤에는 <code style="font-family:Menlo,monospace;font-size:14px;">ReplicaSet/adopt</code>로 바뀌었어요. ReplicaSet은 파드를 두 개가 아니라 하나만 만들었고 이벤트도 SuccessfulCreate 한 줄뿐이었어요. 주인이 없고 셀렉터에 맞는 early를 입양해 하나로 센 거예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 입양 (adoption)</div>
+컨트롤러가 셀렉터에 맞으면서 ownerReferences에 컨트롤러 주인이 없는 오브젝트를 찾아 자기를 주인으로 적는 동작이에요. ReplicaSet 컨트롤러는 개수를 세기 전에 이 단계를 거쳐요. 다른 컨트롤러가 이미 주인인 파드는 입양하지 않아요.</div>
+
+<p>소스에서도 순서가 같아요. ReplicaSet 컨트롤러는 동기화할 때마다 자기 소유이거나 주인이 없는 파드를 모으고, 활성 파드만 남긴 뒤 <code style="font-family:Menlo,monospace;font-size:14px;">claimPods</code>로 셀렉터에 맞는 파드를 입양하거나 맞지 않게 된 파드를 놓아줘요. 그렇게 확정한 목록의 길이에서 replicas를 뺀 값(<code style="font-family:Menlo,monospace;font-size:14px;">diff := len(activePods) - int(*(rs.Spec.Replicas))</code>)만큼 만들거나 지워요. bare 실험은 입양 뒤 diff가 +1이 된 경우이고 early 실험은 입양 뒤 diff가 -1이 된 경우예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="ReplicaSet이 셀렉터에 맞는 파드를 세어 bare를 지우고 라벨을 바꾼 파드를 놓아주는 그림">
+<defs><marker id="k60-sel-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k60-sel-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#3d3a34">ReplicaSet이 세는 범위는 셀렉터가 정해요</text>
+<path d="M20 120 C 77 119.2, 133 120.3, 190 119.5 C 191.2 148, 189.9 176, 189.7 204 C 133 205.6, 77 205.2, 20.7 204.3 C 18.7 176, 19.6 148, 20 120 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="105" y="148" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">ReplicaSet rs-demo</text>
+<text x="105" y="170" text-anchor="middle" font-family="Menlo,monospace" font-size="11" fill="#3d3a34">replicas: 3</text>
+<text x="105" y="190" text-anchor="middle" font-family="Menlo,monospace" font-size="10" fill="#3d3a34">selector app=rs-demo</text>
+<path d="M240 60 C 347 59.0, 453 61.2, 560 59.0 C 561.2 129, 558.7 199, 559.6 268 C 453 268.5, 347 268.7, 240.0 268.1 C 240.4 199, 240.4 129, 240 60 Z" fill="#fffaf0" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round" stroke-dasharray="7 6"/>
+<text x="400" y="84" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#c07f18">셀렉터 app=rs-demo에 맞는 파드</text>
+<path d="M258 100 C 302 98.4, 346 99.2, 390 99.0 C 390.3 120, 389.2 140, 389.5 160 C 346 159.1, 302 161.8, 257.3 160.8 C 259.6 140, 256.8 120, 258 100 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="324" y="126" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">rs-demo-…</text>
+<text x="324" y="147" text-anchor="middle" font-family="Menlo,monospace" font-size="10" fill="#8a8272">owner=rs-demo</text>
+<path d="M410 100 C 454 101.3, 498 98.8, 542 100.3 C 540.5 120, 541.3 140, 542.0 160 C 498 159.5, 454 161.3, 410.3 159.1 C 410.2 140, 408.4 120, 410 100 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="476" y="126" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">rs-demo-…</text>
+<text x="476" y="147" text-anchor="middle" font-family="Menlo,monospace" font-size="10" fill="#8a8272">owner=rs-demo</text>
+<path d="M258 180 C 302 178.7, 346 179.6, 390 179.6 C 390.2 200, 391.9 220, 390.6 240 C 346 240.2, 302 241.4, 257.3 240.4 C 259.9 220, 259.8 200, 258 180 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="324" y="206" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">rs-demo-…</text>
+<text x="324" y="227" text-anchor="middle" font-family="Menlo,monospace" font-size="10" fill="#8a8272">owner=rs-demo</text>
+<path d="M410 180 C 454 180.0, 498 180.4, 542 179.8 C 541.8 200, 544.0 220, 541.3 240 C 498 241.4, 454 238.9, 410.1 240.1 C 408.2 220, 409.9 200, 410 180 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="476" y="204" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#b3502f">bare (내가 만듦)</text>
+<text x="476" y="228" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#b3502f">입양된 뒤 삭제</text>
+<path d="M194 160 C 208 156, 222 158, 236 160" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k60-sel-arr1)"/>
+<text x="215" y="228" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#b3502f">4개 &gt; 3개</text>
+<text x="215" y="248" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#b3502f">하나 지움</text>
+<path d="M586 120 C 621 118.1, 655 121.8, 690 120.9 C 690.3 148, 691.1 176, 690.5 204 C 655 202.8, 621 202.3, 585.7 203.8 C 586.0 176, 586.7 148, 586 120 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="5 5"/>
+<text x="638" y="146" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#3d3a34">app=debug</text>
+<text x="638" y="168" text-anchor="middle" font-family="Menlo,monospace" font-size="10" fill="#8a8272">owner 없음</text>
+<text x="638" y="192" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">Running 유지</text>
+<path d="M562 162 C 569 160, 575 164, 582 162" fill="none" stroke="#8a8272" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="4 4" marker-end="url(#k60-sel-arr2)"/>
+<text x="638" y="226" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">라벨을 바꾸면</text>
+<text x="638" y="244" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">범위 밖으로</text>
+<text x="350" y="306" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#b3502f">누가 만들었든 셀렉터에 맞는 활성 파드를 세고 그 수를 replicas에 맞춰요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 2. 셀렉터 안의 활성 파드는 누가 만들었든 세고, 셀렉터 밖으로 나간 파드는 세지 않아요.</p>
+
+<h2>2. 라벨을 바꾸면 ReplicaSet이 놓아주고 새 파드를 만든다</h2>
+
+<p>1절 실험의 마지막 단계에서는 ReplicaSet 파드 rs-demo-qt7ms의 라벨을 <code style="font-family:Menlo,monospace;font-size:14px;">app=debug</code>로 바꿨어요. 3초 뒤 qt7ms는 여전히 Running이었지만 OWNER 칸이 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;none&gt;</code>으로 비었고 rs-demo-lx74s가 새로 생겼어요. 셀렉터 밖으로 나간 파드를 ReplicaSet이 놓아준 뒤(ownerReferences에서 자기를 지움) 셀렉터 안의 파드가 두 개뿐이라 하나를 더 만든 거예요. 놓아준 파드는 지우지 않아요.</p>
+
+<p>이 성질은 문제가 생긴 파드를 살려 둔 채 조사할 때 써요. 그런데 Service도 같은 라벨로 파드를 고르기 때문에 Service 쪽에서는 어떻게 되는지 확인했어요. 앞의 adopt ReplicaSet을 Service로 노출하고 early의 라벨을 바꿨어요.</p>
+
+<div class="obsv-code">## 3. adopt 를 Service 로 노출한 뒤 파드 하나의 라벨을 app=debug 로 바꾸면
+  바꾸기 전 Service 대상: early adopt-t7fch
+  early 의 라벨을 바꾼 뒤 Service 대상: adopt-t7fch adopt-f4kp2
+    NAME      PHASE     NODE          APP     OWNER        OWNERNAME
+adopt-f4kp2   Running   k8s-worker3   adopt   ReplicaSet   adopt
+adopt-t7fch   Running   k8s-worker1   adopt   ReplicaSet   adopt
+early         Running   k8s-worker3   debug   &lt;none&gt;       &lt;none&gt;</div>
+<p>&rarr; 라벨을 바꾸고 5초 뒤 EndpointSlice의 대상에서 early가 빠지고 새로 만든 adopt-f4kp2가 들어갔어요. early는 Running인 채로 주인 없이 남았어요. 트래픽은 더 받지 않으면서 프로세스와 로그, 파일은 그대로 남은 상태예요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 문제 파드를 살려 둔 채 격리하는 법</div>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl label pod &lt;파드&gt; app=debug --overwrite</code>처럼 셀렉터에 쓰이는 라벨을 바꿔요. ReplicaSet은 대신할 파드를 만들고 Service는 그 파드를 대상에서 빼요.<br>
+&bull; 떼어 낸 파드에서 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl exec</code>, <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs</code>로 원인을 살펴요. 재시작하지 않았으니 메모리와 파일 상태가 그대로예요.<br>
+&bull; 조사가 끝나면 직접 지워요. 주인이 없는 파드라서 ReplicaSet이나 Deployment를 지워도 함께 지워지지 않아요.<br>
+&bull; Deployment가 만든 ReplicaSet의 셀렉터에는 템플릿 해시 라벨 pod-template-hash(4절)도 들어 있어요. 그 라벨만 바꾸면 ReplicaSet에서는 떨어져도 Service 셀렉터(app)에는 계속 맞아서 트래픽을 받아요. 둘에서 함께 빼려면 둘이 같이 쓰는 app 라벨을 바꿔요.</div>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 라벨이 겹치는 파드를 따로 만들지 않아요</div>
+bare처럼 다른 컨트롤러의 셀렉터에 맞는 라벨로 파드를 직접 만들면 그 파드는 입양된 뒤 지워질 수 있어요. 테스트용 파드를 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl run</code>으로 띄울 때 운영 중인 Deployment와 같은 app 라벨을 붙이지 않아요. 같은 이유로 두 워크로드의 셀렉터가 겹치지 않게 이름 짓는 규칙을 정해 두는 편이 좋아요.</div>
+
+<h2>3. ReplicaSet이 맞추는 것은 파드 객체 수이고 Running은 책임지지 않는다</h2>
+
+<p>ReplicaSet은 선언형이라 현재 상태가 맞춰질 때까지 알아서 한다는 설명을 자주 들어요. 절반은 맞아요. 어떤 사정으로 지금 상태가 됐는지와 상관없이 매번 지금 개수와 원하는 개수를 비교해 맞추는 것은 사실이에요. 그런데 ReplicaSet이 맞추는 "현재 상태"가 무엇인지가 중요해요. 어느 노드에도 없는 라벨을 nodeSelector로 줘서 절대 스케줄될 수 없는 replicas=2 ReplicaSet을 만들고 15초를 기다렸어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/60/02-rs-adopt-pending.png" alt="60-rs-adopt-pending.sh 실행 화면, 단독 파드 early가 ReplicaSet adopt에 입양되고 새 파드는 하나만 생성, 스케줄될 수 없는 ReplicaSet pend는 Pending 파드 2개로 replicas=2를 채우고 SuccessfulCreate 2번 뒤 더 만들지 않음, FailedScheduling 0/4 nodes are available" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 3. Pending 파드 두 개로도 replicas=2는 채워졌고 ReplicaSet은 더 만들지 않았어요.</p>
+
+<p>두 파드는 NODE가 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;none&gt;</code>인 Pending이었고 파드 이벤트는 <code style="font-family:Menlo,monospace;font-size:14px;">FailedScheduling   0/4 nodes are available: 1 node(s) had untolerated taint(s), 3 node(s) didn't match Pod's node affinity/selector.</code>였어요. 마스터 한 대는 taint 때문에, 워커 세 대는 nodeSelector가 맞지 않아서 놓을 곳이 없다는 뜻이에요. 그런데도 ReplicaSet의 status는 <code style="font-family:Menlo,monospace;font-size:14px;">replicas=2</code>였고 readyReplicas와 availableReplicas는 비어 있었어요(0이라는 뜻). 이벤트는 처음의 SuccessfulCreate 두 줄뿐이었어요. ReplicaSet 입장에서는 원하는 2개가 이미 있으니 할 일이 없었던 거예요.</p>
+
+<p>소스가 그렇게 세요. 개수를 셀 때 쓰는 <code style="font-family:Menlo,monospace;font-size:14px;">IsPodActive</code>는 phase가 Succeeded나 Failed가 아니고 deletionTimestamp가 없으면 활성 파드로 봐요. Pending도 활성이에요. 파드를 노드에 놓는 것은 스케줄러, 컨테이너를 띄우는 것은 kubelet의 몫이고 ReplicaSet은 파드 오브젝트의 수만 맞춰요(58편). <span class="obsv-mark">ReplicaSet이 책임지는 것은 라벨이 맞는 파드 오브젝트가 몇 개 있느냐이고 그 파드가 실제로 도느냐는 아니에요.</span></p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: level-triggered</div>
+"파드가 하나 지워졌다" 같은 사건마다 그에 맞는 동작을 하는 대신, 깨어날 때마다 지금 상태 전체를 원하는 상태와 비교해 차이만큼 움직이는 방식이에요. 사건을 몇 개 놓쳐도 다음 비교에서 맞춰지고, 어떻게 지금 상태가 됐는지는 따지지 않아요. 39편에서 자세히 봤어요.</div>
+
+<p>level-triggered라서 1절과 2절의 결과가 하나의 규칙으로 설명돼요. 내가 지웠든, 남이 끼워 넣었든, 라벨을 바꿨든 ReplicaSet은 사건의 종류를 구분하지 않고 지금 셀렉터에 맞는 활성 파드가 몇 개인지만 봤어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ READY가 0이어도 ReplicaSet은 조용해요</div>
+<code style="font-family:Menlo,monospace;font-size:14px;">kubectl get rs</code>에서 DESIRED와 CURRENT가 같으면 ReplicaSet은 할 일을 다 했다고 봐요. 파드가 Pending에 머물러도 ReplicaSet 이벤트에는 새 줄이 생기지 않아요. READY 칸이 모자라면 ReplicaSet이 아니라 파드의 이벤트(FailedScheduling, 이미지 받기 실패 등)를 봐요. Deployment로 배포했다면 Available과 Progressing 조건도 함께 봐요(62편).</div>
+
+<h2>4. 템플릿을 바꿔도 ReplicaSet은 기존 파드를 바꾸지 않는다</h2>
+
+<p>보통은 ReplicaSet 말고 그 위의 Deployment를 쓸까요? 이유는 개수만 세는 성질에서 바로 나와요. ReplicaSet rs-only와 Deployment dp-demo를 nginx:1.27-alpine 파드 두 개로 만들고 둘 다 이미지를 nginx:1.28-alpine으로 바꿨어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/60-rs-vs-deploy.txt</code>).</p>
+
+<div class="obsv-code">## ReplicaSet 템플릿 이미지를 nginx:1.28-alpine 으로 바꾼 뒤 15초
+  RS 템플릿: nginx:1.28-alpine
+    rs-only-2kglg  nginx:1.27-alpine  owner=rs-only
+    rs-only-kjw9z  nginx:1.27-alpine  owner=rs-only
+
+## Deployment 이미지를 nginx:1.28-alpine 으로 바꾼 뒤 rollout 완료
+    RS               DESIRED   IMAGE               REVISION
+dp-demo-68dcd67bdc   2         nginx:1.28-alpine   2
+dp-demo-6c886cd5d8   0         nginx:1.27-alpine   1
+
+## 되돌리기: rollout undo
+    RS               DESIRED   IMAGE               REVISION
+dp-demo-68dcd67bdc   0         nginx:1.28-alpine   2
+dp-demo-6c886cd5d8   2         nginx:1.27-alpine   3</div>
+<p>&rarr; ReplicaSet의 템플릿은 1.28로 바뀌었지만 15초 뒤에도 두 파드는 1.27이었어요. 라벨이 맞는 파드가 이미 두 개라서 개수 기준으로는 할 일이 없기 때문이에요. 템플릿은 새 파드를 만들 때만 쓰여요. 기존 파드를 바꾸려면 하나씩 지워서 새로 만들게 해야 하고 그 일을 대신해 주는 것이 Deployment예요.</p>
+
+<p>Deployment는 이미지를 바꾸자 ReplicaSet을 고치지 않고 새 ReplicaSet <code style="font-family:Menlo,monospace;font-size:14px;">dp-demo-68dcd67bdc</code>를 만들었어요. 이 ReplicaSet은 revision 2로 파드 두 개를 맡았고 옛 <code style="font-family:Menlo,monospace;font-size:14px;">dp-demo-6c886cd5d8</code>은 revision 1로 0개가 됐어요. 옛 ReplicaSet은 지워지지 않고 남아 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">rollout undo</code>를 하자 Deployment는 그 옛 ReplicaSet을 다시 2개로 키웠고 그 revision은 1이 아니라 3이 됐어요. 되돌리기도 "옛 템플릿으로 다시 한 번 배포한다"로 처리되고 번호는 계속 늘어나요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: pod-template-hash와 revision</div>
+Deployment 컨트롤러는 파드 템플릿의 해시를 pod-template-hash 라벨로 ReplicaSet과 그 파드에 붙이고 ReplicaSet 이름 꼬리에도 써요. 템플릿이 다르면 해시가 달라서 같은 Deployment의 ReplicaSet끼리 셀렉터가 겹치지 않아요. revision은 Deployment가 ReplicaSet의 annotation(<code style="font-family:Menlo,monospace;font-size:14px;">deployment.kubernetes.io/revision</code>)에 적는 배포 순번이에요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="Deployment가 이미지 변경과 rollout undo 때 ReplicaSet 두 개의 개수와 revision을 바꾸는 그림">
+<defs><marker id="k60-rev-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#3d3a34">Deployment는 ReplicaSet을 갈아타고 옛것은 0개로 남겨요</text>
+<text x="270" y="68" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">처음</text>
+<text x="430" y="68" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">set image 1.28</text>
+<text x="590" y="68" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">rollout undo</text>
+<path d="M338 62 C 346 60, 354 64, 362 62" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" marker-end="url(#k60-rev-arr1)"/>
+<path d="M498 62 C 506 64, 514 60, 522 62" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round" marker-end="url(#k60-rev-arr1)"/>
+<text x="20" y="110" text-anchor="start" font-family="Menlo,monospace" font-size="11.5" fill="#3d3a34">RS …6c886cd5d8</text>
+<text x="20" y="130" text-anchor="start" font-family="Menlo,monospace" font-size="10.5" fill="#8a8272">nginx:1.27-alpine</text>
+<text x="20" y="190" text-anchor="start" font-family="Menlo,monospace" font-size="11.5" fill="#3d3a34">RS …68dcd67bdc</text>
+<text x="20" y="210" text-anchor="start" font-family="Menlo,monospace" font-size="10.5" fill="#8a8272">nginx:1.28-alpine</text>
+<path d="M205 88 C 248 87.6, 292 87.3, 335 88.5 C 334.8 106, 335.4 124, 334.8 142 C 292 143.1, 248 142.2, 206.0 141.7 C 204.8 124, 204.8 106, 205 88 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="270" y="112" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">revision 1</text>
+<text x="270" y="133" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#2e6b41">파드 2개</text>
+<path d="M205 168 C 248 169.0, 292 167.3, 335 167.5 C 333.6 186, 333.5 204, 334.1 222 C 292 221.0, 248 220.7, 205.4 221.2 C 206.0 204, 203.6 186, 205 168 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="5 5"/>
+<text x="270" y="201" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#8a8272">아직 없음</text>
+<path d="M365 88 C 408 87.4, 452 86.4, 495 88.7 C 493.1 106, 495.8 124, 495.3 142 C 452 140.3, 408 140.7, 365.9 142.3 C 364.4 124, 366.0 106, 365 88 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="430" y="112" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">revision 1</text>
+<text x="430" y="133" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#8a8272">0개</text>
+<path d="M365 168 C 408 169.8, 452 167.7, 495 167.2 C 495.9 186, 496.5 204, 495.7 222 C 452 220.0, 408 221.8, 365.3 222.4 C 363.6 204, 365.9 186, 365 168 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="430" y="192" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">revision 2</text>
+<text x="430" y="213" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#2e6b41">파드 2개</text>
+<path d="M525 88 C 568 88.0, 612 89.8, 655 88.5 C 654.3 106, 654.7 124, 655.9 142 C 612 142.5, 568 142.6, 525.7 142.4 C 524.4 124, 523.0 106, 525 88 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="590" y="112" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">revision 3</text>
+<text x="590" y="133" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#2e6b41">파드 2개</text>
+<path d="M525 168 C 568 167.0, 612 169.2, 655 168.0 C 656.3 186, 655.6 204, 655.0 222 C 612 222.5, 568 221.5, 524.8 222.7 C 524.8 204, 525.7 186, 525 168 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="590" y="192" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">revision 2</text>
+<text x="590" y="213" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#8a8272">0개</text>
+<text x="590" y="250" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">같은 RS를 다시 키우고</text>
+<text x="590" y="268" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">번호는 새로 매겨요</text>
+<text x="270" y="262" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#b3502f">ReplicaSet만 쓰면 템플릿을 바꿔도 기존 파드는 그대로예요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 4. Deployment는 템플릿마다 ReplicaSet을 두고 개수를 옮기며, undo도 번호를 새로 받아요.</p>
+
+<p>같은 실행에서 rollout 완료 직후 파드 목록에 옛 ReplicaSet의 파드 <code style="font-family:Menlo,monospace;font-size:14px;">dp-demo-6c886cd5d8-td62q</code>가 1.27로 하나 남아 보였어요. 옛 ReplicaSet의 DESIRED는 이미 0이었으니 지워지는 중이었을 거예요. 이 실행에서는 그 파드의 deletionTimestamp를 찍지 않아서 단정하지는 않아요. 같은 장면을 다시 만들어 종료 중임을 deletionTimestamp로 확인하고 rollout status가 종료 중인 파드를 기다리지 않는다는 점을 본 것은 62편이에요. 이 절의 결과로 "보통은 Deployment를 쓴다"는 말을 정리하면 이래요. 개수를 지키는 일은 ReplicaSet이 하고, 템플릿이 바뀔 때 새 ReplicaSet을 만들어 개수를 옮기는 일과 되돌릴 옛 ReplicaSet을 남기는 일은 Deployment가 해요. 58편에서 봤듯이 Deployment는 ReplicaSet을 물려받은 종류가 아니라 ReplicaSet을 만들어 관리하는 상위 컨트롤러예요. Deployment 아래의 ReplicaSet 개수를 손으로 고쳐도 Deployment 컨트롤러가 0.1초 만에 되돌린 것은 42편에서 확인했어요.</p>
+
+<h2>5. Deployment가 맞지 않는 워크로드도 있다</h2>
+
+<p>Deployment가 ReplicaSet과 파드를 알아서 만들어 주니 대부분 Deployment로 만들면 될까요? 같은 모양의 파드 여러 개를 계속 띄워 두는 서비스라면 맞아요. 그런데 우리 클러스터의 kube-system만 봐도 그렇지 않은 파드가 더 많았어요. 1편에서 남긴 소유자 목록(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/01-components.txt</code>)을 다시 보면 이래요.</p>
+
+<div class="obsv-code">NAME                                       NODE          OWNER
+calico-kube-controllers-846669895c-hvm95   k8s-worker1   ReplicaSet
+calico-node-gc95j                          k8s-worker2   DaemonSet
+coredns-559f6c778d-4ml68                   k8s-worker1   ReplicaSet
+etcd-k8s-master                            k8s-master    Node
+kube-apiserver-k8s-master                  k8s-master    Node
+kube-proxy-2rl74                           k8s-worker2   DaemonSet
+kube-scheduler-k8s-master                  k8s-master    Node
+(15개 중 일부)</div>
+<p>&rarr; 소유자가 ReplicaSet이고 이름 뒤에 pod-template-hash와 임의 꼬리가 차례로 붙은(coredns-<code style="font-family:Menlo,monospace;font-size:14px;">559f6c778d</code>-<code style="font-family:Menlo,monospace;font-size:14px;">4ml68</code>) coredns와 calico-kube-controllers는 Deployment가 만든 ReplicaSet의 파드예요. calico-node와 kube-proxy는 DaemonSet이 노드마다 하나씩 띄웠고 마스터에도 있었어요. etcd, kube-apiserver, kube-controller-manager, kube-scheduler는 소유자가 Node인 정적 파드였어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: DaemonSet과 정적 파드</div>
+DaemonSet은 개수 대신 "조건에 맞는 노드마다 하나"를 맞추는 워크로드예요. 노드가 늘면 그 노드에도 파드를 만들어요. 정적 파드는 kubelet이 노드의 매니페스트 폴더(<code style="font-family:Menlo,monospace;font-size:14px;">/etc/kubernetes/manifests</code>)를 읽어 직접 띄우는 파드로, API 서버에는 소유자가 Node인 거울 오브젝트만 보여요(5편, 36편).</div>
+
+<p>끝나야 하는 작업도 Deployment에 맞지 않아요. 템플릿에 <code style="font-family:Menlo,monospace;font-size:14px;">restartPolicy: Never</code>를 쓴 Deployment를 server dry-run으로 보내자 API 서버가 거절했어요.</p>
+<div class="obsv-code">The Deployment "once" is invalid: spec.template.spec.restartPolicy: Unsupported value: "Never": supported values: "Always"</div>
+<p>&rarr; Deployment의 파드는 restartPolicy가 Always여야 한다는 뜻이에요. 컨테이너가 성공으로 끝나도 다시 띄우므로 "한 번 돌고 끝나면 성공"인 작업은 표현할 수 없어요. 이런 작업은 완료를 세는 Job이나 시각마다 Job을 만드는 CronJob으로 만들어요. Job에 사이드카를 붙일 때 생기는 문제는 68편에서 다뤄요.</p>
+
+<p>파드마다 고정된 이름과 자기 디스크가 필요하면 StatefulSet을 써요. 이번 실험에서는 StatefulSet을 돌려 보지 않았어요. 잠깐 무언가를 확인하는 디버깅용 파드는 단독 Pod로 띄우는 일이 많아요. 다만 50편에서 봤듯이 단독 파드는 노드가 죽어도 대신 만들어 주는 컨트롤러가 없어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 396" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="원하는 파드 모양에 따라 Deployment, DaemonSet, Job, StatefulSet, 정적 파드, 단독 Pod를 고르는 그림">
+<defs><marker id="k60-kind-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#3d3a34">어떤 파드가 필요한가에 따라 만드는 종류가 달라요</text>
+<path d="M20 56 C 107 54.7, 193 56.3, 280 55.9 C 280.3 69, 280.1 83, 279.1 96 C 193 94.3, 107 94.2, 20.3 95.9 C 21.6 83, 19.6 69, 20 56 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="150" y="82" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#3d3a34">같은 파드 여러 개를 계속 실행</text>
+<path d="M284 76 C 295 73, 307 74, 318 76" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k60-kind-arr1)"/>
+<path d="M322 56 C 369 56.9, 415 57.6, 462 55.5 C 463.3 69, 461.9 83, 462.4 96 C 415 97.6, 369 94.0, 321.1 96.8 C 320.7 83, 323.8 69, 322 56 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="392" y="82" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">Deployment</text>
+<text x="474" y="82" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">coredns, calico-kube-controllers</text>
+<path d="M20 106 C 107 107.0, 193 105.2, 280 107.0 C 281.9 119, 278.0 133, 280.6 146 C 193 146.9, 107 145.0, 19.9 145.4 C 21.3 133, 18.9 119, 20 106 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="150" y="132" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#3d3a34">노드마다 하나씩</text>
+<path d="M284 126 C 295 123, 307 124, 318 126" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k60-kind-arr1)"/>
+<path d="M322 106 C 369 105.1, 415 105.3, 462 105.9 C 460.2 119, 463.9 133, 461.7 146 C 415 146.7, 369 147.8, 321.9 145.2 C 320.4 133, 322.3 119, 322 106 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="392" y="132" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">DaemonSet</text>
+<text x="474" y="132" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">calico-node, kube-proxy</text>
+<path d="M20 156 C 107 156.3, 193 157.7, 280 156.2 C 281.0 169, 278.9 183, 279.8 196 C 193 195.3, 107 197.2, 20.9 196.9 C 20.7 183, 20.2 169, 20 156 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="150" y="182" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#3d3a34">끝나면 성공인 작업</text>
+<path d="M284 176 C 295 173, 307 174, 318 176" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k60-kind-arr1)"/>
+<path d="M322 156 C 369 154.2, 415 154.6, 462 156.8 C 461.6 169, 460.8 183, 461.4 196 C 415 196.1, 369 196.9, 322.7 195.8 C 321.6 183, 322.7 169, 322 156 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="392" y="182" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">Job · CronJob</text>
+<text x="474" y="182" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">Deployment는 restartPolicy Always만</text>
+<path d="M20 206 C 107 205.3, 193 207.9, 280 206.8 C 278.3 219, 280.9 233, 280.5 246 C 193 244.9, 107 246.6, 19.1 245.7 C 21.3 233, 21.5 219, 20 206 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="150" y="232" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#3d3a34">파드마다 이름과 디스크가 고정</text>
+<path d="M284 226 C 295 223, 307 224, 318 226" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k60-kind-arr1)"/>
+<path d="M322 206 C 369 205.7, 415 207.7, 462 205.1 C 461.5 219, 460.7 233, 462.7 246 C 415 247.2, 369 246.7, 321.4 246.8 C 322.4 233, 323.2 219, 322 206 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="392" y="232" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">StatefulSet</text>
+<text x="474" y="232" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">이번 실험에서는 다루지 않음</text>
+<path d="M20 256 C 107 254.7, 193 256.0, 280 255.4 C 281.9 269, 281.8 283, 280.9 296 C 193 294.8, 107 294.5, 20.5 295.8 C 18.6 283, 21.0 269, 20 256 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="150" y="282" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#3d3a34">API 서버보다 먼저 떠야 함</text>
+<path d="M284 276 C 295 273, 307 274, 318 276" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k60-kind-arr1)"/>
+<path d="M322 256 C 369 256.7, 415 254.3, 462 255.5 C 460.9 269, 461.2 283, 461.8 296 C 415 294.4, 369 296.4, 321.6 295.8 C 321.8 283, 320.2 269, 322 256 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="392" y="282" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">정적 파드</text>
+<text x="474" y="282" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">etcd, kube-apiserver (owner Node)</text>
+<path d="M20 306 C 107 306.6, 193 307.7, 280 305.6 C 280.9 319, 281.0 333, 280.1 346 C 193 345.7, 107 344.7, 21.0 346.1 C 19.7 333, 18.7 319, 20 306 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="150" y="332" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#3d3a34">잠깐 띄워 보는 디버깅</text>
+<path d="M284 326 C 295 323, 307 324, 318 326" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k60-kind-arr1)"/>
+<path d="M322 306 C 369 305.2, 415 307.3, 462 306.1 C 461.9 319, 463.1 333, 462.0 346 C 415 347.0, 369 347.1, 322.3 345.1 C 323.8 333, 321.1 319, 322 306 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="392" y="332" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">단독 Pod</text>
+<text x="474" y="332" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">죽어도 대신 만들어 주는 쪽이 없음</text>
+<text x="350" y="382" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#b3502f">kube-system 파드의 소유자는 ReplicaSet만이 아니라 DaemonSet과 Node도 있었어요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 5. Deployment는 기본 선택이지만 노드마다, 끝나는 작업, API 서버보다 먼저 떠야 하는 파드에는 다른 종류를 써요.</p>
+
+<p><b>출처</b> &middot; <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/replicaset/replica_set.go">v1.37.2 replica_set.go</a> &middot; <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/controller_utils.go">v1.37.2 controller_utils.go</a> &middot; <a href="https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/">ReplicaSet</a> &middot; <a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/">Deployments</a> &middot; <a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/owners-dependents/">Owners and Dependents</a></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">📝 정리</div>
+<p>ReplicaSet은 자기가 만든 파드가 아니라 셀렉터에 맞는 활성 파드를 세요. 주인 없는 파드는 입양하고, 많으면 아직 배정되지 않았거나 준비되지 않았거나 최근에 만든 파드를 먼저 지워요. 같은 라벨로 직접 만든 bare는 3초 안에 지워졌고 먼저 만들어 둔 early는 입양돼 하나로 셌어요. 라벨을 바꾼 파드는 놓아주고 Service 대상에서도 빠지므로 문제 파드를 격리하는 데 쓸 수 있어요.</p>
+<p>ReplicaSet이 맞추는 것은 파드 오브젝트의 수라서 스케줄될 수 없는 Pending 파드 두 개로도 replicas=2를 채웠고, 템플릿을 바꿔도 기존 파드는 1.27 그대로였어요. 새 템플릿으로 갈아타고 되돌리는 일은 Deployment가 ReplicaSet을 revision마다 두는 방식으로 해요.</p>
+<p style="margin-bottom:0;">Deployment는 계속 도는 같은 파드 여러 개에 맞는 기본 선택이고, 노드마다 하나는 DaemonSet, 끝나는 작업은 Job, 컨트롤 플레인은 정적 파드가 맡았어요. 워크로드를 고를 때는 그 컨트롤러가 무엇을 세는지부터 봐야 해요.</p>
+</div>
+</div>

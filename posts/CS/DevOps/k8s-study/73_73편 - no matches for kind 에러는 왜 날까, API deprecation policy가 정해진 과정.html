@@ -1,0 +1,260 @@
+<!-- ============================================================
+  k8s 스터디 73편: no matches for kind 에러는 왜 날까, API deprecation policy가 정해진 과정
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 옛 매니페스트를 1.37 서버에 dry-run으로 보내자 세 개가 no matches for kind로 막혔어요. 그 메시지가 나오는 곳과, beta 3개월에서 3릴리스, GA 제거 금지까지 deprecation policy가 바뀐 과정을 원문으로 따라갔어요. -->
+<!-- tags: no matches for kind, deprecation policy, extensions/v1beta1, beta API, KEP-3136, runtime-config -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 73편</div>
+  71편. 컨테이너마다 restartPolicy를 주면 사이드카가 될까, restartPolicyRules<br>
+  72편. 같은 HPA를 autoscaling v1과 v2로 동시에 읽을 수 있는 이유<br>
+  <b>73편. no matches for kind 에러는 왜 날까, API deprecation policy가 정해진 과정</b> &larr; 지금 이 글<br>
+  74편. API 버전을 지워도 etcd의 옛 데이터는 어떻게 될까, storage version과 StorageVersionMigration<br>
+  75편. 업그레이드 전에 deprecated API를 누가 쓰는지 찾는 법
+</div>
+
+<p>오래된 매니페스트가 지금 클러스터에서도 먹는지 보려고 YAML 여섯 개를 한 파일에 넣고 1.37 서버에 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply --dry-run=server</code>로 보냈어요. apps/v1 Deployment와 discovery.k8s.io/v1 EndpointSlice는 통과했어요. v1 Endpoints는 경고 한 줄과 함께 통과했어요. 나머지 셋은 같은 모양의 메시지로 막혔어요.</p>
+
+<div class="obsv-code">resource mapping not found for name: "old-deploy" namespace: "blog-75" from "manifests.yaml": no matches for kind "Deployment" in version "extensions/v1beta1"
+ensure CRDs are installed first</div>
+
+<p>막힌 셋은 extensions/v1beta1 Deployment, policy/v1beta1 PodDisruptionBudget, autoscaling/v2beta2 HorizontalPodAutoscaler였어요. 각각 1.16, 1.25, 1.26에 서빙이 끝난 버전이에요. 72편에서 서버는 같은 HPA를 v1과 v2로 바꿔 보여 줬어요. 서버 코드에는 extensions 그룹의 Deployment를 apps 그룹과 같은 저장소로 묶은 줄도 남아 있어요. 그런데 옛 버전은 왜 바꿔 주지 않고 거절할까요?</p>
+<p>이 글은 그 메시지가 어디서 나오는지 확인한 뒤 "버전을 언제 빼도 되는가"를 정한 deprecation policy가 2017년부터 어떻게 바뀌었는지 PR과 KEP 원문으로 따라가요. 실험 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/73-old-manifests-dry-run-scan.txt</code>와 같은 디렉터리의 <code style="font-family:Menlo,monospace;font-size:14px;">73-old-manifests-dry-run-scan.sh</code>예요. 실험 네임스페이스는 blog-75를 썼고 파일 첫 줄 제목도 75로 적혀 있어요. 이 글은 그 파일의 1·2절을 인용하고 3·4절은 75편에서 인용해요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 옛 YAML은 왜 안 먹고 그 메시지는 누가 낼까?<br>
+&middot; "ensure CRDs are installed first"는 맞는 안내일까?<br>
+&middot; beta 지원 기간은 어떻게 3개월에서 3릴리스가 됐을까?<br>
+&middot; beta에는 왜 시한이 생겼고 왜 기본으로 꺼졌을까?<br>
+&middot; GA는 정말 지우지 않을까?<br>
+&middot; 우리 클러스터에서 서빙되는 내장 beta가 0개인 이유는 무엇일까?</p>
+
+<h2>1. no matches for kind는 그 버전을 서버가 더 이상 서빙하지 않는다는 뜻이다</h2>
+
+<p>먼저 질문 하나에 답할게요. <b>옛 YAML은 왜 안 먹을까요?</b> 여섯 개를 한 번에 보낸 화면이에요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/73/01-old-manifests-no-matches.png" alt="매니페스트 6개를 서버 dry-run으로 보내 apps/v1 Deployment, v1 Endpoints, EndpointSlice는 통과하고 extensions/v1beta1, policy/v1beta1, autoscaling/v2beta2 세 개가 no matches for kind로 막히며 종료 코드 1인 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 1. 통과 3개 중 하나는 경고가 붙었고 옛 버전 3개는 같은 메시지로 막혔어요.</p>
+
+<p>72편의 strict decoding 오류와 모양이 달라요. 그 오류는 <code style="font-family:Menlo,monospace;font-size:14px;">Error from server (BadRequest)</code>로 시작했어요. 서버가 요청을 받아 본문을 풀다가 거절했다는 표시예요. 이번 메시지는 <code style="font-family:Menlo,monospace;font-size:14px;">resource mapping not found</code>로 시작하고 Error from server가 없어요. kubectl이 discovery 문서에서 그 kind와 apiVersion에 맞는 리소스를 찾지 못해 요청을 보낼 경로를 정하지 못한 것으로 읽혀요. 같은 groupVersion을 discovery에 직접 물어보면 이유가 보여요.</p>
+
+<div class="obsv-code">## 2. 각 groupVersion을 discovery에 직접 물으면
+  GET /apis/apps/v1                → 서빙 중
+  GET /apis/extensions/v1beta1     → (NotFound): the server could not find the requested resource
+  GET /apis/policy/v1beta1         → (NotFound): the server could not find the requested resource
+  GET /apis/autoscaling/v2beta2    → (NotFound): the server could not find the requested resource
+  GET /apis/discovery.k8s.io/v1    → 서빙 중</div>
+
+<p>막힌 셋의 groupVersion은 모두 NotFound였어요. 서버가 그 버전을 서빙 목록에서 뺐으니 kubectl은 매핑할 곳이 없어요. 덧붙은 "ensure CRDs are installed first"는 이 경우에 맞지 않는 안내예요. 내장 리소스의 옛 버전이라면 CRD를 설치할 일이 아니라 apiVersion을 지금 서빙하는 버전으로 바꿔야 해요. 58편 원자료의 extensions/v1beta1 Deployment도 같은 메시지였어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-kind-apiversion.txt</code>).</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 서빙 중단(no longer served)</div>
+<a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/using-api/deprecation-guide.md">이행 가이드(Deprecated API Migration Guide)</a>는 옛 버전을 "no longer served"라고 적고 항목마다 "All existing persisted objects are accessible via the new API"를 붙여요. 그 버전의 REST 경로를 닫았을 뿐 이미 저장된 객체는 새 버전으로 그대로 읽을 수 있다는 뜻이에요. API 버전을 "제거했다"는 말은 대개 이 서빙 중단을 가리켜요.</div>
+
+<p>그러면 서버는 왜 옛 버전을 받아서 새 버전으로 바꿔 주지 않을까요? 1.16의 사례를 보면 받을 수 없어서가 아니라 받지 않기로 정했기 때문이에요. <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.16.md">1.16 CHANGELOG</a>는 extensions/v1beta1의 Deployment 등을 "no longer served by default"로 바꾸면서 <code style="font-family:Menlo,monospace;font-size:14px;">--runtime-config</code>로 임시로 다시 켤 수 있다고 적었어요. <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.18.md">1.18</a>에 와서야 다시 켤 수도 없게 됐어요(#85903). 어떤 버전을 서빙할지는 정책이 정하고 서버는 그에 맞춰 경로를 열고 닫아요. 그 정책이 deprecation policy예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: deprecation policy</div>
+쿠버네티스가 API 버전, 플래그, 기능을 deprecated로 표시하고 실제로 빼기까지 지켜야 할 규칙을 적은 문서예요. 이 글에서 다루는 것은 REST API 버전에 관한 Rule #4a와 #4b예요. 2026년 8월에 문서 위치가 <code style="font-family:Menlo,monospace;font-size:14px;">/docs/reference/using-api/</code>에서 <code style="font-family:Menlo,monospace;font-size:14px;">/docs/reference/</code>로 옮겨졌어요.</div>
+
+<p>1.16의 이행이 특히 아팠던 이유도 이행 가이드에 남아 있어요. 이름만 바뀐 것이 아니었어요. Deployment 항목의 Notable changes예요.</p>
+
+<div class="obsv-code">* spec.rollbackTo is removed
+* spec.selector is now required and immutable after creation
+* spec.progressDeadlineSeconds now defaults to 600 seconds (the default in extensions/v1beta1 was no deadline)
+* spec.revisionHistoryLimit now defaults to 10 (the default in apps/v1beta1 was 2, the default in extensions/v1beta1 was to retain all)
+* maxSurge and maxUnavailable now default to 25% (the default in extensions/v1beta1 was 1)</div>
+
+<p>&rarr; selector를 반드시 적어야 하고, 적지 않은 칸의 기본값이 바뀐다는 뜻이에요. extensions/v1beta1에서 apiVersion 한 줄만 apps/v1으로 바꾸면 기한이 없던 롤아웃에 600초 기한이 생기고 maxSurge와 maxUnavailable이 1이던 롤링 업데이트가 25% 단위로 바뀌어요. DaemonSet은 updateStrategy 기본값이 OnDelete에서 RollingUpdate로 바뀌었어요. 저장된 객체는 서버가 변환해 줬지만 사람이 들고 있던 YAML, Helm 차트, 컨트롤러 코드는 사람이 고쳐야 했어요. apps/v1은 1.9부터 있었으니 1.16까지 일곱 릴리스 동안 옛 버전에 머물 수 있었던 셈이에요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ apiVersion 한 줄만 바꾸고 끝내지 마세요</div>
+&bull; 이행 가이드의 해당 릴리스 항목에서 Notable changes를 먼저 봐요. 필드 이름이 바뀌거나 기본값이 달라진 경우가 있어요. 1.22의 Ingress는 serviceName이 service.name으로 바뀌고 pathType이 필수가 됐어요<br>
+&bull; 가이드가 안내하는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl convert</code>는 기본으로 설치되지 않는 플러그인이고 가이드 스스로 "This conversion may use non-ideal default values"라고 적어요. 변환 결과도 사람이 다시 읽어야 해요<br>
+&bull; 고친 매니페스트는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl apply --dry-run=server</code>로 지금 서버가 받는지 확인해요</div>
+
+<h2>2. 첫 규칙은 beta 3개월이었고 뒤처진 노드에서 장애를 겪은 뒤 3릴리스로 늘었다</h2>
+
+<p>deprecation policy는 2016년 12월 5일 Tim Hockin이 연 <a href="https://github.com/kubernetes/website/pull/1856">website PR #1856</a>으로 시작해 2017년 1월 3일에 들어갔어요. <a href="https://github.com/kubernetes/website/blob/6ebd94302d/docs/deprecation-policy.md">첫 판</a>의 Rule #4는 deprecated를 알린 뒤 옛 버전을 지원해야 하는 최소 기간을 이렇게 적었어요.</p>
+
+<div class="obsv-code">Rule #4: Other than the most recent API version in each track, older API
+versions must be supported after their announced deprecation for a duration of
+no less than:
+   * GA: 1 year or 2 releases (whichever is longer)
+   * Beta: 3 months or 1 release (whichever is longer)
+   * Alpha: 0 releases</div>
+
+<p>당시 문서는 릴리스 주기를 "approximately 3 months (4 per year)"로 봤어요. beta는 deprecated 뒤 한 릴리스만 버티면 뺄 수 있었어요. 지금 문서는 같은 예시에서 "approximately 4 months (3 per year)"라고 적어요. 첫 판 리뷰에는 Hockin이 lavalamp의 의견으로 GA 버전 제거를 "latter half of the calendar year"나 "odd-numbered releases"에만 하자는 제안을 옮긴 기록도 있어요. 지금 문서에는 그런 규칙이 없어요.</p>
+<p>2017년 9월의 <a href="https://github.com/kubernetes/website/pull/5338">#5338</a>에서 beta는 6개월 또는 2릴리스로 늘었어요. 저장 버전을 언제 올릴 수 있는지 정한 Rule #4b도 이때 들어왔어요. 큰 변화는 2018년 5월에 왔어요. Hockin이 연 <a href="https://github.com/kubernetes/website/pull/8666">#8666</a>의 설명이에요.</p>
+
+<div class="obsv-code">Removing annotations caused a major outage with nodes that lagged the
+master.  We used annotations as would-be fields, though we don't any
+more.  Now we just add fields.  That makes them part of the API version.
+These annotations are effectively part of the API version, too.</div>
+
+<p>&rarr; 필드처럼 쓰던 annotation을 지웠더니 마스터보다 버전이 뒤처진 노드에서 큰 장애가 났고, 그런 annotation도 API 버전의 일부로 봐야 한다는 뜻이에요. 리뷰에서 bgrant0607은 deprecation policy가 버전 skew 정책과 맞지 않는다고 짚었어요. "Which doesn't take into account the 2 minor releases of skew between the master and nodes." 이어서 kubelet이나 kube-proxy 같은 노드 에이전트가 쓰는 beta API나 annotation은 노드 에이전트가 그것을 쓰지 않게 된 뒤 최소 두 마이너 릴리스가 지나야 뺄 수 있다는 문장을 제안했어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 버전 skew(version skew)</div>
+클러스터 구성 요소끼리 허용하는 버전 차이예요. bgrant0607이 인용한 당시 정책은 노드가 마스터보다 두 마이너 릴리스까지 뒤처지는 것을 허용했어요. 업그레이드 중에는 API 서버와 노드의 버전이 한동안 다를 수 있어서 API 서버가 먼저 빼 버린 것을 오래된 노드가 아직 쓰고 있을 수 있어요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="API 서버가 beta를 1릴리스 뒤에 빼면 두 릴리스 뒤처진 노드가 깨지고 3릴리스 뒤에 빼면 안전한 예">
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="24" fill="#3d3a34">beta를 언제 빼야 뒤처진 노드가 깨지지 않을까</text>
+<g font-family="'Nanum Pen Script',cursive" font-size="20" fill="#3d3a34"><text x="18" y="100">API 서버</text><text x="18" y="212">가장 뒤처진</text><text x="18" y="234">노드</text></g>
+<path d="M150 72 C 185 70, 230 73, 262 71 C 264 86, 263 102, 262 118 C 230 120, 185 117, 151 119 C 149 102, 150 86, 150 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M285 71 C 320 73, 365 70, 397 72 C 399 87, 398 103, 397 119 C 365 117, 320 120, 286 118 C 284 103, 285 87, 285 71 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M420 72 C 455 70, 500 73, 532 71 C 534 86, 533 102, 532 118 C 500 120, 455 117, 421 119 C 419 102, 420 86, 420 72 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M555 71 C 590 73, 635 70, 667 72 C 669 87, 668 103, 667 119 C 635 117, 590 120, 556 118 C 554 103, 555 87, 555 71 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.3" stroke-linejoin="round"/>
+<g font-family="Menlo,monospace" font-size="17" text-anchor="middle" fill="#3d3a34"><text x="206" y="101">X</text><text x="341" y="101">X+1</text><text x="476" y="101">X+2</text><text x="611" y="101">X+3</text></g>
+<g font-family="'Nanum Pen Script',cursive" font-size="17" text-anchor="middle"><text x="206" y="142" fill="#8a8272">beta deprecated</text><text x="341" y="142" fill="#b3502f">1릴리스 규칙: 제거</text><text x="611" y="142" fill="#2e6b41">3릴리스 규칙: 제거</text></g>
+<path d="M150 190 C 185 188, 230 191, 262 189 C 264 204, 263 220, 262 236 C 230 238, 185 235, 151 237 C 149 220, 150 204, 150 190 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.1" stroke-linejoin="round"/>
+<path d="M285 189 C 320 191, 365 188, 397 190 C 399 205, 398 221, 397 237 C 365 235, 320 238, 286 236 C 284 221, 285 205, 285 189 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M420 190 C 455 188, 500 191, 532 189 C 534 204, 533 220, 532 236 C 500 238, 455 235, 421 237 C 419 220, 420 204, 420 190 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2.1" stroke-linejoin="round"/>
+<path d="M555 189 C 590 191, 635 188, 667 190 C 669 205, 668 221, 667 237 C 635 235, 590 238, 556 236 C 554 221, 555 205, 555 189 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.3" stroke-linejoin="round"/>
+<g font-family="Menlo,monospace" font-size="17" text-anchor="middle" fill="#3d3a34"><text x="206" y="219">X-2</text><text x="341" y="219">X-1</text><text x="476" y="219">X</text><text x="611" y="219">X+1</text></g>
+<g fill="none" stroke-width="1.8" stroke-dasharray="4 6"><path d="M341 150 C 339 162, 343 174, 341 186" stroke="#e5533c"/><path d="M611 150 C 609 162, 613 174, 611 186" stroke="#5a9e6f"/></g>
+<g font-family="'Nanum Pen Script',cursive" font-size="18" text-anchor="middle"><text x="341" y="262" fill="#b3502f">아직 beta를 써요 ✘</text><text x="611" y="262" fill="#2e6b41">새 표현을 써요 ✔</text></g>
+<text x="350" y="298" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">가정: kubelet은 릴리스 X부터 beta 대신 새 표현을 써요. 같은 열은 같은 시점이에요.</text>
+<text x="350" y="336" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#b3502f">= 노드가 두 릴리스 뒤처질 수 있으니 beta 지원도 그만큼 길어야 해요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 2. 1릴리스 규칙으로는 두 릴리스 뒤처진 노드가 쓰던 beta가 먼저 사라질 수 있어요.</p>
+
+<p>#8666은 GA를 12개월 또는 3릴리스, beta를 9개월 또는 3릴리스로 늘리고 "This covers the maximum supported version skew of 2 releases"라는 이유를 붙여 2018년 5월 29일에 들어갔어요. 지금 문서도 같은 이유를 적어요. 이틀 뒤 들어간 liggitt의 <a href="https://github.com/kubernetes/website/pull/8825">#8825</a>는 다른 쪽을 분명히 했어요. 이슈 #52185가 풀리기 전에는 저장된 적이 있는 버전을 코드에서 지울 수 없고 REST 경로의 서빙만 끌 수 있다는 내용이에요. 1장에서 본 "서빙 중단"과 "제거"의 구분을 정책 문서에 적은 것이 이 PR이에요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">판</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">GA</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">Beta</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">Alpha</th></tr></thead>
+<tbody><tr><td style="padding:9px;border:1px solid #d8cfba;">2017-01 (#1856)</td><td style="padding:9px;border:1px solid #d8cfba;">deprecated 뒤 1년 또는 2릴리스</td><td style="padding:9px;border:1px solid #d8cfba;">3개월 또는 1릴리스</td><td style="padding:9px;border:1px solid #d8cfba;">0</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">2017-09 (#5338)</td><td style="padding:9px;border:1px solid #d8cfba;">1년 / 2릴리스</td><td style="padding:9px;border:1px solid #d8cfba;">6개월 / 2릴리스</td><td style="padding:9px;border:1px solid #d8cfba;">0</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">2018-05 (#8666)</td><td style="padding:9px;border:1px solid #d8cfba;">12개월 / 3릴리스</td><td style="padding:9px;border:1px solid #d8cfba;">9개월 / 3릴리스</td><td style="padding:9px;border:1px solid #d8cfba;">0</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">2022-01 (#31389)</td><td style="padding:9px;border:1px solid #d8cfba;">major 버전 안에서 제거 금지</td><td style="padding:9px;border:1px solid #d8cfba;">deprecated 뒤 9개월 / 3릴리스</td><td style="padding:9px;border:1px solid #d8cfba;">예고 없이 제거 가능</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">2022-09 (#36663, 지금)</td><td style="padding:9px;border:1px solid #d8cfba;">같음</td><td style="padding:9px;border:1px solid #d8cfba;">도입 뒤 9개월 / 3릴리스 안에 deprecated, 그 뒤 9개월 / 3릴리스가 지나면 서빙 중단</td><td style="padding:9px;border:1px solid #d8cfba;">같음</td></tr></tbody></table></div>
+
+<h2>3. beta에 시한을 걸었고(KEP-1635) 그래도 모자라 새 beta를 기본으로 껐다(KEP-3136)</h2>
+
+<p>3릴리스 규칙은 deprecated를 알린 뒤의 기간만 정했어요. deprecated를 알리지 않으면 beta는 얼마든지 남을 수 있었어요. 2019년 10월 deads2k가 작성한 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/1635-prevent-permabeta">KEP-1635</a>의 Motivation이에요.</p>
+
+<div class="obsv-code">When a REST API reaches beta, it is turned on by default. This is great for getting feedback,
+but it can also lead to state where users and vendors start building important infrastructure
+against APIs that are not considered stable. In addition, once a REST API is on by default,
+the incentive to further stabilize appears to diminish.
+See the REST API that have been beta for a long time: CSRs and Ingresses as examples.</div>
+
+<p>&rarr; beta가 기본으로 켜지면 사용자와 벤더가 그 위에 중요한 인프라를 쌓고, 한번 켜진 뒤에는 GA로 다듬을 동기가 약해진다는 뜻이에요. KEP는 "a single actor has been cleaning up behind a lot of the project to unstick perma-beta APIs"라고도 적었어요. 2020년 소개 블로그는 Ingress를 두고 "did you realize that it actually went beta in 2015?"라고 물었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: KEP(Kubernetes Enhancement Proposal)</div>
+쿠버네티스에 기능이나 절차 변경을 제안하고 승인받는 문서예요. 동기, 목표, 하지 않을 것, 위험을 적고 kep.yaml에 alpha, beta, stable 단계를 몇 번째 릴리스에 밟을지 기록해요.</div>
+
+<p>KEP-1635는 1.19에 stable이 됐고 beta에 시한을 정했어요. "every beta API will be deprecated in nine months and removed in 18 months." beta가 된 뒤 9개월(3릴리스) 안에 GA가 되거나 새 beta를 내야 하고, 그러지 못하면 세 번째 릴리스에 deprecated가 되고 다시 3릴리스 뒤에 빠져요. KEP의 예시는 1.16에 나온 v1beta1을 1.16~1.18 동안 평가하고 1.19에 deprecated, 1.22에 제거하는 순서예요. 영향 목록에는 cronjobs.v1beta1.batch를 비롯해 CSR, PSP, events, endpointslices, ingresses, runtimeclasses, PDB 등이 올랐어요.</p>
+<p>이 시한은 코드 생성기에 들어가 있어요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/api/storagemigration/v1beta1/types.go">v1.37.2의 storagemigration.k8s.io/v1beta1 타입</a>에는 introduced=1.35, deprecated=1.37 태그는 있고 removed 태그는 없어요. 그런데 생성된 코드의 APILifecycleRemoved는 1.40을 돌려줘요. 생성 코드 주석은 removed를 적지 않으면 deprecated에 3을, deprecated를 적지 않으면 introduced에 3을 더한다고 적어요.</p>
+
+<p>1.16부터 몇 릴리스에 걸쳐 오래 쓰인 beta가 빠졌어요. CHANGELOG와 이행 가이드에 남은 큰 묶음이에요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">릴리스</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">서빙이 끝난 것</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">근거</th></tr></thead>
+<tbody><tr><td style="padding:9px;border:1px solid #d8cfba;">1.16</td><td style="padding:9px;border:1px solid #d8cfba;">apps/v1beta1·v1beta2 전부, extensions/v1beta1의 Deployment·DaemonSet·ReplicaSet·NetworkPolicy·PodSecurityPolicy</td><td style="padding:9px;border:1px solid #d8cfba;">CHANGELOG-1.16, <a href="https://github.com/kubernetes/kubernetes/pull/70672">PR #70672</a>(2018-11 생성, 2019-06 머지)</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">1.22</td><td style="padding:9px;border:1px solid #d8cfba;">Ingress(extensions·networking.k8s.io v1beta1), CustomResourceDefinition, webhook 설정, APIService, CertificateSigningRequest, Lease, RBAC 등의 v1beta1</td><td style="padding:9px;border:1px solid #d8cfba;">CHANGELOG-1.22, 이행 가이드</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">1.25</td><td style="padding:9px;border:1px solid #d8cfba;">PodSecurityPolicy 제거(새 버전 없이 Pod Security Admission으로 대체), batch/v1beta1 CronJob, autoscaling/v2beta1, policy/v1beta1 PDB, events·EndpointSlice·RuntimeClass의 v1beta1</td><td style="padding:9px;border:1px solid #d8cfba;">CHANGELOG-1.25, 이행 가이드</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">1.26</td><td style="padding:9px;border:1px solid #d8cfba;">autoscaling/v2beta2 HPA, flowcontrol.apiserver.k8s.io/v1beta1</td><td style="padding:9px;border:1px solid #d8cfba;">CHANGELOG-1.26, 이행 가이드</td></tr></tbody></table></div>
+
+<p>1.16 묶음을 끊은 PR #70672는 2018년 11월 5일에 열려 2019년 6월 22일에 머지됐어요. 약 7.5개월이 걸렸어요. 이행 가이드의 마지막 항목은 1.32의 flowcontrol.apiserver.k8s.io/v1beta3이고 그 뒤 릴리스 항목은 없어요.</p>
+
+<p>시한을 걸어도 beta는 여전히 기본으로 켜져 있었어요. 2022년 1월 13일에 작성된 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/3136-beta-apis-off-by-default">KEP-3136</a>은 그 기본값을 바꿨어요.</p>
+
+<div class="obsv-code">Beta APIs are not considered stable and reliance upon APIs in this state leads to exposure to bugs,
+guaranteed migration pain for users when the APIs move to stable, and the risk that dependencies will
+grow around unfinished APIs.
+Enabling beta APIs by default, exacerbates these problems by making them on in nearly every cluster.
+We observed these problems as we removed long-standing beta APIs and the PRR survey tells us that over
+90% of cluster-admins leave production clusters with these APIs enabled.</div>
+
+<p>&rarr; 오래된 beta를 빼면서 이 문제들을 겪었고 설문에서 클러스터 관리자의 90% 이상이 운영 클러스터에서 beta API를 켜 둔 채로 둔다는 결과가 나왔다는 뜻이에요. KEP는 "This is now practical to do since conformance no longer relies on non-stable APIs."라고 덧붙여요. 그 전제는 <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/1333-conformance-without-beta">KEP-1333</a>의 "A production distribution should not be required to enable non-GA features or REST APIs in order to pass conformance tests."예요. KEP-1333에는 kube-scheduler가 1.16에서 실수로 beta Events API를 쓰게 된 사례도 적혀 있어요.</p>
+<p>범위는 좁혀 뒀어요. 이미 있던 beta와 그 beta의 새 버전은 계속 기본으로 켜 두고 1.24부터 새로 나오는 beta API만 기본으로 꺼요. feature gate의 기본값(alpha 꺼짐, beta 켜짐)은 바꾸지 않는다고 Non-Goal에 적었어요. 위험 절에는 "Adoption of beta features will slow. Given how kubernetes is now treated, this is a good thing, not a bad thing."이라는 문장이 있어요. 기본으로 꺼진 beta를 쓰려면 관리자가 API 서버 플래그로 켜야 해요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: --runtime-config</div>
+kube-apiserver가 어떤 API 그룹, 버전, 리소스를 서빙할지 켜고 끄는 플래그예요. KEP-3136은 <code style="font-family:Menlo,monospace;font-size:14px;">그룹/버전/리소스=true</code> 형식으로 리소스 하나만 켤 수 있게 넓혔어요. 1.16 CHANGELOG가 옛 workload API를 임시로 다시 켜는 방법으로 안내한 것도 이 플래그예요.</div>
+
+<p>우리 클러스터에서 확인했어요. API 서버에는 --runtime-config와 --feature-gates가 없었고 서빙 중인 alpha·beta groupVersion은 Calico가 설치한 CRD의 policy.networking.k8s.io/v1alpha2 하나였어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/59-alpha-beta-served.txt</code>). 내장 alpha·beta는 0개예요. <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.37.md">1.37 CHANGELOG</a>는 Workload와 PodGroup을 scheduling.k8s.io/v1beta1로 올렸다고 적지만 우리 클러스터에서 <code style="font-family:Menlo,monospace;font-size:14px;">/apis/scheduling.k8s.io/v1beta1</code>은 NotFound였어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/72-discovery-storage-version-hash.txt</code> 4절). 새로 beta가 된 리소스는 기본으로 꺼진다는 KEP-3136과 맞는 결과예요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 내 클러스터에서 켜진 alpha·beta를 보는 법</div>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl api-versions | grep -E 'alpha|beta'</code>로 서빙 중인 것을 봐요<br>
+&bull; 나온 그룹이 내장인지 CRD인지는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get crd</code>로 구분해요. 우리 클러스터의 v1alpha2는 Calico가 설치한 CRD였어요<br>
+&bull; kube-apiserver 정적 파드 매니페스트에서 <code style="font-family:Menlo,monospace;font-size:14px;">--runtime-config</code>를 찾아 누가 무엇을 켰는지 봐요</div>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 문서끼리 숫자가 다른 곳이 있어요</div>
+&bull; API 개요 문서(<a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/using-api/_index.md">using-api</a>)는 기본으로 켜지는 예외를 "beta versions of APIs introduced prior to Kubernetes 1.22"라고 적지만 KEP-3136과 CHANGELOG-1.24는 1.24부터라고 적어요<br>
+&bull; 1.16 CHANGELOG는 extensions/v1beta1 Ingress의 서빙 중단을 "in v1.20"이라고 예고했지만 2019년 블로그의 지금 판과 이행 가이드, 실제 중단은 1.22예요. 바뀐 경위는 확인하지 못했어요<br>
+&bull; 날짜와 버전은 CHANGELOG와 이행 가이드를 함께 보고 실제 클러스터에서 api-versions로 확인하는 편이 안전해요</div>
+
+<h2>4. GA는 major 버전 안에서 지우지 않기로 했다</h2>
+
+<p>2022년 1월 liggitt가 연 <a href="https://github.com/kubernetes/website/pull/31389">website #31389</a>는 GA 쪽 규칙을 바꿨어요. 새 문장은 "GA API versions may be marked as deprecated, but must not be removed within a major version of Kubernetes"예요. 그 전까지 GA도 deprecated 뒤 12개월 또는 3릴리스가 지나면 뺄 수 있었어요. 리뷰에서 Hockin이 이 변경의 목적을 이렇게 적었어요.</p>
+
+<div class="obsv-code">The whole point of this thread is to assure users that using GA things is
+SO MUCH better than using beta things that they don't need to use beta in prod.</div>
+
+<p>&rarr; GA를 쓰는 것이 beta를 쓰는 것보다 확실히 낫다고 보장해서 운영 환경에서 beta를 쓸 이유를 없애자는 뜻이에요.</p>
+<p>반대 의견도 있었어요. sftim은 "The X Window System ended up really struggling with its legacy of APIs."라며 아무도 쓰지 않는 API를 계속 광고하게 될 위험을 들어 "I'm opposed to a flat MUST NOT here."라고 적었어요. 그는 쿠버네티스 v2.x 같은 major 버전에서는 뺄 수 있게 하자고 했어요. liggitt는 "there are no current plans for a v2.x stream"이라고 답하고 그런 문장이 stable API를 버리는 v2의 동기가 될까 걱정했어요. 생태계가 python2와 python3처럼 갈라지는 것을 예로 들었어요. smarterclayton은 Linux syscall이 10년 넘게 안정적이었다는 점을 들며 v1을 바꾸는 대신 옆에 새 API를 두자고 했어요. 그가 든 예가 "endpoint to endpoint slice"였어요.</p>
+<p>문장은 그대로 들어갔고 2022년 9월 <a href="https://github.com/kubernetes/website/pull/36663">#36663</a>이 KEP-1635, KEP-3136과 함께 지금의 Rule #4a 문구로 정리했어요. 지금 문서에는 "There are no current plans for a major version revision of Kubernetes that removes GA APIs."라는 note도 있어요.</p>
+<p>smarterclayton이 든 예는 실제로 그렇게 됐어요. 1.33 CHANGELOG는 "The v1 Endpoints API is now officially deprecated (though still fully supported). The API will not be removed, but all users should use the EndpointSlice API instead."라고 적어요. 도입부의 dry-run에서 v1 Endpoints가 경고와 함께 통과한 이유예요. 그 경고 문구 <code style="font-family:Menlo,monospace;font-size:14px;">v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice</code>에는 언제부터 못 쓰는지 알리는 부분이 없어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="지금 규칙에서 alpha, beta, GA 버전의 수명">
+<defs><marker id="k73-life-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1.5 C4 3, 6 4, 8.5 5 C6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="24" fill="#3d3a34">2022년 9월 이후의 단계별 수명</text>
+<g font-family="'Nanum Pen Script',cursive" font-size="25"><text x="24" y="86" fill="#c07f18">alpha</text><text x="24" y="182" fill="#3d6591">beta</text><text x="24" y="276" fill="#2e6b41">GA</text></g>
+<path d="M120 80 C 300 78, 480 82, 660 79" fill="none" stroke="#8a8272" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>
+<text x="390" y="70" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#c07f18">기본 꺼짐 · 예고 없이 제거 가능</text>
+<path d="M118 160 C 150 158, 195 161, 224 159 C 226 172, 225 186, 224 199 C 195 201, 150 198, 119 200 C 117 186, 118 172, 118 160 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M322 159 C 360 161, 410 158, 448 160 C 450 173, 449 187, 448 200 C 410 198, 360 201, 323 199 C 321 186, 322 173, 322 159 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M548 160 C 585 158, 630 161, 672 159 C 674 172, 673 186, 672 199 C 630 201, 585 198, 549 200 C 547 186, 548 172, 548 160 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.3" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="20" text-anchor="middle" fill="#3d3a34"><text x="171" y="186">도입</text><text x="385" y="186">deprecated</text><text x="610" y="186">서빙 중단</text></g>
+<path d="M230 180 C 260 178, 290 181, 316 180" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k73-life-arrow)"/>
+<path d="M454 180 C 485 178, 515 181, 542 180" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k73-life-arrow)"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="16" text-anchor="middle" fill="#3d3a34"><text x="273" y="150">9개월·3릴리스 안</text><text x="498" y="150">9개월·3릴리스 뒤</text></g>
+<text x="390" y="226" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">1.24부터 새로 나온 beta는 기본 꺼짐, --runtime-config로 켜요 (KEP-3136)</text>
+<path d="M118 254 C 150 252, 195 255, 224 253 C 226 266, 225 280, 224 293 C 195 295, 150 292, 119 294 C 117 280, 118 266, 118 254 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M322 253 C 360 255, 410 252, 448 254 C 450 267, 449 281, 448 294 C 410 292, 360 295, 323 293 C 321 281, 322 267, 322 253 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.3" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script',cursive" font-size="20" text-anchor="middle" fill="#3d3a34"><text x="171" y="280">GA</text><text x="385" y="280">deprecated 가능</text></g>
+<path d="M230 274 C 260 272, 290 275, 316 274" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k73-life-arrow)"/>
+<path d="M454 274 C 520 272, 600 276, 668 273" fill="none" stroke="#5a9e6f" stroke-width="2.6" stroke-linecap="round" stroke-dasharray="8 6"/>
+<text x="562" y="264" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#2e6b41">major 버전 안에서는 제거 안 함</text>
+<text x="390" y="322" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#8a8272">예: v1 Endpoints는 1.33에 deprecated, 제거 예정 릴리스 없음</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 3. beta는 시한이 정해져 있고 GA는 deprecated가 되어도 major 버전 안에서는 남아요.</p>
+
+<p>여기까지의 규칙은 모두 "서빙"에 관한 것이에요. #8825가 적은 대로 저장된 적이 있는 버전은 서빙을 끊어도 API 서버가 계속 읽을 줄 알아야 해요. 지금 문서도 "Until #52185 is resolved, no API versions that have been persisted to storage may be removed."라고 적어요. 그러면 etcd에 옛 버전으로 저장된 객체는 언제 새 버전으로 바뀌고, 서버는 언제 그 버전의 코드를 버릴 수 있을까요? 서빙 목록만 봐서는 답이 나오지 않는 질문이에요.</p>
+
+<p><b>출처</b><br>
+&middot; deprecation policy: <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/deprecation-policy.md">지금 판</a>, <a href="https://github.com/kubernetes/website/blob/6ebd94302d/docs/deprecation-policy.md">2017년 첫 판</a><br>
+&middot; website PR: <a href="https://github.com/kubernetes/website/pull/1856">#1856</a>, <a href="https://github.com/kubernetes/website/pull/5338">#5338</a>, <a href="https://github.com/kubernetes/website/pull/8666">#8666</a>, <a href="https://github.com/kubernetes/website/pull/8825">#8825</a>, <a href="https://github.com/kubernetes/website/pull/31389">#31389</a>, <a href="https://github.com/kubernetes/website/pull/36663">#36663</a><br>
+&middot; KEP: <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/1635-prevent-permabeta">KEP-1635</a>, <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/3136-beta-apis-off-by-default">KEP-3136</a>, <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/1333-conformance-without-beta">KEP-1333</a><br>
+&middot; <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/using-api/deprecation-guide.md">Deprecated API Migration Guide</a>, <a href="https://github.com/kubernetes/website/blob/main/content/en/docs/reference/using-api/_index.md">API Overview(using-api)</a>, <a href="https://github.com/kubernetes/website/blob/main/content/en/blog/_posts/2020/moving-forward-from-beta/index.md">2020 블로그 Moving Forward From Beta</a>, <a href="https://github.com/kubernetes/website/blob/main/content/en/blog/_posts/2019/some-apis-are-being-deprecated.md">2019 블로그 Deprecated APIs Removed In 1.16</a><br>
+&middot; CHANGELOG: <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.16.md">1.16</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.18.md">1.18</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.22.md">1.22</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.24.md">1.24</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.25.md">1.25</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.26.md">1.26</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.33.md">1.33</a>, <a href="https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.37.md">1.37</a>, <a href="https://github.com/kubernetes/kubernetes/pull/70672">PR #70672</a></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">📝 정리</div>
+<p>no matches for kind는 서버가 그 groupVersion을 더 이상 서빙하지 않아 kubectl이 보낼 경로를 찾지 못했다는 뜻이에요. 1.37 서버에서 extensions/v1beta1, policy/v1beta1, autoscaling/v2beta2는 discovery에서 모두 NotFound였어요. 서버가 변환할 줄 몰라서가 아니라 deprecation policy에 따라 서빙을 끊은 것이고, 옛 YAML을 고칠 때는 apiVersion과 함께 바뀐 필드와 기본값도 고쳐야 해요.</p>
+<p>규칙의 숫자는 겪은 일을 따라 바뀌었어요. 2017년 첫 판의 beta 3개월·1릴리스는 뒤처진 노드에서 장애를 겪은 뒤 2018년에 2릴리스 skew를 덮는 3릴리스가 됐어요. beta가 영구 의존성이 되자 KEP-1635(1.19)가 시한을 걸었고 KEP-3136(1.24)이 새 beta를 기본으로 껐어요.</p>
+<p style="margin-bottom:0;">GA는 2022년부터 major 버전 안에서 지우지 않아요. 바꾸고 싶으면 옆에 새 API를 두고 옛 것은 deprecated로 남겨요. 1.33의 v1 Endpoints가 그 예예요.</p>
+</div>
+</div>

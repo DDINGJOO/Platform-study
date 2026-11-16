@@ -1,0 +1,24 @@
+# 59 검증 모드와 dry-run (2026-11-15 21:42:32 KST)
+
+## 0. kubectl apply --help 의 --validate 설명
+  Must be one of: strict (or true), warn, ignore (or false). "true" or "strict" will use a schema to 
+  validate the input and fail the request if invalid. It will perform server side validation if 
+  ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side 
+  validation if not. "warn" will warn about unknown or duplicate fields without blocking the request if 
+  server-side field validation is enabled on the API server, and behave as "ignore" otherwise. "false" or 
+  "ignore" will not perform any schema validation, silently dropping any unknown or duplicate fields.
+
+## 필드 이름 오타(imagePullPolicyy)
+  apply --dry-run=client               → pod/typo created (dry run) 
+  apply --dry-run=client --validate=false → pod/typo created (dry run) 
+  apply --dry-run=server               → Error from server (BadRequest): error when creating "STDIN": Pod in version "v1" cannot be handled as a Pod: strict decoding error: unknown field "spec.containers[0].imagePullPolicyy" 
+  apply --dry-run=server --validate=false → pod/typo created (server dry run) 
+
+## 값 오류(restartPolicy: Sometimes)
+  apply --dry-run=client               → pod/badval created (dry run) 
+  apply --dry-run=client --validate=false → pod/badval created (dry run) 
+  apply --dry-run=server               → The Pod "badval" is invalid: spec.restartPolicy: Unsupported value: "Sometimes": supported values: "Always", "OnFailure", "Never" 
+  apply --dry-run=server --validate=false → The Pod "badval" is invalid: spec.restartPolicy: Unsupported value: "Sometimes": supported values: "Always", "OnFailure", "Never" 
+
+## 오타가 버려진 뒤 저장될 객체에 그 필드가 남나 (--dry-run=server --validate=false -o yaml 의 containers)
+  {"image":"nginx:1.27-alpine","imagePullPolicy":"IfNotPresent","name":"c","resources":{},"terminationMessagePath":"/dev/termination-log","terminationMessagePolicy":"File","volumeMounts":[{"mountPath":"/var/run/secrets/kubernetes.io/serviceaccount","name":"kube-api-access-pccr2","readOnly":true}]}

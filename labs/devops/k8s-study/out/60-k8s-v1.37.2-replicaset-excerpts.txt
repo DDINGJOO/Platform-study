@@ -1,0 +1,81 @@
+# kubernetes v1.37.2 소스 발췌 (ReplicaSet 컨트롤러가 무엇을 세고 무엇을 먼저 지우나), https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/
+# 받은 날: 2026-11-15
+
+## pkg/controller/replicaset/replica_set.go (syncReplicaSet: 셀렉터가 맞는 파드를 입양하고 그 수로 맞춘다)
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/replicaset/replica_set.go#L795-L806
+
+	// List all pods indexed to RS UID and Orphan pods
+	allRSPods, err := controller.FilterPodsByOwner(rsc.podIndexer, &rs.ObjectMeta, rsc.Kind, true)
+	if err != nil {
+		return err
+	}
+
+	// NOTE: activePods and terminatingPods are pointing to objects from cache - if you need to
+	// modify them, you need to copy it first.
+	allActivePods := controller.FilterActivePods(logger, allRSPods)
+	activePods, err := rsc.claimPods(ctx, rs, selector, allActivePods)
+	if err != nil {
+	...
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/replicaset/replica_set.go#L859-L873
+func (rsc *ReplicaSetController) claimPods(ctx context.Context, rs *apps.ReplicaSet, selector labels.Selector, filteredPods []*v1.Pod) ([]*v1.Pod, error) {
+	// If any adoptions are attempted, we should first recheck for deletion with
+	// an uncached quorum read sometime after listing Pods (see #42639).
+	canAdoptFunc := controller.RecheckDeletionTimestamp(func(ctx context.Context) (metav1.Object, error) {
+		fresh, err := rsc.kubeClient.AppsV1().ReplicaSets(rs.Namespace).Get(ctx, rs.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		if fresh.UID != rs.UID {
+			return nil, fmt.Errorf("original %v %v/%v is gone: got uid %v, wanted %v", rsc.Kind, rs.Namespace, rs.Name, fresh.UID, rs.UID)
+		}
+		return fresh, nil
+	})
+	cm := controller.NewPodControllerRefManager(rsc.podControl, rs, selector, rsc.GroupVersionKind, canAdoptFunc)
+	return cm.ClaimPods(ctx, filteredPods)
+
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/replicaset/replica_set.go#L649-L650
+func (rsc *ReplicaSetController) manageReplicas(ctx context.Context, activePods []*v1.Pod, rs *apps.ReplicaSet) error {
+	diff := len(activePods) - int(*(rs.Spec.Replicas))
+	...
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/replicaset/replica_set.go#L941-L950
+func getPodsToDelete(filteredPods, relatedPods []*v1.Pod, diff int) []*v1.Pod {
+	// No need to sort pods if we are about to delete all of them.
+	// diff will always be <= len(filteredPods), so not need to handle > case.
+	if diff < len(filteredPods) {
+		podsWithRanks := getPodsRankedByRelatedPodsOnSameNode(filteredPods, relatedPods)
+		sort.Sort(podsWithRanks)
+		reportSortingDeletionAgeRatioMetric(filteredPods, diff)
+	}
+	return filteredPods[:diff]
+}
+
+## pkg/controller/controller_utils.go (활성 파드: Succeeded·Failed·삭제 중이 아닌 파드. Pending 도 센다)
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/controller_utils.go#L1085-L1089
+func IsPodActive(p *v1.Pod) bool {
+	return v1.PodSucceeded != p.Status.Phase &&
+		v1.PodFailed != p.Status.Phase &&
+		p.DeletionTimestamp == nil
+}
+
+## pkg/controller/controller_utils.go (줄일 때 먼저 지울 파드의 순서)
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/controller_utils.go#L843-L858
+func (s ActivePodsWithRanks) Less(i, j int) bool {
+	// 1. Unassigned < assigned
+	// If only one of the pods is unassigned, the unassigned one is smaller
+	if s.Pods[i].Spec.NodeName != s.Pods[j].Spec.NodeName && (len(s.Pods[i].Spec.NodeName) == 0 || len(s.Pods[j].Spec.NodeName) == 0) {
+		return len(s.Pods[i].Spec.NodeName) == 0
+	}
+	// 2. PodPending < PodUnknown < PodRunning
+	if podPhaseToOrdinal[s.Pods[i].Status.Phase] != podPhaseToOrdinal[s.Pods[j].Status.Phase] {
+		return podPhaseToOrdinal[s.Pods[i].Status.Phase] < podPhaseToOrdinal[s.Pods[j].Status.Phase]
+	}
+	// 3. Not ready < ready
+	// If only one of the pods is not ready, the not ready one is smaller
+	if podutil.IsPodReady(s.Pods[i]) != podutil.IsPodReady(s.Pods[j]) {
+		return !podutil.IsPodReady(s.Pods[i])
+	}
+
+	...
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/controller_utils.go#L897-L898
+	// 8. Empty creation time pods < newer pods < older pods
+	if !s.Pods[i].CreationTimestamp.Equal(&s.Pods[j].CreationTimestamp) {

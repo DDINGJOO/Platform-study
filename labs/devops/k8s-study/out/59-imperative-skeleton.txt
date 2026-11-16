@@ -1,0 +1,65 @@
+# 59 명령형으로 뼈대 뽑기 (2026-11-15 21:43:35 KST, kubectl v1.37.2)
+
+## 1. kubectl create deployment web --image=nginx:1.27-alpine --replicas=2 --dry-run=client -o yaml
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    labels:
+      app: web
+    name: web
+    namespace: blog-59
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: web
+    strategy: {}
+    template:
+      metadata:
+        labels:
+          app: web
+      spec:
+        containers:
+        - image: nginx:1.27-alpine
+          name: nginx
+          resources: {}
+  status: {}
+
+## 2. kubectl run tmp --image=busybox:1.37 --restart=Never --dry-run=client -o yaml -- sleep 3600
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    labels:
+      run: tmp
+    name: tmp
+    namespace: blog-59
+  spec:
+    containers:
+    - args:
+      - sleep
+      - "3600"
+      image: busybox:1.37
+      name: tmp
+      resources: {}
+    dnsPolicy: ClusterFirst
+    restartPolicy: Never
+  status: {}
+
+## 3. kubectl autoscale: --cpu-percent 와 --cpu (둘 다 --dry-run=client)
+  --cpu-percent=50:
+    Flag --cpu-percent has been deprecated, Use --cpu with percentage or resource quantity format (e.g., '70%' for utilization or '500m' for milliCPU).
+    apiVersion: autoscaling/v2
+            averageUtilization: 50
+  --cpu=50%:
+    apiVersion: autoscaling/v2
+            averageUtilization: 50
+
+## 4. kubectl create 의 하위 명령 (여기 없는 종류는 명령형으로 만들 수 없다)
+  clusterrole clusterrolebinding configmap cronjob deployment ingress job namespace poddisruptionbudget 
+  priorityclass quota role rolebinding secret service serviceaccount token
+
+## 5. 명령이 없는 종류의 예: 위 목록에 있나
+  daemonset              없음
+  statefulset            없음
+  persistentvolumeclaim  없음
+  networkpolicy          없음

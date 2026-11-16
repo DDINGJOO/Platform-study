@@ -1,0 +1,31 @@
+# 사이드카가 붙은 Job (2026-11-15 21:15:11 KST)
+
+## job-native (생성 후 약 45초)
+    job: active=0 succeeded=1 startTime=2026-11-15T12:15:11Z completionTime=2026-11-15T12:15:23Z conditions=SuccessCriteriaMet,Complete
+    pod: phase=Succeeded
+    side: terminated finishedAt=2026-11-15T12:15:20Z exit=0
+    work: terminated finishedAt=2026-11-15T12:15:17Z exit=0
+
+## job-old (생성 후 약 45초)
+    job: active=1 succeeded=0 startTime=2026-11-15T12:15:11Z completionTime=- conditions=
+    pod: phase=Running
+    side: running finishedAt=- exit=-
+    work: terminated finishedAt=2026-11-15T12:15:17Z exit=0
+
+## kubectl get job,pod
+  NAME                   STATUS     COMPLETIONS   DURATION   AGE
+  job.batch/job-native   Complete   1/1           12s        46s
+  job.batch/job-old      Running    0/1           46s        46s
+  
+  NAME                   READY   STATUS      RESTARTS   AGE
+  pod/job-native-929vr   0/2     Completed   0          46s
+  pod/job-old-fd585      1/2     NotReady    0          46s
+  NAME         STATUS     COMPLETIONS   DURATION   AGE
+  job-native   Complete   1/1           12s        46s
+  job-old      Running    0/1           46s        46s
+
+# 읽는 법 (2026-11-15 추가)
+# - job-native: work가 12:15:17에 끝나자 side가 TERM을 받고 3초 정리 뒤 12:15:20 exit 0. Job은 Complete, completionTime 12:15:23.
+#   completionTime이 사이드카 종료(12:15:20) 뒤다. CHANGELOG-1.31 #124942 "sidecars' finish time will now be accounted for"와 맞는다.
+# - job-old: work는 같은 12:15:17에 끝났지만 side가 containers에 있어 계속 Running. Job은 45초가 지나도 0/1, 파드 1/2 NotReady.
+#   2016년 이슈 #25908 본문 "the Job will keep running as long as the second container keeps running" 그대로다.

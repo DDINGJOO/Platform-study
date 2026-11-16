@@ -1,0 +1,25 @@
+# nginx 를 감싼 모양별 PID 1 과 삭제 시간 (2026-11-15 21:45:35 KST)
+
+## 1. PID 1 은 누구이고 어떤 신호를 무시(SigIgn)하거나 잡나(SigCgt)
+  w-direct  command: ["nginx","-g","daemon off;"]
+    PID 1 = nginx: master process nginx -g daemon off; 
+    SigIgn=0000000040001000 (PIPE SYS)  SigCgt=0000000018016a07 (HUP INT QUIT USR1 USR2 ALRM TERM CHLD WINCH IO)
+  w-sh-exec  command: ["sh","-c","echo prep; exec nginx -g \"daemon off;\""]
+    PID 1 = nginx: master process nginx -g daemon off; 
+    SigIgn=0000000040001000 (PIPE SYS)  SigCgt=0000000018016a07 (HUP INT QUIT USR1 USR2 ALRM TERM CHLD WINCH IO)
+  w-sh-noexec  command: ["sh","-c","echo prep; nginx -g \"daemon off;\""]
+    PID 1 = nginx: master process nginx -g daemon off; 
+    SigIgn=0000000040001000 (PIPE SYS)  SigCgt=0000000018016a07 (HUP INT QUIT USR1 USR2 ALRM TERM CHLD WINCH IO)
+  w-sh-tail  command: ["sh","-c","nginx -g \"daemon off;\"; echo bye"]
+    PID 1 = sh -c nginx -g "daemon off;"; echo bye 
+    SigIgn=0000000000000004 (QUIT)  SigCgt=0000000000010002 (INT CHLD)
+
+## 2. 네 파드를 한꺼번에 지운다 (노드 시계 - Mac 시계: k8s-worker1=0.054s k8s-worker2=0.054s k8s-worker3=0.161s)
+  파드 / 사라짐 / 컨테이너 종료(watch 첫 등장) / 노드 / containerd 로그(삭제 요청 기준)
+  w-direct     +3.3s    +2.3 exit=0 reason=Completed   k8s-worker2  +0.3s 신호 quit
+  w-sh-exec    +3.2s    +2.4 exit=0 reason=Completed   k8s-worker3  +0.3s 신호 quit
+  w-sh-noexec  +3.4s    +2.4 exit=0 reason=Completed   k8s-worker1  +0.5s 신호 quit
+  w-sh-tail    +32.3s   +31.5 exit=137 reason=Error    k8s-worker2  +0.7s 신호 quit / +30.7s SIGKILL
+
+# 메모: 137 = 128+9(SIGKILL), 0 = 스스로 exit 0. containerd 의 '신호 quit' 은 이미지 STOPSIGNAL(SIGQUIT)을 보냈다는 뜻
+# 네임스페이스 blog-65 삭제

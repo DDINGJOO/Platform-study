@@ -1,0 +1,39 @@
+# 파드·컨테이너 restartPolicy 조합 (2026-11-15 21:44:53 KST)
+Server Version: v1.37.2
+
+## (1) dry-run=server, stderr 포함 (Warning 이 있으면 여기에 찍힌다)
+  - 파드 restartPolicy: Never, 보통 컨테이너 helper 에 restartPolicy: Always
+    pod/dry-never created (server dry run)
+  - 파드 restartPolicy: OnFailure, 보통 컨테이너 helper 에 restartPolicy: Always
+    pod/dry-onfailure created (server dry run)
+
+## 생성 후 약 30초
+  always-never (컨테이너 restartPolicy: app= once=Never )
+    phase=Running
+    app: restartCount=0 state=running lastExit=-
+    once: restartCount=0 state=terminated(exit=0) lastExit=-
+  never-onfail (컨테이너 restartPolicy: app=OnFailure )
+    phase=Succeeded
+    app: restartCount=2 state=terminated(exit=0) lastExit=1
+
+## 생성 후 약 60초
+  always-never (컨테이너 restartPolicy: app= once=Never )
+    phase=Running
+    app: restartCount=0 state=running lastExit=-
+    once: restartCount=0 state=terminated(exit=0) lastExit=-
+  never-onfail (컨테이너 restartPolicy: app=OnFailure )
+    phase=Succeeded
+    app: restartCount=2 state=terminated(exit=0) lastExit=1
+
+## kubectl get pod
+  NAME           READY   STATUS      RESTARTS      AGE
+  always-never   1/2     NotReady    0             62s
+  never-onfail   0/1     Completed   2 (60s ago)   62s
+
+# 정리: 네임스페이스 blog-71 삭제 (없음)
+
+# 읽는 법 (2026-11-15 추가)
+# - (1) 파드 Never/OnFailure 에 보통 컨테이너 Always 를 줘도 API 서버는 경고 없이 받는다(stderr 를 같이 찍었는데 Warning 줄이 없다).
+#       2023-01 KEP 리뷰에서 thockin 이 "not-supported or API warning - pod can never terminate" 라고 적었던 조합이다.
+# - (2) always-never: 파드 Always 인데 once 는 exit 0 뒤 다시 뜨지 않는다(restartCount 0). 파드는 Running, READY 1/2, STATUS NotReady.
+# - (3) never-onfail: 파드 Never 인데 app 은 exit 1 두 번 뒤 재시작해 세 번째 exit 0, 파드 Succeeded. 컨테이너 값이 파드 값을 덮는다.

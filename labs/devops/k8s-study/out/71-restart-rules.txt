@@ -1,0 +1,40 @@
+# 컨테이너 수준 restartPolicy와 restartPolicyRules (2026-11-15 21:15:11 KST)
+
+## 적용된 스펙 확인 (API 서버가 필드를 받아들였나)
+  rules-pod app: restartPolicy=Never restartPolicyRules=[{"action":"Restart","exitCodes":{"operator":"In","values":[42]}}]
+  always-pod helper: restartPolicy=Always
+
+## 생성 후 약 30초
+  rules-pod
+    phase=Succeeded
+    app: restartCount=2 state=terminated(exit=0) lastExit=42
+  always-pod
+    phase=Running
+    app: restartCount=0 state=terminated(exit=0) lastExit=-
+    helper: restartCount=2 state=terminated(exit=0) lastExit=0
+
+## 생성 후 약 75초
+  rules-pod
+    phase=Succeeded
+    app: restartCount=2 state=terminated(exit=0) lastExit=42
+  always-pod
+    phase=Running
+    app: restartCount=0 state=terminated(exit=0) lastExit=-
+    helper: restartCount=3 state=terminated(exit=0) lastExit=0
+
+## rules-pod 로그 (마지막 실행)
+  run 3
+  exit-0
+
+## kubectl get pod
+  NAME         READY   STATUS      RESTARTS      AGE
+  rules-pod    0/1     Completed   2 (75s ago)   76s
+  always-pod   0/2     Completed   3 (52s ago)   76s
+
+# 읽는 법 (2026-11-15 추가)
+# - API 서버(1.37.2)는 보통 컨테이너의 restartPolicy / restartPolicyRules를 받아들였다. ContainerRestartRules는 1.35 beta(기본 켜짐).
+# - rules-pod: 파드 restartPolicy: Never인데 exit 42 일 때만 제자리 재시작(2회), 세 번째 exit 0 → Succeeded. KEP-5307의 쓰임새.
+# - always-pod: 보통 컨테이너 helper에 restartPolicy: Always를 주면 사이드카가 되지 않는다. app이 exit 0으로 끝난 뒤에도
+#   helper는 계속 다시 뜨고(재시작 2 → 3, 간격이 늘어남) 파드 phase는 75초가 지나도 Running. 파드가 끝나지 않는다.
+#   kubectl STATUS는 그 순간 helper가 막 끝나 있어 "Completed"로 보이지만 phase는 Running이다.
+#   "Always = 파드 종료를 막지 않음"은 initContainers 안에서만의 뜻이다(KEP-753 'Future use of restartPolicy field' 절이 미뤄 둔 문제).

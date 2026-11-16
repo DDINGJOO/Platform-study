@@ -1,0 +1,81 @@
+# 04 CRD 저장 버전 변경 · deprecated 경고 · StorageVersionMigration (2026-11-15 21:13:49 KST)
+
+## 0. 시작 전 apiserver_requested_deprecated_apis (내장 API 중 deprecated를 누가 불렀나)
+    apiserver_requested_deprecated_apis{group="",removed_release="",resource="endpoints",subresource="",version="v1"} 1
+
+## 1. 21:13:49 CRD 생성: v1(storage) + v2, 두 버전 스키마 같음, conversion은 기본 None(apiVersion만 바꿈)
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com created
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com condition met
+  versions: v1(served=true,storage=true) v2(served=true,storage=false) 
+  status.storedVersions: ["v1"]
+
+## 2. 21:13:49 w1을 v1으로 생성 → etcd는 v1, v2 경로로 읽으면 v2
+  → widget.why-api.example.com/w1 created
+  /registry/why-api.example.com/widgets/why-api/w1        JSON     apiVersion=why-api.example.com/v1 (mod_revision 1000252150)
+  GET /apis/why-api.example.com/v1/.../w1 → apiVersion why-api.example.com/v1
+  GET /apis/why-api.example.com/v2/.../w1 → apiVersion why-api.example.com/v2
+  discovery storageVersionHash: v1 경로 0rzA46NRJVs=, v2 경로 0rzA46NRJVs= | 계산 v1=0rzA46NRJVs= v2=2DbIdfh8Ae4=
+
+## 3. 21:13:52 저장 버전을 v2로 바꾼다 (v1 storage=false, v2 storage=true)
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com patched
+  versions: v1(served=true,storage=false) v2(served=true,storage=true) 
+  status.storedVersions: ["v1","v2"]   ← etcd에 v1 객체가 남아 있을 수 있으니 v1을 지우지 않는다
+  discovery storageVersionHash: 2DbIdfh8Ae4= (계산 v2=2DbIdfh8Ae4=)
+  → w2를 v1으로 생성: widget.why-api.example.com/w2 created
+  /registry/why-api.example.com/widgets/why-api/w1        JSON     apiVersion=why-api.example.com/v1 (mod_revision 1000252150)
+  /registry/why-api.example.com/widgets/why-api/w2        JSON     apiVersion=why-api.example.com/v2 (mod_revision 1000252156)
+  → 같은 리소스인데 etcd에 v1 객체와 v2 객체가 섞여 있다. 저장 버전을 바꿔도 기존 객체는 다시 쓰이기 전까지 옛 버전 그대로.
+
+## 4. 21:13:55 이 상태에서 v1을 CRD에서 빼려고 하면
+  → The CustomResourceDefinition "widgets.why-api.example.com" is invalid: status.storedVersions[0]: Invalid value: "v1": missing from spec.versions; v1 was previously a storage version, and must remain in spec.versions until a storage migration ensures no data remains persisted in v1 and removes v1 from status.storedVersions
+
+## 5. 21:13:55 v1을 deprecated로 표시 → 요청마다 Warning 헤더, 메트릭
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com patched
+  $ kubectl get widgets.v1.why-api.example.com -n why-api   (stderr 포함)
+    Warning: why-api.example.com/v1 Widget is deprecated; use why-api.example.com/v2 Widget
+    NAME   AGE
+    w1     7s
+    w2     4s
+  $ kubectl get widgets.v2.why-api.example.com -n why-api   (stderr 포함)
+    NAME   AGE
+    w1     7s
+    w2     4s
+  응답 헤더 (curl로 직접, 마스터의 admin.conf 인증서 사용):
+    HTTP/2 200 
+    content-type: application/json
+    warning: 299 - "why-api.example.com/v1 Widget is deprecated; use why-api.example.com/v2 Widget"
+  kube-apiserver /metrics:
+    apiserver_requested_deprecated_apis{group="",removed_release="",resource="endpoints",subresource="",version="v1"} 1
+    apiserver_requested_deprecated_apis{group="why-api.example.com",removed_release="",resource="widgets",subresource="",version="v1"} 1
+    apiserver_request_total{code="200",component="apiserver",dry_run="",group="why-api.example.com",resource="widgets",scope="namespace",subresource="",verb="LIST",version="v1"} 2
+    apiserver_request_total{code="200",component="apiserver",dry_run="",group="why-api.example.com",resource="widgets",scope="namespace",subresource="",verb="LIST",version="v2"} 1
+    apiserver_request_total{code="200",component="apiserver",dry_run="",group="why-api.example.com",resource="widgets",scope="resource",subresource="",verb="GET",version="v1"} 1
+    apiserver_request_total{code="200",component="apiserver",dry_run="",group="why-api.example.com",resource="widgets",scope="resource",subresource="",verb="GET",version="v2"} 1
+    apiserver_request_total{code="201",component="apiserver",dry_run="",group="why-api.example.com",resource="widgets",scope="resource",subresource="",verb="POST",version="v1"} 2
+
+## 6. 21:13:59 StorageVersionMigration 생성 (storagemigration.k8s.io/v1, 대상 group=why-api.example.com resource=widgets)
+  → storageversionmigration.storagemigration.k8s.io/why-api-widgets created
+  21:14:20 상태:
+    condition Running    False  MigrationCompleted Migration completed
+    condition Succeeded  True   StorageVersionMigrationSucceeded Migration completed
+    status의 다른 필드: {'resourceVersion': '1000252167'}
+
+## 7. 마이그레이션 뒤 etcd와 storedVersions
+  /registry/why-api.example.com/widgets/why-api/w1        JSON     apiVersion=why-api.example.com/v2 (mod_revision 1000252517)
+  /registry/why-api.example.com/widgets/why-api/w2        JSON     apiVersion=why-api.example.com/v2 (mod_revision 1000252156)
+  status.storedVersions: ["v2"]
+  StorageVersionMigration 객체 자체는 어떤 버전으로 저장됐나 (v1으로 만들었지만):
+  /registry/storageversionmigrations/why-api-widgets      protobuf apiVersion=storagemigration.k8s.io/v1beta1 (mod_revision 1000252520)
+
+## 8. 21:14:21 이제 v1 서빙을 끄고 CRD에서 v1을 뺀다
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com patched
+  GET /apis/why-api.example.com/v1/namespaces/why-api/widgets → Error from server (NotFound): the server could not find the requested resource
+  → customresourcedefinition.apiextensions.k8s.io/widgets.why-api.example.com patched
+  versions: v2(served=true,storage=true)  | storedVersions: ["v2"]
+  21:14:23 w1을 v2로 읽기: why-api.example.com/v2 size=small
+
+## 9. 정리
+  storageversionmigration.storagemigration.k8s.io "why-api-widgets" deleted
+  customresourcedefinition.apiextensions.k8s.io "widgets.why-api.example.com" deleted
+  namespace "why-api" deleted
+  남은 것: crd 1=NotFound, ns 1=NotFound

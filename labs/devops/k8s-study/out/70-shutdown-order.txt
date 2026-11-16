@@ -1,0 +1,62 @@
+# 사이드카 종료 순서 (2026-11-15 21:12:10 KST)
+Server Version: v1.37.2
+
+## (a) restartPolicy: Never, 앱이 8초 뒤 스스로 exit 0
+  phase=Succeeded
+  로그(kubectl logs --timestamps, 노드 시각 KST +09:00):
+    21:12:10.789  s1 start
+    21:12:10.821  s2 start
+    21:12:10.858  app start
+    21:12:18.858  app exit-0
+    21:12:18.941  s1 preStop-hook
+    21:12:18.943  s2 preStop-hook
+    21:12:18.949  s2 got-TERM
+    21:12:20.952  s2 exit-0
+    21:12:20.981  s1 got-TERM
+    21:12:22.983  s1 exit-0
+  컨테이너 상태:
+    s1: finishedAt=2026-11-15T12:12:22Z exit=0 reason=Completed
+    s2: finishedAt=2026-11-15T12:12:20Z exit=0 reason=Completed
+    app: finishedAt=2026-11-15T12:12:18Z exit=0 reason=Completed
+
+## (b) restartPolicy: Always, 파드 삭제. 앱은 TERM을 받고 6초 동안 정리한 뒤 exit 0 (유예 30초)
+  12:12:29 UTC kubectl delete pod order-b
+  로그(kubectl logs --timestamps, 노드 시각 KST +09:00):
+    21:12:27.093  s1 start
+    21:12:27.127  s2 start
+    21:12:27.157  app start
+    21:12:29.271  app got-TERM-draining-6s
+    21:12:29.276  s1 preStop-hook
+    21:12:29.280  s2 preStop-hook
+    21:12:35.274  app exit-0
+    21:12:35.309  s2 got-TERM
+    21:12:37.311  s2 exit-0
+    21:12:37.357  s1 got-TERM
+    21:12:39.359  s1 exit-0
+  마지막으로 본 컨테이너 상태:
+    s1: finishedAt=2026-11-15T12:12:39Z exit=0 reason=Completed
+    s2: finishedAt=2026-11-15T12:12:37Z exit=0 reason=Completed
+    app: finishedAt=2026-11-15T12:12:35Z exit=0 reason=Completed
+
+## (c) 유예 6초, 앱은 TERM을 무시, 사이드카는 TERM 뒤 5초 정리 (모자람)
+  12:12:43 UTC kubectl delete pod order-c
+  로그(kubectl logs --timestamps, 노드 시각 KST +09:00):
+    21:12:41.577  s1 start
+    21:12:41.607  s2 start
+    21:12:41.639  app start
+    21:12:43.728  app got-TERM-ignored
+    21:12:43.740  s1 preStop-hook
+    21:12:43.747  s2 preStop-hook
+    21:12:49.748  s1 got-TERM
+    21:12:49.755  s2 got-TERM
+  마지막으로 본 컨테이너 상태:
+    s1: finishedAt=2026-11-15T12:12:51Z exit=137 reason=Error
+    s2: finishedAt=2026-11-15T12:12:51Z exit=137 reason=Error
+    app: finishedAt=2026-11-15T12:12:49Z exit=137 reason=Error
+
+# 읽는 법 (2026-11-15 추가)
+# - 로그 시각은 노드 시각(KST), "kubectl delete" 줄과 finishedAt은 UTC 다. 9시간 차이.
+# - (a) 앱 exit(18.858) → 같은 순간 s1·s2 preStop → 나중에 선언한 s2가 먼저 TERM(18.949) → s2가 끝난 뒤(20.952) s1 TERM(20.981).
+# - (b) 삭제 즉시 앱 TERM과 사이드카 preStop이 같이 온다(29.27). 사이드카 TERM은 앱이 끝난 뒤(35.27)에야, 역순(s2 → s1)으로 하나씩.
+# - (c) 유예 6초가 앱(TERM 무시)에 다 쓰였다. 6초 뒤(49.75) 앱은 SIGKILL, 두 사이드카는 차례를 기다리지 않고 동시에 TERM,
+#       2초 뒤(12:12:51Z) 둘 다 137. kubelet minimumGracePeriodInSeconds = 2와 맞는다. 파드 유예 시간을 넘겨 늘려 주지는 않는다.

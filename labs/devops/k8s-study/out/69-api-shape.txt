@@ -1,0 +1,54 @@
+# 사이드카 API 모양 (2026-11-15 21:44:09 KST)
+Server Version: v1.37.2
+
+## (1) 2018 첫 KEP 모양: containers 안에 sidecar: true
+  Error from server (BadRequest): error when creating "STDIN": Pod in version "v1" cannot be handled as a Pod: strict decoding error: unknown field "spec.containers[1].sidecar"
+
+## (2) 2019 implementable 모양: containers 안에 lifecycle.type: Sidecar
+  Error from server (BadRequest): error when creating "STDIN": Pod in version "v1" cannot be handled as a Pod: strict decoding error: unknown field "spec.containers[1].lifecycle.type"
+
+## (3) 2023 KEP 모양: initContainers 안에 restartPolicy: Always (+ startupProbe)
+  pod/kep2023 created (server dry run)
+
+## (4) restartPolicy 가 없는 보통 init 컨테이너에 startupProbe
+  The Pod "plain-init-probe" is invalid: spec.initContainers[0].startupProbe: Forbidden: may not be set for init containers without restartPolicy=Always
+
+## (5) kubectl explain pod.spec.containers.lifecycle (필드 목록)
+    postStart	<LifecycleHandler>
+    preStop	<LifecycleHandler>
+    stopSignal	<string>
+    enum: SIGABRT, SIGALRM, SIGBUS, SIGCHLD, ....
+
+## (6) kubectl explain pod.spec.initContainers.restartPolicy
+  KIND:       Pod
+  VERSION:    v1
+  
+  FIELD: restartPolicy <string>
+  
+  
+  DESCRIPTION:
+      RestartPolicy defines the restart behavior of individual containers in a
+      pod. This overrides the pod-level restart policy. When this field is not
+      specified, the restart behavior is defined by the Pod's restart policy and
+      the container type. Additionally, setting the RestartPolicy as "Always" for
+      the init container will have the following effect: this init container will
+      be continually restarted on exit until all regular containers have
+      terminated. Once all regular containers have completed, all init containers
+      with restartPolicy "Always" will be shut down. This lifecycle differs from
+      normal init containers and is often referred to as a "sidecar" container.
+      Although this init container still starts in the init container sequence, it
+      does not wait for the container to complete before proceeding to the next
+      init container. Instead, the next init container starts immediately after
+      this init container is started, or after any startupProbe has successfully
+      completed.
+      
+  
+
+# 정리: 네임스페이스 blog-69 삭제 (없음)
+
+# 읽는 법 (2026-11-15 추가)
+# - (1)(2) 2018 원안(sidecar: true)과 2019 implementable 판(lifecycle.type: Sidecar)의 필드는 API 에 없다. strict 검증이 unknown field 로 거절한다.
+# - (3) 실제로 들어온 모양은 initContainers 안의 restartPolicy: Always. startupProbe 도 받는다.
+# - (4) 보통 init 컨테이너에는 probe 를 줄 수 없다. probe·lifecycle 은 restartPolicy=Always 인 init 컨테이너에만 열렸다(validation.go).
+# - (5) containers[].lifecycle 에는 postStart, preStop, stopSignal 만 있고 type 은 없다. (enum 줄은 stopSignal 설명이 grep 에 걸린 것)
+# - (6) 필드 설명 자체가 이 init 컨테이너를 "often referred to as a sidecar" 라고 부른다.

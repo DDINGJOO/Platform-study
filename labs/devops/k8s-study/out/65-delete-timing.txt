@@ -1,0 +1,17 @@
+# PID 1 모양별 파드 삭제 시간 (2026-11-15 21:14:05 KST)
+# 노드 시계 - Mac 시계: k8s-worker1=0.041s k8s-worker2=0.098s k8s-worker3=-0.023s
+# +0.0s 9개 한꺼번에 delete 요청 (grace는 각 파드 spec 값)
+
+파드 / 사라짐 / 컨테이너 종료(watch 첫 등장) / 노드 / containerd 로그(삭제 요청 기준)
+a-sleep         +31.0s   +30.4 exit=137 reason=Error    k8s-worker3  +0.1s 신호 terminated / +30.1s SIGKILL
+b-sh-c          +30.9s   +30.3 exit=137 reason=Error    k8s-worker1  +0.1s 신호 terminated / +30.1s SIGKILL
+c-sh-c-2cmds    +31.0s   +30.5 exit=137 reason=Error    k8s-worker3  +0.1s 신호 terminated / +30.1s SIGKILL
+d-trap-fg       +30.8s   +30.4 exit=137 reason=Error    k8s-worker1  +0.1s 신호 terminated / +30.1s SIGKILL
+e-trap-wait     +0.7s    +0.3 exit=0 reason=Completed   k8s-worker2  +0.1s 신호 terminated
+f-nginx         +0.7s    +0.4 exit=0 reason=Completed   k8s-worker3  +0.1s 신호 quit
+g-share         +0.6s    +0.4 exit=143 reason=Error     k8s-worker1  +0.1s 신호 terminated
+h-tini          +0.7s    +0.4 exit=143 reason=Error     k8s-worker2  +0.1s 신호 terminated
+i-sleep-grace5  +5.7s    +5.3 exit=137 reason=Error     k8s-worker3  +0.1s 신호 terminated / +5.1s SIGKILL
+
+# 메모: 종료 코드 137 = 128+9(SIGKILL), 143 = 128+15(SIGTERM 기본 동작으로 죽음), 0 = 스스로 exit 0
+# 메모: 사라짐 = watch에 DELETED 이벤트가 온 시각, 종료 = watch에 terminated 상태가 처음 실린 시각 (둘 다 Mac 시계, 삭제 요청 기준)

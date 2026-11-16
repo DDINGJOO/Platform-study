@@ -1,0 +1,38 @@
+# 59 리스트의 순서 (2026-11-15 21:42:47 KST)
+apiVersion: v1
+kind: Pod
+metadata: {name: order-demo}
+spec:
+  volumes: [{name: work, emptyDir: {}}]
+  initContainers:
+  - name: init-a            # 먼저 적었고 2초 걸린다
+    image: busybox:1.37
+    command: ["sh", "-c", "sleep 2; echo init-a >> /work/order"]
+    volumeMounts: [{name: work, mountPath: /work}]
+  - name: init-b            # 나중에 적었고 바로 끝난다
+    image: busybox:1.37
+    command: ["sh", "-c", "echo init-b >> /work/order"]
+    volumeMounts: [{name: work, mountPath: /work}]
+  containers:
+  - name: app
+    image: busybox:1.37
+    env:
+    - {name: BEFORE, value: "hello-$(NAME)"}   # NAME 보다 앞에서 참조
+    - {name: NAME,   value: "k8s"}
+    - {name: AFTER,  value: "hello-$(NAME)"}   # NAME 보다 뒤에서 참조
+    command: ["sh", "-c", "echo order: $(cat /work/order | tr '\\n' ' '); echo BEFORE=$BEFORE; echo AFTER=$AFTER; sleep 3600"]
+    volumeMounts: [{name: work, mountPath: /work}]
+
+## app 로그
+  order: init-a init-b
+  BEFORE=hello-$(NAME)
+  AFTER=hello-k8s
+
+## initContainerStatuses (시작 · 끝)
+  init-a  started=2026-11-15T12:42:48Z  finished=2026-11-15T12:42:50Z  exit=0
+  init-b  started=2026-11-15T12:42:51Z  finished=2026-11-15T12:42:51Z  exit=0
+
+## 저장된 env 는 보낸 문자열 그대로다 (치환은 kubelet 이 컨테이너를 만들 때)
+  BEFORE=hello-$(NAME)
+  NAME=k8s
+  AFTER=hello-$(NAME)

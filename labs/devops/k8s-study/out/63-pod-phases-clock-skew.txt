@@ -1,0 +1,45 @@
+# 02 파드 생명주기 관찰 (2026-11-15 20:05:05 KST), 네임스페이스 ch05
+# (worker3 시계가 2.1초 늦던 때의 결과. lastTransitionTime 순서가 뒤집혀 보이는 원인 — 03-node-clocks.txt)
+
+## A. 오래 도는 파드(nginx)가 Ready 가 될 때까지 — 바뀔 때만 한 줄
+  표기: phase | conditions | 컨테이너 상태
+  +  0.1s Pending | PodReadyToStartContainers=False Initialized=True Ready=False ContainersReady=False PodScheduled=True | waiting(ContainerCreating) ready=false restarts=0
+  +  0.9s Pending | PodReadyToStartContainers=True Initialized=True Ready=False ContainersReady=False PodScheduled=True | waiting(ContainerCreating) ready=false restarts=0
+  +  6.7s Running | PodReadyToStartContainers=True Initialized=True Ready=True ContainersReady=True PodScheduled=True | running ready=true restarts=0
+
+  노드: k8s-worker3
+  conditions 의 lastTransitionTime (초 단위):
+    2026-11-15T11:05:05Z  Initialized=True
+    2026-11-15T11:05:06Z  PodReadyToStartContainers=True
+    2026-11-15T11:05:07Z  PodScheduled=True
+    2026-11-15T11:05:12Z  ContainersReady=True
+    2026-11-15T11:05:12Z  Ready=True
+  이벤트:
+2026-11-15T11:05:06Z   Pulling     kubelet             Pulling image "nginx:1.27-alpine"
+2026-11-15T11:05:07Z   Scheduled   default-scheduler   Successfully assigned ch05/life-nginx to k8s-worker3
+2026-11-15T11:05:12Z   Pulled      kubelet             Successfully pulled image "nginx:1.27-alpine" in 6.021s (6.021s including waiting). Image size: 21832241 bytes.
+2026-11-15T11:05:12Z   Created     kubelet             Container created
+2026-11-15T11:05:12Z   Started     kubelet             Container started
+
+## B. 끝나는 파드(restartPolicy: Never) — exit 0 과 exit 1
+  [life-exit0] sh -c 'sleep 3; exit 0'
+  +  0.1s Pending | PodReadyToStartContainers=False Initialized=True Ready=False ContainersReady=False PodScheduled=True | waiting(ContainerCreating) ready=false restarts=0
+  +  0.9s Running | PodReadyToStartContainers=True Initialized=True Ready=True ContainersReady=True PodScheduled=True | running ready=true restarts=0
+  +  4.0s Running | PodReadyToStartContainers=True Initialized=True Ready=False ContainersReady=False PodScheduled=True | terminated(Completed) ready=false restarts=0
+  +  5.2s Succeeded | PodReadyToStartContainers=False Initialized=True Ready=False ContainersReady=False PodScheduled=True | terminated(Completed) ready=false restarts=0
+    terminated: reason=Completed exitCode=0
+  [life-exit1] sh -c 'sleep 3; exit 1'
+  +  0.2s Pending | PodReadyToStartContainers=False Initialized=True Ready=False ContainersReady=False PodScheduled=True | waiting(ContainerCreating) ready=false restarts=0
+  +  0.5s Pending | PodReadyToStartContainers=True Initialized=True Ready=False ContainersReady=False PodScheduled=True | waiting(ContainerCreating) ready=false restarts=0
+  +  0.9s Running | PodReadyToStartContainers=True Initialized=True Ready=True ContainersReady=True PodScheduled=True | running ready=true restarts=0
+  +  4.8s Running | PodReadyToStartContainers=True Initialized=True Ready=False ContainersReady=False PodScheduled=True | terminated(Error) exit=1 ready=false restarts=0
+  +  6.0s Failed | PodReadyToStartContainers=False Initialized=True Ready=False ContainersReady=False PodScheduled=True | terminated(Error) exit=1 ready=false restarts=0
+    terminated: reason=Error exitCode=1
+
+## C. 지울 때 걸리는 시간 — SIGTERM 을 받으면 끝나는 nginx vs 신호를 처리하지 않는 PID 1 sleep
+  [life-nginx] PID 1 = nginx: master process nginx -g daemon off; 
+    +  1.0s kubectl get STATUS 열:  / .status.phase:  / deletionGracePeriodSeconds: 
+    +  1.3s 객체 사라짐
+  [life-sleep] PID 1 = sleep infinity 
+    +  1.1s kubectl get STATUS 열: Terminating / .status.phase: Running / deletionGracePeriodSeconds: 30
+    + 31.6s 객체 사라짐

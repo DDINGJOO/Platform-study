@@ -1,0 +1,48 @@
+# 62 겹친 포트와 readinessProbe (2026-11-15 21:45:03 KST)
+
+## kubectl apply (minReadySeconds 없음, progressDeadlineSeconds 30, web2 에만 readinessProbe)
+  deployment.apps/probe-demo created
+  저장된 web2 프로브: {"failureThreshold":3,"httpGet":{"path":"/","port":80,"scheme":"HTTP"},"periodSeconds":10,"successThreshold":1,"timeoutSeconds":1}
+
+## kubectl rollout status
+  exit=0  0.6초  마지막 줄: deployment "probe-demo" successfully rolled out
+
+## 그 뒤 60초: 바뀔 때만 한 줄 (경과는 rollout status 시작부터)
+  경과 | web2 ready 상태 재시작 | web1 ready | deploy ready/available | Progressing 사유
+  +  0.8s web2 ready=true running restarts=0 | web1 ready=true | ready=1 available=1 | NewReplicaSetAvailable
+  +  5.0s web2 ready=true running restarts=1 | web1 ready=true | ready=1 available=1 | NewReplicaSetAvailable
+  +  8.5s web2 ready=false terminated(Error) restarts=1 | web1 ready=true | ready= available= | NewReplicaSetAvailable
+  + 14.4s web2 ready=false waiting(CrashLoopBackOff) restarts=1 | web1 ready=true | ready= available= | NewReplicaSetAvailable
+  + 18.6s web2 ready=true running restarts=2 | web1 ready=true | ready=1 available=1 | NewReplicaSetAvailable
+  + 22.5s web2 ready=false terminated(Error) restarts=2 | web1 ready=true | ready= available= | NewReplicaSetAvailable
+  + 29.2s web2 ready=false waiting(CrashLoopBackOff) restarts=2 | web1 ready=true | ready= available= | NewReplicaSetAvailable
+  + 45.2s web2 ready=true running restarts=3 | web1 ready=true | ready=1 available=1 | NewReplicaSetAvailable
+  + 47.5s web2 ready=true running restarts=3 | web1 ready=true | ready= available= | NewReplicaSetAvailable
+  + 48.7s web2 ready=false terminated(Error) restarts=3 | web1 ready=true | ready= available= | NewReplicaSetAvailable
+  + 54.3s web2 ready=false waiting(CrashLoopBackOff) restarts=3 | web1 ready=true | ready= available= | NewReplicaSetAvailable
+
+## 프로브 요청을 받은 쪽: web1 의 nginx 접근 로그에서 kube-probe 요청 (web1 에는 프로브가 없다)
+  kube-probe 줄 수: 4
+  192.168.104.3 - - [15/Nov/2026:12:45:04 +0000] "GET / HTTP/1.1" 200 615 "-" "kube-probe/1.37" "-"
+  192.168.104.3 - - [15/Nov/2026:12:45:07 +0000] "GET / HTTP/1.1" 200 615 "-" "kube-probe/1.37" "-"
+
+## web2 의 마지막으로 죽은 실행 로그
+  2026/11/15 12:45:47 [emerg] 1#1: bind() to 0.0.0.0:80 failed (98: Address in use)
+  nginx: [emerg] bind() to 0.0.0.0:80 failed (98: Address in use)
+  2026/11/15 12:45:47 [emerg] 1#1: bind() to [::]:80 failed (98: Address in use)
+
+## 파드 이벤트 (사유별 횟수)
+  Scheduled x1  Successfully assigned blog-62/probe-demo-6f9cdfb486-n258v to k8s-worker1
+  Pulled x1  Container image "nginx:1.27-alpine" already present on machine and can be accessed by the pod
+  Created x1  Container created
+  Started x1  Container started
+  Pulled x4  Container image "nginx:1.27-alpine" already present on machine and can be accessed by the pod
+  Created x4  Container created
+  Started x4  Container started
+  BackOff x6  Back-off restarting failed container web2 in pod probe-demo-6f9cdfb486-n258v_blog-62(86ab23e9-d921-4f78-a750-c32a68af7d50)
+
+## Deployment conditions (마지막)
+  Progressing=True NewReplicaSetAvailable
+  Available=False MinimumReplicasUnavailable
+
+  네임스페이스 blog-62 삭제 요청

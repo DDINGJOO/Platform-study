@@ -1,0 +1,39 @@
+# 72 apiVersion이 고르는 스키마 (2026-11-15 21:42:49 KST)
+
+## 1. kubectl api-versions: 서버가 지금 서빙하는 group/version 목록 (전체 개수와 autoscaling 줄)
+  전체 25줄
+  autoscaling/v1
+  autoscaling/v2
+
+## 2. kubectl api-resources: kind 하나에 preferred 버전 하나만 보여 준다
+  NAME                       SHORTNAMES   APIVERSION       NAMESPACED   KIND
+  horizontalpodautoscalers   hpa          autoscaling/v2   true         HorizontalPodAutoscaler
+
+## 3. kubectl explain: 같은 kind의 spec 필드가 버전마다 다르다
+  $ kubectl explain horizontalpodautoscalers.spec --api-version=autoscaling/v1
+    maxReplicas
+    minReplicas
+    scaleTargetRef
+    targetCPUUtilizationPercentage
+  $ kubectl explain horizontalpodautoscalers.spec --api-version=autoscaling/v2
+    behavior
+    maxReplicas
+    metrics
+    minReplicas
+    scaleTargetRef
+
+## 4. v2 모양 본문(spec.metrics)을 apiVersion만 바꿔 서버 dry-run
+  apiVersion: autoscaling/v2
+    → horizontalpodautoscaler.autoscaling/web created (server dry run)
+  apiVersion: autoscaling/v1
+    → Error from server (BadRequest): error when creating "STDIN": HorizontalPodAutoscaler in version "v1" cannot be handled as a HorizontalPodAutoscaler: strict decoding error: unknown field "spec.metrics"
+
+## 5. v1 모양 본문(spec.targetCPUUtilizationPercentage)을 apiVersion만 바꿔 서버 dry-run
+  apiVersion: autoscaling/v1
+    → horizontalpodautoscaler.autoscaling/web created (server dry run)
+  apiVersion: autoscaling/v2
+    → Error from server (BadRequest): error when creating "STDIN": HorizontalPodAutoscaler in version "v2" cannot be handled as a HorizontalPodAutoscaler: strict decoding error: unknown field "spec.targetCPUUtilizationPercentage"
+
+## 6. 정리
+  HPA 남은 수: 0
+  namespace "blog-72" deleted

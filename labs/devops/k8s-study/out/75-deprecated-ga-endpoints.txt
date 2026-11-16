@@ -1,0 +1,34 @@
+# 05 GA인데 deprecated인 v1 Endpoints: 경고와 메트릭 (2026-11-15 21:15:31 KST)
+
+## 1. kubectl로 읽기만 해도 경고가 stderr로 나온다
+  $ kubectl get endpoints -n default kubernetes
+    Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+    NAME         ENDPOINTS            AGE
+    kubernetes   192.168.104.1:6443   10d
+  $ kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes
+    NAME         ADDRESSTYPE   PORTS   ENDPOINTS       AGE
+    kubernetes   IPv4          6443    192.168.104.1   10d
+
+## 2. --warnings-as-errors를 주면 같은 조회가 실패 코드로 끝난다
+  종료 코드: 1
+
+## 3. apiserver_requested_deprecated_apis (값 1 = 이 API 서버 프로세스가 뜬 뒤 한 번이라도 요청됨)
+  apiserver_requested_deprecated_apis{group="",removed_release="",resource="endpoints",subresource="",version="v1"} 1
+  apiserver_requested_deprecated_apis{group="why-api.example.com",removed_release="",resource="widgets",subresource="",version="v1"} 1
+  → removed_release가 비어 있다: GA는 deprecated여도 제거 예정 릴리스가 없다(Rule #4a).
+  → widgets 줄은 04 실험에서 지운 CRD의 것이다. 이 gauge는 API 서버가 재시작할 때까지 1로 남는다.
+    CRD 존재 여부: NotFound
+
+## 4. 같은 group/version/resource로 apiserver_request_total을 묶어 동사별 요청 수 보기
+  core/v1/endpoints              DELETE  code=200  2
+  core/v1/endpoints              DELETE  code=404  1
+  core/v1/endpoints              GET     code=200  470
+  core/v1/endpoints              LIST    code=200  2
+  core/v1/endpoints              POST    code=201  1
+  core/v1/endpoints              PUT     code=200  34
+  core/v1/endpoints              WATCH   code=200  11
+  why-api.example.com/v1/widgets GET     code=200  1
+  why-api.example.com/v1/widgets LIST    code=200  2
+  why-api.example.com/v1/widgets POST    code=201  2
+  (누가 불렀는지는 이 메트릭으로 알 수 없다. 클라이언트를 찾으려면 감사 로그의 k8s.io/deprecated annotation이 필요)
+  API 서버 --audit-policy-file 플래그 수: 0

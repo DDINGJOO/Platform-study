@@ -1,0 +1,22 @@
+# kubernetes v1.37.2 소스 발췌 — https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/
+
+## staging/src/k8s.io/api/core/v1/types.go (HTTPGetAction.Protocol)
+	// Protocol selects the wire protocol for the probe connection.
+	// Nil defaults to HTTP/1.1.
+	// +optional
+	// +featureGate=H2CContainerProbe
+	Protocol *HTTPProtocol `json:"protocol,omitempty" protobuf:"bytes,6,opt,name=protocol,casttype=HTTPProtocol"`
+
+## pkg/features/kube_features.go (H2CContainerProbe)
+	// owner @amritansh1502
+	// kep: https://kep.k8s.io/5999
+	//
+	// Enables the Protocol field on HTTPGetAction to select the wire protocol (HTTP/1.1 or HTTP/2).
+	H2CContainerProbe featuregate.Feature = "H2CContainerProbe"
+	H2CContainerProbe: {
+		{Version: version.MustParse("1.37"), Default: false, PreRelease: featuregate.Alpha},
+	},
+	H2CContainerProbe: {NodeDeclaredFeatures},
+
+## CHANGELOG/CHANGELOG-1.37.md
+- Added a `protocol` field to `httpGet` probes so that liveness, readiness, and startup probes can run over HTTP/2 cleartext (H2C). ([#139429](https://github.com/kubernetes/kubernetes/pull/139429), [@amritansh1502](https://github.com/amritansh1502)) [SIG API Machinery, Apps, Node and Testing]

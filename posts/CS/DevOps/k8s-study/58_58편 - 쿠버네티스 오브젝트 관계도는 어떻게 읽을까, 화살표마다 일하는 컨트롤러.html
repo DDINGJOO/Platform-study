@@ -1,0 +1,352 @@
+<!-- ============================================================
+  k8s 스터디 58편: 쿠버네티스 오브젝트 관계도는 어떻게 읽을까, 화살표마다 일하는 컨트롤러
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: Ingress는 만들어졌는데 ADDRESS는 비어 있었고 HPA는 45초 뒤 ScalingActive=False였어요. 흔한 쿠버네티스 오브젝트 관계도의 화살표를 실습 클러스터에서 하나씩 확인하며 화살표마다 일하는 컨트롤러를 찾았어요. -->
+<!-- tags: 오브젝트 관계도, 쿠버네티스 컨트롤러, ownerReferences, CRD, EndpointSlice, Desired State -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 58편</div>
+  56편. 파드 통신 장애는 어디부터 볼까, Calico 장애를 구간별로 좁히기<br>
+  57편. 파드 하나를 배포하고 요청받기까지, 애플리케이션으로 확인하는 쿠버네티스<br>
+  <b>58편. 쿠버네티스 오브젝트 관계도는 어떻게 읽을까, 화살표마다 일하는 컨트롤러</b> &larr; 지금 이 글<br>
+  59편. kubectl apply 전에 YAML 실수를 잡는 법, explain과 dry-run=server<br>
+  60편. ReplicaSet은 왜 내가 만든 파드를 지울까, 라벨 셀렉터와 Deployment
+</div>
+
+<p>쿠버네티스를 배우다 보면 오브젝트 관계도를 자주 만나요. Ingress에서 Service로, Service에서 Pod로 화살표가 이어지고 Deployment 아래에는 ReplicaSet과 Pod가 매달려 있어요. HPA는 Deployment를 가리키고 Role과 RoleBinding은 ServiceAccount 옆에 있어요. Pod 주변에는 ConfigMap, Secret, Volume, PVC, StorageClass, PV가 놓이고 화살표에는 "Extends", "Creates", "Controls operations" 같은 말이 붙어 있어요.</p>
+<p>이 그림의 화살표를 실습 클러스터에서 하나씩 확인해 봤어요. Ingress 규칙은 에러 없이 만들어졌지만 10초 뒤에도 ADDRESS 칸은 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;none&gt;</code>이었어요. HPA도 만들어졌다고 나왔는데 45초 뒤의 조건은 <code style="font-family:Menlo,monospace;font-size:14px;">ScalingActive=False</code>였어요. 둘 다 API 서버에 저장은 됐지만 그 뒤로 아무 일도 일어나지 않았어요. 반대로 Deployment에서 ReplicaSet을 거쳐 Pod까지는 그림대로 소유 관계가 이어져 있었어요.</p>
+<p>차이를 만든 것은 화살표 사이에서 일하는 프로그램이 있느냐였어요. 오브젝트는 etcd에 저장된 데이터이고 화살표마다 그 데이터를 읽고 쓰는 컨트롤러가 따로 있어요. 이 글은 관계도의 화살표마다 클러스터에서 본 증거 한 줄을 달고 그 화살표를 자세히 다루는 편 번호를 붙인 안내 글이에요. 클러스터는 Lima VM 4대(마스터 1대, 워커 3대, 모두 arm64)에 kubeadm으로 올린 v1.37.2이고 런타임은 containerd 2.4.1, CNI는 Calico v3.33.0이에요.</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 관계도는 어떤 순서로 분석하면 될까?<br>
+&middot; 관계도의 상자는 전부 API 오브젝트일까?<br>
+&middot; 화살표마다 실제로 일하는 것은 무엇일까?<br>
+&middot; 만들었는데 아무 일도 없으면 어디부터 볼까?<br>
+&middot; CRD는 무엇이고 kubectl api-resources에 나오는 것만 쓸 수 있을까?<br>
+&middot; Desired State Management는 무엇이고 Deployment는 ReplicaSet에 배포 기능을 더한 것일까?</p>
+
+<h2>1. 관계도를 읽기 전에 상자가 API에 있는지부터 확인한다</h2>
+
+<p>관계도는 이런 식으로 분석하면 될까요? 제가 쓴 방법은 두 단계예요. 먼저 상자마다 API 서버에 그런 종류가 있는지 확인하고, 그다음 화살표마다 누가 무엇을 읽고 무엇을 쓰는지 찾아요. 첫 단계에서 이미 두 군데가 그림과 달랐어요. 확인한 스크립트와 출력은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-object-map.sh</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-object-map.txt</code>에 남겼어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: API 오브젝트와 kind</div>
+API 서버가 받아서 etcd에 저장하는 기록 한 건이에요. kind가 그 기록의 종류(Pod, Service, Deployment 등)를 정해요. 저장된 오브젝트는 그 자체로 아무것도 실행하지 않고 다른 프로그램이 읽어 갈 때 비로소 일이 일어나요. 오브젝트가 etcd에 어떤 키로 들어가는지는 22편에서 봤어요.</div>
+
+<div class="obsv-code">## 1. Pod → Volume: Volume 은 따로 있는 오브젝트인가
+  api-resources 중 이름에 volume 이 들어간 종류(KIND):
+    PersistentVolumeClaim
+    PersistentVolume
+    VolumeAttachment
+    VolumeAttributesClass
+  파드 스펙 안의 필드: FIELD: volumes &lt;[]Volume&gt;
+
+## 2. Secret → ConfigMap (Extends?): 두 종류의 최상위 필드
+  configmap (v1): apiVersion binaryData data immutable kind metadata
+  secret (v1): apiVersion data immutable kind metadata stringData type</div>
+<p>&rarr; 이름에 volume이 들어간 종류는 네 개지만 Volume이라는 종류는 없어요. Volume은 <code style="font-family:Menlo,monospace;font-size:14px;">pod.spec.volumes</code> 목록의 항목이에요. 따로 만들고 지우는 오브젝트가 아니라 파드 정의 안에 적는 필드라서 관계도에서 PVC나 PV와 같은 모양의 상자로 그리면 오해가 생겨요. 파드보다 오래 남는 저장소가 필요하면 그 목록 항목에서 PVC를 가리키고, PVC가 PV와 묶여요.</p>
+<p>Secret이 ConfigMap을 확장(Extends)한다는 화살표도 API에는 없는 관계예요. 둘 다 core 그룹 v1의 별개 종류이고 최상위 필드부터 달라요. Secret에만 type과 stringData가 있고 ConfigMap에만 binaryData가 있어요. 한쪽을 바꿔도 다른 쪽에 영향이 없고 둘을 잇는 컨트롤러도 없어요. 쓰임새가 비슷해서 나란히 그릴 수는 있지만 상속 관계로 읽으면 안 돼요. Secret의 값이 etcd에 평문으로 들어 있다는 점은 22편에서 확인했어요.</p>
+
+<h2>2. 화살표는 오브젝트끼리 하는 일이 아니라 그 사이의 프로그램이 하는 일이다</h2>
+
+<p>상자를 확인한 뒤에는 화살표를 "누가 무엇을 읽고 무엇을 쓰나"로 바꿔 읽었어요. 같은 스크립트가 데모 Deployment(obj-demo, replicas 2)와 Service, HPA, Role, Ingress를 만들고 결과를 찍었어요. 화살표 여섯 개의 결과를 먼저 표로 모았어요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">화살표</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">클러스터에서 본 것</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">일하는 쪽</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">자세히</th></tr></thead>
+<tbody>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Deployment → ReplicaSet → Pod</td><td style="padding:9px;border:1px solid #d8cfba;">RS의 owner=Deployment, Pod의 owner=ReplicaSet, 둘 다 pod-template-hash 라벨</td><td style="padding:9px;border:1px solid #d8cfba;">Deployment·ReplicaSet 컨트롤러</td><td style="padding:9px;border:1px solid #d8cfba;">60편, 42편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Service → Pod</td><td style="padding:9px;border:1px solid #d8cfba;">사이에 EndpointSlice(owner=Service, managed-by=endpointslice-controller.k8s.io)</td><td style="padding:9px;border:1px solid #d8cfba;">EndpointSlice 컨트롤러, 노드의 kube-proxy</td><td style="padding:9px;border:1px solid #d8cfba;">28편, 47편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Ingress → Service</td><td style="padding:9px;border:1px solid #d8cfba;">IngressClass 없음, ADDRESS &lt;none&gt;</td><td style="padding:9px;border:1px solid #d8cfba;">Ingress 컨트롤러(없음)</td><td style="padding:9px;border:1px solid #d8cfba;">24편과 같은 모양</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">HPA → Deployment</td><td style="padding:9px;border:1px solid #d8cfba;">/scale 하위 리소스는 읽었지만 metrics API가 없어 ScalingActive=False</td><td style="padding:9px;border:1px solid #d8cfba;">HPA 컨트롤러와 metrics-server(없음)</td><td style="padding:9px;border:1px solid #d8cfba;">72편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Role → Pod</td><td style="padding:9px;border:1px solid #d8cfba;">SA default의 can-i list pods가 no에서 yes로, delete pods는 no</td><td style="padding:9px;border:1px solid #d8cfba;">API 서버의 RBAC 인가</td><td style="padding:9px;border:1px solid #d8cfba;">10편, 32편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">StorageClass → PV</td><td style="padding:9px;border:1px solid #d8cfba;">local-path의 PROVISIONER는 rancher.io/local-path, 손으로 만든 PV는 클래스 없음</td><td style="padding:9px;border:1px solid #d8cfba;">provisioner</td><td style="padding:9px;border:1px solid #d8cfba;">16편</td></tr>
+</tbody>
+</table></div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 컨트롤러와 ownerReferences</div>
+컨트롤러는 API 서버에서 어떤 종류의 오브젝트를 지켜보다가 원하는 상태와 지금 상태가 다르면 다른 오브젝트를 만들거나 고치는 프로그램이에요. 컨트롤러가 만든 오브젝트에는 metadata.ownerReferences로 소유자가 적혀요. 소유자를 지우면 가비지 컬렉터가 딸린 오브젝트도 정리해요.</div>
+
+<p>그림이 맞은 화살표는 Deployment에서 Pod까지였어요. ReplicaSet <code style="font-family:Menlo,monospace;font-size:14px;">obj-demo-695b7659f6</code>의 ownerReferences는 Deployment obj-demo를, 두 파드의 ownerReferences는 그 ReplicaSet을 가리켰어요. ReplicaSet 셀렉터에는 <code style="font-family:Menlo,monospace;font-size:14px;">app=obj-demo</code> 말고도 <code style="font-family:Menlo,monospace;font-size:14px;">pod-template-hash: 695b7659f6</code>가 들어 있었고 같은 값이 ReplicaSet 이름의 꼬리와 파드 라벨에도 붙어 있었어요. 다만 화살표를 실제로 잇는 것은 Deployment 오브젝트가 아니라 컨트롤러 매니저 안의 Deployment 컨트롤러와 ReplicaSet 컨트롤러예요(42편). ReplicaSet이 파드를 어떻게 세는지는 60편에서 따로 실험해요.</p>
+
+<p>Service에서 Pod로 가는 화살표에는 그림에 없는 오브젝트가 하나 끼어 있었어요. Service에는 셀렉터 <code style="font-family:Menlo,monospace;font-size:14px;">{"app":"obj-demo"}</code>와 ClusterIP만 있고 파드 목록이 없어요. 파드 IP 두 개를 모아 둔 것은 EndpointSlice <code style="font-family:Menlo,monospace;font-size:14px;">obj-demo-g4cr9</code>였고 소유자는 Service, managed-by 라벨은 <code style="font-family:Menlo,monospace;font-size:14px;">endpointslice-controller.k8s.io</code>였어요. 두 주소 모두 <code style="font-family:Menlo,monospace;font-size:14px;">ready=true</code>였어요. 노드마다 도는 kube-proxy가 이 EndpointSlice를 읽어 iptables나 nftables 규칙을 만들어요. Service 자체는 패킷을 받지도 넘기지도 않아요(28편).</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: EndpointSlice</div>
+Service 셀렉터에 맞는 파드의 IP와 포트, 준비 여부(ready)를 모아 둔 오브젝트예요. EndpointSlice 컨트롤러가 파드가 바뀔 때마다 고쳐 쓰고 kube-proxy가 이것을 읽어 노드 규칙을 만들어요. Service 하나에 여러 개가 생길 수 있어요.</div>
+
+<p>Ingress에서 Service로 가는 화살표는 우리 클러스터에서 끊겨 있었어요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get ingressclass</code>는 No resources found였고 만든 Ingress의 CLASS와 ADDRESS는 둘 다 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;none&gt;</code>이었어요. Ingress는 "demo.local로 온 요청을 obj-demo:80으로 보내라" 같은 규칙을 적은 데이터예요. 그 규칙을 읽어 실제 프록시를 설정하고 ADDRESS를 채우는 것은 Ingress 컨트롤러인데 그런 프로그램이 클러스터에 없었어요. 24편에서 본 LoadBalancer Service의 pending도 같은 모양이었어요. 처리할 컨트롤러가 없으니 상태 칸이 빈 채로 남았어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: IngressClass와 Ingress 컨트롤러</div>
+IngressClass는 "이 클래스의 Ingress는 어느 컨트롤러가 맡는다"를 적은 오브젝트이고 Ingress 컨트롤러는 Ingress 규칙을 읽어 nginx나 Envoy 같은 프록시를 설정하는 프로그램이에요. 쿠버네티스는 Ingress 종류만 제공하고 컨트롤러는 컨트롤러 매니저에 들어 있지 않아서 따로 설치해야 해요.</div>
+
+<p>HPA도 Deployment 오브젝트를 통째로 고치지 않았어요. HPA의 scaleTargetRef는 <code style="font-family:Menlo,monospace;font-size:14px;">{"apiVersion":"apps/v1","kind":"Deployment","name":"obj-demo"}</code>였고 HPA 컨트롤러는 이 대상의 <code style="font-family:Menlo,monospace;font-size:14px;">/scale</code> 하위 리소스를 읽고 써요. 같은 주소를 직접 GET하자 <code style="font-family:Menlo,monospace;font-size:14px;">"kind":"Scale","apiVersion":"autoscaling/v1"</code>에 <code style="font-family:Menlo,monospace;font-size:14px;">spec.replicas: 2</code>와 셀렉터 <code style="font-family:Menlo,monospace;font-size:14px;">app=obj-demo</code>만 담긴 작은 객체가 돌아왔어요. 문제는 HPA가 계산에 쓸 CPU 사용률을 가져오는 화살표였어요. <code style="font-family:Menlo,monospace;font-size:14px;">v1beta1.metrics.k8s.io</code> APIService를 조회하자 NotFound가 나왔고 45초 뒤 HPA 조건은 이랬어요.</p>
+
+<div class="obsv-code">AbleToScale=True SucceededGetScale: the HPA controller was able to get the target's current scale
+ScalingActive=False FailedGetResourceMetric: the HPA was unable to compute the replica count:
+  failed to get cpu utilization: unable to get metrics for resource cpu: unable to fetch metrics
+  from resource metrics API: the server could not find the requested resource (get pods.metrics.k8s.io)</div>
+<p>&rarr; 대상의 현재 개수는 읽었지만(AbleToScale=True) CPU 지표를 주는 API가 없어서 몇 개로 맞출지 계산하지 못했다는 뜻이에요. 우리 클러스터에는 그 API를 채울 metrics-server가 없어요. 원래 한 줄인 메시지를 읽기 쉽게 줄을 나눠 옮겼어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: scale 하위 리소스 (/scale)</div>
+Deployment, ReplicaSet, StatefulSet 같은 종류에 붙은 별도 주소예요. 본 객체 전체가 아니라 replicas와 셀렉터만 담은 Scale 객체를 주고받아요. HPA와 kubectl scale은 대상의 종류와 상관없이 이 주소로 개수를 바꿔요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 336" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="관계도의 화살표를 그 사이에서 일하는 프로그램으로 바꿔 그린 그림">
+<defs><marker id="k58-map-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#b3502f" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k58-map-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34">관계도의 화살표를 일하는 쪽으로 바꿔 그리면 (✗는 우리 클러스터에 없음)</text>
+<path d="M20 78 C 53 78.3, 85 76.8, 118 78.3 C 119.8 93, 116.2 107, 117.9 122 C 85 121.4, 53 121.2, 20.8 122.9 C 21.2 107, 19.7 93, 20 78 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="69" y="107" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34">Ingress</text>
+<path d="M200 78 C 233 79.5, 265 76.4, 298 78.0 C 297.9 93, 296.3 107, 298.1 122 C 265 121.5, 233 121.5, 199.2 122.3 C 198.5 107, 198.1 93, 200 78 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="249" y="107" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34">Service</text>
+<path d="M380 78 C 420 79.5, 460 77.2, 500 78.2 C 500.9 93, 501.0 107, 500.8 122 C 460 120.6, 420 121.8, 379.3 122.4 C 378.9 107, 379.1 93, 380 78 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="440" y="107" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">EndpointSlice</text>
+<path d="M590 78 C 621 77.0, 651 78.9, 682 78.0 C 683.3 136, 682.4 194, 682.2 252 C 651 252.7, 621 251.3, 589.8 251.6 C 588.8 194, 591.6 136, 590 78 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="636" y="160" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="26" fill="#3d3a34">Pod</text>
+<text x="636" y="186" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#8a8272">파드 2개</text>
+<path d="M20 198 C 53 198.4, 85 197.8, 118 198.2 C 116.7 213, 119.5 227, 118.0 242 C 85 241.2, 53 242.8, 20.0 242.4 C 18.5 227, 21.8 213, 20 198 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="69" y="227" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34">HPA</text>
+<path d="M200 198 C 233 199.5, 265 196.5, 298 198.0 C 296.1 213, 296.2 227, 297.4 242 C 265 240.3, 233 243.8, 200.0 242.1 C 200.9 227, 199.1 213, 200 198 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="249" y="227" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">Deployment</text>
+<path d="M380 198 C 420 197.9, 460 198.8, 500 198.2 C 499.3 213, 498.2 227, 500.8 242 C 460 243.9, 420 243.9, 379.3 241.4 C 378.8 227, 381.3 213, 380 198 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="440" y="227" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#3d3a34">ReplicaSet</text>
+<path d="M122 100 C 147 96, 171 98, 196 100" fill="none" stroke="#b3502f" stroke-width="2.1" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k58-map-arr1)"/>
+<text x="159" y="66" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#b3502f">Ingress</text>
+<text x="159" y="84" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#b3502f">컨트롤러 ✗</text>
+<path d="M302 100 C 327 96, 351 98, 376 100" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-map-arr2)"/>
+<text x="339" y="66" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#2e6b41">EndpointSlice</text>
+<text x="339" y="84" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#2e6b41">컨트롤러</text>
+<path d="M504 100 C 531 96, 559 98, 586 100" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-map-arr2)"/>
+<text x="545" y="66" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d6591">kube-proxy가</text>
+<text x="545" y="84" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d6591">노드 규칙으로</text>
+<path d="M122 220 C 147 216, 171 218, 196 220" fill="none" stroke="#b3502f" stroke-width="2.1" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#k58-map-arr1)"/>
+<text x="159" y="186" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d3a34">/scale 변경</text>
+<text x="159" y="204" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#b3502f">지표 API ✗</text>
+<path d="M302 220 C 327 216, 351 218, 376 220" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-map-arr2)"/>
+<text x="339" y="186" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#2e6b41">Deployment</text>
+<text x="339" y="204" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#2e6b41">컨트롤러</text>
+<path d="M504 220 C 531 216, 559 218, 586 220" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-map-arr2)"/>
+<text x="545" y="186" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#2e6b41">ReplicaSet</text>
+<text x="545" y="204" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#2e6b41">컨트롤러</text>
+<text x="69" y="142" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#b3502f">ADDRESS &lt;none&gt;</text>
+<text x="249" y="143" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">셀렉터만 있어요</text>
+<text x="440" y="142" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#8a8272">owner=Service</text>
+<text x="69" y="262" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#b3502f">ScalingActive=False</text>
+<text x="440" y="262" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#8a8272">owner=Deployment</text>
+<text x="636" y="270" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#8a8272">owner=ReplicaSet</text>
+<text x="350" y="314" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#b3502f">상자는 etcd에 저장된 데이터, 화살표는 그 데이터를 읽고 쓰는 프로그램이에요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 1. 그림이 맞은 화살표에도 틀린 화살표에도 그 사이에서 일하는 프로그램이 있었어요.</p>
+
+<p>Role이 Pod의 동작을 통제한다(Controls operations)는 화살표는 방향부터 달라요. Role은 "pods를 get, list할 수 있다" 같은 동사와 리소스의 목록이고 RoleBinding이 그 목록을 주체에 붙여요. 파드는 serviceAccountName으로 ServiceAccount를 쓰고, 그 토큰으로 API를 부를 때만 이 권한이 쓰여요(10편). 데모 파드의 SA는 default였어요. Role 없이 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl auth can-i list pods --as=system:serviceaccount:ch05:default</code>는 no였고 pod-reader Role과 RoleBinding을 만든 뒤에는 yes였어요. 같은 SA로 delete pods는 여전히 no였어요. Role에 적은 동사만큼만 권한이 생긴 거예요.</p>
+<p>이 화살표에는 컨트롤러도 없어요. API 서버의 RBAC 인가 단계가 요청이 들어올 때마다 Role과 RoleBinding을 읽어 판단해요(32편). 컨테이너 안의 프로세스가 무엇을 하든 API를 부르지 않으면 Role은 관여하지 않아요. 그래서 이 관계는 "Role이 Pod를 통제한다"보다 "RoleBinding이 SA에 API 권한을 주고 Pod는 그 SA를 빌려 쓴다"로 읽는 편이 정확해요.</p>
+
+<p>StorageClass가 PV를 만든다(Creates)는 화살표도 실제로 PV를 만드는 쪽은 따로 있어요. 우리 클러스터의 StorageClass local-path에는 <code style="font-family:Menlo,monospace;font-size:14px;">PROVISIONER rancher.io/local-path</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">BINDING WaitForFirstConsumer</code>가 적혀 있어요. StorageClass는 "이 클래스의 PVC가 오면 어느 provisioner에게 어떤 설정으로 맡길지"를 적은 데이터이고, PVC를 보고 PV를 만드는 것은 local-path-storage 네임스페이스에 뜬 provisioner예요(16편). 목록에 보이는 portainer-pv는 STORAGECLASS가 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;none&gt;</code>이에요. 16편에서 손으로 만든 정적 PV라서 어떤 provisioner도 거치지 않았어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: provisioner</div>
+PVC를 지켜보다가 그 PVC의 StorageClass가 자기 이름을 가리키면 실제 저장 공간을 마련하고 PV 오브젝트를 만드는 프로그램이에요. 우리 클러스터에서는 rancher.io/local-path라는 이름의 local-path-provisioner가 그 일을 해요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="StorageClass와 provisioner와 PV, Role과 RoleBinding과 ServiceAccount의 실제 관계">
+<defs><marker id="k58-store-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M350 20 C 349 110, 353 198, 352 285" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="6 6"/>
+<text x="175" y="34" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#3d3a34">저장소: StorageClass는 설정이에요</text>
+<path d="M110 56 C 153 57.8, 197 54.7, 240 55.1 C 241.2 70, 240.1 84, 239.1 98 C 197 96.8, 153 96.7, 110.8 97.3 C 110.4 84, 111.3 70, 110 56 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="175" y="77" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">StorageClass</text>
+<text x="175" y="91" text-anchor="middle" font-family="Menlo,monospace" font-size="10" fill="#8a8272">local-path</text>
+<path d="M30 170 C 60 168.0, 90 171.5, 120 169.6 C 118.5 183, 119.6 197, 120.1 210 C 90 208.6, 60 208.2, 29.8 209.9 C 28.9 197, 29.2 183, 30 170 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="75" y="197" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34">PVC</text>
+<path d="M230 170 C 260 170.6, 290 171.4, 320 170.4 C 319.8 183, 320.1 197, 320.5 210 C 290 209.4, 260 211.5, 230.8 210.5 C 228.3 197, 228.3 183, 230 170 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="275" y="197" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34">PV</text>
+<path d="M124 190 C 158 185, 192 187, 226 190" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-store-arr1)"/>
+<path d="M175 102 C 174 126, 176 153, 176 180" fill="none" stroke="#c07f18" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="4 5"/>
+<text x="184" y="136" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">어느 provisioner에</text>
+<text x="184" y="154" text-anchor="start" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">맡길지 적은 데이터</text>
+<text x="175" y="232" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#2e6b41">provisioner가 PV를 만들어요</text>
+<text x="175" y="250" text-anchor="middle" font-family="Menlo,monospace" font-size="10.5" fill="#8a8272">rancher.io/local-path</text>
+<text x="175" y="282" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#b3502f">StorageClass가 PV를 만들지 않아요</text>
+<text x="525" y="34" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#3d3a34">권한: Role은 ServiceAccount에 붙어요</text>
+<path d="M370 56 C 403 55.5, 437 55.5, 470 55.6 C 471.8 70, 469.8 84, 469.6 98 C 437 98.8, 403 97.9, 369.7 98.9 C 369.8 84, 368.2 70, 370 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="420" y="77" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">Role</text>
+<text x="420" y="91" text-anchor="middle" font-family="Menlo,monospace" font-size="9.5" fill="#8a8272">get,list pods</text>
+<path d="M560 56 C 601 57.8, 641 55.0, 682 55.4 C 681.0 70, 680.3 84, 681.4 98 C 641 98.0, 601 98.0, 559.7 98.3 C 561.0 84, 558.3 70, 560 56 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="621" y="77" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="16" fill="#3d3a34">ServiceAccount</text>
+<text x="621" y="91" text-anchor="middle" font-family="Menlo,monospace" font-size="10" fill="#8a8272">default</text>
+<path d="M455 148 C 495 148.8, 535 148.1, 575 147.7 C 576.8 161, 574.9 175, 575.8 188 C 535 186.4, 495 186.1, 454.8 188.3 C 453.1 175, 455.5 161, 455 148 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="515" y="174" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#3d3a34">RoleBinding</text>
+<path d="M486 146 C 472 128, 454 115, 436 102" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-store-arr1)"/>
+<text x="452" y="132" text-anchor="end" font-family="Menlo,monospace" font-size="10" fill="#8a8272">roleRef</text>
+<path d="M546 146 C 561 128, 580 115, 600 102" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-store-arr1)"/>
+<text x="582" y="132" text-anchor="start" font-family="Menlo,monospace" font-size="10" fill="#8a8272">subjects</text>
+<path d="M590 222 C 621 220.6, 651 220.9, 682 222.8 C 681.6 235, 680.3 249, 681.8 262 C 651 260.1, 621 263.1, 589.8 261.2 C 590.2 249, 591.3 235, 590 222 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="636" y="249" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="21" fill="#3d3a34">Pod</text>
+<path d="M650 219 C 653 180, 652 142, 650 103" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-store-arr1)"/>
+<text x="644" y="212" text-anchor="end" font-family="Menlo,monospace" font-size="10" fill="#8a8272">serviceAccountName</text>
+<text x="372" y="236" text-anchor="start" font-family="Menlo,monospace" font-size="10" fill="#3d3a34">can-i list pods: no → yes</text>
+<text x="372" y="254" text-anchor="start" font-family="Menlo,monospace" font-size="10" fill="#3d3a34">can-i delete pods: no</text>
+<text x="525" y="286" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="18" fill="#b3502f">API 요청마다 인가 단계가 검사해요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 2. StorageClass와 Role은 설정이고, PV를 만드는 일과 권한을 검사하는 일은 다른 프로그램이 해요.</p>
+
+<h2>3. 만들었는데 아무 일도 없으면 그 화살표의 프로그램부터 본다</h2>
+
+<p>Ingress와 HPA를 만들 때 kubectl이 돌려준 응답은 둘 다 성공이었어요. 이 응답은 API 서버가 요청을 검증하고 etcd에 저장했다는 뜻이에요. 그 오브젝트를 읽어 갈 프로그램이 있는지는 API 서버가 확인하지 않아요. 그래서 컨트롤러가 없는 화살표에서는 오류 대신 빈 칸이나 False 조건이 남아요. 저장 전에 어떤 검증을 거치는지는 59편에서 따로 봐요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/58/02-object-map-hpa-ingress.png" alt="05-object-map.sh 실행 화면, 45초 뒤 HPA ScalingActive=False FailedGetResourceMetric, can-i list pods no에서 yes, delete no, StorageClass local-path의 provisioner rancher.io/local-path, Ingress ADDRESS none" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 3. 만들기는 전부 성공했지만 HPA와 Ingress의 상태 칸은 일한 쪽이 없다는 것을 보여 줬어요.</p>
+
+<p>이번 실험에서 그런 칸은 Ingress의 ADDRESS와 HPA의 ScalingActive였고, 그 원인은 IngressClass 목록과 metrics API의 APIService에서 확인됐어요. 16편에서 본 PVC도 같은 방식으로 읽을 수 있어요. local-path는 WaitForFirstConsumer라서 그 PVC를 쓰는 파드가 생기기 전까지 바인딩을 미뤄요. 파드 없이 PVC만 만들어 두고 Pending이라고 놀랄 필요가 없는 이유예요. 24편의 LoadBalancer pending은 cloud-controller-manager가 없어서 생긴 빈 칸이었어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 만들었는데 아무 일도 없을 때 보는 순서</div>
+&bull; 그 오브젝트의 status와 conditions, 이벤트를 먼저 봐요(<code style="font-family:Menlo,monospace;font-size:14px;">kubectl describe</code>). 빈 칸인지, False 조건과 reason이 있는지 확인해요.<br>
+&bull; 그 화살표를 맡는 프로그램이 클러스터에 있는지 봐요. Ingress는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get ingressclass</code>, HPA는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get apiservice v1beta1.metrics.k8s.io</code>, PVC는 StorageClass의 PROVISIONER와 그 파드, LoadBalancer는 cloud-controller-manager나 그 역할을 하는 컨트롤러예요.<br>
+&bull; 프로그램이 있으면 그 프로그램의 로그와 권한을 봐요. 컨트롤러도 ServiceAccount로 API를 부르기 때문에 RBAC에 막힐 수 있어요.</div>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ HPA는 AbleToScale만 보고 판단하지 않아요</div>
+이번 HPA는 AbleToScale=True였지만 ScalingActive=False였어요. 앞의 것은 대상의 /scale을 읽을 수 있다는 뜻이고 뒤의 것이 지표로 개수를 계산할 수 있다는 뜻이에요. metrics-server가 없는 kubeadm 클러스터에서는 HPA가 만들어져도 개수가 바뀌지 않아요. 같은 실행에서 kubectl 1.37은 <code style="font-family:Menlo,monospace;font-size:14px;">--cpu-percent</code> 플래그가 deprecated라는 경고도 냈어요. 대신 쓸 <code style="font-family:Menlo,monospace;font-size:14px;">--cpu</code>는 59편에서 다뤄요.</div>
+
+<h2>4. kubectl api-resources는 지금 서빙하는 목록이고 CRD로 늘어난다</h2>
+
+<p>kubectl api-resources에 나오는 것만 쓸 수 있을까요? 지금 이 클러스터에 한해서는 맞아요. 이 명령은 API 서버가 지금 서빙하는 종류를 보여 주고 목록에 없는 종류는 받아 주지 않아요. 옛 apiVersion으로 Deployment를 보내 보면 바로 드러나요. 원본은 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-kind-apiversion.txt</code>예요.</p>
+
+<div class="obsv-code">error: resource mapping not found for name: "old" namespace: "ch05" from "STDIN": no matches for kind "Deployment" in version "extensions/v1beta1"
+ensure CRDs are installed first</div>
+<p>&rarr; extensions/v1beta1 그룹·버전에서는 Deployment라는 종류를 찾을 수 없다는 뜻이에요. kubectl이 서버에서 받은 목록과 맞춰 보다가 요청을 보내기 전에 멈췄어요. 마지막 줄은 그 종류가 CRD로 들어오는 것이라면 CRD부터 설치하라는 안내예요. apiVersion이 왜 이렇게 중요한지는 59편에서, 한 종류를 여러 버전으로 동시에 서빙하는 구조는 72편에서, 옛 버전이 목록에서 빠지는 규칙은 73편에서 다뤄요.</p>
+
+<p>그런데 이 목록은 고정돼 있지 않아요. 같은 출력에서 그룹별로 종류 수를 세면 1위가 내장 그룹이 아니었어요.</p>
+
+<div class="obsv-code">  22 crd.projectcalico.org/v1
+  17 v1
+   6 storage.k8s.io/v1
+   6 admissionregistration.k8s.io/v1
+   5 resource.k8s.io/v1
+   5 networking.k8s.io/v1</div>
+<p>&rarr; 종류가 가장 많은 그룹은 Calico가 설치한 crd.projectcalico.org였어요. 20편에서 센 CRD 23개 중 22개가 이 그룹이었어요. CRD를 지우면 그 종류도 목록에서 빠지고, 2절의 HPA가 찾던 metrics.k8s.io 같은 그룹은 APIService로 API 서버에 붙으면 목록에 나타나요. 그래서 "api-resources에 나오는 것만 쓸 수 있다"는 말은 "지금 서빙되는 것만 쓸 수 있고, 서빙 목록은 CRD와 APIService로 늘고 준다"로 고쳐 읽어야 해요.</p>
+
+<p>CRD는 뭘까요? 쿠버네티스에 없던 종류를 API 서버에 등록하는 오브젝트예요. 등록된 종류로 만든 개별 오브젝트는 CR(커스텀 리소스)이라고 불러요. Calico의 IPPool로 보면 둘이 이렇게 나뉘어요. 이 부분은 새로 돌린 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-who-writes.txt</code>의 3절이에요.</p>
+
+<div class="obsv-code">  CRD ippools.crd.projectcalico.org: group=crd.projectcalico.org kind=IPPool scope=Cluster versions=v1
+  CR                  CIDR            IPIP     BLOCKSIZE
+default-ipv4-ippool   10.244.0.0/16   Always   26
+  ippools 를 list·watch 할 수 있는 ClusterRole 과 그 역할을 받은 ServiceAccount:
+    ClusterRole calico-kube-controllers  &lt;- ServiceAccount/kube-system/calico-kube-controllers
+    ClusterRole calico-node              &lt;- ServiceAccount/kube-system/calico-node</div>
+<p>&rarr; CRD <code style="font-family:Menlo,monospace;font-size:14px;">ippools.crd.projectcalico.org</code>는 crd.projectcalico.org 그룹에 IPPool이라는 클러스터 범위 종류를 v1로 등록해요. CR <code style="font-family:Menlo,monospace;font-size:14px;">default-ipv4-ippool</code>은 그 종류로 만든 오브젝트 하나이고 파드 IP 대역 10.244.0.0/16, IPIP Always, 블록 크기 26을 담고 있어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: CRD와 CR</div>
+CRD(CustomResourceDefinition)는 새 종류의 이름, 그룹, 버전, 스키마를 API 서버에 등록하는 오브젝트예요. 등록이 끝나면 그 종류도 kubectl get, apply, explain으로 내장 종류와 같은 방식으로 다뤄요. CR은 그 종류로 만든 오브젝트 하나하나예요.</div>
+
+<p>CRD만 있으면 아무 일도 일어나지 않아요. API 서버는 CR을 받아 스키마로 검증하고 etcd에 저장할 뿐이에요. 이 데이터를 읽어 일하는 쪽은 Calico 프로그램들이에요. 위 출력에서 ippools를 list·watch할 수 있는 ClusterRole은 calico-node와 calico-kube-controllers였고 각각 kube-system의 같은 이름 ServiceAccount에 붙어 있었어요. 노드마다 도는 calico-node와 클러스터에 하나만 뜬 calico-kube-controllers가 이 권한으로 IPPool을 지켜봐요. 파드 IP가 실제로 이 대역의 블록에서 나오는 과정은 31편에서 봤어요. <span class="obsv-mark">내장 종류든 CRD든 데이터와 그 데이터를 지켜보는 컨트롤러가 짝을 이뤄야 일이 일어나요.</span></p>
+
+<h2>5. Desired State Management는 컨트롤러마다 자기 몫을 맞추는 루프다</h2>
+
+<p>Desired State Management는 무엇일까요? 사용자는 원하는 상태를 오브젝트의 spec에 적고, 컨트롤러들이 지금 상태를 관찰해 그 차이를 메우는 방식이에요. 여기서 놓치기 쉬운 점은 루프가 하나가 아니라는 거예요. 각 컨트롤러는 자기가 맡은 칸만 읽고 써요. 이것을 눈으로 확인하려고 실험을 하나 더 했어요. blog-58 네임스페이스에 Deployment web을 1개로 만들고 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl scale --replicas=3</code>을 <code style="font-family:Menlo,monospace;font-size:14px;">-v=6</code>으로 보낸 뒤 오브젝트마다 managedFields(어느 작성자가 어느 칸을 마지막으로 썼는지 API 서버가 남기는 기록)를 뽑았어요. 스크립트는 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-who-writes.sh</code>예요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/58/01-who-writes.png" alt="58-who-writes.sh 실행 화면, kubectl scale이 PATCH deployments/web/scale 200 OK를 보내고 Deployment spec.replicas 3, managedFields에서 kubectl은 scale 하위 리소스로 spec.replicas를, kube-controller-manager는 ReplicaSet과 Pod와 EndpointSlice를, kubelet은 Pod status를 쓴 기록" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 4. 같은 Deployment 하나에서 출발한 칸들을 서로 다른 작성자가 나눠 썼어요.</p>
+
+<p>명령형으로 친 kubectl scale이 보낸 것은 GET 한 번과 <code style="font-family:Menlo,monospace;font-size:14px;">PATCH /apis/apps/v1/namespaces/blog-58/deployments/web/scale</code> 한 번이었어요. Deployment의 managedFields에는 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl Update scale spec.{replicas}</code>가 남았고 generation은 2로 올랐어요. 명령형 명령도 결국 spec의 한 칸을 바꾸는 요청이에요. 20편에서 컨트롤러 매니저를 멈췄을 때 scale로 올린 숫자가 Deployment spec에만 남고 아무도 따라오지 않았던 것도 이 때문이에요.</p>
+<p>그 뒤의 칸은 모두 다른 작성자가 썼어요.<br>
+&middot; ReplicaSet의 ownerReferences와 spec.replicas는 kube-controller-manager가 썼어요. Deployment 컨트롤러가 Deployment의 3을 ReplicaSet으로 옮긴 거예요.<br>
+&middot; 파드의 ownerReferences와 spec.containers도 kube-controller-manager가 썼어요. ReplicaSet 컨트롤러가 템플릿으로 파드를 만든 기록이에요.<br>
+&middot; 파드의 spec.nodeName은 managedFields가 아니라 이벤트로 확인했어요. Scheduled 이벤트를 남긴 것은 default-scheduler였어요. 스케줄러는 binding 하위 리소스로 노드를 정해요(41편).<br>
+&middot; 파드의 status는 kubelet이 썼고 annotations 일부는 calico라는 작성자가 status 하위 리소스로 썼어요. coredns 파드에서 확인한 calico의 칸은 <code style="font-family:Menlo,monospace;font-size:14px;">cni.projectcalico.org/podIP</code>, <code style="font-family:Menlo,monospace;font-size:14px;">podIPs</code>, <code style="font-family:Menlo,monospace;font-size:14px;">containerID</code> 주석이었어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/58-calico-annotations.txt</code>).<br>
+&middot; EndpointSlice의 endpoints와 ports, ownerReferences는 kube-controller-manager가 썼고 managed-by 라벨은 endpointslice-controller.k8s.io였어요.</p>
+
+<p>정리하면 Deployment 컨트롤러는 Deployment spec을 보고 ReplicaSet spec을 맞추고, ReplicaSet 컨트롤러는 ReplicaSet spec을 보고 파드 수를 맞춰요. 스케줄러는 nodeName이 빈 파드를 보고 nodeName을 채우고, kubelet은 자기 노드에 배정된 파드를 보고 실제 컨테이너와 status를 맞춰요. EndpointSlice 컨트롤러는 Service 셀렉터와 파드의 준비 상태를 보고 EndpointSlice를 맞추고 kube-proxy는 그것을 노드 규칙으로 옮겨요. 각 루프는 이벤트가 몇 번 왔는지가 아니라 지금 상태와 원하는 상태의 차이를 보고 움직여요. 39편에서 본 level-triggered 방식이에요. <span class="obsv-mark">원하는 상태 한 칸을 바꾸면 그 칸을 지켜보는 컨트롤러가 다음 오브젝트의 칸을 바꾸고, 그 칸을 또 다른 컨트롤러가 이어받아요.</span></p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="kubectl scale 한 번 뒤에 컨트롤러마다 자기 칸을 맞추는 여러 루프">
+<defs><marker id="k58-loop-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#4a7fb5" stroke-width="1.6" stroke-linecap="round"/></marker><marker id="k58-loop-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="23" fill="#3d3a34">원하는 상태 한 칸에서 시작하는 여러 루프</text>
+<path d="M255 160 C 318 160.2, 382 158.5, 445 160.4 C 445.3 183, 445.4 207, 444.4 230 C 382 230.6, 318 230.9, 255.5 230.3 C 256.9 207, 254.9 183, 255 160 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linejoin="round"/>
+<text x="350" y="190" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="22" fill="#3d3a34">API 서버 · etcd</text>
+<text x="350" y="216" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="17" fill="#8a8272">spec과 status</text>
+<path d="M25 55 C 82 55.0, 138 56.8, 195 54.6 C 193.9 73, 196.3 91, 195.2 109 C 138 107.5, 82 109.9, 25.2 108.3 C 24.0 91, 25.8 73, 25 55 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="110" y="79" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">kubectl scale</text>
+<text x="110" y="100" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">spec.replicas = 3</text>
+<path d="M505 55 C 562 55.8, 618 54.7, 675 54.3 C 676.5 73, 673.1 91, 675.0 109 C 618 108.8, 562 107.1, 504.5 109.9 C 504.4 91, 505.2 73, 505 55 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="590" y="79" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">Deployment 컨트롤러</text>
+<text x="590" y="100" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">→ RS의 spec.replicas</text>
+<path d="M505 168 C 562 167.5, 618 167.4, 675 168.4 C 676.6 186, 674.7 204, 674.8 222 C 618 221.6, 562 221.2, 505.1 221.6 C 503.2 204, 504.7 186, 505 168 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="590" y="192" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">ReplicaSet 컨트롤러</text>
+<text x="590" y="213" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">→ 파드 3개 생성</text>
+<path d="M505 281 C 562 279.6, 618 280.5, 675 280.4 C 675.5 299, 674.6 317, 675.5 335 C 618 333.7, 562 333.6, 505.4 334.2 C 505.3 317, 504.4 299, 505 281 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="590" y="305" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">스케줄러</text>
+<text x="590" y="326" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">→ 파드의 nodeName</text>
+<path d="M25 281 C 82 281.0, 138 280.4, 195 280.9 C 193.8 299, 196.6 317, 195.8 335 C 138 334.0, 82 333.2, 24.7 334.2 C 24.8 317, 25.8 299, 25 281 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="110" y="305" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">kubelet</text>
+<text x="110" y="326" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">→ 컨테이너, status</text>
+<path d="M25 168 C 82 167.8, 138 167.3, 195 167.8 C 194.2 186, 193.3 204, 195.9 222 C 138 223.4, 82 222.5, 25.0 222.6 C 23.7 204, 25.1 186, 25 168 Z" fill="#fffdf7" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="110" y="192" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="19" fill="#3d3a34">EndpointSlice 컨트롤러</text>
+<text x="110" y="213" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="15" fill="#8a8272">→ endpoints 목록</text>
+<path d="M197 92 C 224 109, 245 132, 266 156" fill="none" stroke="#4a7fb5" stroke-width="2.1" stroke-linecap="round" marker-end="url(#k58-loop-arr1)"/>
+<text x="250" y="116" text-anchor="start" font-family="Menlo,monospace" font-size="10" fill="#3d6591">PATCH …/scale</text>
+<path d="M503 92 C 476 109, 455 132, 434 156" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-start="url(#k58-loop-arr2)" marker-end="url(#k58-loop-arr2)"/>
+<path d="M503 195 C 485 199, 467 197, 449 195" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-start="url(#k58-loop-arr2)" marker-end="url(#k58-loop-arr2)"/>
+<path d="M503 305 C 476 286, 454 260, 434 234" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-start="url(#k58-loop-arr2)" marker-end="url(#k58-loop-arr2)"/>
+<path d="M197 305 C 224 286, 246 260, 266 234" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-start="url(#k58-loop-arr2)" marker-end="url(#k58-loop-arr2)"/>
+<path d="M197 195 C 215 199, 233 197, 251 195" fill="none" stroke="#3d3a34" stroke-width="2.1" stroke-linecap="round" marker-start="url(#k58-loop-arr2)" marker-end="url(#k58-loop-arr2)"/>
+<text x="350" y="364" text-anchor="middle" font-family="'Nanum Pen Script',cursive" font-size="20" fill="#b3502f">각 루프는 자기 칸의 지금 상태와 원하는 상태를 비교해요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 5. 사용자가 바꾼 것은 spec.replicas 한 칸이고 나머지는 컨트롤러마다 자기 칸을 맞춘 결과예요.</p>
+
+<h3>Deployment는 ReplicaSet을 물려받은 종류가 아니다</h3>
+<p>ReplicaSet에 배포 기능을 더한 게 Deployment일까요? 할 수 있는 일로 보면 그렇게 말할 수도 있지만 구조는 상속이 아니에요. Deployment는 ReplicaSet과 별개의 종류이고 Deployment 컨트롤러가 ReplicaSet 오브젝트를 만들어 관리해요. 그 증거가 파드의 소유자예요. obj-demo의 파드 두 개는 ownerReferences가 Deployment가 아니라 ReplicaSet을 가리켰어요. 템플릿을 바꾸면 Deployment 컨트롤러는 기존 ReplicaSet을 고치지 않고 새 pod-template-hash로 ReplicaSet을 하나 더 만든 뒤 두 ReplicaSet의 replicas를 조절해 옮겨 가요. 이미지를 바꿨을 때 revision 2의 새 ReplicaSet이 2개를, 옛 ReplicaSet이 0개를 맡는 모습은 60편에서 확인해요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 이 칸은 누가 썼는지 확인하는 법</div>
+<code style="font-family:Menlo,monospace;font-size:14px;">kubectl get &lt;종류&gt; &lt;이름&gt; -o yaml --show-managed-fields</code>로 managedFields를 함께 봐요. 이 옵션 없이 <code style="font-family:Menlo,monospace;font-size:14px;">-o yaml</code>이나 <code style="font-family:Menlo,monospace;font-size:14px;">-o json</code>으로 보면 managedFields가 출력에서 빠져요. manager가 작성자 이름이고 subresource가 status나 scale이면 그 하위 리소스로 쓴 기록이에요. ownerReferences(누가 만들었나), managed-by 라벨, 이벤트를 남긴 구성 요소와 함께 보면 그 화살표를 맡은 프로그램을 대부분 찾을 수 있어요.</div>
+
+<h2>6. 새 관계도를 만나면 세 가지를 묻고 화살표별 자세한 내용은 각 편에서 본다</h2>
+
+<p>이 글의 방법은 다른 그림에도 그대로 쓸 수 있어요. 상자마다 "API 서버에 있는 종류인가"를 api-resources와 explain으로 묻고, 화살표마다 "누가 무엇을 읽고 무엇을 쓰나"를 ownerReferences, managed-by 라벨, managedFields, 이벤트로 물어요. 마지막으로 "결과가 status에 나타났나"를 conditions로 물어요. 세 번째 질문에서 빈 칸이 나오면 두 번째 질문의 프로그램이 없거나 막혀 있는 경우가 많았어요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">화살표 또는 주제</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">이 글에서 본 증거</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">자세히 보는 편</th></tr></thead>
+<tbody>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">apiVersion·kind·spec과 저장 전 검증</td><td style="padding:9px;border:1px solid #d8cfba;">extensions/v1beta1 Deployment 거절</td><td style="padding:9px;border:1px solid #d8cfba;">59편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Deployment → ReplicaSet → Pod, 라벨 셀렉터</td><td style="padding:9px;border:1px solid #d8cfba;">ownerReferences, pod-template-hash</td><td style="padding:9px;border:1px solid #d8cfba;">60편, 42편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Pod 상자 안: 컨테이너끼리 공유하는 것</td><td style="padding:9px;border:1px solid #d8cfba;">관계도에서는 상자 하나</td><td style="padding:9px;border:1px solid #d8cfba;">61편, 43편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">배포가 끝났다는 판단</td><td style="padding:9px;border:1px solid #d8cfba;">Deployment status</td><td style="padding:9px;border:1px solid #d8cfba;">62편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">파드의 phase와 conditions</td><td style="padding:9px;border:1px solid #d8cfba;">파드 status를 kubelet이 씀</td><td style="padding:9px;border:1px solid #d8cfba;">63편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">파드를 지우는 데 30초가 걸리는 경우</td><td style="padding:9px;border:1px solid #d8cfba;">컨테이너 PID 1과 신호</td><td style="padding:9px;border:1px solid #d8cfba;">64편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Job과 사이드카</td><td style="padding:9px;border:1px solid #d8cfba;">끝나지 않는 Job</td><td style="padding:9px;border:1px solid #d8cfba;">68편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">HPA와 API 버전</td><td style="padding:9px;border:1px solid #d8cfba;">autoscaling/v1 Scale, autoscaling/v2 HPA</td><td style="padding:9px;border:1px solid #d8cfba;">72편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Service → EndpointSlice → 노드 규칙</td><td style="padding:9px;border:1px solid #d8cfba;">owner=Service, managed-by</td><td style="padding:9px;border:1px solid #d8cfba;">28편, 47편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">StorageClass → provisioner → PV</td><td style="padding:9px;border:1px solid #d8cfba;">rancher.io/local-path</td><td style="padding:9px;border:1px solid #d8cfba;">16편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">Role·RoleBinding·ServiceAccount</td><td style="padding:9px;border:1px solid #d8cfba;">can-i no → yes, delete no</td><td style="padding:9px;border:1px solid #d8cfba;">10편, 32편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">CRD와 그 컨트롤러</td><td style="padding:9px;border:1px solid #d8cfba;">IPPool, calico-node</td><td style="padding:9px;border:1px solid #d8cfba;">20편, 30편, 31편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">구성 요소 전체 그림</td><td style="padding:9px;border:1px solid #d8cfba;">컨트롤 플레인과 노드 구성 요소</td><td style="padding:9px;border:1px solid #d8cfba;">1편, 2편, 19편</td></tr>
+</tbody>
+</table></div>
+
+<p><b>출처</b> &middot; <a href="https://kubernetes.io/docs/concepts/architecture/controller/">Controllers</a> &middot; <a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/owners-dependents/">Owners and Dependents</a> &middot; <a href="https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/">Custom Resources</a> &middot; <a href="https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/">Ingress Controllers</a> &middot; <a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">Horizontal Pod Autoscaling</a> &middot; <a href="https://kubernetes.io/docs/reference/using-api/server-side-apply/">Server-Side Apply(managedFields)</a></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">📝 정리</div>
+<p>오브젝트 관계도의 상자는 etcd에 저장된 데이터이고 화살표는 그 데이터를 읽고 쓰는 프로그램이에요. 실습 클러스터에서 확인하니 Volume은 오브젝트가 아니라 pod.spec.volumes 필드였고 Secret과 ConfigMap 사이에는 확장 관계가 없었어요.</p>
+<p>Deployment → ReplicaSet → Pod는 컨트롤러 매니저가 ownerReferences로 이었고, Service와 Pod 사이에는 EndpointSlice 컨트롤러와 kube-proxy가, StorageClass와 PV 사이에는 provisioner가 있었어요. Ingress 컨트롤러와 metrics-server가 없는 화살표에서는 만들기가 성공한 뒤에도 빈 ADDRESS와 ScalingActive=False만 남았어요. CRD도 같아서 IPPool은 calico-node와 calico-kube-controllers가 지켜볼 때 의미가 생겨요.</p>
+<p style="margin-bottom:0;">kubectl scale도 /scale에 PATCH를 보내 spec 한 칸을 바꿀 뿐이고, 그 뒤는 컨트롤러마다 자기 칸을 맞추는 루프가 이어받아요. 만들었는데 아무 일도 없으면 그 화살표를 맡은 프로그램이 있는지부터 봐야 해요.</p>
+</div>
+</div>
