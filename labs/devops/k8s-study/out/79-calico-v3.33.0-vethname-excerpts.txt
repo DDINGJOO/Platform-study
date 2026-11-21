@@ -1,0 +1,49 @@
+# Calico v3.33.0 소스 발췌: 파드 쪽 veth 의 호스트 이름(caliXXXXXXXXXXX)을 정하는 코드 (2026-11-21 확인)
+# 줄 번호는 v3.33.0 태그 기준. 내용은 원문 그대로 옮겼다.
+
+## 파드 객체를 WorkloadEndpoint 로 바꿀 때 인터페이스 이름 계산
+# https://github.com/projectcalico/calico/blob/v3.33.0/libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go
+   75  // VethNameForWorkload returns a deterministic veth name
+   76  // for the given Kubernetes workload (WEP) name and namespace.
+   77  func (wc defaultWorkloadEndpointConverter) VethNameForWorkload(namespace, podname string) string {
+   78  	// A SHA1 is always 20 bytes long, and so is sufficient for generating the
+   79  	// veth name and mac addr.
+   80  	h := sha1.New()
+   81  	h.Write(fmt.Appendf(nil, "%s.%s", namespace, podname))
+   82  	prefix := os.Getenv("FELIX_INTERFACEPREFIX")
+   83  	if prefix == "" {
+   84  		// Prefix is not set. Default to "cali"
+   85  		prefix = "cali"
+   86  	} else {
+   87  		// Prefix is set - use the first value in the list.
+   88  		splits := strings.Split(prefix, ",")
+   89  		prefix = splits[0]
+   90  	}
+   91  	log.WithField("prefix", prefix).Debugf("Using prefix to create a WorkloadEndpoint veth name")
+   92  	return fmt.Sprintf("%s%s", prefix, hex.EncodeToString(h.Sum(nil))[:11])
+   93  }
+  ...
+  153  	// Generate the interface name based on workload.  This must match
+  154  	// the host-side veth configured by the CNI plugin.
+  155  	interfaceName := wc.VethNameForWorkload(pod.Namespace, pod.Name)
+  156  
+  ...
+  250  		Pod:                        pod.Name,
+  251  		ContainerID:                containerID,
+  252  		Endpoint:                   "eth0",
+  253  		InterfaceName:              interfaceName,
+  254  		Profiles:                   profiles,
+
+## CNI ADD 에서 veth 를 만들 때 같은 함수로 이름을 정함
+# https://github.com/projectcalico/calico/blob/v3.33.0/cni-plugin/pkg/k8s/k8s.go
+  437  	// Whether the endpoint existed or not, the veth needs (re)creating.
+  438  	desiredVethName := k8sconversion.NewConverter().VethNameForWorkload(epIDs.Namespace, epIDs.Pod)
+  439  	hostVethName, contVethMac, err := d.DoNetworking(
+  440  		ctx, calicoClient, args, result, desiredVethName, routes, endpoint, annot, skipHostSideRoutes)
+  441  	if err != nil {
+  ...
+  452  	}
+  453  	endpoint.Spec.MAC = mac.String()
+  454  	endpoint.Spec.InterfaceName = hostVethName
+  455  	endpoint.Spec.ContainerID = epIDs.ContainerID
+  456  	logger.WithField("endpoint", endpoint).Info("Added Mac, interface name, and active container ID to endpoint")

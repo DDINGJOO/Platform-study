@@ -1,0 +1,234 @@
+# 80편이 인용하는 1차 자료 발췌 (받은 날 2026-11-21, curl 로 원문을 받아 해당 줄만 옮김)
+
+## kube-proxy v1.37.2 pkg/proxy/conntrack/cleanup.go (줄 37~)
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/conntrack/cleanup.go
+// Kubernetes UDP services can be affected by stale conntrack entries.
+// These entries may point to endpoints that no longer exist,
+// leading to packet loss and connectivity problems.
+
+// CleanStaleEntries scans conntrack table and removes any entries
+// for a service that do not correspond to a serving endpoint.
+// List existing conntrack entries and calculate the desired conntrack state
+// based on the current Services and Endpoints.
+func CleanStaleEntries(ct Interface, ipFamily v1.IPFamily,
+	svcPortMap proxy.ServicePortMap, endpointsMap proxy.EndpointsMap) {
+
+	...
+	for svcName, svc := range svcPortMap {
+		// we are only interested in UDP services
+		if svc.Protocol() != v1.ProtocolUDP {
+			continue
+		}
+	...
+	for _, entry := range entries {
+		// we only deal with UDP protocol entries
+		if entry.Forward.Protocol != unix.IPPROTO_UDP {
+			continue
+		}
+
+## Linux v6.8 net/netfilter/nf_conntrack_proto_tcp.c
+# https://github.com/torvalds/linux/blob/v6.8/net/netfilter/nf_conntrack_proto_tcp.c
+
+static const unsigned int tcp_timeouts[TCP_CONNTRACK_TIMEOUT_MAX] = {
+	[TCP_CONNTRACK_SYN_SENT]	= 2 MINS,
+	[TCP_CONNTRACK_SYN_RECV]	= 60 SECS,
+	[TCP_CONNTRACK_ESTABLISHED]	= 5 DAYS,
+	[TCP_CONNTRACK_FIN_WAIT]	= 2 MINS,
+	[TCP_CONNTRACK_CLOSE_WAIT]	= 60 SECS,
+	[TCP_CONNTRACK_LAST_ACK]	= 30 SECS,
+	[TCP_CONNTRACK_TIME_WAIT]	= 2 MINS,
+	[TCP_CONNTRACK_CLOSE]		= 10 SECS,
+	[TCP_CONNTRACK_SYN_SENT2]	= 2 MINS,
+	...
+static const u8 tcp_conntracks[2][6][TCP_CONNTRACK_MAX] = {
+	{
+/* ORIGINAL */
+/* 	     sNO, sSS, sSR, sES, sFW, sCW, sLA, sTW, sCL, sS2	*/
+/*syn*/	   { sSS, sSS, sIG, sIG, sIG, sIG, sIG, sSS, sSS, sS2 },
+/*
+ *	sNO -> sSS	Initialize a new connection
+ *	sSS -> sSS	Retransmitted SYN
+ *	sS2 -> sS2	Late retransmitted SYN
+ *	sSR -> sIG
+ *	sES -> sIG	Error: SYNs in window outside the SYN_SENT state
+ *			are errors. Receiver will reply with RST
+ *			and close the connection.
+ *			Or we are not in sync and hold a dead connection.
+ *	sFW -> sIG
+ *	sCW -> sIG
+ *	sLA -> sIG
+ *	sTW -> sSS	Reopened connection (RFC 1122).
+ *	sCL -> sSS
+ */
+
+## Linux v6.8 net/ipv4/inet_hashtables.c (__inet_hash_connect, connect 가 출발 포트를 고르는 곳)
+# https://github.com/torvalds/linux/blob/v6.8/net/ipv4/inet_hashtables.c
+	offset = READ_ONCE(table_perturb[index]) + (port_offset >> 32);
+	offset %= remaining;
+
+	/* In first pass we try ports of @low parity.
+	 * inet_csk_get_port() does the opposite choice.
+	 */
+	if (!local_ports)
+		offset &= ~1U;
+other_parity_scan:
+	...
+
+	if (!local_ports) {
+		offset++;
+		if ((offset & 1) && remaining > 1)
+			goto other_parity_scan;
+	}
+
+## Linux v6.8 include/net/tcp.h (TIME_WAIT 길이)
+# https://github.com/torvalds/linux/blob/v6.8/include/net/tcp.h
+#define TCP_TIMEWAIT_LEN (60*HZ) /* how long to wait to destroy TIME-WAIT
+				  * state, about 60 seconds	*/
+
+## kubernetes.io Termination of Pods (website main, pod-termination.md)
+# https://github.com/kubernetes/website/blob/main/content/en/docs/concepts/workloads/pods/pod-termination.md
+1. At the same time as the kubelet is starting graceful shutdown of the Pod, the control plane
+   evaluates whether to remove that shutting-down Pod from EndpointSlice objects,
+   where those objects represent a {{< glossary_tooltip term_id="service" text="Service" >}}
+   with a configured {{< glossary_tooltip text="selector" term_id="selector" >}}.
+   {{< glossary_tooltip text="ReplicaSets" term_id="replica-set" >}} and other workload resources
+   no longer treat the shutting-down Pod as a valid, in-service replica.
+
+   Pods that shut down slowly should not continue to serve regular traffic and should start
+   terminating and finish processing open connections.  Some applications need to go beyond
+   finishing open connections and need more graceful termination, for example, session draining
+   and completion.
+
+   Any endpoints that represent the terminating Pods are not immediately removed from
+   EndpointSlices, and a status indicating [terminating state](/docs/concepts/services-networking/endpoint-slices/#conditions)
+   is exposed from the EndpointSlice API.
+   Terminating endpoints always have their `ready` status as `false` (for backward compatibility
+   with versions before 1.26), so load balancers will not use it for regular traffic.
+
+   If traffic draining on terminating Pod is needed, the actual readiness can be checked as a
+   condition `serving`.  You can find more details on how to implement connections draining in the
+   tutorial [Pods And Endpoints Termination Flow](/docs/tutorials/services/pods-and-endpoint-termination-flow/)
+
+## kubernetes.io EndpointSlices, Conditions (website main, endpoint-slices.md)
+# https://github.com/kubernetes/website/blob/main/content/en/docs/concepts/services-networking/endpoint-slices.md
+
+The EndpointSlice API stores conditions about endpoints that may be useful for consumers.
+The three conditions are `serving`, `terminating`, and `ready`.
+
+#### Serving
+
+{{< feature-state for_k8s_version="v1.26" state="stable" >}}
+
+The `serving` condition indicates that the endpoint is currently serving responses, and
+so it should be used as a target for Service traffic. For endpoints backed by a Pod, this
+maps to the Pod's `Ready` condition.
+
+#### Terminating
+
+{{< feature-state for_k8s_version="v1.26" state="stable" >}}
+
+The `terminating` condition indicates that the endpoint is
+terminating. For endpoints backed by a Pod, this condition is set when
+the Pod is first deleted (that is, when it receives a deletion
+timestamp, but most likely before the Pod's containers exit).
+
+Service proxies will normally ignore endpoints that are `terminating`,
+but they may route traffic to endpoints that are both `serving` and
+`terminating` if all available endpoints are `terminating`. (This
+helps to ensure that no Service traffic is lost during rolling updates
+of the underlying Pods.)
+
+#### Ready
+
+The `ready` condition is essentially a shortcut for checking
+"`serving` and not `terminating`" (though it will also always be
+`true` for Services with `spec.publishNotReadyAddresses` set to
+
+## CoreDNS kubernetes 플러그인 README (ttl), cache 플러그인 README (disable)
+# https://github.com/coredns/coredns/blob/master/plugin/kubernetes/README.md
+* `ttl` allows you to set a custom TTL for responses. The default is 5 seconds.  The minimum TTL allowed is
+  0 seconds, and the maximum is capped at 3600 seconds. Setting TTL to 0 will prevent records from being cached.
+# https://github.com/coredns/coredns/blob/master/plugin/cache/README.md
+* `disable`  disable the success or denial cache for the listed **ZONES**.  If no **ZONES** are given, the specified
+  cache will be disabled for all zones.
+
+## AWS Load Balancer Controller, Pod readiness gate
+# https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/deploy/pod_readiness_gate.md
+The pod readiness gate is needed under certain circumstances to achieve full zero downtime rolling deployments. Consider the following example:
+
+* Low number of replicas in a deployment
+* Start a rolling update of the deployment
+* Rollout of new pods takes less time than it takes the AWS Load Balancer controller to register the new pods and for their health state to become »Healthy« in the target group
+* At some point during this rolling update, the target group might only have registered targets that are in »Initial« or »Draining« state; this results in service outage
+
+In order to avoid this situation, the AWS Load Balancer controller can set the readiness condition on the pods that constitute your ingress or service backend. The condition status on a pod will be set to `True` only when the corresponding target in the ALB/NLB target group shows a health state of »Healthy«.
+This prevents the rolling update of a deployment from terminating old pods until the newly created pods are »Healthy« in the ALB/NLB target group and ready to take traffic.
+
+
+## AWS ELB 문서, Target group attributes: Deregistration delay
+# https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-target-group-attributes.html
+Deregistration delay Elastic Load Balancing stops sending requests to targets that are deregistering. By
+default, Elastic Load Balancing waits 300 seconds before completing the deregistration process, which can help
+in-flight requests to the target to complete. To change the amount of time that Elastic Load Balancing waits,
+update the deregistration delay value. The initial state of a deregistering target is draining . After the
+deregistration delay elapses, the deregistration process completes and the state of the target is unused . If
+the target is part of an Auto Scaling group, it can be terminated and replaced. If a deregistering target has
+no in-flight requests and no active connections, Elastic Load Balancing immediately completes the
+deregistration process, without waiting for the deregistration delay to elapse. However, even though target
+deregistration is complete, the status of the target is displayed as draining until the deregistration delay
+timeout expires. After the timeout expires, the target transitions to an unused state. If a deregistering
+target terminates the connection before the deregistration delay elapses, the client receives a 500-level
+error response.
+
+
+## Linux v6.8 net/netfilter/nf_conntrack_proto_tcp.c, tcp_packet() 의 SYN 처리 분기 (줄 990~1030, 감사 보강)
+# https://github.com/torvalds/linux/blob/v6.8/net/netfilter/nf_conntrack_proto_tcp.c
+	old_state = ct->proto.tcp.state;
+	dir = CTINFO2DIR(ctinfo);
+	index = get_conntrack_index(th);
+	new_state = tcp_conntracks[dir][index][old_state];
+
+	switch (new_state) {
+	case TCP_CONNTRACK_SYN_SENT:
+		if (old_state < TCP_CONNTRACK_TIME_WAIT)
+			break;
+		/* RFC 1122: "When a connection is closed actively,
+		 * it MUST linger in TIME-WAIT state for a time 2xMSL
+		 * (Maximum Segment Lifetime). However, it MAY accept
+		 * a new SYN from the remote TCP to reopen the connection
+		 * directly from TIME-WAIT state, if..."
+		 * We ignore the conditions because we are in the
+		 * TIME-WAIT state anyway.
+		 *
+		 * Handle aborted connections: we and the server
+		 * think there is an existing connection but the client
+		 * aborts it and starts a new one.
+		 */
+		if (((ct->proto.tcp.seen[dir].flags
+		      | ct->proto.tcp.seen[!dir].flags)
+		     & IP_CT_TCP_FLAG_CLOSE_INIT)
+		    || (ct->proto.tcp.last_dir == dir
+		        && ct->proto.tcp.last_index == TCP_RST_SET)) {
+			/* Attempt to reopen a closed/aborted connection.
+			 * Delete this connection and look up again. */
+			spin_unlock_bh(&ct->lock);
+
+			/* Only repeat if we can actually remove the timer.
+			 * Destruction may already be in progress in process
+			 * context and we must give it a chance to terminate.
+			 */
+			if (nf_ct_kill(ct))
+				return -NF_REPEAT;
+			return NF_DROP;
+		}
+		fallthrough;
+	case TCP_CONNTRACK_IGNORE:
+		/* Ignored packets:
+
+## AWS Load Balancer Controller, Pod readiness gate (네임스페이스 라벨과 target-type ip, 감사 보강)
+# https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/deploy/pod_readiness_gate.md
+For readiness gate configuration to be injected to the pod spec, you need to apply the label `elbv2.k8s.aws/pod-readiness-gate-inject: enabled` to the pod namespace. However, note that this only works with `target-type: ip`, since when using `target-type: instance`, it's the node used as backend, the ALB itself is not aware of pod/podReadiness in such case.
+
+## nginx 문서, Controlling nginx (신호, 감사 보강)
+# https://nginx.org/en/docs/control.html
+TERM, INT fast shutdown / QUIT graceful shutdown

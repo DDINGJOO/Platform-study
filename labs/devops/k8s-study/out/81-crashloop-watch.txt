@@ -1,0 +1,67 @@
+# 81 CrashLoopBackOff 를 watch 로 보기 (2026-11-21 19:31:07 KST), 노드 k8s-worker3
+
+## A. 노드 kubelet 의 백오프 관련 설정과 기능 게이트 (configz, metrics 를 읽기만 함)
+  syncFrequency=1m0s crashLoopBackOff={'maxContainerRestartPeriod': '5m0s'} featureGates=None
+  kubernetes_feature_enabled{name="ContainerRestartRules",stage="BETA"} 1
+  kubernetes_feature_enabled{name="EventedPLEG",stage="ALPHA"} 0
+  kubernetes_feature_enabled{name="KubeletCrashLoopBackOffMax",stage="BETA"} 1
+  kubernetes_feature_enabled{name="ReduceDefaultCrashLoopBackOffDecay",stage="ALPHA"} 0
+
+## B. restartPolicy Always, 2초 뒤 exit 1 (watch 이벤트마다 한 줄, 경과는 Mac 시계, 약 150초)
+  [STATUS열] = kubectl get 기본 표(EVENT NAME READY STATUS RESTARTS AGE)
+  [필드]     = phase  Ready  restartCount  state.waiting.reason  state.terminated.reason  state.terminated.finishedAt  state.running.startedAt
+  +  2.1s [STATUS열] ADDED      crashy   0/1   Pending   0     0s
+  +  2.1s [STATUS열] MODIFIED   crashy   0/1   ContainerCreating   0     0s
+  +  2.1s [필드] Pending   <none>   <none>   <none>   <none>   <none>   <none>
+  +  2.1s [필드] Pending   False    0        ContainerCreating   <none>   <none>   <none>
+  +  2.5s [STATUS열] MODIFIED   crashy   0/1   ContainerCreating   0     0s
+  +  2.5s [필드] Pending   False    0        ContainerCreating   <none>   <none>   <none>
+  +  2.6s [STATUS열] MODIFIED   crashy   0/1   ContainerCreating   0     0s
+  +  2.6s [STATUS열] MODIFIED   crashy   1/1   Running             0     0s
+  +  2.6s [필드] Pending   False    0        ContainerCreating   <none>   <none>   <none>
+  +  2.6s [필드] Running   True     0        <none>              <none>   <none>   2026-11-21T10:31:10Z
+  +  5.2s [STATUS열] MODIFIED   crashy   0/1   Error               0     3s
+  +  5.2s [필드] Running   False    0        <none>              Error    2026-11-21T10:31:12Z   <none>
+  +  5.3s [STATUS열] MODIFIED   crashy   1/1   Running             1 (1s ago)   3s
+  +  5.3s [필드] Running   True     1        <none>              <none>   <none>                 2026-11-21T10:31:13Z
+  +  8.2s [STATUS열] MODIFIED   crashy   0/1   Error               1 (4s ago)   6s
+  +  8.2s [필드] Running   False    1        <none>              Error    2026-11-21T10:31:15Z   <none>
+  + 18.3s [STATUS열] MODIFIED   crashy   0/1   CrashLoopBackOff    1 (11s ago)   16s
+  + 18.3s [필드] Running   False    1        CrashLoopBackOff    <none>   <none>                 <none>
+  + 18.4s [STATUS열] MODIFIED   crashy   1/1   Running             2 (11s ago)   16s
+  + 18.4s [필드] Running   True     2        <none>              <none>   <none>                 2026-11-21T10:31:26Z
+  + 21.3s [STATUS열] MODIFIED   crashy   0/1   Error               2 (14s ago)   19s
+  + 21.3s [필드] Running   False    2        <none>              Error    2026-11-21T10:31:28Z   <none>
+  + 48.3s [STATUS열] MODIFIED   crashy   0/1   CrashLoopBackOff    2 (28s ago)   46s
+  + 48.3s [필드] Running   False    2        CrashLoopBackOff    <none>   <none>                 <none>
+  + 48.4s [STATUS열] MODIFIED   crashy   1/1   Running             3 (28s ago)   46s
+  + 48.4s [필드] Running   True     3        <none>              <none>   <none>                 2026-11-21T10:31:56Z
+  + 51.3s [STATUS열] MODIFIED   crashy   0/1   Error               3 (31s ago)   49s
+  + 51.3s [필드] Running   False    3        <none>              Error    2026-11-21T10:31:58Z   <none>
+  +107.3s [STATUS열] MODIFIED   crashy   0/1   CrashLoopBackOff    3 (57s ago)   105s
+  +107.3s [필드] Running   False    3        CrashLoopBackOff    <none>   <none>                 <none>
+  +107.4s [STATUS열] MODIFIED   crashy   1/1   Running             4 (57s ago)   105s
+  +107.4s [필드] Running   True     4        <none>              <none>   <none>                 2026-11-21T10:32:55Z
+  +109.5s [STATUS열] MODIFIED   crashy   0/1   Error               4 (59s ago)   107s
+  +109.5s [필드] Running   False    4        <none>              Error    2026-11-21T10:32:57Z   <none>
+
+  컨테이너가 끝난 시각 → 다시 시작한 시각 (위 [필드] 의 finishedAt 과 startedAt 을 짝지음, 초 단위)
+    2026-11-21T10:31:12Z → 2026-11-21T10:31:13Z    1초
+    2026-11-21T10:31:15Z → 2026-11-21T10:31:26Z   11초
+    2026-11-21T10:31:28Z → 2026-11-21T10:31:56Z   28초
+    2026-11-21T10:31:58Z → 2026-11-21T10:32:55Z   57초
+    2026-11-21T10:32:57Z → (관찰 시간 안에 다시 시작하지 않음)
+
+  BackOff 이벤트: count=4 first=2026-11-21T10:31:16Z last=2026-11-21T10:32:57Z
+
+## C. 같은 컨테이너를 restartPolicy 만 바꿔 실행한 파드 (생성 약 150초 뒤)
+  [STATUS열] onfailure 0/1 Error restarts=4
+  [STATUS열] never 0/1 Error restarts=0
+  [필드] onfailure phase=Running Ready=False restartCount=4 lastExit=1 exit=1
+  [필드] never phase=Failed Ready=False restartCount=0 lastExit= exit=1
+
+## D. 스케줄할 수 없는 파드의 conditions (모든 필드)
+  type=PodScheduled status=False reason=Unschedulable lastProbeTime=null lastTransitionTime=2026-11-21T10:31:10Z
+  phase=Pending
+
+  정리: Error from server (NotFound): namespaces "blog-81" not found

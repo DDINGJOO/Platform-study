@@ -1,0 +1,48 @@
+# 26 노드 간 경로 (2026-11-21 12:15:56 KST)
+
+## Calico 가 노드마다 나눠 준 파드 블록 (blockaffinities CR = 클러스터에 저장된 원본)
+  NODE        CIDR                STATE
+k8s-master    10.244.235.192/26   confirmed
+k8s-worker1   10.244.194.64/26    confirmed
+k8s-worker2   10.244.126.0/26     confirmed
+k8s-worker3   10.244.100.192/26   confirmed
+
+## 노드 IP
+  NODE        INTERNAL-IP
+k8s-master    192.168.104.1
+k8s-worker1   192.168.104.3
+k8s-worker2   192.168.104.4
+k8s-worker3   192.168.104.5
+
+## k8s-master 의 커널 라우팅 표 중 파드 대역
+  10.244.100.192/26 via 192.168.104.5 dev tunl0 proto 80 onlink mtu 1480 
+  10.244.126.0/26 via 192.168.104.4 dev tunl0 proto 80 onlink mtu 1480 
+  10.244.194.64/26 via 192.168.104.3 dev tunl0 proto 80 onlink mtu 1480 
+  blackhole 10.244.235.192/26 proto 80 
+  (자기 파드 /32 경로 수: 2)
+
+## k8s-worker1 의 커널 라우팅 표 중 파드 대역
+  10.244.100.192/26 via 192.168.104.5 dev tunl0 proto 80 onlink mtu 1480 
+  10.244.126.0/26 via 192.168.104.4 dev tunl0 proto 80 onlink mtu 1480 
+  blackhole 10.244.194.64/26 proto 80 
+  10.244.235.192/26 via 192.168.104.1 dev tunl0 proto 80 onlink mtu 1480 
+  (자기 파드 /32 경로 수: 0)
+
+## k8s-worker2 의 커널 라우팅 표 중 파드 대역
+  10.244.100.192/26 via 192.168.104.5 dev tunl0 proto 80 onlink mtu 1480 
+  blackhole 10.244.126.0/26 proto 80 
+  10.244.194.64/26 via 192.168.104.3 dev tunl0 proto 80 onlink mtu 1480 
+  10.244.235.192/26 via 192.168.104.1 dev tunl0 proto 80 onlink mtu 1480 
+  (자기 파드 /32 경로 수: 2)
+
+## k8s-worker3 의 커널 라우팅 표 중 파드 대역
+  blackhole 10.244.100.192/26 proto 80 
+  10.244.126.0/26 via 192.168.104.4 dev tunl0 proto 80 onlink mtu 1480 
+  10.244.194.64/26 via 192.168.104.3 dev tunl0 proto 80 onlink mtu 1480 
+  10.244.235.192/26 via 192.168.104.1 dev tunl0 proto 80 onlink mtu 1480 
+  (자기 파드 /32 경로 수: 0)
+
+## 경로를 누가 넣나: proto 번호와 노드의 BGP 데몬
+  /etc/iproute2/rt_protos:12	bird
+  2772 bird -R -s /var/run/calico/bird.ctl -d -c /etc/calico/confd/config/bird.cfg
+  2773 bird6 -R -s /var/run/calico/bird6.ctl -d -c /etc/calico/confd/config/bird6.cfg

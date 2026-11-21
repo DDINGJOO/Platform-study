@@ -1,0 +1,256 @@
+<!-- ============================================================
+  k8s 스터디 76편: 파드 하나가 만들어지고 지워지기까지 무엇이 바뀔까, 생명주기 지도
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: Deployment를 apply하고 0.9초 만에 파드 IP가 EndpointSlice에 들어갔고, 파드를 지우자 1초 만에 UID가 다른 파드가 자리를 채웠어요. 만들기부터 지우기까지 단계마다 무엇이 바뀌고 누가 바꾸는지 지도로 정리했어요. -->
+<!-- tags: 파드 생명주기, EndpointSlice, kubelet, kube-proxy, nodeName, CrashLoopBackOff, 파드 삭제 -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 76편</div>
+  74편. API 버전을 지워도 etcd의 옛 데이터는 어떻게 될까, storage version과 StorageVersionMigration<br>
+  75편. 업그레이드 전에 deprecated API를 누가 쓰는지 찾는 법<br>
+  <b>76편. 파드 하나가 만들어지고 지워지기까지 무엇이 바뀔까, 생명주기 지도</b> &larr; 지금 이 글<br>
+  77편. env로 넣은 비밀번호는 왜 kubectl describe에 보일까, Secret과 secretKeyRef<br>
+  78편. Service는 파드를 어떻게 찾고 파드 IP·ClusterIP·externalIP는 어디서 닿을까
+</div>
+
+<p>replicas 1인 Deployment와 Service 하나를 apply하고 그 순간을 0으로 놓은 뒤 파드와 EndpointSlice를 계속 읽었어요. +0.2초에 파드는 이미 worker3에 배정돼 있었지만 IP는 비어 있었어요. +0.9초에 IP 10.244.100.249를 받고 Running, Ready가 됐고 같은 관측에서 EndpointSlice에도 그 주소가 ready로 들어가 있었어요.</p>
+<p>컨테이너의 PID 1에 SIGTERM을 보내자 +1.0초에 재시작 횟수가 1로 올라 있었어요. UID도 IP도 노드도 그대로였어요. 이번에는 파드를 지웠어요. +0.2초에 옛 파드는 삭제 중이었고 EndpointSlice에는 terminating으로 남았어요. 그 옆에 ReplicaSet이 만든 새 파드가 이미 있었어요. +2.0초에는 새 파드만 남았고 IP도 UID도 달랐어요. 옛 IP로 가는 노드의 경로와 마스터의 iptables 규칙은 사라졌어요.</p>
+<p>세 구간 모두 2초 안에 끝났고 그사이 바뀐 것은 객체의 칸 몇 개와 노드의 규칙 몇 줄이었어요. 그것을 바꾼 프로그램은 매번 달랐어요. 이 글은 파드의 일생을 다섯 단계로 나눠 단계마다 무엇이 바뀌고 누가 바꾸는지, 어느 편에서 자세히 보는지를 한 장의 지도로 모아요. 실험은 Lima VM 4대(마스터 1, 워커 3)에 올린 kubeadm v1.37.2, Calico v3.33.0 IPIP, kube-proxy iptables 모드에서 했어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/76-pod-lifecycle-ledger.txt</code>, 같은 이름의 .sh).</p>
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 파드의 일생은 어떤 단계로 나눠 보면 좋을까?<br>
+&middot; 파드가 만들어질 때 어떤 칸을 누가 채울까?<br>
+&middot; 라벨·Service·IP의 관계를 정확히 알아야 한다는데 무엇을 알아야 할까?<br>
+&middot; 파드는 한 번 스케줄되면 그 노드에서만 살까?<br>
+&middot; 파드를 지울 때는 무엇이 어떤 순서로 사라질까?</p>
+
+<h2>1. 파드의 일생을 다섯 단계로 나누면 장애가 어느 단계의 일인지 보인다</h2>
+
+<p>"파드가 안 돼요"라는 말은 너무 넓어요. 객체가 안 만들어졌는지, 만들어졌는데 컨테이너가 죽는지, 떠 있는데 Service로 안 닿는지, 지우는 중에 요청이 끊기는지에 따라 볼 곳이 전혀 달라요. 그래서 파드 하나의 일생을 만들기, 연결, 통신, 다시 띄우기, 지우기로 나눴어요. 58편의 관계도가 오브젝트 사이의 화살표마다 일하는 컨트롤러를 찾았다면 이 지도는 시간 순서로 파드 하나를 따라가요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 470" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="파드 생명주기 다섯 단계: 만들기, 연결, 통신, 다시 띄우기, 지우기와 단계마다 바뀌는 것과 바꾸는 쪽">
+<defs><marker id="k76-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M40 30 C 90 27, 150 31, 196 28 C 199 46, 198 66, 197 86 C 150 89, 90 85, 42 87 C 39 66, 40 48, 40 30 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+<path d="M40 112 C 90 109, 150 113, 196 110 C 199 128, 198 148, 197 168 C 150 171, 90 167, 42 169 C 39 148, 40 130, 40 112 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+<path d="M40 194 C 90 191, 150 195, 196 192 C 199 210, 198 230, 197 250 C 150 253, 90 249, 42 251 C 39 230, 40 212, 40 194 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+<path d="M40 276 C 90 273, 150 277, 196 274 C 199 292, 198 312, 197 332 C 150 335, 90 331, 42 333 C 39 312, 40 294, 40 276 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.6" stroke-linejoin="round"/>
+<path d="M40 358 C 90 355, 150 359, 196 356 C 199 374, 198 394, 197 414 C 150 417, 90 413, 42 415 C 39 394, 40 376, 40 358 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34" text-anchor="middle">
+<text x="118" y="66">① 만들기</text><text x="118" y="148">② 연결</text><text x="118" y="230">③ 통신</text><text x="118" y="312">④ 다시 띄우기</text><text x="118" y="394">⑤ 지우기</text>
+</g>
+<path d="M118 90 C 120 96, 116 102, 118 108" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k76-arr1)"/>
+<path d="M118 172 C 120 178, 116 184, 118 190" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k76-arr1)"/>
+<path d="M118 254 C 120 260, 116 266, 118 272" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k76-arr1)"/>
+<path d="M118 336 C 120 342, 116 348, 118 354" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k76-arr1)"/>
+<path d="M38 318 C 14 312, 12 292, 36 288" fill="none" stroke="#c07f18" stroke-width="2" stroke-linecap="round" marker-end="url(#k76-arr1)"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">
+<text x="222" y="48">spec 저장 → nodeName → podIP·phase·conditions</text>
+<text x="222" y="130">라벨 → EndpointSlice → 노드마다 DNAT 규칙</text>
+<text x="222" y="212">노드 라우팅 표의 파드 경로(/32, /26)</text>
+<text x="222" y="294">restartCount·lastState, UID·IP·노드는 그대로</text>
+<text x="222" y="376">deletionTimestamp → terminating → 규칙·경로 제거</text>
+</g>
+<g font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d6591">
+<text x="222" y="70">API 서버 · 스케줄러 · kubelet · Calico CNI</text>
+<text x="222" y="152">endpointslice 컨트롤러 · kube-proxy</text>
+<text x="222" y="234">Calico CNI · Felix (BIRD는 블록을 알림)</text>
+<text x="222" y="316">kubelet</text>
+<text x="222" y="398">API 서버 · endpointslice 컨트롤러 · kube-proxy · kubelet</text>
+</g>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="end">
+<text x="684" y="88">2·27·41·59·63·77편</text><text x="684" y="170">28·57·78편</text><text x="684" y="252">30·51·52·79편</text><text x="684" y="334">27·63·81편</text><text x="684" y="416">34·63·64~67·80편</text>
+</g>
+<text x="350" y="456" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f" text-anchor="middle">= 같은 파드라도 단계마다 칸을 바꾸는 프로그램이 달라요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 1. 단계 이름 오른쪽 첫 줄이 바뀌는 것, 둘째 줄이 바꾸는 쪽, 회색이 자세히 다룬 편이에요.</p>
+
+<p>단계마다 증거 한 줄을 붙이면 이렇게 돼요. 76-pod-lifecycle-ledger는 이 글의 실험이고, 나머지는 각 편의 원자료예요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">단계</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">무엇이 바뀌나</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">누가 바꾸나</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">증거 한 줄</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">자세히</th></tr></thead>
+<tbody>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">만들기</td><td style="padding:9px;border:1px solid #d8cfba;">Pod 객체(spec, env·Secret 참조), spec.nodeName, status의 podIP·phase·conditions</td><td style="padding:9px;border:1px solid #d8cfba;">API 서버, ReplicaSet 컨트롤러, 스케줄러, kubelet, Calico CNI</td><td style="padding:9px;border:1px solid #d8cfba;">+0.2초 node=worker3 ip=- Pending, +0.9초 ip=10.244.100.249 Running ready=True (76-pod-lifecycle-ledger)</td><td style="padding:9px;border:1px solid #d8cfba;">2, 27, 34, 41, 59, 63, 77편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">연결</td><td style="padding:9px;border:1px solid #d8cfba;">EndpointSlice의 주소와 조건, 노드마다 DNAT 규칙</td><td style="padding:9px;border:1px solid #d8cfba;">endpointslice 컨트롤러, kube-proxy</td><td style="padding:9px;border:1px solid #d8cfba;">라벨을 app=other로 바꾸자 EndpointSlice endpoints null, ClusterIP 거부, 파드 IP는 응답 (78-label-service-ip)</td><td style="padding:9px;border:1px solid #d8cfba;">28, 57, 78편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">통신</td><td style="padding:9px;border:1px solid #d8cfba;">파드가 뜬 노드의 /32 경로, 다른 노드 블록으로 가는 /26 경로</td><td style="padding:9px;border:1px solid #d8cfba;">Calico CNI와 Felix</td><td style="padding:9px;border:1px solid #d8cfba;">10.244.100.249 dev cali99f27912842 scope link (76-pod-lifecycle-ledger), 같은 노드 ping 20번에 tunl0 rx=1528 그대로 (79-same-node-ping-counters)</td><td style="padding:9px;border:1px solid #d8cfba;">30, 51, 52, 61, 79편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">다시 띄우기</td><td style="padding:9px;border:1px solid #d8cfba;">restartCount, lastState, 재시작 대기(CrashLoopBackOff)</td><td style="padding:9px;border:1px solid #d8cfba;">kubelet</td><td style="padding:9px;border:1px solid #d8cfba;">+1.0초 uid=735ebc4d 그대로 restarts=1, lastState Completed exitCode=0 (76-pod-lifecycle-ledger)</td><td style="padding:9px;border:1px solid #d8cfba;">27, 63, 77, 81편</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">지우기</td><td style="padding:9px;border:1px solid #d8cfba;">deletionTimestamp, EndpointSlice의 terminating과 제거, 규칙·경로 제거, IP 반납</td><td style="padding:9px;border:1px solid #d8cfba;">API 서버, endpointslice 컨트롤러, kube-proxy, kubelet, Calico CNI</td><td style="padding:9px;border:1px solid #d8cfba;">+0.2초 옛 파드 r=false,s=true,t=true, +2.0초 사라짐, 옛 IP의 iptables 줄 0 (76-pod-lifecycle-ledger)</td><td style="padding:9px;border:1px solid #d8cfba;">34, 63, 64~67, 80편</td></tr>
+</tbody></table></div>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 실무에서는 증상을 단계에 먼저 놓아요</div>
+&bull; <b>만들기</b>: apply가 거절되거나 파드가 Pending이면 API 서버의 검증과 스케줄러를 봐요. Pending이어도 nodeName이 있으면 스케줄은 끝났고 노드의 kubelet 단계예요<br>
+&bull; <b>다시 띄우기</b>: 재시작 횟수가 오르면 이벤트보다 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs --previous</code>가 먼저예요<br>
+&bull; <b>연결</b>: Running인데 Service로 안 닿으면 파드보다 EndpointSlice를 먼저 봐요<br>
+&bull; <b>통신</b>: 파드 IP로도 안 닿으면 같은 노드인지 다른 노드인지부터 갈라요<br>
+&bull; <b>지우기</b>: 배포나 축소 때만 요청이 끊기면 엔드포인트 제거와 프로세스 종료의 순서를 봐요</div>
+
+<h2>2. 만들기: API에 저장된 순간과 컨테이너가 뜬 순간 사이에 칸이 차례로 채워진다</h2>
+
+<p>kubectl apply가 created를 돌려준 순간 저장된 것은 Pod 객체의 spec이에요. 선언형으로 YAML을 쓰든 kubectl run으로 뼈대를 뽑든(59편) 결과는 같은 객체이고, 환경 변수나 Secret 참조도 이때 spec에 들어가요. env value로 넣은 비밀번호가 describe에 그대로 보이는 이유와 secretKeyRef로 바꾸는 법은 77편에서 다뤘어요. secretKeyRef로 바꾸면 Pod 객체에는 참조만 남고 값은 kubelet이 컨테이너를 만들 때 채워요. 그래서 secrets 권한 없이 파드만 만들 수 있는 계정도 그 파드의 로그로 비밀번호를 읽을 수 있었어요. spec에 이상이 없어도 컨테이너가 바로 죽을 수 있다는 것도 77편에서 봤어요. 필수 환경 변수 없이 띄운 mysql:8.4는 2초 만에 Error가 됐어요.</p>
+<p>저장 뒤에는 다른 칸들이 차례로 채워져요. 이번 실험에서는 +0.2초에 nodeName이 이미 worker3였고 IP는 비어 있었어요. +0.9초에 IP와 Running, Ready가 함께 보였어요. 이 칸들을 누가 채웠는지는 이벤트와 managedFields에 남아요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/76/02-who-writes.png" alt="Deployment로 만든 파드의 이벤트(default-scheduler Scheduled, kubelet Pulled·Created·Started)와 managedFields 작성자(kube-controller-manager, calico status, kubelet status), EndpointSlice 관리자 라벨 endpointslice-controller.k8s.io를 출력한 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 2. 객체를 만든 쪽, 노드를 고른 쪽, status를 쓴 쪽이 모두 달랐어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: managedFields</div>
+객체의 metadata에 "누가 어느 칸을 마지막으로 썼나"를 작성자 이름과 하위 리소스(status 등)로 남기는 기록이에요. 이번 파드에서는 kube-controller-manager가 파드 본체를, kubelet이 status를 썼고 calico도 status 하위 리소스로 무언가를 썼어요(58편에서는 그 칸이 주석이었어요). 관계도의 화살표마다 이 기록을 확인한 것은 58편이에요.</div>
+
+<p>객체를 만든 kube-controller-manager는 그 안의 ReplicaSet 컨트롤러예요(60편). nodeName은 managedFields에 따로 보이지 않고 이벤트의 <code style="font-family:Menlo,monospace;font-size:14px;">default-scheduler Scheduled</code>로 남아요. 스케줄러는 바인딩 요청을 보내고 nodeName을 실제로 저장하는 것은 API 서버예요(41편). 그 칸을 본 worker3의 kubelet이 샌드박스와 컨테이너를 만들었고(27편), 샌드박스를 만드는 중에 Calico CNI가 IP를 정했어요(34편). phase와 conditions는 kubelet이 status에 써요(63편). PodScheduled 조건만은 바인딩 때 API 서버가 nodeName과 함께 적어요(41편).</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: nodeName과 바인딩</div>
+spec.nodeName은 파드가 실행될 노드 이름이에요. 비어 있으면 스케줄러가 노드를 골라 pods/binding 요청을 보내고 API 서버가 이 칸을 채워요. 각 노드의 kubelet은 이 칸에 자기 이름이 적힌 파드만 맡아요.</div>
+
+<h2>3. 연결과 통신: 라벨은 EndpointSlice를 거쳐 노드의 규칙이 되고 파드 IP는 Calico 경로로 닿는다</h2>
+
+<p>"라벨, Service, IP의 관계를 정확히 알아야 한다"는 말이 가리키는 것은 사슬 하나예요. 파드의 라벨이 Service의 셀렉터와 맞으면 endpointslice 컨트롤러가 그 파드의 IP를 EndpointSlice에 적고, 노드마다 도는 kube-proxy가 그것을 읽어 "ClusterIP:port로 오면 파드 IP:targetPort로 바꾼다"는 규칙을 깔아요. 이번 실험의 마스터에는 그 규칙이 이렇게 들어 있었어요.</p>
+<div class="obsv-code">  EndpointSlice 관리자 라벨: endpointslice-controller.k8s.io
+  노드 상태:
+    worker3 의 라우팅 표에서 10.244.100.249: 10.244.100.249 dev cali99f27912842 scope link metric 1024
+    master 의 iptables 에서 10.244.100.249 를 담은 줄 수: 3
+    master 의 iptables 에서 이 파드로 DNAT 하는 줄: -A KUBE-SEP-OZFRJPKGNOI5OITG -p tcp -m comment --comment "blog-76/life-svc" -m tcp -j DNAT --to-destination 10.244.100.249:80</div>
+<p>&rarr; 파드는 worker3에 있는데 DNAT 규칙은 마스터에도 있었어요. kube-proxy가 노드마다 같은 규칙을 깔기 때문에 어느 노드에서 출발한 요청이든 그 자리에서 목적지가 파드 IP로 바뀌어요(28편). 사슬의 고리 하나가 어긋나면 어떻게 되는지는 78편에서 확인했어요. 파드 라벨을 바꾸자 EndpointSlice가 비었고 ClusterIP는 바로 거부했지만 파드 IP는 계속 답했어요. 파드가 Running인 것과 Service로 닿는 것은 다른 단계의 일이에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: EndpointSlice의 ready·serving·terminating</div>
+EndpointSlice는 주소마다 세 가지 조건을 적어요. ready는 지금 새 요청을 보내도 되는지, serving은 지우는 중이어도 아직 응답할 수 있는지, terminating은 지워지는 중인지예요. 이 글의 실험 출력에서는 r, s, t로 줄여 적었어요.</div>
+
+<p>목적지가 파드 IP로 바뀐 다음은 Calico의 몫이에요. 위 출력의 셋째 줄을 보면 파드가 뜬 노드의 라우팅 표에 그 파드 IP 하나만 가리키는 경로가 caliXXX 인터페이스로 생겨 있어요. 이 장치와 경로를 처음 만드는 것은 Calico CNI이고 이후 상태를 유지하는 것은 Felix예요(51편). 다른 노드의 파드 블록(/26)으로 가는 경로는 Felix가 넣고 BIRD는 그 블록을 BGP로 알려요(30편). 노드에는 브리지가 없어요. 같은 노드의 파드끼리는 노드 커널이 /32 경로로 상대 cali를 골라 주고 tunl0는 지나지 않아요. 다른 노드의 파드로는 노드 IP로 한 번 감싼 IPIP 패킷이 노드 사이를 건너요(52편). 79편 원자료에 이 차이가 카운터로 남아 있어요. 같은 노드의 두 파드 사이에 ping 20번을 보내는 동안 tunl0 카운터는 rx=1528 tx=599 그대로였고 두 cali 장치의 카운터만 늘었어요(<code style="font-family:Menlo,monospace;font-size:14px;">79-same-node-ping-counters.txt</code>). 다른 노드의 파드로 ping 3번을 보내자 받는 쪽 worker3의 tunl0 rx가 1528에서 1531이 됐어요(<code style="font-family:Menlo,monospace;font-size:14px;">79-cross-node-ipip.txt</code>). 통신 장애를 같은 노드와 다른 노드로 먼저 가르는 이유와 경로 추적은 79편에서 다뤄요.</p>
+<p>IP의 종류도 이 사슬로 정리돼요. 파드 IP는 Calico IPAM이 10.244.0.0/16에서 주고 파드의 eth0에 붙어요. ClusterIP는 API 서버가 10.96.0.0/12에서 골라 기록하지만 어느 인터페이스에도 없고 규칙에만 있어요. externalIPs는 사용자가 적은 문자열이라 할당도 인터페이스도 없고 규칙만 모든 노드에 생겨요. 그래서 아무도 쓰지 않는 주소를 적어도 클러스터 안에서 그 주소의 같은 포트로 가는 요청을 가로챘어요. 셋을 구분하는 방법과 externalIPs가 1.36에서 deprecated된 이유는 78편에서 다뤘어요.</p>
+
+<h2>4. 다시 띄우기: 컨테이너는 같은 파드 안에서 다시 뜨고 파드는 다른 노드로 옮겨지지 않는다</h2>
+
+<p>컨테이너의 PID 1인 nginx에 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl exec -- kill 1</code>로 SIGTERM을 보냈어요. nginx는 SIGTERM에 핸들러가 있어서 바로 끝났고 종료 코드는 0이었어요(PID 1과 신호는 64편, nginx가 신호마다 어떻게 끝나는지는 65편).</p>
+<div class="obsv-code">## 3. 다시 띄우기: 컨테이너 PID 1(nginx)에 SIGTERM (kubectl exec -- kill 1) 한 시각을 0 으로
+  +  0.2s xnj8k uid=735ebc4d node=worker3 ip=10.244.100.249 phase=Running ready=True restarts=0 || EndpointSlice: 10.244.100.249(r=true,s=true,t=false)
+  +  1.0s xnj8k uid=735ebc4d node=worker3 ip=10.244.100.249 phase=Running ready=True restarts=1 || EndpointSlice: 10.244.100.249(r=true,s=true,t=false)
+  lastState: Completed exitCode=0</div>
+<p>&rarr; 재시작 횟수만 0에서 1로 바뀌었어요. 파드 이름, UID, IP, 노드는 그대로였어요. 다시 뜬 것은 컨테이너이고 그 일은 노드의 kubelet이 같은 샌드박스 안에서 해요(27편). 이번 재시작은 1초 안에 끝나서 Ready=False인 순간이 관측 간격 사이에 잡히지 않았어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: restartCount와 CrashLoopBackOff</div>
+restartCount는 kubelet이 같은 파드 안에서 컨테이너를 다시 띄운 횟수예요. 컨테이너가 계속 죽으면 kubelet은 다음 재시작까지 기다리는 시간을 늘리고, 그 대기를 컨테이너 상태의 대기 사유 CrashLoopBackOff로 적어요. 다만 81편에서 본 v1.37.2의 컨테이너 하나짜리 파드는 기다리는 동안 STATUS 칸이 거의 내내 Error였고 CrashLoopBackOff는 다시 뜨기 직전 0.1초만 보였어요. 77편의 mysql:8.4는 재시작 2, 3, 4번째가 +13초, +42초, +90초 지점에서 관측됐어요.</div>
+
+<p>재시작이 계속 반복되는 경우는 81편에서 따로 봐요. 기다리는 간격이 어떻게 늘어나는지, 그동안 파드의 phase가 무엇인지, status를 kubectl edit로 고치면 왜 바뀌지 않는지가 그 편의 질문이에요. 81편 원자료(<code style="font-family:Menlo,monospace;font-size:14px;">81-crashloop-restart.txt</code>)에서 2초 만에 끝나는 컨테이너는 다섯 번 다시 떴고 끝난 시각부터 다시 뜨기까지 1, 13, 27, 48, 88초가 걸렸어요. 그동안 파드 UID와 IP는 그대로였어요. 첫 재시작은 바로 일어났고 그다음은 10, 20, 40, 80초 백오프에 몇 초씩 더해진 값이었는데, 81편은 그 몇 초가 kubelet이 다음 동기화를 예약할 때 붙이는 지터의 범위 안에 있었다는 것을 소스로 확인해요.</p>
+<p>같은 81편 원자료(<code style="font-family:Menlo,monospace;font-size:14px;">81-status-subresource.txt</code>)에서 본 리소스 경로로 status.phase를 Failed로 패치하자 <code style="font-family:Menlo,monospace;font-size:14px;">patched (no change)</code>였고, status 하위 리소스로 conditions를 덮어써도 12초 뒤 kubelet이 자기 condition 다섯 개를 다시 채워 넣었어요. 파드가 노드에 올라간 뒤 phase와 kubelet 소유 condition은 kubelet이 기준이 되어 계속 맞춘다는 뜻이에요.</p>
+
+<h3>파드는 한 번 스케줄되면 그 노드에서만 살까?</h3>
+<p>네, 그 파드 객체는 그래요. 같은 실험에서 nodeName을 worker3에서 worker1로 바꾸는 patch를 보냈어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/76/01-nodename-forbidden.png" alt="실행 중인 파드의 spec.nodeName을 k8s-worker3에서 k8s-worker1로 바꾸는 patch가 spec: Forbidden: pod updates may not change fields other than ... 으로 거절되고 patch 뒤 nodeName이 k8s-worker3 그대로인 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 3. 파드의 노드는 바꿀 수 없는 칸이었어요.</p>
+
+<p>&rarr; API 서버가 <code style="font-family:Menlo,monospace;font-size:14px;">spec: Forbidden: pod updates may not change fields other than `spec.containers[*].image`, ...</code>로 거절했어요. 메시지는 바꿀 수 있는 칸을 컨테이너와 init 컨테이너의 이미지, activeDeadlineSeconds 순으로 늘어놓다가 스크립트가 200자에서 자른 자리에서 끊겼고, 그 아래 diff에 NodeName이 바뀐 줄이 찍혔어요. 실행 중인 파드의 spec에서 바꿀 수 있는 칸은 이렇게 목록으로 정해져 있고 nodeName을 바꾸는 요청은 거절됐어요. 파드를 "옮긴다"는 말은 실제로는 지우고 새로 만드는 일이에요. 새 파드는 이름, UID, IP가 다른 별개 객체이고 노드도 스케줄러가 다시 골라요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="컨테이너 재시작은 같은 파드 안에서 일어나고 파드 삭제는 다른 UID와 IP의 새 파드로 이어진다">
+<defs><marker id="k76-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="24" y="34" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">컨테이너 재시작 (kill 1) · kubelet</text>
+<path d="M170 54 C 240 51, 330 55, 400 52 C 403 74, 402 100, 401 124 C 330 127, 240 123, 172 125 C 169 100, 170 76, 170 54 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.6" stroke-linejoin="round"/>
+<g font-family="Menlo, monospace" font-size="12.5" fill="#3d3a34" text-anchor="middle">
+<text x="285" y="78">pod xnj8k  uid 735ebc4d</text><text x="285" y="97">IP …249  node worker3</text><text x="285" y="116">restarts 0 → 1</text>
+</g>
+<path d="M404 72 C 450 60, 470 110, 406 112" fill="none" stroke="#5a9e6f" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k76-arr2)"/>
+<text x="470" y="96" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">같은 샌드박스에서 컨테이너만 다시</text>
+<path d="M40 160 C 200 157, 500 161, 660 158" fill="none" stroke="#d8cfba" stroke-width="1.6" stroke-dasharray="8 8"/>
+<text x="24" y="196" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">파드 삭제 (delete) · ReplicaSet 컨트롤러와 스케줄러</text>
+<path d="M30 216 C 100 213, 190 217, 260 214 C 263 236, 262 262, 261 286 C 190 289, 100 285, 32 287 C 29 262, 30 238, 30 216 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.6" stroke-linejoin="round"/>
+<path d="M430 216 C 500 213, 590 217, 670 214 C 673 236, 672 262, 671 286 C 590 289, 500 285, 432 287 C 429 262, 430 238, 430 216 Z" fill="#f1f8f2" stroke="#5a9e6f" stroke-width="2.6" stroke-linejoin="round"/>
+<g font-family="Menlo, monospace" font-size="12.5" fill="#3d3a34" text-anchor="middle">
+<text x="145" y="240">pod xnj8k  uid 735ebc4d</text><text x="145" y="259">IP …249  삭제중</text><text x="145" y="278">→ Succeeded → 사라짐</text>
+<text x="550" y="240">pod nxskf  uid 124eef63</text><text x="550" y="259">IP …211  node worker3</text><text x="550" y="278">restarts 0</text>
+</g>
+<path d="M264 250 C 310 240, 380 240, 426 250" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round" marker-end="url(#k76-arr2)"/>
+<text x="345" y="232" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#3d3a34" text-anchor="middle">+0.2초에 새 파드</text>
+<text x="550" y="310" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle">노드는 스케줄러가 다시 골라요(이번엔 같은 worker3)</text>
+<text x="350" y="346" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f" text-anchor="middle">= 이름·UID·IP가 바뀌면 다시 띄운 게 아니라 다시 만든 거예요</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 4. 재시작은 같은 객체 안의 숫자 하나, 삭제는 다른 객체의 등장이었어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 다시 띄우는 쪽과 다시 만드는 쪽은 달라요</div>
+&bull; 컨테이너가 죽으면 kubelet이 restartPolicy에 따라 같은 파드 안에서 다시 띄워요. 파드가 지워지면 kubelet은 되살리지 않아요<br>
+&bull; 새 파드를 만드는 것은 ReplicaSet 같은 컨트롤러예요(60편). 직접 만든 단독 파드는 지워지면 그걸로 끝이에요<br>
+&bull; 노드가 죽은 경우에도 파드를 옮기지 않아요. 노드가 Unknown이 되고 기본 300초 toleration이 끝나면 축출되고 컨트롤러가 다른 노드에 새 파드를 만들어요(25편, 50편)</div>
+
+<h2>5. 지우기: 엔드포인트에서 빠지는 일과 프로세스가 멈추는 일은 따로 진행된다</h2>
+
+<p>마지막으로 파드를 지웠어요. ReplicaSet이 관리하는 파드라서 지우는 동안 새 파드가 함께 보여요.</p>
+<div class="obsv-code">## 4. 지우기: kubectl delete pod life-864d77957f-xnj8k 한 시각을 0 으로 (ReplicaSet 이 새 파드를 만든다)
+  +  0.2s xnj8k ... ready=True restarts=1 삭제중 | nxskf uid=124eef63 node=worker3 ip=- phase=Pending ... || EndpointSlice: 10.244.100.249(r=false,s=true,t=true)
+  +  1.0s xnj8k ... phase=Succeeded ready=False restarts=1 삭제중 | nxskf ... ip=10.244.100.211 phase=Running ready=True ... || EndpointSlice: 10.244.100.211(r=true,s=true,t=false)
+  +  2.0s nxskf uid=124eef63 node=worker3 ip=10.244.100.211 phase=Running ready=True restarts=0 || EndpointSlice: 10.244.100.211(r=true,s=true,t=false)
+  옛 파드 IP 의 노드 상태:
+    worker3 의 라우팅 표에서 10.244.100.249:
+    master 의 iptables 에서 10.244.100.249 를 담은 줄 수: 0</div>
+<p>&rarr; 삭제 요청을 받은 API 서버가 deletionTimestamp를 적자 옛 파드는 "삭제중"이 됐고 EndpointSlice에서는 ready=false, serving=true, terminating=true가 됐어요. 그 사이 ReplicaSet은 개수가 모자란 것을 보고 새 파드를 만들었어요. +1.0초에는 정지 신호(nginx 이미지는 SIGTERM이 아니라 SIGQUIT, 65편)를 받은 nginx가 끝나 옛 파드의 phase가 Succeeded였고 EndpointSlice에는 새 파드만 남았어요. +2.0초에 옛 파드 객체가 사라졌고, 그 뒤에 본 worker3의 라우팅 표와 마스터의 iptables에는 옛 IP가 한 줄도 없었어요. 위 출력은 줄이 길어 각 파드의 필드 일부를 ...으로 줄였어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: deletionTimestamp</div>
+삭제 요청을 받은 API 서버가 객체에 적는 시각이에요. 이 칸이 생기면 kubectl은 STATUS에 Terminating을 보여 주지만 phase는 아니에요(63편). kubelet은 이 칸을 보고 컨테이너를 멈추기 시작하고 endpointslice 컨트롤러는 그 주소를 terminating으로 바꿔요. 둘은 서로를 기다리지 않아요.</div>
+
+<p>여기서 중요한 것은 마지막 문장이에요. 엔드포인트에서 빠지는 일과 컨테이너가 멈추는 일은 같은 deletionTimestamp를 보고 각자 진행돼요. kube-proxy가 노드 규칙을 고치기 전에 프로세스가 먼저 사라지면 그 틈에 들어온 요청은 실패해요. 80편 원자료의 삭제 실험(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/80-delete-race.txt</code>)에서는 preStop이 없는 파드를 지운 지 75ms 만에 EndpointSlice에서 terminating으로 바뀌었고 0.35초 만에 목록에서 사라졌어요. 이 작은 클러스터에서는 그동안 보낸 요청 224번이 모두 200이었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: preStop</div>
+컨테이너를 멈추기 직전에 kubelet이 실행하는 훅이에요. preStop이 끝나야 정지 신호를 보내고 terminationGracePeriodSeconds는 preStop 시작부터 세요(67편). 정지 신호를 몇 초 늦춰서 엔드포인트에서 먼저 빠질 시간을 주는 데 써요. 같은 원자료에서 preStop sleep 5를 단 파드는 terminating인 채로 약 5초 동안 serving=true로 남았다가 사라졌어요.</div>
+
+<p>요청이 실제로 끊긴 것은 롤링 업데이트에서였어요. 같은 80편 원자료(<code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-kinds.txt</code>)의 한 번 실행에서 신호를 받자마자 끝나는 앱을 replicas 3으로 rollout restart하자 아무 대책이 없을 때 64건, preStop만 둘 때 62건, readinessProbe만 둘 때 38건이 실패했고 preStop과 readinessProbe를 함께 둔 경우는 14만 5,715건 가운데 실패가 0이었어요. 조건마다 3번씩 더 돌린 반복 실험(<code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-repeat.txt</code>)까지 네 번을 모으면 대책이 없을 때 30~64건, readinessProbe만 둘 때 32~38건, preStop만 둘 때 0~62건으로 흔들렸고 둘을 함께 둔 경우만 네 번 모두 0(요청 56만 5,297건)이었어요. preStop은 지워지는 파드 쪽의 경쟁을, readiness는 막 뜬 파드 쪽의 경쟁을 막는다는 해석과 실패 종류의 분석은 80편에서 다뤄요.</p>
+<p>롤아웃이 끝나고 수십 초 뒤까지 띄엄띄엄 난 2초 타임아웃도 지우는 쪽의 흔적이었어요. 80편의 추적 실험(<code style="font-family:Menlo,monospace;font-size:14px;">80-e28-trace.txt</code>, 타임아웃이 난 세 회차)에서 tcpdump가 기록하는 동안 난 이 타임아웃 81건은 모두 이미 죽은 옛 파드 IP로 DNAT된 연결 시도였어요. 롤아웃 순간 그 파드로 간 SYN이 client 노드에 conntrack 항목(SYN_SENT, 120초)을 남겼고, 81건 중 61건은 같은 출발 포트를 다시 쓴 새 연결이 그 항목을 따라 죽은 파드로 간 것이었어요. 파드 객체와 규칙이 정리된 뒤에도 노드의 연결 기록은 죽은 파드 IP를 가리킨 채 남아 있었던 거예요.</p>
+<p>컨테이너를 멈추는 쪽의 세부는 앞선 편들에 있어요. SIGTERM에 핸들러가 없는 PID 1은 30초 유예를 다 쓰고 SIGKILL로 끝나요(64편). sh -c로 감싸면 셸이 신호를 넘기지 않을 수 있어요(65편). preStop과 유예 시간을 어디서부터 세는지는 67편이에요. 샌드박스가 정리될 때 CNI DEL이 IP를 반납하고 노드가 죽어 DEL이 오지 않으면 IP가 남아요(34편).</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 파드가 사라졌다고 모든 것이 같은 순간에 정리되지는 않아요</div>
+&bull; 객체가 사라지는 시각, 엔드포인트에서 빠지는 시각, 노드 규칙이 바뀌는 시각, 프로세스가 끝나는 시각, IP가 반납되는 시각이 모두 달라요. 노드의 conntrack 항목은 그 뒤에도 죽은 파드 IP를 가리킨 채 남을 수 있어요(80편)<br>
+&bull; 배포 중 끊김을 볼 때는 "누가 늦게 알았나"를 물어요. 노드 규칙이 늦으면 preStop, 막 뜬 파드가 너무 일찍 엔드포인트에 들어가면 readinessProbe가 답이에요<br>
+&bull; Terminating이 오래 가면 phase가 아니라 deletionTimestamp와 PID 1의 신호 처리를 먼저 봐요(63편, 64편)</div>
+
+<h2>6. 다섯 단계를 한 번에 확인하는 명령</h2>
+
+<p>지도를 장애 대응에 쓰려면 단계마다 무엇을 볼지 정해 두면 돼요. 이 글의 실험이 읽은 칸을 그대로 명령으로 옮기면 이래요.</p>
+<div class="obsv-code"># ① 만들기: 노드가 정해졌나, IP와 조건이 채워졌나, 누가 썼나
+kubectl get pod 이름 -o jsonpath='{.spec.nodeName} {.status.podIP} {.status.phase}{"\n"}'
+kubectl get events --field-selector involvedObject.name=이름 --sort-by=.lastTimestamp
+
+# ② 연결: 셀렉터에 맞는 파드가 EndpointSlice에 ready로 있나 (-o wide의 ENDPOINTS 칸에는 조건이 나오지 않아요)
+kubectl get endpointslice -l kubernetes.io/service-name=서비스이름 -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]} ready={.conditions.ready} serving={.conditions.serving} terminating={.conditions.terminating}{"\n"}{end}'
+
+# ③ 통신: 파드가 뜬 노드에 그 IP의 경로가 있나 (노드에서)
+ip route show | grep -w 파드IP
+
+# ④ 다시 띄우기: 재시작 횟수와 직전 실행의 종료 사유
+kubectl get pod 이름 -o jsonpath='{.status.containerStatuses[0].restartCount} {.status.containerStatuses[0].lastState.terminated.reason}{"\n"}'
+kubectl logs 이름 --previous
+
+# ⑤ 지우기: 삭제 시각과 엔드포인트의 terminating (②의 명령에서 terminating=true인 줄)
+kubectl get pod 이름 -o jsonpath='{.metadata.deletionTimestamp}{"\n"}'</div>
+<p>&rarr; 각 명령은 지도의 한 칸을 읽어요. 칸이 비어 있으면 그 칸을 채우는 프로그램을 보면 돼요. nodeName이 비면 스케줄러, podIP가 비면 그 노드의 kubelet과 CNI, EndpointSlice가 비면 셀렉터와 readiness, 노드 경로가 없으면 Calico, 재시작 횟수가 오르면 컨테이너의 로그예요.</p>
+
+<p><b>출처와 원자료</b><br>
+&middot; 파드 spec에서 바꿀 수 있는 칸: v1.37.2 API 서버가 돌려준 거절 메시지(<code style="font-family:Menlo,monospace;font-size:14px;">76-pod-lifecycle-ledger.txt</code> 2절)<br>
+&middot; 단계별 세부: 2, 25, 27, 28, 30, 34, 41, 50, 51, 52, 57~67편과 77, 78편, 이어지는 79, 80, 81편<br>
+&middot; 이 글의 실험: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/76-pod-lifecycle-ledger</code>(.sh/.txt), 인용한 다른 편 원자료 <code style="font-family:Menlo,monospace;font-size:14px;">78-label-service-ip.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">77-mysql-pod.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">79-same-node-ping-counters.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">79-cross-node-ipip.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">81-crashloop-restart.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">81-status-subresource.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-delete-race.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-kinds.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-repeat.txt</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-e28-trace.txt</code></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<p>파드 하나의 일생은 만들기, 연결, 통신, 다시 띄우기, 지우기로 나눠 볼 수 있어요. 만들 때는 API 서버가 spec을 저장한 뒤 스케줄러의 바인딩으로 nodeName이, kubelet과 Calico CNI로 IP와 status가 채워졌어요. 이번 실험에서는 +0.2초에 노드가, +0.9초에 IP와 Ready가 보였어요. 연결은 라벨이 EndpointSlice를 거쳐 노드마다 DNAT 규칙이 되는 사슬이고 통신은 Calico가 깐 /32와 /26 경로 위에서 일어나요.</p>
+<p>컨테이너가 죽으면 kubelet이 같은 파드 안에서 다시 띄워 UID와 IP와 노드가 그대로였어요. 파드의 nodeName은 바꿀 수 없어서 patch가 Forbidden으로 거절됐고, 파드를 지우자 ReplicaSet이 UID와 IP가 다른 새 파드를 만들었어요. 지울 때는 deletionTimestamp를 보고 엔드포인트 제거와 컨테이너 정지가 따로 진행돼요. 그 순서가 어긋나면 배포 중 요청이 끊겨요.</p>
+<p style="margin-bottom:0;">장애를 만나면 지금 어느 단계의 일인지부터 가르고, 그 단계의 칸을 읽고, 그 칸을 쓰는 프로그램을 보면 돼요.</p>
+</div>
+</div>

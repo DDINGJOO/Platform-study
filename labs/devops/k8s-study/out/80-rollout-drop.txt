@@ -1,0 +1,29 @@
+# 32 롤링 업데이트와 요청 끊김 (2026-11-21 18:51:31 KST), replicas 3, maxSurge 25%·maxUnavailable 25%(기본)
+
+## (1) graceful: nginx 기본 종료, preStop 없음
+  rollout 완료 2초
+  keep-alive(4개) 요청 101630, 실패 26   26 ka000 
+  새 연결(1개)   요청 1159, 실패 3    3 new000 
+
+## (2) fast-exit: 신호 받자마자 빠른 종료, preStop 없음
+  rollout 완료 2초
+  keep-alive(4개) 요청 46430, 실패 110  110 ka000 
+  새 연결(1개)   요청 686, 실패 14   14 new000 
+
+## (3) fast-exit + preStop sleep 5
+  rollout 완료 2초
+  keep-alive(4개) 요청 89010, 실패 12   12 ka000 
+  새 연결(1개)   요청 1080, 실패 2    2 new000 
+
+## (4) headless Service: DNS 가 파드 IP 를 준다, 한 번 받은 IP 를 계속 쓰면
+  DNS 응답(TTL, 마스터에서 dig @CoreDNS):
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.194.116
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.126.60
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.100.209
+  클라이언트가 처음 받은 파드 IP: 10.244.100.209
+  cached: 요청 74, 실패 33
+  fresh: 요청 74, 실패 0
+  rollout 뒤 DNS 응답:
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.194.115
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.100.202
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.126.49

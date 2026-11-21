@@ -1,0 +1,38 @@
+# 21 라벨 · Service · IP (2026-11-21 12:01:30 KST)
+Warning: spec.externalIPs is deprecated and may no longer be implemented in some clusters
+
+## kubectl get po,svc -o wide
+  NAME         READY   STATUS    RESTARTS   AGE   IP               NODE          NOMINATED NODE   READINESS GATES
+  pod/myweb1   1/1     Running   0          1s    10.244.100.233   k8s-worker3   <none>           <none>
+  
+  NAME                TYPE        CLUSTER-IP     EXTERNAL-IP    PORT(S)    AGE   SELECTOR
+  service/myweb-svc   ClusterIP   10.96.220.47   192.168.64.5   8001/TCP   1s    app=myweb1
+
+## Service 와 파드를 잇는 것: 셀렉터 → EndpointSlice
+  selector={"app":"myweb1"}  파드 labels={"app":"myweb1"}
+  EndpointSlice myweb-svc-hqcr8: 10.244.100.233: ready=true 
+  ports: [{"name":"","port":80,"protocol":"TCP"}]
+
+## Service 를 만든 뒤 master 에서 ClusterIP 가 처음 응답하기까지 (0.2초 간격)
+  실패 1 번 뒤 응답, 대기 0.4초 (파드 Ready 확인 뒤부터)
+
+## 어디서 어디로 닿나 (curl -m 3)
+  master → 파드 IP 10.244.100.233:80         → <title>Welcome to nginx!</title>
+  master → ClusterIP 10.96.220.47:8001         → <title>Welcome to nginx!</title>
+  master → ClusterIP 10.96.220.47:80 (port 아님) → curl: (7) Failed to connect to 10.96.220.47 port 80 after 67 ms: Couldn't connect to server
+  Mac → externalIP 192.168.64.5:8001           → <title>Welcome to nginx!</title>
+  Mac → worker1 192.168.64.3:8001 (외부 IP 아님) → curl: (7) Failed to connect to 192.168.64.3 port 8001 after 1002 ms: Couldn't connect to server
+  Mac → 파드 IP 10.244.100.233:80            → curl: (28) Connection timed out after 3003 milliseconds
+  Mac → ClusterIP 10.96.220.47:8001            → curl: (7) Failed to connect to 10.96.220.47 port 8001 after 26 ms: Couldn't connect to server
+
+## externalIP 규칙은 worker3 만이 아니라 모든 노드의 kube-proxy 가 만든다 (master 의 규칙)
+  kube-proxy mode: mode: iptables
+  master nft 줄 수: 1, iptables 줄 수: 1
+    		meta l4proto tcp ip daddr 192.168.64.5  tcp dport 8001 counter packets 0 bytes 0 jump KUBE-EXT-CMCRHR2OSFVE3IIS
+    -A KUBE-SERVICES -d 192.168.64.5/32 -p tcp -m comment --comment "ch05/myweb-svc external IP" -m tcp --dport 8001 -j KUBE-EXT-CMCRHR2OSFVE3IIS
+
+## 라벨을 바꾸면 (app=myweb1 → app=other)
+  EndpointSlice endpoints: null
+  master → ClusterIP 10.96.220.47:8001         → curl: (7) Failed to connect to 10.96.220.47 port 8001 after 0 ms: Couldn't connect to server
+  master → 파드 IP 10.244.100.233:80 (파드는 그대로) → <title>Welcome to nginx!</title>
+  라벨 되돌린 뒤 master → ClusterIP      → <title>Welcome to nginx!</title>

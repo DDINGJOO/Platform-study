@@ -1,0 +1,74 @@
+# externalIPs 가 deprecated 된 배경: 원문 발췌 (2026-11-21 확인). 인용문은 원문 그대로, 줄 앞 # 는 설명이다.
+
+## 1. CVE-2020-8554 이슈 (2020-12-04 등록) https://github.com/kubernetes/kubernetes/issues/97076
+  title: CVE-2020-8554: Man in the middle using LoadBalancer or ExternalIPs
+  "CVSS Rating: **Medium** (CVSS:3.0/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:L)"
+  "This issue affects multitenant clusters. If a potential attacker can already create or edit services and pods, then they may be able to intercept traffic from other pods (or nodes) in the cluster."
+  "An attacker that is able to create a ClusterIP service and set the spec.externalIPs field can intercept traffic to that IP. An attacker that is able to patch the status (which is considered a privileged operation and should not typically be granted to users) of a LoadBalancer service can set the status.loadBalancer.ingress.ip to similar effect."
+  "This issue is a design flaw that cannot be mitigated without user-facing changes."
+  "All Kubernetes versions are affected. Multi-tenant clusters that grant tenants the ability to create and update services and pods are most vulnerable."
+  "There is no patch for this issue, and it can currently only be mitigated by restricting access to the vulnerable features. Because an in-tree fix would require a breaking change, we will open a conversation about a longer-term fix or built-in mitigation after the embargo is lifted"
+  "To restrict the use of external IPs we are providing an admission webhook container: k8s.gcr.io/multitenancy/externalip-webhook:v1.0.0. The source code and deployment instructions are published at https://github.com/kubernetes-sigs/externalip-webhook."
+  "Alternatively, external IPs can be restricted using OPA Gatekeeper."
+  보안 공지(2020-12-08): https://groups.google.com/g/kubernetes-security-announce/c/iZWsF9nbKE8
+
+## 2. DenyServiceExternalIPs 어드미션 (KEP-2200, v1.21)
+  PR: https://github.com/kubernetes/kubernetes/pull/97395  "Add denyserviceexternalips admission (KEP 2200)", 2021-01-28 머지, milestone v1.21
+  release-note: "New admission controller "DenyServiceExternalIPs" is available.  Clusters which do not *need* the Service "externalIPs" feature should enable this controller and be more secure."
+  KEP-2200 kep.yaml: https://github.com/kubernetes/enhancements/blob/master/keps/sig-network/2200-externalips-admission/kep.yaml
+    title: Block ExternalIPs via Admission Control / stage: stable / milestone: stable: "v1.21"
+  문서: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#denyserviceexternalips
+  "This admission controller rejects all net-new usage of the `Service` field `externalIPs`.  This feature is very powerful (allows network traffic interception) and not well controlled by policy.  When enabled, users of the cluster may not create new Services which use `externalIPs` and may not add new values to `externalIPs` on existing `Service` objects.  Existing uses of `externalIPs` are not affected, and users may remove values from `externalIPs` on existing `Service` objects."
+  "This admission controller is disabled by default."
+
+## 3. KEP-5707 Deprecate Service.spec.externalIPs
+  README: https://github.com/kubernetes/enhancements/blob/master/keps/sig-network/5707-deprecate-service-externalips/README.md
+  kep.yaml: stage: deprecated / latest-milestone: "v1.36" / milestone: deprecated: "v1.36" / feature-gates: AllowServiceExternalIPs (components: kube-proxy)
+  Summary: "The externalIPs feature has long been considered a security risk and architectural problem, as it allows non-privileged users to claim arbitrary IP addresses without proper authorization or validation, potentially enabling man-in-the-middle attacks and other security exploits."
+  Motivation: "**Security Risk**: Any user with permission to create or modify Services can claim arbitrary IP addresses, including IPs that may be in use by other systems or services. This enables potential man-in-the-middle attacks and unauthorized traffic interception."
+  Motivation: "The community has already recognized these issues, as evidenced by KEP-2200 (Block service ExternalIPs via admission), which introduced admission control to deny the use of externalIPs. This KEP takes the next step by formally deprecating the field and removing the implementation."
+  Phase 1, "Tentative version: 1.36":
+    "- Mark the field as deprecated in API documentation and emit warnings when used."
+    "- Introduce the `AllowServiceExternalIPs` feature gate to kube-proxy (default: true). When set to false, this will:"
+    "  - Cause kube-proxy to stop programming iptables/nftables/ipvs rules for externalIPs"
+  Phase 2, "4 releases after Phase 1 (tentatively in Kubernetes 1.40)":
+    "- Switch the `AllowServiceExternalIPs` feature gate to false"
+    "Clusters administrators can enable the feature gate if needed to restore the externalIPs functionality"
+  Phase 3, "3 releases after Phase 2 (tentatively in Kubernetes 1.43)":
+    "- Lock `AllowServiceExternalIPs` feature gate to false"
+    "- Remove the feature gate checks and all related code from kube-proxy"
+    "- Do not remove any code from kube-apiserver or its unit tests"
+  Phase 4, "Code and feature gate removal":
+    "After 3 releases since phase 3, remove the `AllowServiceExternalIPs` feature gate and `DenyServiceExternalIPs` admission controller"
+  Migration Guidance: "1. **LoadBalancer Services with Cloud Provider Integration**" / "2. **Gateway API** ... Recommended for new deployments" / "3. **Ingress Controllers**"
+
+## 4. 경고를 넣은 PR: https://github.com/kubernetes/kubernetes/pull/137293
+  title: "KEP-5707: Deprecate Service.spec.externalIPs", 2026-03-17 머지, milestone v1.36, 본문 "This is for phase 1 of KEP-5707"
+  CHANGELOG-1.36 v1.36.0 Deprecation: "Added warnings and deprecation for Service `.spec.externalIPs`. (#137293, @adrianmoisey)"
+
+## 5. v1.37.2 소스: 게이트 기본값과 kube-proxy 의 사용처
+# https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/features/kube_features.go
+	// owner: @adrianmoisey
+	// kep: https://kep.k8s.io/5707
+	//
+	// When enabled, kube-proxy will program iptables/nftables/ipvs rules for Service.spec.externalIPs.
+	// When disabled, kube-proxy will not program rules for externalIPs, effectively disabling this
+	// deprecated feature.
+	AllowServiceExternalIPs featuregate.Feature = "AllowServiceExternalIPs"
+	AllowServiceExternalIPs: {
+		{Version: version.MustParse("1.0"), Default: true, PreRelease: featuregate.GA},
+	},
+# https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/proxy/serviceport.go
+// ExternalIPs is part of ServicePort interface.
+func (bsvcPortInfo *BaseServicePortInfo) ExternalIPs() []net.IP {
+	// Only program rules for externalIPs if the feature gate is enabled
+	if !utilfeature.DefaultFeatureGate.Enabled(features.AllowServiceExternalIPs) {
+		return []net.IP{}
+	}
+	return bsvcPortInfo.externalIPs
+}
+
+## 6. Service 문서 External IPs 절 https://kubernetes.io/docs/concepts/services-networking/service/#external-ips
+  "Feature state: Deprecated since Kubernetes v1.36"
+  "All users should begin migrating away from `externalIPs`. Consider using an external load balancer controller or a Gateway API implementation instead."
+  "Kubernetes does not manage allocation of `externalIPs`; these are the responsibility of the cluster administrator."

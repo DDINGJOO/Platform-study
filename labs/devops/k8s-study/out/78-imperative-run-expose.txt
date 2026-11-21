@@ -1,0 +1,51 @@
+# 22 kubectl run · expose (2026-11-21 12:03:01 KST)
+
+## kubectl run myweb2 --image=nginx:1.25.3-alpine --port=80 --dry-run=client -o yaml
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    labels:
+      run: myweb2
+    name: myweb2
+    namespace: ch05
+  spec:
+    containers:
+    - image: nginx:1.25.3-alpine
+      name: myweb2
+      ports:
+      - containerPort: 80
+      resources: {}
+    dnsPolicy: ClusterFirst
+    restartPolicy: Always
+  status: {}
+
+## kubectl expose pod myweb2 --name=myweb2-svc --port=8002 --target-port=80 --dry-run=client -o yaml (셀렉터를 어디서 가져오나)
+  spec:
+    ports:
+    - port: 8002
+      protocol: TCP
+      targetPort: 80
+    selector:
+      run: myweb2
+  status:
+    loadBalancer: {}
+
+## kubectl get po,svc -o wide
+  NAME         READY   STATUS    RESTARTS   AGE   IP               NODE          NOMINATED NODE   READINESS GATES
+  pod/myweb2   1/1     Running   0          0s    10.244.100.245   k8s-worker3   <none>           <none>
+  
+  NAME                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+  service/myweb2-svc   ClusterIP   10.109.111.23   <none>        8002/TCP   0s    run=myweb2
+
+## 노드마다 파드 IP:80 과 ClusterIP:8002 (파드 노드: k8s-worker3)
+  k8s-master   파드IP → <title>Welcome to nginx!</title>   ClusterIP → <title>Welcome to nginx!</title>
+  k8s-worker1  파드IP → <title>Welcome to nginx!</title>   ClusterIP → <title>Welcome to nginx!</title>
+  k8s-worker2  파드IP → <title>Welcome to nginx!</title>   ClusterIP → <title>Welcome to nginx!</title>
+  k8s-worker3  파드IP → <title>Welcome to nginx!</title>   ClusterIP → <title>Welcome to nginx!</title>
+
+## 이름이 다른 파드를 지우면: kubectl delete pod myweb2-pod
+  Error from server (NotFound): pods "myweb2-pod" not found
+
+## 실제 이름으로 지우기
+  pod "myweb2" deleted from ch05 namespace
+  service "myweb2-svc" deleted from ch05 namespace

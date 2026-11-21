@@ -1,0 +1,326 @@
+<!-- ============================================================
+  k8s 스터디 79편: Calico 노드에는 브리지가 없다, 같은 노드와 다른 노드의 파드 통신은 어디를 지나갈까
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: Calico 노드마다 브리지(tunl0)가 있고 veth가 붙는다는 그림을 worker3에서 확인하니 브리지는 0개였어요. 같은 노드와 다른 노드 ping의 경로·카운터를 비교하고 클러스터 라우팅 테이블이 실제로 어디 있는지 따라갔어요. -->
+<!-- tags: Calico, tunl0, cali 인터페이스, 파드 간 통신, 라우팅 테이블, BlockAffinity -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 79편</div>
+  77편. env로 넣은 비밀번호는 왜 kubectl describe에 보일까, Secret과 secretKeyRef<br>
+  78편. Service는 파드를 어떻게 찾고 파드 IP·ClusterIP·externalIP는 어디서 닿을까<br>
+  <b>79편. Calico 노드에는 브리지가 없다, 같은 노드와 다른 노드의 파드 통신은 어디를 지나갈까</b> &larr; 지금 이 글<br>
+  80편. 롤링 업데이트 중에 요청이 왜 끊길까, preStop과 readiness는 각각 무엇을 막나<br>
+  81편. CrashLoopBackOff는 파드를 다시 만드는 걸까, 재시작 백오프와 status의 주인
+</div>
+
+<p>worker3에서 <code style="font-family:Menlo,monospace;font-size:14px;">ip -br link show type bridge</code>를 실행했더니 한 줄도 나오지 않았어요. 파드 네트워크를 설명하는 흔한 그림은 노드마다 브리지(tunl0)가 하나 있고 파드마다 생긴 veth(caliXXX)가 그 브리지에 붙는다고 그려요. 그래서 같은 노드에서 tunl0의 종류도 확인했어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/79-calico-tunl0-not-bridge.txt</code>).</p>
+
+<div class="obsv-code">## 노드의 브리지 인터페이스 (ip -br link show type bridge)
+  (줄 수:        0)
+
+## tunl0 의 종류 (ip -d link show tunl0)
+  5: tunl0@NONE: &lt;NOARP,UP,LOWER_UP&gt; mtu 1480 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+      link/ipip 0.0.0.0 brd 0.0.0.0 promiscuity 0  allmulti 0 minmtu 0 maxmtu 0
+      ipip any remote any local any ttl inherit nopmtudisc ...</div>
+
+<p>&rarr; 브리지 종류의 장치는 0개였고 tunl0는 <code style="font-family:Menlo,monospace;font-size:14px;">link/ipip</code>, MTU 1480인 IPIP 터널 장치였어요. 그림의 "브리지(tunl0)"라는 상자는 이 노드에 없었어요.</p>
+
+<p>그림이 실제와 다르면 장애를 볼 때 엉뚱한 곳부터 보게 돼요. 브리지가 있다고 믿으면 브리지의 MAC 표를 찾고, 모든 파드 통신이 tunl0를 지난다고 믿으면 같은 노드의 두 파드가 통신하지 못할 때도 터널부터 의심해요. 51편에서는 파드의 eth0와 노드의 cali 장치가 veth 한 쌍이라는 걸, 52편에서는 다른 노드로 가는 패킷이 IPIP로 감싸지는 걸 tcpdump로 확인했어요. 이번 글은 그 결과를 진단 순서로 묶어요. 통신이 안 될 때 두 파드가 같은 노드에 있는지 다른 노드에 있는지부터 가르고 각각 어느 경로와 어느 카운터를 봐야 하는지 실제 출력으로 정해요. 클러스터는 Lima VM 4대(마스터 1, 워커 3, arm64)에 kubeadm v1.37.2, Calico v3.33.0(IPIP Always), kube-proxy iptables 모드를 올린 실습 환경이에요.</p>
+
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 노드에 브리지가 정말 없을까, tunl0는 무슨 일을 할까?<br>
+&middot; 파드끼리 통신할 때 브리지가 veth를 찾아 주나?<br>
+&middot; 같은 노드 파드끼리 ping하면 tunl0 카운터는 움직일까?<br>
+&middot; 다른 노드의 파드로 갈 때는 어디를 지나고 무엇이 늘까?<br>
+&middot; 클러스터 라우팅 테이블은 어디 있나?<br>
+&middot; cali 이름은 어떻게 정해지고 진단에 어떻게 쓸까?</p>
+
+<h2>1. worker3에는 브리지가 0개였고 tunl0는 다른 노드로 갈 때만 쓰는 터널이었다</h2>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 리눅스 브리지 (Linux bridge)</div>
+커널이 만드는 가상 스위치예요. 붙어 있는 포트들의 MAC 주소를 배워서 이더넷 프레임을 해당 포트로 넘겨요. Docker 기본 네트워크의 docker0, CNI의 bridge 플러그인을 쓰는 구성이 이 방식으로 컨테이너를 같은 L2 구간에 묶어요. <code style="font-family:Menlo,monospace;font-size:14px;">ip link show type bridge</code>로 노드에 있는지 볼 수 있어요.</div>
+
+<p>흔한 그림은 브리지형 CNI의 모습에 가까워요. 그 구성에서는 같은 노드의 파드들이 한 브리지에 붙어 같은 L2 구간에 있고 브리지가 MAC 주소를 보고 프레임을 상대 파드의 veth로 넘겨요. Calico의 이번 구성은 브리지를 만들지 않았어요. worker3에서 브리지 종류의 장치를 세면 0이었어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: tunl0</div>
+리눅스 ipip 모듈이 만드는 기본 IPIP 터널 장치예요. 이 장치로 내보낸 IPv4 패킷 앞에 바깥 IPv4 헤더가 하나 더 붙어요. Calico의 IPIP 모드는 다른 노드에 있는 파드로 가는 패킷을 이 장치로 보내요. MTU 1480은 노드 NIC의 1500에서 바깥 헤더 20바이트를 뺀 값이고 53편에서 자세히 봤어요.</div>
+
+<p>tunl0 출력의 <code style="font-family:Menlo,monospace;font-size:14px;">remote any local any</code>는 이 장치가 상대 끝을 하나로 정해 두지 않았다는 뜻이에요. 바깥 헤더의 목적지를 어느 노드로 할지는 tunl0를 가리키는 경로의 via 주소가 정해요. 4절의 캡처에서 바깥 목적지가 경로의 via 주소인 192.168.104.5와 같았던 것으로 확인할 수 있어요. 그러니 tunl0는 파드들을 묶는 장치가 아니라 다른 노드로 나가는 출구 하나예요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="흔한 그림의 브리지 구조와 worker3에서 확인한 라우팅 구조 비교">
+<defs><marker id="k79-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="178" y="32" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">흔한 그림</text>
+<text x="523" y="32" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="25" fill="#3d3a34">worker3에서 본 것</text>
+<path d="M25 50 C 120 47, 230 52, 330 49 C 333 150, 332 250, 331 336 C 230 339, 120 335, 26 337 C 23 250, 24 150, 25 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+<path d="M370 50 C 470 47, 580 52, 680 49 C 683 150, 682 250, 681 336 C 580 339, 470 335, 371 337 C 368 250, 369 150, 370 50 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+<path d="M45 72 C 80 70, 110 73, 145 71 C 147 89, 146 105, 145 119 C 110 121, 80 118, 46 120 C 43 105, 44 89, 45 72 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M205 72 C 240 70, 270 73, 305 71 C 307 89, 306 105, 305 119 C 270 121, 240 118, 206 120 C 203 105, 204 89, 205 72 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="21" text-anchor="middle" fill="#3d6591"><text x="95" y="102">파드 A</text><text x="255" y="102">파드 B</text></g>
+<path d="M95 122 C 97 150, 93 175, 95 198" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<path d="M255 122 C 257 150, 253 175, 255 198" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272"><text x="103" y="166">veth</text><text x="263" y="166">veth</text></g>
+<path d="M40 200 C 130 197, 220 203, 318 200 C 320 210, 319 222, 318 234 C 220 237, 130 232, 41 235 C 38 222, 39 210, 40 200 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="125" y="224" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#a86b12">브리지 (tunl0)</text>
+<path d="M235 186 C 258 204, 282 228, 306 248" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+<path d="M235 248 C 260 228, 283 206, 306 186" fill="none" stroke="#e5533c" stroke-width="3" stroke-linecap="round"/>
+<path d="M120 270 C 160 268, 200 271, 238 269 C 240 280, 239 292, 238 302 C 200 304, 160 301, 121 303 C 118 292, 119 280, 120 270 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+<text x="179" y="292" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">노드 NIC</text>
+<text x="178" y="368" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">worker3: type bridge 0개</text>
+<path d="M385 66 C 415 64, 445 67, 475 65 C 477 80, 476 94, 475 106 C 445 108, 415 105, 386 107 C 383 94, 384 80, 385 66 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M575 66 C 605 64, 635 67, 665 65 C 667 80, 666 94, 665 106 C 635 108, 605 105, 576 107 C 573 94, 574 80, 575 66 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle" fill="#3d6591"><text x="430" y="92">pp1 eth0 /32</text><text x="620" y="92">pp2 eth0 /32</text></g>
+<path d="M380 132 C 415 130, 445 133, 480 131 C 482 142, 481 152, 480 162 C 445 164, 415 161, 381 163 C 378 152, 379 142, 380 132 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M570 132 C 605 130, 635 133, 670 131 C 672 142, 671 152, 670 162 C 635 164, 605 161, 571 163 C 568 152, 569 142, 570 132 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linejoin="round"/>
+<g font-family="Menlo, monospace" font-size="11" text-anchor="middle" fill="#3d3a34"><text x="430" y="151">cali6d8ce9c91fa</text><text x="620" y="151">cali7986f7b7af3</text></g>
+<path d="M430 108 C 432 116, 428 122, 430 129" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M620 108 C 622 116, 618 122, 620 129" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M395 190 C 480 187, 570 192, 655 189 C 657 210, 656 236, 655 258 C 570 261, 480 256, 396 259 C 393 236, 394 210, 395 190 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="525" y="183" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">노드 커널의 라우팅 표</text>
+<g font-family="Menlo, monospace" font-size="11" fill="#3d3a34"><text x="405" y="210">.228/32 dev cali6d8ce9c91fa</text><text x="405" y="228">.193/32 dev cali7986f7b7af3</text><text x="405" y="246">다른 /26 via 노드IP dev tunl0</text></g>
+<path d="M430 165 C 432 172, 428 178, 432 186" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr1)"/>
+<path d="M620 186 C 622 178, 618 172, 620 166" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr1)"/>
+<path d="M395 285 C 430 283, 470 286, 505 284 C 507 294, 506 304, 505 314 C 470 316, 430 313, 396 315 C 393 304, 394 294, 395 285 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M560 285 C 590 283, 620 286, 655 284 C 657 294, 656 304, 655 314 C 620 316, 590 313, 561 315 C 558 304, 559 294, 560 285 Z" fill="#fffdf7" stroke="#8a8272" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="Menlo, monospace" font-size="11" text-anchor="middle" fill="#3d3a34"><text x="450" y="304">tunl0 (ipip)</text><text x="607" y="304">eth0</text></g>
+<path d="M450 261 C 452 268, 448 274, 450 281" fill="none" stroke="#c07f18" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="5 4" marker-end="url(#k79-arr1)"/>
+<path d="M508 300 C 520 298, 540 301, 555 299" fill="none" stroke="#c07f18" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="5 4" marker-end="url(#k79-arr1)"/>
+<text x="468" y="276" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#c07f18">다른 노드로 갈 때만</text>
+<text x="523" y="368" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">같은 노드는 표에서 상대 cali로 바로</text>
+<text x="350" y="400" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#b3502f">파드를 잇는 것은 브리지가 아니라 경로 한 줄이에요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. tunl0는 파드를 묶는 브리지가 아니라 다른 노드로 나가는 출구였어요.</div>
+
+<p>같은 그림 계열에는 "pod eth0 &rarr; veth(cali) &rarr; vRouter(calico) &rarr; tunl0 &rarr; 노드 NIC &rarr; 상대 노드" 순서로 그린 것도 있어요. 이 순서는 실제와 거의 같아요. 다만 vRouter는 따로 떠 있는 장치나 프로세스가 아니에요. 노드 커널의 라우팅 표이고 그 표에 경로를 넣는 것은 calico-node 안의 Felix예요(30편). 패킷은 커널이 전달하고 Calico 프로세스를 거쳐 가지 않아요. 우리 클러스터에서는 그림의 노드 NIC 자리가 eth0(192.168.104.x)예요.</p>
+
+<h2>2. 브리지 대신 파드마다 /32 경로가 있고 커널이 그 경로로 cali를 고른다</h2>
+
+<p>브리지가 없으면 노드는 어떤 장치로 파드에게 패킷을 넘길까요? 같은 파일에서 worker3의 두 파드 IP로 가는 경로를 조회한 결과예요.</p>
+
+<div class="obsv-code">## 이 노드 파드로 가는 경로: 파드마다 caliXXXX 로 /32
+  10.244.100.228 dev cali6d8ce9c91fa src 192.168.104.5 uid 501
+  10.244.100.193 dev cali7986f7b7af3 src 192.168.104.5 uid 501
+
+## 파드 안에서 본 eth0 와 기본 경로
+  3: eth0    inet 10.244.100.228/32 scope global eth0 ...
+  default via 169.254.1.1 dev eth0
+  169.254.1.1 dev eth0 scope link</div>
+
+<p>&rarr; 노드는 파드 IP마다 그 파드의 cali 장치를 가리키는 경로를 하나씩 갖고 있어요. 파드 안의 eth0 주소는 /32이고 기본 경로는 169.254.1.1을 거쳐요. 169.254.1.1에 노드 쪽 cali가 proxy ARP로 대신 답하는 구조는 51편에서 확인했어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 파드별 /32 경로</div>
+주소 하나만 가리키는 경로예요. Calico는 노드에 뜬 파드마다 <code style="font-family:Menlo,monospace;font-size:14px;">&lt;파드 IP&gt; dev &lt;cali 장치&gt;</code> 한 줄을 노드 라우팅 표에 둬요. 같은 노드의 블록(/26)보다 범위가 좁으니 최장 접두사 일치로 이 줄이 먼저 선택돼요.</div>
+
+<p><b>파드끼리 통신할 때 브리지가 veth를 찾아 주나?</b> 이 구성에서는 아니에요. pp1이 pp2에게 보내는 패킷을 따라가 볼게요. pp1의 eth0는 /32라서 같은 링크에 이웃이 없다고 봐요. 그래서 목적지가 같은 노드의 pp2여도 모든 패킷을 기본 게이트웨이 169.254.1.1로 보내요. 패킷은 veth를 지나 노드의 cali6d8ce9c91fa로 나오고 노드 커널이 목적지 IP로 라우팅 표를 찾아 <code style="font-family:Menlo,monospace;font-size:14px;">10.244.100.193 dev cali7986f7b7af3</code>를 골라요. MAC 주소를 배워 두는 표가 아니라 IP 경로가 상대 veth를 찾아 주는 거예요.</p>
+
+<p>그래서 같은 노드 안의 통신도 라우팅을 한 번 거쳐요. 52편의 캡처에서 같은 노드 요청의 TTL이 출발 쪽 64에서 도착 쪽 63으로 줄었던 것도 이 때문이에요. 브리지는 프레임을 넘길 때 TTL을 건드리지 않고 라우터는 패킷을 넘길 때마다 TTL을 하나 줄여요. 두 파드가 같은 /26 블록의 주소를 받았다고 같은 L2 구간에 있는 것은 아니에요.</p>
+
+<h2>3. 같은 노드 파드끼리 ping 20번을 해도 tunl0 카운터는 1528 그대로였다</h2>
+
+<p>같은 노드 통신이 tunl0를 지나지 않는다는 건 카운터로도 확인할 수 있어요. worker3에 pp1과 pp2를 고정하고 pp1에서 pp2로 ping 20번을 보내면서 그 전후로 tunl0와 두 파드의 cali 장치가 받은 패킷 수와 보낸 패킷 수를 읽었어요(<code style="font-family:Menlo,monospace;font-size:14px;">79-same-node-ping-counters.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 인터페이스 카운터 (rx_packets, tx_packets)</div>
+커널이 장치마다 세는 누적 패킷 수예요. <code style="font-family:Menlo,monospace;font-size:14px;">/sys/class/net/&lt;장치&gt;/statistics/</code>에서 읽어요. 노드 쪽 cali의 rx는 노드가 그 장치에서 받은 패킷, 즉 파드가 보낸 패킷이고 tx는 파드 쪽으로 넘긴 패킷이에요.</div>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/79/02-same-node-counters.png" alt="worker3의 같은 노드 파드 사이 ping 20번 전후 카운터: tunl0 rx 1528 tx 599로 그대로, cali6d8ce9c91fa는 rx 2에서 27, cali7986f7b7af3는 rx 3에서 28로 증가" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 2. ping 20번이 오가는 동안 tunl0의 두 카운터는 하나도 움직이지 않았어요.</p>
+
+<p>tunl0는 전후 모두 rx 1528, tx 599였어요. cali6d8ce9c91fa는 rx 2에서 27, tx 2에서 33으로, cali7986f7b7af3는 rx 3에서 28, tx 1에서 33으로 늘었어요. 20개 요청과 20개 응답은 두 cali 사이에서만 오갔고 손실은 0%였어요. 증가량이 20보다 조금 많은 것은 ping 말고도 다른 패킷이 섞였기 때문인데, 그 패킷의 종류는 이번에 따로 확인하지 않았어요.</p>
+
+<p>두 cali의 시작 값이 rx 2, rx 3으로 작은 것도 눈여겨볼 만해요. 이 두 파드는 1·2절의 출력을 얻은 실험에서 같은 이름(ch05 네임스페이스의 pp1, pp2)으로 만들었다가 지운 뒤 다시 만든 파드예요. 장치 이름은 같았지만 카운터는 처음부터 다시 셌어요. 6절에서 이유를 봐요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ tunl0 카운터는 노드 전체의 합계예요</div>
+&bull; tunl0는 노드에 하나뿐이라서 그 노드로 드나드는 모든 파드의 노드 간 트래픽이 같은 카운터에 쌓여요<br>
+&bull; 이번 실습 클러스터는 조용해서 전후 차이가 내 ping과 정확히 맞았지만, 바쁜 노드에서는 차이만으로 내 패킷이라고 단정할 수 없어요<br>
+&bull; 그때는 52편에서 한 대로 노드 eth0에서 <code style="font-family:Menlo,monospace;font-size:14px;">tcpdump -ni eth0 'ip proto 4'</code>로 안쪽 주소를 보고 좁혀요. cali 카운터는 파드 하나에 하나씩이라 그 파드의 트래픽만 세요</div>
+
+<h2>4. 다른 노드로 가면 출발 노드의 경로가 tunl0를 가리키고 도착 노드의 tunl0 rx가 3 늘었다</h2>
+
+<p>이번에는 worker1의 src1에서 worker3의 dst3로 ping 3번을 보냈어요. 두 노드에서 경로를 조회하고 worker3의 eth0에서 IPIP 패킷만 잡았어요(<code style="font-family:Menlo,monospace;font-size:14px;">79-cross-node-ipip.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/79/01-cross-node-ipip.png" alt="worker1의 src1에서 worker3의 dst3로 ping 3번: worker1 경로는 via 192.168.104.5 dev tunl0, worker3 경로는 dev calie3e75f17935, worker3 eth0 캡처의 바깥 IP는 노드 주소이고 안쪽은 파드 주소, worker3 tunl0 rx_packets 1528에서 1531" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 3. 출발 노드는 tunl0로, 도착 노드는 상대 파드의 cali로 경로를 골랐어요.</p>
+
+<p>worker1에서 dst3(10.244.100.210)로 가는 경로는 <code style="font-family:Menlo,monospace;font-size:14px;">via 192.168.104.5 dev tunl0</code>였어요. worker3 노드 주소를 다음 홉으로 삼아 tunl0로 내보내라는 뜻이에요. 같은 주소를 worker3에서 조회하면 <code style="font-family:Menlo,monospace;font-size:14px;">dev calie3e75f17935</code>였어요. 도착 노드에서는 다시 2절과 같은 /32 경로가 쓰여요.</p>
+
+<p>worker3 eth0 캡처의 첫 줄은 <code style="font-family:Menlo,monospace;font-size:14px;">IP 192.168.104.3 &gt; 192.168.104.5: IP 10.244.194.90 &gt; 10.244.100.210: ICMP echo request</code>였어요. 바깥 헤더는 worker1에서 worker3로 가는 노드 주소이고 안쪽 헤더는 파드 주소 그대로예요. 바깥 목적지 192.168.104.5는 worker1 경로의 via 주소와 같아요. 헤더 구조와 길이는 52편에서 바이트 단위로 확인했으니 여기서는 다시 풀지 않아요.</p>
+
+<p>카운터도 달랐어요. worker3의 tunl0 rx_packets는 1528에서 1531이 됐어요. 바깥 헤더를 벗긴 echo request 3개가 tunl0로 들어왔다는 뜻이에요. 3절 실험의 전후와 이 실험의 시작 때 값이 모두 1528이었으니, 그 1분 남짓 동안 worker3로 터널을 타고 들어온 패킷은 없었어요. 그래서 +3을 이 ping의 요청 세 개로 읽을 수 있어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="같은 노드 통신과 다른 노드 통신이 지나는 장치와 늘어난 카운터 비교">
+<defs><marker id="k79-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="20" y="34" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#2e6b41">같은 노드 (worker3 안에서 끝)</text>
+<path d="M20 58 C 45 56, 75 59, 105 57 C 107 72, 106 88, 105 100 C 75 102, 45 99, 21 101 C 18 88, 19 72, 20 58 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2" stroke-linejoin="round"/>
+<path d="M130 58 C 165 56, 210 59, 250 57 C 252 72, 251 88, 250 100 C 210 102, 165 99, 131 101 C 128 88, 129 72, 130 58 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M275 58 C 320 56, 375 59, 420 57 C 422 72, 421 88, 420 100 C 375 102, 320 99, 276 101 C 273 88, 274 72, 275 58 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<path d="M445 58 C 480 56, 525 59, 565 57 C 567 72, 566 88, 565 100 C 525 102, 480 99, 446 101 C 443 88, 444 72, 445 58 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M590 58 C 615 56, 650 59, 680 57 C 682 72, 681 88, 680 100 C 650 102, 615 99, 591 101 C 588 88, 589 72, 590 58 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" text-anchor="middle"><text x="62" y="85" fill="#3d6591">pp1</text><text x="347" y="85" fill="#2e6b41">라우팅 표 /32</text><text x="635" y="85" fill="#3d6591">pp2</text></g>
+<g font-family="Menlo, monospace" font-size="11" text-anchor="middle" fill="#3d3a34"><text x="190" y="83">cali6d8ce9c91fa</text><text x="505" y="83">cali7986f7b7af3</text></g>
+<path d="M108 79 C 115 77, 120 80, 126 79" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr2)"/>
+<path d="M253 79 C 260 77, 266 80, 271 79" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr2)"/>
+<path d="M423 79 C 430 77, 436 80, 441 79" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr2)"/>
+<path d="M568 79 C 575 77, 581 80, 586 79" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr2)"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19"><text x="20" y="132" fill="#2e6b41">tunl0 rx 1528 &#8594; 1528, tx 599 &#8594; 599 (그대로)</text><text x="400" y="132" fill="#3d3a34">cali 두 개만 rx·tx 증가</text></g>
+<path d="M20 158 C 240 155, 460 161, 680 157" fill="none" stroke="#d8cfba" stroke-width="2" stroke-dasharray="6 6"/>
+<text x="20" y="190" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#b3502f">다른 노드 (worker1 &#8594; worker3)</text>
+<path d="M20 212 C 45 210, 80 213, 110 211 C 112 228, 111 246, 110 260 C 80 262, 45 259, 21 261 C 18 246, 19 228, 20 212 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2" stroke-linejoin="round"/>
+<path d="M128 212 C 170 210, 230 213, 272 211 C 274 228, 273 246, 272 260 C 230 262, 170 259, 129 261 C 126 246, 127 228, 128 212 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<path d="M290 212 C 315 210, 345 213, 372 211 C 374 228, 373 246, 372 260 C 345 262, 315 259, 291 261 C 288 246, 289 228, 290 212 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M432 212 C 457 210, 487 213, 514 211 C 516 228, 515 246, 514 260 C 487 262, 457 259, 433 261 C 430 246, 431 228, 432 212 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M532 212 C 575 210, 635 213, 680 211 C 682 228, 681 246, 680 260 C 635 262, 575 259, 533 261 C 530 246, 531 228, 532 212 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="18" text-anchor="middle"><text x="65" y="233" fill="#3d6591">src1</text><text x="65" y="252" fill="#8a8272">worker1</text><text x="200" y="233" fill="#2e6b41">worker1 표</text><text x="331" y="233" fill="#a86b12">tunl0</text><text x="331" y="252" fill="#a86b12">&#8594; eth0</text><text x="473" y="233" fill="#a86b12">eth0</text><text x="473" y="252" fill="#a86b12">&#8594; tunl0</text><text x="606" y="233" fill="#2e6b41">worker3 표 /32</text><text x="606" y="252" fill="#3d6591">&#8594; cali &#8594; dst3</text></g>
+<text x="200" y="252" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#3d3a34">via .5 dev tunl0</text>
+<path d="M113 236 C 118 234, 121 237, 124 236" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr2)"/>
+<path d="M275 236 C 280 234, 283 237, 286 236" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr2)"/>
+<path d="M517 236 C 522 234, 525 237, 528 236" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr2)"/>
+<path d="M375 236 C 390 226, 410 246, 428 236" fill="none" stroke="#e5533c" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="6 4" marker-end="url(#k79-arr2)"/>
+<text x="402" y="206" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#b3502f">IPIP</text>
+<text x="402" y="282" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#b3502f">.3 &gt; .5</text>
+<g font-family="'Nanum Pen Script', cursive" font-size="19"><text x="20" y="300" fill="#b3502f">worker3 tunl0 rx 1528 &#8594; 1531 (+3, echo request 3개)</text></g>
+<text x="350" y="330" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d3a34">tunl0 카운터가 움직이면 노드를 건넌 거예요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 4. 같은 노드는 cali 두 개 사이에서, 다른 노드는 tunl0와 eth0를 두 번씩 지나서 도착했어요.</div>
+
+<h2>5. 클러스터 라우팅 테이블은 하나가 아니라 노드마다 커널에 있다</h2>
+
+<p><b>클러스터 라우팅 테이블은 어디 있나?</b> "클러스터가 노드 IP를 담은 라우팅 테이블을 저장한다"는 설명을 자주 봐요. 그런데 클러스터에 저장된 라우팅 테이블이라는 객체는 찾을 수 없어요. 클러스터에 저장된 것과 노드 커널에 있는 것을 나란히 놓아 봤어요(<code style="font-family:Menlo,monospace;font-size:14px;">79-node-to-node-routes.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-code">## Calico 가 노드마다 나눠 준 파드 블록 (blockaffinities CR = 클러스터에 저장된 원본)
+  NODE        CIDR                STATE
+k8s-master    10.244.235.192/26   confirmed
+k8s-worker1   10.244.194.64/26    confirmed
+k8s-worker2   10.244.126.0/26     confirmed
+k8s-worker3   10.244.100.192/26   confirmed
+
+## k8s-worker3 의 커널 라우팅 표 중 파드 대역
+  blackhole 10.244.100.192/26 proto 80
+  10.244.126.0/26 via 192.168.104.4 dev tunl0 proto 80 onlink mtu 1480
+  10.244.194.64/26 via 192.168.104.3 dev tunl0 proto 80 onlink mtu 1480
+  10.244.235.192/26 via 192.168.104.1 dev tunl0 proto 80 onlink mtu 1480</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: BlockAffinity</div>
+Calico IPAM이 "이 /26 블록은 이 노드 것"이라고 적어 두는 CRD 객체예요(<code style="font-family:Menlo,monospace;font-size:14px;">blockaffinities.crd.projectcalico.org</code>). 쿠버네티스 API를 거쳐 etcd에 저장돼요. 블록을 나누는 방식과 podCIDR과의 차이는 31편에서 봤어요.</div>
+
+<p>&rarr; 클러스터(etcd)에 있는 것은 블록 소유 기록 네 줄이에요. 경로가 아니라 "어느 노드가 어느 /26을 가졌나"라는 데이터예요. 실제 경로는 노드마다 커널에 있어요. worker3의 표에는 다른 세 노드의 블록으로 가는 경로 세 줄과 자기 블록의 blackhole 한 줄이 있었어요. 네 노드 모두 같은 모양이었어요. 각 노드는 자기를 뺀 세 블록을 그 블록 주인의 노드 IP로 보내요. 자기 블록은 blackhole로 두고, 그 블록 안의 실제 파드는 더 좁은 /32 경로로 찾아가요. blackhole이 정상 파드를 막지 않는 이유는 56편에서 봤어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 경로의 proto 값</div>
+커널 경로에 붙는 출처 표시 번호예요. 경로를 넣은 프로그램이 자기 번호를 붙이고 <code style="font-family:Menlo,monospace;font-size:14px;">/etc/iproute2/rt_protos</code>가 번호에 이름을 붙여요. 같은 출력에서 12는 bird였어요. 파드 대역 경로는 모두 80이었어요.</div>
+
+<p>그 경로를 누가 넣었는지는 proto 값이 알려 줘요. worker3에서는 bird와 bird6 프로세스가 돌고 있었고 rt_protos에서 BIRD의 번호는 12였어요. 그런데 파드 대역 경로는 모두 proto 80이었어요. 30편에서는 Calico v3.33.0 Felix 소스의 기본 경로 표시가 80이라는 것, BIRD를 멈춰도 이 경로가 남는다는 것, 경로를 지우면 Felix가 다시 넣는다는 것을 확인했어요. Felix는 BlockAffinity 같은 IPAM 데이터를 읽어 자기 노드의 커널에 경로를 써요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="쿠버네티스 API에 저장된 블록 소유 기록과 노드마다 커널에 있는 라우팅 표의 관계">
+<defs><marker id="k79-arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M170 30 C 290 27, 410 32, 530 29 C 532 70, 531 112, 530 150 C 410 153, 290 148, 171 151 C 168 112, 169 70, 170 30 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="56" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d6591">쿠버네티스 API (etcd): blockaffinities</text>
+<g font-family="Menlo, monospace" font-size="12" fill="#3d3a34"><text x="200" y="82">k8s-master   10.244.235.192/26</text><text x="200" y="100">k8s-worker1  10.244.194.64/26</text><text x="200" y="118">k8s-worker2  10.244.126.0/26</text><text x="200" y="136">k8s-worker3  10.244.100.192/26</text></g>
+<path d="M230 154 C 180 175, 120 190, 95 214" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr3)"/>
+<path d="M300 154 C 290 175, 275 195, 262 214" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr3)"/>
+<path d="M400 154 C 410 175, 425 195, 438 214" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr3)"/>
+<path d="M470 154 C 520 175, 580 190, 605 214" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k79-arr3)"/>
+<text x="350" y="192" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#8a8272">Felix가 읽어서</text>
+<path d="M15 218 C 55 216, 125 219, 170 217 C 172 250, 171 285, 170 316 C 125 318, 55 315, 16 317 C 13 285, 14 250, 15 218 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<path d="M185 218 C 225 216, 295 219, 340 217 C 342 250, 341 285, 340 316 C 295 318, 225 315, 186 317 C 183 285, 184 250, 185 218 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<path d="M360 218 C 400 216, 470 219, 515 217 C 517 250, 516 285, 515 316 C 470 318, 400 315, 361 317 C 358 285, 359 250, 360 218 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<path d="M530 218 C 570 216, 640 219, 685 217 C 687 250, 686 285, 685 316 C 640 318, 570 315, 531 317 C 528 285, 529 250, 530 218 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle" fill="#2e6b41"><text x="92" y="240">master 커널 표</text><text x="262" y="240">worker1 커널 표</text><text x="437" y="240">worker2 커널 표</text><text x="607" y="240">worker3 커널 표</text></g>
+<g font-family="Menlo, monospace" font-size="10" fill="#3d3a34" text-anchor="middle"><text x="92" y="264">다른 /26 3줄</text><text x="92" y="280">via 노드IP tunl0</text><text x="92" y="298">blackhole 자기 /26</text><text x="262" y="264">다른 /26 3줄</text><text x="262" y="280">via 노드IP tunl0</text><text x="262" y="298">blackhole 자기 /26</text><text x="437" y="264">다른 /26 3줄</text><text x="437" y="280">via 노드IP tunl0</text><text x="437" y="298">blackhole 자기 /26</text><text x="607" y="264">다른 /26 3줄</text><text x="607" y="280">via 노드IP tunl0</text><text x="607" y="298">blackhole 자기 /26</text></g>
+<text x="350" y="345" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">저장된 것은 블록 소유 기록, 경로는 노드마다 하나씩 (proto 80)</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 클러스터에는 경로가 아니라 블록 소유가 저장되고 경로는 네 노드의 커널에 따로 있어요.</div>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 다른 노드로만 안 될 때 경로를 확인하는 순서</div>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get blockaffinities.crd.projectcalico.org -o custom-columns=NODE:.spec.node,CIDR:.spec.cidr</code>로 목적지 파드 IP가 어느 노드의 블록인지 봐요<br>
+&bull; 출발 노드에서 <code style="font-family:Menlo,monospace;font-size:14px;">ip route show proto 80</code>을 실행해 그 블록이 주인 노드의 IP를 via로 해서 tunl0에 걸려 있는지 봐요. 30편에서 이 명령은 다른 노드 블록 세 줄과 자기 블록의 blackhole 한 줄을 돌려줬어요. 노드가 블록을 둘 이상 가지면 줄도 그만큼 늘어요<br>
+&bull; 줄이 없으면 패킷은 기본 경로로 빠지고 via가 다르면 엉뚱한 노드로 가요. 30편에서 경로 한 줄을 지우자 바로 다음 요청이 실패했고 Felix가 37초 안에 다시 넣었어요</div>
+
+<h2>6. cali 이름은 네임스페이스와 파드 이름의 SHA-1에서 나오니 노드에서 바로 계산할 수 있다</h2>
+
+<p>3절에서 본 두 파드는 앞 실험에서 지웠다가 같은 이름으로 다시 만든 파드였어요. 파드 IP는 10.244.100.228에서 10.244.100.216으로, 10.244.100.193에서 10.244.100.242로 바뀌었는데 cali 이름은 두 번 다 cali6d8ce9c91fa, cali7986f7b7af3이었어요. IP가 아닌 다른 무언가에서 이름이 나온다는 뜻이에요. Calico v3.33.0 소스에서 이름을 정하는 함수를 찾았어요(<code style="font-family:Menlo,monospace;font-size:14px;">79-calico-v3.33.0-vethname-excerpts.txt</code>).</p>
+
+<div class="obsv-code">// libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go (v3.33.0)
+func (wc defaultWorkloadEndpointConverter) VethNameForWorkload(namespace, podname string) string {
+	// A SHA1 is always 20 bytes long, and so is sufficient for generating the
+	// veth name and mac addr.
+	h := sha1.New()
+	h.Write(fmt.Appendf(nil, "%s.%s", namespace, podname))
+	prefix := os.Getenv("FELIX_INTERFACEPREFIX")
+	if prefix == "" {
+		// Prefix is not set. Default to "cali"
+		prefix = "cali"
+	} ...
+	return fmt.Sprintf("%s%s", prefix, hex.EncodeToString(h.Sum(nil))[:11])
+}</div>
+
+<p>&rarr; "네임스페이스.파드이름" 문자열의 SHA-1 값을 16진수로 쓴 뒤 앞 11자를 잘라 cali 뒤에 붙인다는 뜻이에요. 접두사는 FELIX_INTERFACEPREFIX 환경 변수로 바꿀 수 있고 기본은 cali예요. 합쳐서 15자이고 리눅스 인터페이스 이름에 쓸 수 있는 최대 길이와 같아요.</p>
+
+<p>테스트 코드를 빼면 이 함수를 부르는 곳은 두 군데예요. CNI 플러그인이 파드의 veth를 만들 때(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/cni-plugin/pkg/k8s/k8s.go">cni-plugin/pkg/k8s/k8s.go</a> 438행), 그리고 파드 객체를 WorkloadEndpoint로 바꿀 때(<a href="https://github.com/projectcalico/calico/blob/v3.33.0/libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go">workload_endpoint_default.go</a> 155행)예요. 155행 위의 주석은 "This must match the host-side veth configured by the CNI plugin"이에요. 파드 객체에서 WorkloadEndpoint를 만드는 쪽도 같은 함수로 이름을 계산하니, CNI가 만든 장치의 이름과 반드시 같아야 한다는 뜻이에요. 그래서 파드의 네임스페이스와 이름만 알면 누구든 같은 이름을 얻을 수 있어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: WorkloadEndpoint</div>
+Calico가 파드 하나의 네트워크 끝점을 나타내는 객체예요. 인터페이스 이름, 파드 IP, 적용할 프로필 같은 값을 담아요. 이번 클러스터와 같이 쿠버네티스 API를 데이터스토어로 쓰면 파드 객체를 변환해서 만들어요. Felix는 이 객체를 보고 노드의 cali 장치에 경로와 정책을 걸어요.</div>
+
+<p>계산이 맞는지 Mac에서 확인했어요. <code style="font-family:Menlo,monospace;font-size:14px;">printf 'ch05.pp1' | shasum -a 1</code>의 앞 11자는 6d8ce9c91fa, ch05.pp2는 7986f7b7af3, 4절의 ch05.dst3는 e3e75f17935였어요. 세 cali 이름과 모두 같아요. 우연이 아닌지 보려고 worker2에 파드를 고정하고 blog-79, blog-81 네임스페이스에서 이름과 네임스페이스를 바꿔 가며 새로 실험했어요(<code style="font-family:Menlo,monospace;font-size:14px;">79-cali-name-hash.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-code">  1) 처음 만든 파드
+     blog-79/web  IP=10.244.126.52   경로 dev=calif27d0b7a09b  계산값=calif27d0b7a09b  일치=yes ifindex=82  rx_packets=1
+  파드를 지운 뒤 노드에서 calif27d0b7a09b 조회: Device "calif27d0b7a09b" does not exist.
+  2) 같은 이름으로 다시
+     blog-79/web  IP=10.244.126.21   경로 dev=calif27d0b7a09b  계산값=calif27d0b7a09b  일치=yes ifindex=83  rx_packets=2
+  3) 다른 네임스페이스
+     blog-81/web  IP=10.244.126.38   경로 dev=calie330e958bd7  계산값=calie330e958bd7  일치=yes ifindex=85  rx_packets=3
+  4) 다른 파드 이름
+     blog-79/web2 IP=10.244.126.47   경로 dev=cali27304031fe0  계산값=cali27304031fe0  일치=yes ifindex=86  rx_packets=1</div>
+
+<p>&rarr; 네 경우 모두 노드 경로가 가리킨 장치 이름과 계산값이 같았어요. 같은 이름으로 다시 만든 파드는 IP가 바뀌어도 같은 이름을 받았고 파드 이름이 같아도 네임스페이스가 다르면 다른 이름을 받았어요. 파드를 지운 뒤에는 그 장치가 노드에서 사라졌고 다시 만든 장치의 ifindex는 82에서 83으로 바뀌었어요. 이름만 같은 새 장치라는 뜻이에요. 3절의 cali 카운터가 rx 2, rx 3에서 시작한 것도 같은 이유예요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 이름이 같은 cali가 같은 장치는 아니에요</div>
+&bull; 파드를 다시 만들면 veth도 새로 만들어져요. 이름은 같아도 ifindex가 바뀌고 카운터는 0부터 다시 세요<br>
+&bull; 파드를 다시 만든 시점을 사이에 두고 카운터를 빼면 엉뚱한 값이 나와요. 비교 전후로 파드의 UID나 장치의 ifindex가 그대로인지 봐요<br>
+&bull; 코드대로라면 이름이 고정되는 StatefulSet 파드(web-0 등)는 다시 만들어져도 같은 cali 이름을 받고 이름 끝이 무작위인 Deployment 파드는 다시 만들어질 때마다 이름이 바뀌어요</div>
+
+<p>진단에서는 이 성질이 편해요. 장애가 난 파드의 네임스페이스와 이름만 알면 kubectl exec 없이 노드에서 바로 그 파드의 cali를 찾아 카운터를 읽을 수 있어요. 지금까지의 관찰을 진단 순서로 정리하면 이래요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 같은 노드냐 다른 노드냐부터 가르는 진단 순서</div>
+&bull; <b>먼저</b> <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pod -o wide</code>로 두 파드의 노드를 봐요<br>
+&bull; <b>같은 노드</b>: 출발 노드에서 <code style="font-family:Menlo,monospace;font-size:14px;">ip route get &lt;목적지 파드 IP&gt;</code>가 <code style="font-family:Menlo,monospace;font-size:14px;">dev cali...</code>인지 보고 두 파드의 cali 카운터를 요청 전후로 비교해요. 이름은 <code style="font-family:Menlo,monospace;font-size:14px;">printf '네임스페이스.파드' | shasum -a 1 | cut -c1-11</code>로 계산해요. tunl0와 노드 간 경로는 볼 필요가 없어요. 여기서 막히면 정책(54편)이나 앱의 listen 상태(56편)를 봐요<br>
+&bull; <b>다른 노드</b>: 출발 노드의 경로가 <code style="font-family:Menlo,monospace;font-size:14px;">via &lt;목적지 노드 IP&gt; dev tunl0</code>인지, 그 via가 BlockAffinity의 주인 노드와 맞는지 봐요. 도착 노드에서 tunl0 rx가 느는지, eth0에 <code style="font-family:Menlo,monospace;font-size:14px;">ip proto 4</code> 패킷이 오는지(52편) 보고 큰 요청만 멈추면 MTU(53편)를 봐요<br>
+&bull; 이 순서는 IPIP Always와 iptables 데이터플레인인 이번 구성에서 관찰한 것이에요. VXLAN 모드나 eBPF 데이터플레인은 장치와 경로가 다를 수 있는데 이번에 실험하지 않았어요</div>
+
+<p><b>출처와 원자료</b><br>
+&middot; cali 이름 계산: Calico v3.33.0 <a href="https://github.com/projectcalico/calico/blob/v3.33.0/libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go">workload_endpoint_default.go</a>, <a href="https://github.com/projectcalico/calico/blob/v3.33.0/cni-plugin/pkg/k8s/k8s.go">cni-plugin/pkg/k8s/k8s.go</a>, 발췌는 <code style="font-family:Menlo,monospace;font-size:14px;">79-calico-v3.33.0-vethname-excerpts.txt</code><br>
+&middot; proto 80과 Felix의 경로 작성: 30편, BlockAffinity와 IPAM 블록: 31편, veth와 proxy ARP: 51편, IPIP 헤더: 52편, MTU: 53편, blackhole과 구간별 진단: 56편<br>
+&middot; 이 글의 실험: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/79-calico-tunl0-not-bridge</code>, <code style="font-family:Menlo,monospace;font-size:14px;">79-same-node-ping-counters</code>, <code style="font-family:Menlo,monospace;font-size:14px;">79-cross-node-ipip</code>, <code style="font-family:Menlo,monospace;font-size:14px;">79-node-to-node-routes</code>, <code style="font-family:Menlo,monospace;font-size:14px;">79-cali-name-hash</code>(.sh/.txt)</p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<p>worker3에는 브리지가 하나도 없었고 tunl0는 다른 노드로 갈 때만 쓰는 IPIP 터널 장치였어요. 같은 노드의 파드끼리는 노드 커널의 파드별 /32 경로가 상대 cali를 골라 줬고 ping 20번 동안 tunl0 카운터는 rx 1528, tx 599 그대로였어요. 다른 노드로 갈 때는 출발 노드의 경로가 <code style="font-family:Menlo,monospace;font-size:14px;">via 노드IP dev tunl0</code>였고 도착 노드의 tunl0 rx가 ping 세 번만큼 늘었어요.</p>
+<p>클러스터에 저장된 것은 노드마다 /26 블록을 누가 가졌는지 적은 BlockAffinity였고 실제 라우팅 표는 네 노드의 커널에 따로 있었어요. 그 경로는 모두 proto 80으로 Felix가 넣은 것이었어요. cali 이름은 "네임스페이스.파드이름"의 SHA-1 앞 11자라서, 같은 이름으로 다시 만든 파드는 같은 이름의 새 장치를 받았어요.</p>
+<p style="margin-bottom:0;">파드 통신이 안 될 때는 두 파드가 같은 노드에 있는지부터 가르고 같은 노드면 cali와 /32 경로를, 다른 노드면 tunl0 경로와 블록 소유와 IPIP를 보면 돼요.</p>
+</div>
+</div>

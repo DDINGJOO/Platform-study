@@ -1,0 +1,43 @@
+# 78 externalIPs 와 IP 종류 (2026-11-21 19:12:09 KST)
+  web 파드 IP 10.244.100.241 (노드 k8s-worker3), client 파드 노드 k8s-worker1
+
+## 1. Service 를 만들기 전, 203.0.113.10:8001 로 요청
+  client 파드 → 203.0.113.10:8001          → curl: (28) Connection timed out after 3003 milliseconds
+  master 노드 → 203.0.113.10:8001          → curl: (28) Connection timed out after 3003 milliseconds
+
+## 2. externalIPs: [203.0.113.10] 인 Service 를 만든다 (kubectl apply 출력 그대로)
+  Warning: spec.externalIPs is deprecated and may no longer be implemented in some clusters
+  service/ext-demo created
+  client 파드 → 203.0.113.10:8001          → <title>Welcome to nginx!</title>
+  client 파드 → 203.0.113.10:80 (port 아님) → curl: (28) Connection timed out after 3003 milliseconds
+  master 노드 → 203.0.113.10:8001          → <title>Welcome to nginx!</title>
+  worker1 노드 → 203.0.113.10:8001         → <title>Welcome to nginx!</title>
+  노드마다 203.0.113.10 를 잡는 iptables 줄 수: master=1 worker1=1 worker2=1 worker3=1
+  노드마다 203.0.113.10 가 붙은 인터페이스 수: master=0 worker1=0 worker2=0 worker3=0
+    -A KUBE-SERVICES -d 203.0.113.10/32 -p tcp -m comment --comment "blog-78/ext-demo external IP" -m tcp --dport 8001 -j KUBE-EXT-LUGB2CNPHBVBA6MJ
+
+## 3. 누가 이 주소들을 기록하나: ClusterIP 는 IPAddress 객체, externalIP 는 Service 의 문자열
+  ext-demo clusterIP=10.101.41.30 externalIPs=["203.0.113.10"]
+  IPADDRESS      PARENT     NAMESPACE   NAME       MANAGED-BY
+  10.101.41.30   services   blog-78     ext-demo   ipallocator.k8s.io
+  kubectl get ipaddress 203.0.113.10 → Error from server (NotFound): ipaddresses.networking.k8s.io "203.0.113.10" not found
+  ServiceCIDR kubernetes: ["10.96.0.0/12"]
+  Calico IPPool: 10.244.0.0/16 ipipMode=Always blockSize=26
+  API 서버 플래그:
+    - --enable-admission-plugins=NodeRestriction
+    - --service-cluster-ip-range=10.96.0.0/12
+
+## 4. 같은 파드를 NodePort 로 열면 (Mac 에서 노드 lima1 주소마다)
+  service/np-demo created
+  np-demo nodePort=30720 clusterIP=10.96.193.82 externalTrafficPolicy=Cluster
+  Mac → 192.168.64.2:30720 (NodePort)        → <title>Welcome to nginx!</title>
+  Mac → 192.168.64.3:30720 (NodePort)        → <title>Welcome to nginx!</title>
+  Mac → 192.168.64.4:30720 (NodePort)        → <title>Welcome to nginx!</title>
+  Mac → 192.168.64.5:30720 (NodePort)        → <title>Welcome to nginx!</title>
+
+## 5. Mac 은 각 대역으로 가는 패킷을 어느 인터페이스로 보내나 (route -n get 의 interface 줄)
+  10.244.100.241   interface: en0
+  10.101.41.30     interface: en0
+  192.168.64.5     interface: bridge100
+
+(네임스페이스 blog-78 삭제 요청)

@@ -1,0 +1,400 @@
+<!-- ============================================================
+  k8s 스터디 81편: CrashLoopBackOff는 파드를 다시 만드는 걸까, 재시작 백오프와 status의 주인
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: CrashLoopBackOff 파드를 3분 지켜보니 다섯 번 재시작하는 동안 파드 UID와 IP가 그대로였어요. 재시작 간격 1·13·27·48·88초의 출처를 kubelet v1.37.2 소스로 따라가고 status를 kubectl edit로 고칠 수 있는지 봤어요. -->
+<!-- tags: CrashLoopBackOff, restartCount, 재시작 백오프, pod phase, pod conditions, status subresource -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 81편</div>
+  77편. env로 넣은 비밀번호는 왜 kubectl describe에 보일까, Secret과 secretKeyRef<br>
+  78편. Service는 파드를 어떻게 찾고 파드 IP·ClusterIP·externalIP는 어디서 닿을까<br>
+  79편. Calico 노드에는 브리지가 없다, 같은 노드와 다른 노드의 파드 통신은 어디를 지나갈까<br>
+  80편. 롤링 업데이트 중에 요청이 왜 끊길까, preStop과 readiness는 각각 무엇을 막나<br>
+  <b>81편. CrashLoopBackOff는 파드를 다시 만드는 걸까, 재시작 백오프와 status의 주인</b> &larr; 지금 이 글
+</div>
+
+<p>busybox 컨테이너가 2초 뒤 exit 1로 끝나게 만든 파드 crashy(restartPolicy Always)를 3분 남짓 지켜봤어요. 약 1초 간격으로 상태를 읽어 바뀔 때만 한 줄씩 남겼어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/81-crashloop-restart.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-code">  경과  STATUS            restarts  파드UID(앞 8자) IP               lastState.finishedAt → state.running.startedAt
+  +  1s  Running           0         7ed33dc2        10.244.100.219   - → 2026-11-21T03:20:53Z
+  +  4s  Running           1         7ed33dc2        10.244.100.219   2026-11-21T03:20:55Z → 2026-11-21T03:20:56Z
+  + 18s  Running           2         7ed33dc2        10.244.100.219   2026-11-21T03:20:58Z → 2026-11-21T03:21:11Z
+  + 47s  Running           3         7ed33dc2        10.244.100.219   2026-11-21T03:21:13Z → 2026-11-21T03:21:40Z
+  + 97s  Running           4         7ed33dc2        10.244.100.219   2026-11-21T03:21:42Z → 2026-11-21T03:22:30Z
+  +187s  Running           5         7ed33dc2        10.244.100.219   2026-11-21T03:22:32Z → 2026-11-21T03:24:00Z
+  (ContainerCreating 줄과 Error 줄은 생략)</div>
+
+<p>&rarr; 컨테이너는 다섯 번 다시 떴는데 파드 UID 앞 8자 7ed33dc2와 파드 IP 10.244.100.219는 끝까지 같았어요. 컨테이너가 끝난 시각에서 다시 시작한 시각까지는 1초, 13초, 27초, 48초, 88초였어요. 흔히 "10초에서 시작해 두 배씩, 최대 300초"라고 설명하는데, 첫 재시작은 거의 바로 일어났고 나머지는 10·20·40·80초보다 3~8초씩 길었어요.</p>
+
+<p>같은 날 status도 손으로 고쳐 봤어요. 실행 중인 파드의 status.phase를 Failed로 패치하자 kubectl은 <code style="font-family:Menlo,monospace;font-size:14px;">pod/st-demo patched (no change)</code>라고 답했고 phase는 Running 그대로였어요. 이 글은 두 장면을 kubelet v1.37.2 소스와 추가 실험으로 따라가요. 63편에서 phase와 conditions가 바뀌는 순서를 봤으니 여기서는 누가 컨테이너를 다시 띄우고 누가 status를 쓰는지에 집중해요. 클러스터는 Lima VM 4대(마스터 1, 워커 3)에 kubeadm v1.37.2, containerd 2.4.1을 올린 실습 환경이에요.</p>
+
+<p><b>이 글에서 다룰 것</b><br>
+&middot; kubelet이 재시작하는 건 파드인가 컨테이너인가?<br>
+&middot; 재시작 간격 1·13·27·48·88초는 어디서 나왔을까?<br>
+&middot; CrashLoopBackOff라는데 STATUS 칸에는 왜 Error가 더 오래 보였을까?<br>
+&middot; CrashLoopBackOff 중인 파드의 phase는 무엇이고 Failed는 언제 될까?<br>
+&middot; Unschedulable은 condition일까?<br>
+&middot; kubectl edit로 status를 고칠 수 있을까?</p>
+
+<h2>1. 다섯 번 재시작하는 동안 파드 UID와 IP는 그대로였다</h2>
+
+<p><b>kubelet이 재시작하는 건 파드인가 컨테이너인가?</b> 컨테이너예요. 위 출력에서 restarts가 0에서 5까지 올라가는 동안 파드 객체는 하나였어요. UID가 같으니 API 서버에 저장된 파드가 지워졌다가 새로 만들어진 적이 없어요. IP가 같다는 것은 파드의 샌드박스, 곧 pause 컨테이너가 쥔 네트워크 네임스페이스도 그대로였다는 뜻이에요(43편). kubelet은 그 샌드박스 안에서 끝난 컨테이너만 새로 띄웠어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: CrashLoopBackOff</div>
+컨테이너가 끝난 뒤 kubelet이 다시 띄우기 전에 기다리는 상태를 가리키는 대기 사유예요. 컨테이너 상태의 <code style="font-family:Menlo,monospace;font-size:14px;">state.waiting.reason</code>에 적혀요. 파드의 phase 값이 아니고 쿠버네티스에 CrashLoopBackOff라는 phase는 없어요.</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: restartCount와 lastState</div>
+<code style="font-family:Menlo,monospace;font-size:14px;">status.containerStatuses[]</code>의 필드예요. restartCount는 이 파드 안에서 그 컨테이너를 다시 띄운 횟수이고 lastState.terminated는 직전 실행이 끝난 기록(exitCode, reason, finishedAt)이에요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs --previous</code>가 보여 주는 것도 그 직전 실행의 로그예요.</div>
+
+<p>파드를 새로 만드는 것은 kubelet이 아니라 ReplicaSet 같은 컨트롤러의 일이에요. 파드 객체가 지워지면 컨트롤러가 새 이름, 새 UID의 파드를 만들고 스케줄러가 다시 노드를 고르고 새 IP를 받아요(60편). crashy는 컨트롤러 없이 만든 단독 파드였지만 지워지지 않았으니 그 일은 일어나지 않았어요.</p>
+
+<p>이 구분은 백오프에도 이어져요. kubelet은 재시작을 미룰 시간을 컨테이너마다 키 하나로 기억하는데, v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kuberuntime/helpers.go">helpers.go</a>의 키에는 파드 UID가 들어가요(<code style="font-family:Menlo,monospace;font-size:14px;">81-k8s-v1.37.2-backoff-status-excerpts.txt</code>).</p>
+
+<div class="obsv-code">func GetBackoffKey(pod *v1.Pod, container *v1.Container) string {
+	// Include stable identifiers (name, namespace, uid) as well as any
+	// fields that should reset the backoff when changed.
+	key := []string{
+		pod.Name, pod.Namespace, string(pod.UID),
+		container.Name, container.Image, container.Resources.String(),
+	} ...</div>
+
+<p>&rarr; 파드를 지워서 컨트롤러가 새 파드를 만들면 UID가 달라져 백오프가 처음부터 시작돼요. 같은 파드여도 컨테이너의 이미지나 자원 설정을 바꾸면 키가 바뀌어 역시 처음부터예요. 반대로 지운 파드를 다시 만들어도 원인이 그대로면 같은 실패를 처음부터 다시 겪어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 CrashLoopBackOff 파드를 만나면</div>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl logs &lt;파드&gt; --previous</code>로 죽은 실행의 로그를 봐요. 그냥 logs는 지금 막 다시 뜬 실행의 로그예요<br>
+&bull; <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get pod &lt;파드&gt; -o jsonpath='{.status.containerStatuses[0].lastState.terminated}'</code>로 exitCode와 reason을 봐요. 137이면 SIGKILL(메모리 초과 등), 1이면 앱이 스스로 끝낸 경우가 많아요<br>
+&bull; RESTARTS 칸과 BackOff 이벤트의 count가 늘고 있으면 kubelet이 계속 다시 띄우는 중이에요. 파드를 지우면 백오프는 초기화되지만 원인은 남아요</div>
+
+<h2>2. 첫 재시작은 바로, 그다음은 끝난 시각부터 10초·20초·40초·80초를 기다린다</h2>
+
+<p>kubelet이 재시작 여부를 정하는 코드는 v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kuberuntime/kuberuntime_manager.go">kuberuntime_manager.go</a>의 doBackOff예요.</p>
+
+<div class="obsv-code">// Use the finished time of the latest exited container as the start point to calculate whether to do back-off.
+ts := cStatus.FinishedAt
+key := GetBackoffKey(pod, container)
+if backOff.IsInBackOffSince(key, ts) {
+	m.recorder...Eventf(containerRef, v1.EventTypeWarning, events.BackOffStartContainer,
+		"Back-off restarting failed container %s in pod %s", container.Name, format.Pod(pod))
+	backoff := backOff.Get(key)
+	err := fmt.Errorf("back-off %s restarting failed container=%s pod=%s", ...)
+	return true, err.Error(), kubecontainer.NewBackoffError(kubecontainer.ErrCrashLoopBackOff, ts.Add(backoff))
+}
+backOff.Next(key, ts)
+return false, "", nil</div>
+
+<p>&rarr; 기준 시각은 컨테이너가 끝난 시각(FinishedAt)이에요. 끝난 지 아직 백오프 시간이 지나지 않았으면 BackOff 이벤트를 남기고 이번에는 시작하지 않아요. 지났으면 백오프를 다음 단계로 올리고 컨테이너를 시작해요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: flowcontrol.Backoff</div>
+client-go에 들어 있는 백오프 도구예요. 키마다 현재 대기 시간과 마지막 갱신 시각을 기억하고 Next를 부를 때마다 대기 시간을 두 배로 늘리되 최댓값에서 멈춰요. kubelet은 <code style="font-family:Menlo,monospace;font-size:14px;">flowcontrol.NewBackOff(10초, 300초)</code>로 만들어서 대기 시간 자체에는 무작위 값을 더하지 않아요.</div>
+
+<p>첫 재시작이 바로 일어난 이유도 여기서 나와요. 처음 끝난 컨테이너에는 키가 아직 없어서 <code style="font-family:Menlo,monospace;font-size:14px;">IsInBackOffSince</code>가 false를 돌려줘요. 그래서 기다리지 않고 시작하면서 Next가 키를 10초로 만들어요. 두 번째로 끝났을 때 비로소 10초를 기다리고 그 뒤로 20초, 40초, 80초, 160초, 300초로 올라가요. 두 실행의 간격을 백오프와 나란히 놓으면 이래요. 두 번째 실행은 3절의 watch 실험이에요(<code style="font-family:Menlo,monospace;font-size:14px;">81-crashloop-watch.txt</code>).</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">재시작</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">그때의 백오프</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">첫 실행 간격 (81-crashloop-restart)</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">둘째 실행 간격 (81-crashloop-watch)</th></tr></thead>
+<tbody><tr><td style="padding:9px;border:1px solid #d8cfba;">1번째</td><td style="padding:9px;border:1px solid #d8cfba;">없음 (키가 없음)</td><td style="padding:9px;border:1px solid #d8cfba;">1초</td><td style="padding:9px;border:1px solid #d8cfba;">1초</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">2번째</td><td style="padding:9px;border:1px solid #d8cfba;">10초</td><td style="padding:9px;border:1px solid #d8cfba;">13초 (+3)</td><td style="padding:9px;border:1px solid #d8cfba;">11초 (+1)</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">3번째</td><td style="padding:9px;border:1px solid #d8cfba;">20초</td><td style="padding:9px;border:1px solid #d8cfba;">27초 (+7)</td><td style="padding:9px;border:1px solid #d8cfba;">28초 (+8)</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">4번째</td><td style="padding:9px;border:1px solid #d8cfba;">40초</td><td style="padding:9px;border:1px solid #d8cfba;">48초 (+8)</td><td style="padding:9px;border:1px solid #d8cfba;">57초 (+17)</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">5번째</td><td style="padding:9px;border:1px solid #d8cfba;">80초</td><td style="padding:9px;border:1px solid #d8cfba;">88초 (+8)</td><td style="padding:9px;border:1px solid #d8cfba;">관찰 시간(150초) 밖</td></tr></tbody></table></div>
+
+<p>간격은 컨테이너 상태의 초 단위 시각(finishedAt, startedAt)으로 잰 값이라 1초 안팎의 오차가 있어요. 백오프 단계는 두 실행에서 같았는데 더해진 시간은 실행마다 달랐어요. 이 차이는 3절에서 봐요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="첫 실행의 재시작 간격을 백오프와 더해진 시간으로 나눈 막대">
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">끝난 시각 &#8594; 다시 시작 (81-crashloop-restart, 1초 = 4px)</text>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34"><text x="25" y="76">1번째 재시작</text><text x="25" y="116">2번째 재시작</text><text x="25" y="156">3번째 재시작</text><text x="25" y="196">4번째 재시작</text><text x="25" y="236">5번째 재시작</text></g>
+<path d="M170 60 C 172 59, 174 61, 175 60 C 176 66, 175 74, 175 81 C 173 82, 171 80, 170 81 C 169 74, 170 66, 170 60 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M170 100 C 185 98, 198 101, 210 99 C 212 106, 211 114, 210 121 C 198 123, 185 120, 171 122 C 168 114, 169 106, 170 100 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M210 100 C 214 99, 218 101, 222 100 C 223 107, 222 114, 222 121 C 218 122, 214 120, 210 121 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M170 140 C 200 138, 225 141, 250 139 C 252 146, 251 154, 250 161 C 225 163, 200 160, 171 162 C 168 154, 169 146, 170 140 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M250 140 C 260 139, 270 141, 278 140 C 279 147, 278 154, 278 161 C 270 162, 260 160, 250 161 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M170 180 C 225 178, 280 181, 330 179 C 332 186, 331 194, 330 201 C 280 203, 225 200, 171 202 C 168 194, 169 186, 170 180 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M330 180 C 342 179, 352 181, 362 180 C 363 187, 362 194, 362 201 C 352 202, 342 200, 330 201 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M170 220 C 280 218, 390 221, 490 219 C 492 226, 491 234, 490 241 C 390 243, 280 240, 171 242 C 168 234, 169 226, 170 220 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M490 220 C 502 219, 512 221, 522 220 C 523 227, 522 234, 522 241 C 512 242, 502 240, 490 241 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34"><text x="186" y="77">1초 (기다리지 않음)</text><text x="232" y="117">13초 = 10 + 3</text><text x="288" y="157">27초 = 20 + 7</text><text x="372" y="197">48초 = 40 + 8</text><text x="532" y="237">88초 = 80 + 8</text></g>
+<path d="M170 50 C 171 120, 169 190, 170 252" fill="none" stroke="#8a8272" stroke-width="1.6" stroke-dasharray="4 5"/>
+<text x="170" y="270" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">컨테이너가 끝난 시각</text>
+<path d="M60 292 C 72 291, 84 293, 96 292 C 97 297, 96 302, 96 306 C 84 307, 72 305, 61 306 C 59 302, 60 297, 60 292 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2"/>
+<text x="106" y="305" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#a86b12">kubelet 백오프 (10초부터 두 배)</text>
+<path d="M370 292 C 382 291, 394 293, 406 292 C 407 297, 406 302, 406 306 C 394 307, 382 305, 371 306 C 369 302, 370 297, 370 292 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2"/>
+<text x="416" y="305" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#b3502f">더해진 시간 (3절)</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 1. 주황 막대는 정해진 백오프이고 빨간 꼬리는 실행마다 달라지는 시간이에요.</div>
+
+<p>백오프가 영원히 쌓이지는 않아요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet.go">kubelet.go</a>는 백오프를 만들면서 초기화 조건을 따로 넣었어요.</p>
+
+<div class="obsv-code">klet.crashLoopBackOff = flowcontrol.NewBackOff(base, boMax)
+klet.crashLoopBackOff.HasExpiredFunc = func(eventTime time.Time, lastUpdate time.Time, maxDuration time.Duration) bool {
+	return eventTime.Sub(lastUpdate) &gt; 600*time.Second
+}</div>
+
+<p>&rarr; 컨테이너가 끝난 시각이 마지막으로 백오프를 올린 시각보다 600초 넘게 뒤라면 그 기록을 만료로 보고 처음부터 다시 시작해요. 마지막 재시작 뒤 10분 넘게 잘 돌다 죽은 컨테이너는 다시 바로 재시작하고 다음 대기는 10초부터예요.</p>
+
+<h3>최댓값 300초는 노드마다 낮출 수 있다</h3>
+<p>초기값과 최댓값을 정하는 newCrashLoopBackOff에는 기능 게이트 두 개가 걸려 있어요(<code style="font-family:Menlo,monospace;font-size:14px;">81-k8s-v1.37.2-crashloop-gates.txt</code>). KubeletCrashLoopBackOffMax는 1.32에 <a href="https://github.com/kubernetes/enhancements/issues/4603">KEP-4603</a>의 일부로 알파가 됐고, 2025년 9월 그 KEP에서 갈라져 나온 <a href="https://github.com/kubernetes/enhancements/issues/5593">KEP-5593</a>으로 1.35에 베타가 되면서 기본으로 켜졌어요. 켜져 있으면 kubelet 설정의 <code style="font-family:Menlo,monospace;font-size:14px;">crashLoopBackOff.maxContainerRestartPeriod</code>가 최댓값이 돼요. 필드 설명대로 1초에서 300초 사이 값만 받고, 비워 두면 300초예요. 초기값보다 작게 주면 초기값도 그 값으로 내려가요. KEP-4603에 남은 ReduceDefaultCrashLoopBackOffDecay는 1.33 알파이고 기본으로 꺼져 있어요. 코드로는 이 게이트가 켜지면 초기값 1초, 최댓값 60초를 먼저 두지만, 바로 아래에서 KubeletCrashLoopBackOffMax가 켜져 있으면 최댓값을 kubelet 설정 값으로 다시 바꿔요. 그 설정을 비워 두면 기본값이 300초라서, 두 게이트가 모두 켜진 노드의 최댓값은 kubelet 설정이 정해요.</p>
+
+<div class="obsv-code">## A. 노드 kubelet 의 백오프 관련 설정과 기능 게이트 (configz, metrics 를 읽기만 함)
+  syncFrequency=1m0s crashLoopBackOff={'maxContainerRestartPeriod': '5m0s'} featureGates=None
+  kubernetes_feature_enabled{name="ContainerRestartRules",stage="BETA"} 1
+  kubernetes_feature_enabled{name="EventedPLEG",stage="ALPHA"} 0
+  kubernetes_feature_enabled{name="KubeletCrashLoopBackOffMax",stage="BETA"} 1
+  kubernetes_feature_enabled{name="ReduceDefaultCrashLoopBackOffDecay",stage="ALPHA"} 0</div>
+
+<p>&rarr; 실험한 worker3의 kubelet은 KubeletCrashLoopBackOffMax가 켜져 있고 최댓값이 기본값 5분(300초)이었어요. 줄인 쪽 게이트는 꺼져 있으니 초기값 10초, 최댓값 300초가 그대로 적용된 상태예요. 이 값은 노드 설정을 읽기만 해서 확인했어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 백오프 최댓값을 바꾸고 싶다면</div>
+&bull; 1.35 이후 노드라면 kubelet 설정 파일에 예를 들어 <code style="font-family:Menlo,monospace;font-size:14px;">crashLoopBackOff: {maxContainerRestartPeriod: 30s}</code>를 넣어 그 노드의 최댓값을 낮출 수 있어요. 300초보다 늘리는 값은 받지 않아요<br>
+&bull; 노드 단위 설정이라 특정 파드만 바꾸는 방법은 아니에요. 재시작이 잦은 Job만 모아 두는 노드를 따로 둘 때 고려해요<br>
+&bull; 이번 글에서는 클러스터 설정을 바꾸지 않았으니 값을 바꾼 뒤의 간격은 직접 확인해야 해요</div>
+
+<h2>3. 간격에 더해진 1~17초는 다음 동기화를 예약할 때 붙는 지터의 범위 안이었다</h2>
+
+<p>백오프가 정확히 10초, 20초인데 왜 몇 초씩 더 걸렸을까요? kubelet은 백오프가 끝나는 순간에 깨어나도록 타이머를 거는 것이 아니라, 파드를 다시 처리할 시각을 작업 큐에 예약해요. 그 예약 시각에 무작위 값이 붙어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: PLEG (Pod Lifecycle Event Generator)</div>
+kubelet이 컨테이너 런타임의 상태를 주기적으로 다시 읽어 컨테이너 시작·종료 같은 변화를 이벤트로 만드는 부분이에요. 기본 방식(generic PLEG)은 1초마다 다시 읽어요. 런타임 이벤트를 받는 EventedPLEG는 1.37에서도 알파이고 위 출력에서도 꺼져 있었어요.</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: 파드 워커와 동기화(sync)</div>
+kubelet이 파드마다 두는 처리 루프예요. 한 번의 동기화에서 파드의 status를 만들고 필요한 컨테이너를 시작하거나 멈춰요. 동기화가 끝나면 다음 동기화 시각을 작업 큐에 넣고 kubelet은 1초마다 때가 된 파드를 꺼내 동기화해요.</div>
+
+<p>컨테이너가 끝나면 PLEG가 1초 안쪽에서 알아채고 동기화가 돌아요. 그 동기화에서 doBackOff가 백오프 중이라고 답하면, 백오프가 끝나는 시각을 담은 오류가 파드 워커까지 올라가요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/pod_workers.go">pod_workers.go</a>의 completeWork가 그 시각으로 다음 동기화를 예약해요.</p>
+
+<div class="obsv-code">default:
+	// Error occurred during the sync; back off and then retry. If the error includes a backoff expiration,
+	// wait until then instead of the default to avoid adding extra time to the backoff.
+	backoff := p.backOffPeriod
+	if backoffAt, isBackoffErr := kubecontainer.MinBackoffExpiration(syncErr); isBackoffErr {
+		backoff = backoffAt.Sub(p.clock.Now())
+	}
+	if backoff &lt; 0 { backoff = 0 } else if backoff &gt; p.resyncInterval { backoff = p.resyncInterval }
+	p.workQueue.Enqueue(podUID, wait.Jitter(backoff, workerBackOffPeriodJitterFactor))</div>
+
+<p>&rarr; 남은 백오프 시간만큼 기다리되 동기화 주기(syncFrequency, 기본 1분)를 넘지 않게 자르고, 거기에 <code style="font-family:Menlo,monospace;font-size:14px;">wait.Jitter(d, 0.5)</code>를 씌워요(같은 파일 330행 workerBackOffPeriodJitterFactor = 0.5). wait.Jitter는 d에서 1.5d 사이의 무작위 시간을 돌려줘요. 그러니 재시작은 백오프가 끝난 시각에서 남은 시간의 최대 절반만큼 늦어질 수 있어요.</p>
+
+<p>이 코드는 1.35에 들어왔어요. <a href="https://github.com/kubernetes/kubernetes/issues/123602">이슈 #123602</a>는 예전 동작을 두고 "the error retry period is 10s, which adds up to 10s to the backoff time"이라고 적었어요. 예전에는 파드 워커가 백오프 시각을 모른 채 자기 재시도 주기 10초로 다시 예약해서 백오프에 최대 10초가 더해질 수 있었다는 뜻이에요. <a href="https://github.com/kubernetes/kubernetes/pull/133066">PR #133066</a>이 백오프가 끝나는 시각을 오류에 담아 파드 워커까지 올려 보내게 바꿨고 v1.35.0부터 들어 있어요. 지터는 그 뒤에도 남았어요.</p>
+
+<p>관찰과 맞춰 볼게요. 남은 시간은 백오프에서 감지까지 걸린 1초 안팎을 뺀 값이에요. 10초 백오프면 최대 4~5초, 20초면 9~10초, 40초면 19~20초가 더해질 수 있어요. 여기에 1초마다 큐를 확인하는 간격과 컨테이너를 시작하는 시간이 조금 더 붙어요. 첫 실행의 +3, +7, +8과 둘째 실행의 +1, +8, +17은 모두 이 안에 있었어요. 80초 백오프는 1분으로 잘린 뒤 다시 예약되는 경우가 있어 계산이 복잡하고 +8도 그 범위 안이에요. 둘째 실행의 BackOff 이벤트가 컨테이너가 끝난 10:31:15에서 1초 뒤인 10:31:16에 처음 찍힌 것도 감지에 1초 안쪽이 걸린다는 설명과 맞아요. 다만 각 값을 감지 지연, 1초 주기, 지터로 정확히 나누지는 못했어요. 관찰로 말할 수 있는 것은 더해진 시간이 실행마다 달랐고 코드가 허용하는 범위 안이었다는 데까지예요.</p>
+
+<h3>STATUS 칸에 CrashLoopBackOff가 보인 시간은 0.1초였다</h3>
+<p>첫 실행의 출력을 다시 보면 이상한 점이 있어요. 약 1초 간격으로 읽었는데 STATUS 칸에 CrashLoopBackOff가 한 번도 찍히지 않았어요. 백오프 동안에는 계속 Error였어요. 그래서 watch로 API의 모든 변경을 받아 STATUS 칸과 컨테이너 상태 필드를 함께 기록했어요(<code style="font-family:Menlo,monospace;font-size:14px;">81-crashloop-watch.txt</code>, 같은 이름의 .sh, 네임스페이스 blog-81).</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/81/01-crashloop-watch.png" alt="watch로 기록한 crashy 파드: 백오프 동안 STATUS는 Error, CrashLoopBackOff는 재시작 0.1초 전에만 보임(+18.3초, +48.3초, +107.3초), phase는 계속 Running, 끝난 시각에서 다시 시작까지 1·11·28·57초" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 2. STATUS 칸은 백오프 내내 Error였고 CrashLoopBackOff는 다시 뜨기 직전에만 지나갔어요.</p>
+
+<p>+8.2초에 Error가 된 뒤 +18.3초까지 10초 동안 STATUS는 Error였어요. +18.3초에 CrashLoopBackOff가 찍히고 0.1초 뒤 +18.4초에 Running이 됐어요. 그다음 두 번도 같았어요(+48.3초와 +48.4초, +107.3초와 +107.4초). 그동안 [필드] 줄의 컨테이너 상태는 <code style="font-family:Menlo,monospace;font-size:14px;">terminated: Error</code>였고 <code style="font-family:Menlo,monospace;font-size:14px;">waiting: CrashLoopBackOff</code>는 재시작 직전 한 번만 나타났어요. BackOff 이벤트는 네 번 기록됐어요.</p>
+
+<p>이 순서는 kubelet이 한 번의 동기화에서 일하는 순서로 설명할 수 있어요. 아래 설명은 코드 순서에서 추론한 것이고 kubelet 로그로 동기화 시점을 확인하지는 않았어요. v1.37.2 kubelet.go의 SyncPod는 2108행에서 status를 먼저 만들고, 2267~2268행에서 컨테이너를 시작한 결과를 reasonCache에 적어요. kubelet_pods.go는 reasonCache에 사유가 있을 때만 컨테이너 상태를 Waiting으로 바꾸고, 없으면 "the container will be restarted soon, so we prefer the original state here"라며 Terminated를 그대로 둬요.</p>
+
+<p>그러니 컨테이너가 죽은 직후의 동기화는 Terminated(Error)로 status를 쓰고, 그다음에 백오프에 걸려 CrashLoopBackOff를 reasonCache에 적어요. 이 사유가 status에 실리는 건 다음 동기화예요. 1.35부터는 다음 동기화가 백오프가 끝날 때로 예약되니, 그 동기화가 status에 CrashLoopBackOff를 쓰자마자 같은 동기화에서 컨테이너를 시작해요. 컨테이너 하나짜리 이 파드에서 CrashLoopBackOff가 0.1초만 보인 이유로 보여요. 컨테이너가 둘인 62편의 파드에서는 waiting(CrashLoopBackOff)이 +14.4초 기록부터 +18.6초에 running이 될 때까지 4초가량 관찰된 적이 있어요. 그때 어떤 동기화가 끼어들었는지는 이번에 확인하지 않았어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ STATUS가 Error로만 보여도 백오프 중일 수 있어요</div>
+&bull; 1.37.2 클러스터에서 컨테이너 하나짜리 파드는 백오프 동안 STATUS가 Error로 남았어요. "CrashLoopBackOff가 안 보이니 재시작 루프가 아니다"라고 판단하면 틀려요<br>
+&bull; RESTARTS 칸의 숫자가 늘어나는지, <code style="font-family:Menlo,monospace;font-size:14px;">kubectl get events --field-selector reason=BackOff</code>의 count가 오르는지로 봐요<br>
+&bull; 모니터링에서 <code style="font-family:Menlo,monospace;font-size:14px;">waiting.reason == CrashLoopBackOff</code>만 세면 놓칠 수 있어요. restartCount의 증가량을 함께 봐요</div>
+
+<h2>4. CrashLoopBackOff 중에도 phase는 Running이고 Failed는 다시 시작하지 않을 때만 된다</h2>
+
+<p>그림 2의 [필드] 줄에서 phase는 컨테이너가 처음 뜬 +2.6초부터 끝까지 Running이었어요. STATUS 칸이 Error든 CrashLoopBackOff든 phase는 바뀌지 않았고 Ready만 True와 False를 오갔어요. STATUS 칸은 phase가 아니라 컨테이너의 대기·종료 사유를 먼저 보여 주는 칸이에요. Terminating이 phase가 아닌 것과 같은 이야기이고 63편에서 그 코드를 봤어요.</p>
+
+<p>같은 컨테이너를 restartPolicy만 바꿔 함께 띄운 파드도 150초 뒤에 확인했어요.</p>
+
+<div class="obsv-code">## C. 같은 컨테이너를 restartPolicy 만 바꿔 실행한 파드 (생성 약 150초 뒤)
+  [STATUS열] onfailure 0/1 Error restarts=4
+  [STATUS열] never 0/1 Error restarts=0
+  [필드] onfailure phase=Running Ready=False restartCount=4 lastExit=1 exit=1
+  [필드] never phase=Failed Ready=False restartCount=0 lastExit= exit=1</div>
+
+<p>&rarr; 두 파드 모두 STATUS 칸은 Error였어요. OnFailure 파드는 네 번 재시작했고 phase가 Running이었어요. Never 파드는 한 번도 재시작하지 않았고 phase가 Failed였어요. STATUS 칸이 같아도 phase는 달랐어요.</p>
+
+<p>kubelet이 phase를 정하는 곳은 v1.37.2 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet_pods.go">kubelet_pods.go</a>의 getPhase예요. 실행 중인 컨테이너가 하나도 없고 멈춘 컨테이너가 있을 때의 분기를 옮겼어요. 재시작을 기다리는 컨테이너(Waiting이면서 직전 종료 기록이 있는 컨테이너)도 여기서는 멈춘 컨테이너로 세요.</p>
+
+<div class="obsv-code">case running == 0 &amp;&amp; stopped &gt; 0 &amp;&amp; unknown == 0:
+	if podIsTerminal { ... 모두 성공이면 Succeeded, 아니면 Failed ... }
+	...
+	if spec.RestartPolicy == v1.RestartPolicyAlways {
+		// All containers are in the process of restarting
+		return v1.PodRunning
+	}
+	if stopped == succeeded { return v1.PodSucceeded }
+	if spec.RestartPolicy == v1.RestartPolicyNever {
+		// RestartPolicy is Never, and all containers are
+		// terminated with at least one in failure
+		return v1.PodFailed
+	}
+	// RestartPolicy is OnFailure, and at least one in failure
+	// and in the process of restarting
+	return v1.PodRunning</div>
+
+<p>&rarr; <b>Failed는 "컨테이너가 실패했다"가 아니라 "모든 컨테이너가 멈췄고 하나라도 실패했으며 다시 시작하지 않을 파드"</b>예요. Always 파드는 모든 컨테이너가 다시 시작하는 중이라 Running이고 OnFailure 파드도 실패한 컨테이너를 다시 띄우는 중이라 Running이에요. 실패로 끝날 수 있는 건 Never 파드와, 지우거나 축출해서 끝나는 중인 파드(podIsTerminal)예요. 63편에서 지우는 중에 SIGKILL로 끝난 Always 파드가 Failed가 된 것이 뒤쪽 경우예요. 이 클러스터는 컨테이너마다 재시작 규칙을 주는 ContainerRestartRules가 켜져 있어 코드상 그 게이트의 분기를 타요. 파드 단위 restartPolicy만 쓴 이번 실험의 결과는 위 분기와 같았어요. 컨테이너별 규칙은 71편에서 봤어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="실행 중인 컨테이너가 없을 때 restartPolicy에 따라 phase가 정해지는 갈래와 실험 결과">
+<defs><marker id="k81-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M200 18 C 300 15, 400 20, 500 17 C 502 32, 501 50, 500 64 C 400 67, 300 62, 201 65 C 198 50, 199 32, 200 18 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="350" y="48" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d6591">실행 중인 컨테이너가 하나도 없나?</text>
+<path d="M22 100 C 70 98, 130 101, 180 99 C 182 115, 181 131, 180 146 C 130 148, 70 145, 23 147 C 20 131, 21 115, 22 100 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="20" text-anchor="middle"><text x="101" y="122" fill="#2e6b41">Running</text><text x="101" y="140" fill="#8a8272" font-size="16">하나라도 실행 중</text></g>
+<path d="M255 100 C 300 98, 400 101, 445 99 C 447 115, 446 131, 445 146 C 400 148, 300 145, 256 147 C 253 131, 254 115, 255 100 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<text x="350" y="129" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#a86b12">restartPolicy는?</text>
+<path d="M230 66 C 190 75, 140 85, 110 96" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k81-arr2)"/>
+<path d="M350 67 C 352 78, 348 88, 350 96" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k81-arr2)"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272"><text x="140" y="78">아니오</text><text x="358" y="86">예</text></g>
+<path d="M20 205 C 80 203, 160 206, 220 204 C 222 228, 221 252, 220 274 C 160 276, 80 273, 21 275 C 18 252, 19 228, 20 205 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<path d="M250 205 C 310 203, 390 206, 450 204 C 452 228, 451 252, 450 274 C 390 276, 310 273, 251 275 C 248 252, 249 228, 250 205 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2" stroke-linejoin="round"/>
+<path d="M480 205 C 540 203, 620 206, 680 204 C 682 228, 681 252, 680 274 C 620 276, 540 273, 481 275 C 478 252, 479 228, 480 205 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M300 149 C 240 165, 170 180, 125 200" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k81-arr2)"/>
+<path d="M350 150 C 352 168, 348 185, 350 200" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k81-arr2)"/>
+<path d="M400 149 C 460 165, 530 180, 575 200" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k81-arr2)"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="21" text-anchor="middle"><text x="120" y="230" fill="#2e6b41">Always</text><text x="350" y="230" fill="#2e6b41">OnFailure</text><text x="580" y="230" fill="#b3502f">Never</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" text-anchor="middle" fill="#3d3a34"><text x="120" y="252">Running</text><text x="120" y="269">(모두 다시 시작하는 중)</text><text x="350" y="252">실패가 있으면 Running</text><text x="350" y="269">모두 성공이면 Succeeded</text><text x="580" y="252">하나라도 실패면 Failed</text><text x="580" y="269">모두 성공이면 Succeeded</text></g>
+<g font-family="Menlo, monospace" font-size="11" text-anchor="middle"><text x="120" y="302" fill="#2e6b41">crashy: Running</text><text x="120" y="318" fill="#8a8272">STATUS Error, restarts 4</text><text x="350" y="302" fill="#2e6b41">onfailure: Running</text><text x="350" y="318" fill="#8a8272">STATUS Error, restarts 4</text><text x="580" y="302" fill="#b3502f">never: Failed</text><text x="580" y="318" fill="#8a8272">STATUS Error, restarts 0</text></g>
+<text x="350" y="360" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">STATUS가 셋 다 Error여도 phase는 다시 시작할지로 갈려요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 3. 지우는 중인 파드를 빼면 Failed로 가는 길은 Never 하나였어요.</div>
+
+<p>phase의 다섯 값 중 Unknown도 잠깐 짚을게요. 노드와 연락이 끊기면 파드가 Unknown이 될 것 같지만 우리 클러스터에서는 그러지 않았어요. 25편에서 worker3의 kubelet을 멈추고 10초마다 확인했을 때 52초 지점에서 노드는 Ready=Unknown이었지만 그 노드 파드는 API 기준으로 Running, ready=False였어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/25-kubelet-stop.txt</code>). v1.37.2 노드 컨트롤러의 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/util/node/controller_utils.go">MarkPodsNotReady</a>는 파드의 Ready 조건만 False로 바꾸고 phase는 건드리지 않아요. 그 뒤 축출 시간이 지나면 파드가 지워지고 대체 파드가 생겨요(50편).</p>
+
+<h2>5. conditions는 다섯 개이고 Unschedulable은 type이 아니라 reason이다</h2>
+
+<p>파드 conditions를 소개하는 표에는 Initialized, Ready, ContainerReady, PodScheduled, Unschedulable 다섯 줄이 자주 나와요. 실제 파드를 열어 봤어요. 정상 파드 하나와 nodeSelector가 어느 노드와도 맞지 않는 파드 하나를 만들었어요(<code style="font-family:Menlo,monospace;font-size:14px;">81-pod-conditions.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-code">## cond-ok  phase=Running
+  type=PodReadyToStartContainers status=True reason=
+  type=Initialized status=True reason=
+  type=Ready status=True reason=
+  type=ContainersReady status=True reason=
+  type=PodScheduled status=True reason=
+
+## cond-nonode  phase=Pending
+  type=PodScheduled status=False reason=Unschedulable 0/4 nodes are available: 1 node(s) had untolerated taint(s), 3 node(s) didn't match Pod's node affinity/selector. preemption: 0/4 nodes are available: 4 Preemption is not helpful for scheduling.</div>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: condition의 type·status·reason</div>
+type은 무엇을 확인했는지를 나타내는 이름이고 status는 그 확인 결과(True, False, Unknown)예요. reason은 왜 그 결과인지를 한 단어로, message는 사람이 읽을 설명으로 적어요. 같은 type이 상황에 따라 다른 reason을 가질 수 있어요.</div>
+
+<p><b>Unschedulable은 condition일까?</b> type으로는 아니에요. 스케줄할 수 없는 파드에는 condition이 PodScheduled 하나뿐이었고 그 status가 False, reason이 Unschedulable이었어요. 노드가 정해지지 않았으니 kubelet이 쓰는 다른 condition은 아예 없었고 phase는 Pending이었어요. API 정의에도 reason으로 나와요.</p>
+
+<div class="obsv-code">// staging/src/k8s.io/api/core/v1/types.go (v1.37.2)
+// PodReasonUnschedulable reason in PodScheduled PodCondition means that the scheduler
+// can't schedule the pod right now, for example due to insufficient resources in the cluster.
+PodReasonUnschedulable = "Unschedulable"</div>
+
+<p>표에 Unschedulable이 type으로 남은 데는 이력이 있어요. 예전 버전 문서인 <a href="https://github.com/kubernetes/website/blob/release-1.16/content/en/docs/concepts/workloads/pods/pod-lifecycle.md">1.16의 pod-lifecycle 문서</a>에는 type 목록에 Unschedulable이 있었고 1.17 문서부터 빠졌어요. 흔히 보는 표에는 단수형 ContainerReady로 적힌 것도 있는데 실제 이름은 복수형 ContainersReady예요.</p>
+
+<p>반대로 표에 흔히 빠지는 것이 PodReadyToStartContainers예요. 샌드박스와 네트워크가 준비됐다는 condition이고 1.37에서 GA가 됐어요. 정상 파드 목록의 맨 앞에 있었어요. 언제 True가 되는지는 63편에서 봤어요. 이 다섯 개 말고도 API에는 DisruptionTarget, PodResizePending, PodResizeInProgress 같은 type이 정의돼 있지만 축출이나 크기 변경 같은 일이 있을 때만 붙어요. Initialized의 문서 설명도 1.16의 "all init containers have started successfully"에서 지금의 "have completed successfully"로 바뀌었어요. init 컨테이너가 시작만 한 것이 아니라 모두 성공하고 끝나야 True예요.</p>
+
+<h3>lastProbeTime은 왜 모두 null일까</h3>
+<p>condition에는 lastProbeTime과 lastTransitionTime 두 시각 필드가 있어요. 정상 파드의 다섯 condition에서 lastProbeTime은 모두 null이었어요(<code style="font-family:Menlo,monospace;font-size:14px;">81-status-subresource.txt</code>). 스케줄러가 쓴 Unschedulable 파드의 PodScheduled도 <code style="font-family:Menlo,monospace;font-size:14px;">lastProbeTime=null</code>이었어요(<code style="font-family:Menlo,monospace;font-size:14px;">81-crashloop-watch.txt</code> D절). API 필드 설명은 "Last time we probed the condition"이지만 kubelet이 다섯 condition을 만드는 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/status/generate.go">generate.go</a>에는 LastProbeTime을 채우는 줄이 없어요. 제가 읽은 kubelet 상태 코드(generate.go, status_manager.go, kubelet_pods.go)에서 이 값을 채우는 곳은 status_manager.go의 크기 변경 condition 하나였어요. 순서나 걸린 시간을 볼 때는 lastTransitionTime을 보고 그 값도 쓴 구성 요소의 시계라는 점(63편)을 기억해요.</p>
+
+<h2>6. status는 kubectl edit로 고쳐지지 않고 /status로 덮어도 kubelet이 10초 주기로 되돌린다</h2>
+
+<p><b>kubectl edit로 status를 고칠 수 있을까?</b> 실행 중인 파드 st-demo의 status를 두 경로로 바꿔 봤어요(<code style="font-family:Menlo,monospace;font-size:14px;">81-status-subresource.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/81/02-status-subresource.png" alt="status 패치 실험: 다섯 condition의 lastProbeTime은 모두 null, 본 리소스로 status.phase를 Failed로 패치하면 patched (no change)와 phase Running, --subresource=status로 conditions를 lab/demo로 덮으면 12초 뒤 kubelet의 condition 5개가 다시 붙음" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 4. 본 리소스로는 바뀌지 않았고 /status로 바꾼 것은 12초 뒤 kubelet이 다시 채웠어요.</p>
+
+<p>첫째, 본 리소스로 <code style="font-family:Menlo,monospace;font-size:14px;">{"status":{"phase":"Failed"}}</code>를 merge 패치했어요. 결과는 <code style="font-family:Menlo,monospace;font-size:14px;">patched (no change)</code>였고 phase는 Running 그대로였어요. kubectl edit도 기본으로는 이 본 리소스에 패치를 보내요. API 서버의 파드 저장 규칙인 <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/registry/core/pod/strategy.go">strategy.go</a>에 이유가 있어요.</p>
+
+<div class="obsv-code">func (podStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
+	newPod := obj.(*api.Pod)
+	oldPod := old.(*api.Pod)
+	newPod.Status = oldPod.Status
+	...
+func (podStatusStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
+	newPod := obj.(*api.Pod)
+	oldPod := old.(*api.Pod)
+	newPod.Spec = oldPod.Spec
+	newPod.DeletionTimestamp = nil</div>
+
+<p>&rarr; 본 리소스 업데이트는 보낸 status를 버리고 저장돼 있던 status로 되돌려요. 그래서 바뀐 것이 없다는 답이 왔어요. 반대로 /status 경로의 업데이트는 spec을 옛 값으로 되돌려요. 같은 파드인데 spec과 status를 바꾸는 길이 나뉘어 있어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: status 하위 리소스 (/status subresource)</div>
+같은 객체의 status만 바꾸는 별도 API 경로예요(<code style="font-family:Menlo,monospace;font-size:14px;">/api/v1/namespaces/&lt;ns&gt;/pods/&lt;이름&gt;/status</code>). RBAC에서도 <code style="font-family:Menlo,monospace;font-size:14px;">pods</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">pods/status</code>를 따로 허용해요. <code style="font-family:Menlo,monospace;font-size:14px;">kubectl edit</code>와 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl patch</code>에 <code style="font-family:Menlo,monospace;font-size:14px;">--subresource=status</code>를 주면 이 경로를 써요.</div>
+
+<p>둘째, <code style="font-family:Menlo,monospace;font-size:14px;">--subresource=status</code>로 conditions에 <code style="font-family:Menlo,monospace;font-size:14px;">lab/demo</code> 하나만 넣어 merge 패치했어요. 이번에는 <code style="font-family:Menlo,monospace;font-size:14px;">patched</code>였고 conditions가 lab/demo 하나만 남았어요. JSON merge 패치는 목록을 통째로 바꾸기 때문에 kubelet의 다섯 condition이 사라진 거예요. 그런데 12초 뒤에 다시 읽으니 <code style="font-family:Menlo,monospace;font-size:14px;">lab/demo PodReadyToStartContainers Initialized Ready ContainersReady PodScheduled</code>였어요. 다섯 개가 돌아왔고 lab/demo는 지워지지 않고 남았어요.</p>
+
+<p>되돌린 것은 kubelet의 status 관리자예요. <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/status/status_manager.go">status_manager.go</a>는 10초마다 모든 파드의 status를 API의 값과 비교하고 다르면 다시 보내요. 비교 함수 위의 주석이 그 이유를 적어 뒀어요.</p>
+
+<div class="obsv-code">const syncPeriod = 10 * time.Second
+...
+// needsReconcile compares the given status with the status in the pod manager (which
+// in fact comes from apiserver), returns whether the status needs to be reconciled with
+// the apiserver. Now when pod status is inconsistent between apiserver and kubelet,
+// kubelet should forcibly send an update to reconcile the inconsistence, because kubelet
+// should be the source of truth of pod status.</div>
+
+<p>&rarr; API 서버의 파드 status와 kubelet이 기억하는 status가 다르면 kubelet이 강제로 다시 보낸다는 뜻이고 이유는 "kubelet should be the source of truth of pod status"예요. 12초는 10초 주기와 맞는 관찰이에요.</p>
+
+<p>lab/demo가 남은 이유도 같은 파일에 있어요. 다시 보낼 status를 만드는 mergePodStatus는 API에 있던 condition 가운데 kubelet 소유가 아닌 것은 그대로 두고, kubelet 소유인 것만 자기 값으로 채워요. kubelet 소유 목록(<a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/types/pod_status.go">pod_status.go</a>)에는 PodScheduled, Ready, Initialized, ContainersReady와 크기 변경 condition이 있고, PodReadyToStartContainers는 기능 게이트를 거쳐 들어가요. 출력에서 lab/demo가 맨 앞에, 다섯 개가 그 뒤에 붙은 순서도 이 함수의 순서와 같아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 370" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="본 리소스 패치와 status 하위 리소스 패치의 결과, kubelet이 10초 주기로 status를 되돌리는 흐름">
+<defs><marker id="k81-arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<path d="M20 40 C 70 38, 150 41, 200 39 C 202 55, 201 71, 200 86 C 150 88, 70 85, 21 87 C 18 71, 19 55, 20 40 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2" stroke-linejoin="round"/>
+<path d="M240 40 C 290 38, 380 41, 430 39 C 432 55, 431 71, 430 86 C 380 88, 290 85, 241 87 C 238 71, 239 55, 240 40 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2" stroke-linejoin="round"/>
+<path d="M20 160 C 70 158, 150 161, 200 159 C 202 175, 201 191, 200 206 C 150 208, 70 205, 21 207 C 18 191, 19 175, 20 160 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2" stroke-linejoin="round"/>
+<path d="M240 160 C 290 158, 380 161, 430 159 C 432 175, 431 191, 430 206 C 380 208, 290 205, 241 207 C 238 191, 239 175, 240 160 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle" fill="#3d3a34"><text x="110" y="61">kubectl edit · patch</text><text x="110" y="80" font-size="16" fill="#8a8272">(기본)</text><text x="110" y="181">kubectl patch</text><text x="110" y="199" font-size="16" fill="#8a8272">--subresource=status</text></g>
+<g font-family="Menlo, monospace" font-size="11" text-anchor="middle" fill="#3d3a34"><text x="335" y="60">PATCH /pods/st-demo</text><text x="335" y="78">status = 옛 값으로</text><text x="335" y="180">PATCH /pods/st-demo/status</text><text x="335" y="198">conditions = [lab/demo]</text></g>
+<path d="M203 63 C 215 61, 225 64, 236 63" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k81-arr3)"/>
+<path d="M203 183 C 215 181, 225 184, 236 183" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k81-arr3)"/>
+<text x="335" y="112" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">patched (no change), phase Running</text>
+<path d="M500 60 C 560 58, 620 61, 680 59 C 682 110, 681 160, 680 206 C 620 208, 560 205, 501 207 C 498 160, 499 110, 500 60 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.4" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle"><text x="590" y="88" fill="#3d6591">API 서버의 Pod</text><text x="590" y="122" fill="#3d3a34" font-size="17">spec: 사용자·컨트롤러</text><text x="590" y="146" fill="#3d3a34" font-size="17">status: kubelet이 기준</text></g>
+<g font-family="Menlo, monospace" font-size="10" text-anchor="middle" fill="#3d3a34"><text x="590" y="172">conditions:</text><text x="590" y="188">lab/demo + 5개</text></g>
+<path d="M434 63 C 455 70, 470 75, 494 80" fill="none" stroke="#e5533c" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="5 4" marker-end="url(#k81-arr3)"/>
+<path d="M434 183 C 455 180, 470 176, 494 172" fill="none" stroke="#3d3a34" stroke-width="1.8" stroke-linecap="round" marker-end="url(#k81-arr3)"/>
+<path d="M240 260 C 360 257, 560 262, 680 259 C 682 276, 681 294, 680 310 C 560 313, 360 308, 241 311 C 238 294, 239 276, 240 260 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.4" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="19" text-anchor="middle"><text x="460" y="282" fill="#2e6b41">kubelet status 관리자: 10초마다 API의 status와 비교</text><text x="460" y="302" fill="#3d3a34" font-size="16">kubelet 소유가 아닌 condition(lab/demo)은 남기고 자기 것 5개를 다시</text></g>
+<path d="M610 256 C 612 240, 608 225, 610 212" fill="none" stroke="#5a9e6f" stroke-width="2" stroke-linecap="round" marker-end="url(#k81-arr3)"/>
+<text x="600" y="238" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">다르면 PATCH /status</text>
+<text x="350" y="350" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">status를 바꾸는 길은 /status 하나, 그 위에 kubelet이 계속 다시 써요</text>
+</svg>
+</div>
+<div class="obsv-figcap">그림 5. 사용자의 패치는 한 번이고 kubelet의 비교는 10초마다 돌아요.</div>
+
+<p>그렇다고 파드 status를 kubelet 혼자 쓰는 것은 아니에요. 노드가 정해지기 전에는 스케줄러가 PodScheduled=False, Unschedulable을 써요. 노드와 연락이 끊기면 노드 컨트롤러가 Ready를 False로 바꿔요. 축출할 때는 DisruptionTarget이 붙고, kubelet은 이 condition을 "함께 쓰는" 것으로 따로 다뤄요. 정리하면 파드가 노드에 올라간 뒤 phase와 컨테이너 상태, 자기 소유 condition은 kubelet이 기준이 되어 계속 맞추고, 다른 구성 요소가 쓴 condition은 kubelet이 지우지 않고 남겨 둬요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ status를 고치지 말고 원인을 고쳐요</div>
+&bull; CrashLoopBackOff 파드의 phase를 Failed로 바꾸거나 Ready를 True로 바꿔도 본 리소스로는 바뀌지 않고 /status로 바꾼 값은 kubelet이 다음 비교에서 되돌려요<br>
+&bull; 고칠 곳은 spec(이미지, 명령, 환경 변수, 프로브)이나 그 컨테이너가 기대하는 외부 조건이에요. Deployment라면 템플릿을 고쳐 새 파드가 만들어지게 해요<br>
+&bull; 외부 도구가 파드 상태에 신호를 남겨야 한다면 kubelet 소유가 아닌 자기 condition type을 /status로 쓰고 spec.readinessGates로 연결하는 방식이 있어요. 이번 글에서 readinessGates는 실험하지 않았어요</div>
+
+<p><b>출처와 원자료</b><br>
+&middot; 재시작 백오프: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kuberuntime/kuberuntime_manager.go">kuberuntime_manager.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kuberuntime/helpers.go">helpers.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet.go">kubelet.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/client-go/util/flowcontrol/backoff.go">flowcontrol/backoff.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/apis/config/v1beta1/defaults.go">kubelet 설정 기본값</a> (v1.37.2)<br>
+&middot; 다음 동기화 예약과 지터: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/pod_workers.go">pod_workers.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apimachinery/pkg/util/wait/wait.go">wait.go</a> (v1.37.2), <a href="https://github.com/kubernetes/kubernetes/issues/123602">이슈 #123602</a>, <a href="https://github.com/kubernetes/kubernetes/pull/133066">PR #133066</a><br>
+&middot; 기능 게이트: <a href="https://github.com/kubernetes/enhancements/issues/5593">KEP-5593</a>, <a href="https://github.com/kubernetes/enhancements/issues/4603">KEP-4603</a>, 단계는 <code style="font-family:Menlo,monospace;font-size:14px;">81-k8s-v1.37.2-crashloop-gates.txt</code><br>
+&middot; phase와 status: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet_pods.go">kubelet_pods.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/status/status_manager.go">status_manager.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/types/pod_status.go">pod_status.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/registry/core/pod/strategy.go">strategy.go</a>, <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/api/core/v1/types.go">core/v1 types.go</a> (v1.37.2), 문서 <a href="https://github.com/kubernetes/website/blob/release-1.16/content/en/docs/concepts/workloads/pods/pod-lifecycle.md">1.16 pod-lifecycle</a>와 <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-conditions">현재 pod-lifecycle</a><br>
+&middot; 발췌 모음: <code style="font-family:Menlo,monospace;font-size:14px;">81-k8s-v1.37.2-backoff-status-excerpts.txt</code><br>
+&middot; 이 글의 실험: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/81-crashloop-restart</code>, <code style="font-family:Menlo,monospace;font-size:14px;">81-crashloop-watch</code>, <code style="font-family:Menlo,monospace;font-size:14px;">81-pod-conditions</code>, <code style="font-family:Menlo,monospace;font-size:14px;">81-status-subresource</code>(.sh/.txt), 25편의 <code style="font-family:Menlo,monospace;font-size:14px;">25-kubelet-stop.txt</code></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<p>CrashLoopBackOff에서 kubelet이 다시 띄운 것은 파드가 아니라 컨테이너였어요. 다섯 번 재시작하는 동안 파드 UID와 IP는 그대로였고 파드를 새로 만드는 것은 파드가 지워졌을 때 컨트롤러가 하는 일이에요. 백오프 키에 파드 UID가 들어가서 새 파드는 백오프도 처음부터예요.</p>
+<p>첫 재시작은 백오프 기록이 없어 바로 일어났고 그다음은 컨테이너가 끝난 시각부터 10·20·40·80초를 기다렸어요. 1.35부터 kubelet은 백오프가 끝나는 시각에 다음 동기화를 예약하지만 남은 시간의 최대 절반까지 지터를 붙이고, 두 실행에서 더해진 1~17초는 그 범위 안이었어요. STATUS 칸은 백오프 내내 Error였고 CrashLoopBackOff는 재시작 0.1초 전에만 보였는데, 코드 순서로 보면 이것도 이 예약 방식 때문으로 보여요. 그동안 phase는 Running이었고, 이번 실험에서 Failed는 다시 시작하지 않는 Never 파드에서만 나왔어요.</p>
+<p style="margin-bottom:0;">Unschedulable은 PodScheduled=False의 reason이었고 lastProbeTime은 비어 있었어요. status는 본 리소스로는 바뀌지 않았고 /status로 덮어도 kubelet이 10초 주기의 비교로 자기 condition을 다시 채웠어요. 파드 상태가 이상하면 status를 고칠 게 아니라 status를 쓰는 쪽이 왜 그렇게 썼는지를 읽어야 해요.</p>
+</div>
+</div>

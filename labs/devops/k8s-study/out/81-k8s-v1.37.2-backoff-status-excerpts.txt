@@ -1,0 +1,457 @@
+# Kubernetes v1.37.2 소스 발췌: 컨테이너 재시작 백오프, 파드 워커 재예약, phase 계산, status 하위 리소스와 kubelet 의 status 재조정 (2026-11-21 확인)
+# 줄 번호는 v1.37.2 태그 기준. 내용은 원문 그대로 옮겼다. 관련 PR: https://github.com/kubernetes/kubernetes/pull/133066 (v1.35, 이슈 #123602)
+
+## 백오프 초기값·최대값, 파드 동기화 오류 때 재시도 간격, PLEG relist 주기, 600초 리셋
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet.go
+  165  	// MaxCrashLoopBackOff is the max backoff period for container restarts, exported for the e2e test
+  166  	MaxCrashLoopBackOff = v1beta1.MaxContainerBackOff
+  167  
+  168  	// reducedMaxCrashLoopBackOff is the default max backoff period for container restarts when the alpha feature
+  169  	// gate ReduceDefaultCrashLoopBackOffDecay is enabled
+  170  	reducedMaxCrashLoopBackOff = 60 * time.Second
+  171  
+  172  	// Initial period for the exponential backoff for container restarts.
+  173  	initialCrashLoopBackOff = time.Second * 10
+  174  
+  175  	// reducedInitialCrashLoopBackOff is the default initial backoff period for container restarts when the alpha feature
+  176  	// gate ReduceDefaultCrashLoopBackOffDecay is enabled
+  177  	reducedInitialCrashLoopBackOff = 1 * time.Second
+  ...
+  221  	// backOffPeriod is the period to back off when pod syncing results in an
+  222  	// error.
+  223  	backOffPeriod = time.Second * 10
+  ...
+  215  	genericPlegRelistPeriod    = time.Second * 1
+  ...
+  353  func newCrashLoopBackOff(kubeCfg *kubeletconfiginternal.KubeletConfiguration) (time.Duration, time.Duration) {
+  354  	boMax := MaxCrashLoopBackOff
+  355  	boInitial := initialCrashLoopBackOff
+  356  	if utilfeature.DefaultFeatureGate.Enabled(features.ReduceDefaultCrashLoopBackOffDecay) {
+  357  		boMax = reducedMaxCrashLoopBackOff
+  358  		boInitial = reducedInitialCrashLoopBackOff
+  359  	}
+  360  
+  361  	if utilfeature.DefaultFeatureGate.Enabled(features.KubeletCrashLoopBackOffMax) {
+  362  		// operator-invoked configuration always has precedence if valid
+  363  		boMax = kubeCfg.CrashLoopBackOff.MaxContainerRestartPeriod.Duration
+  364  		if boMax < boInitial {
+  365  			boInitial = boMax
+  366  		}
+  367  	}
+  ...
+ 1085  	boMax, base := newCrashLoopBackOff(kubeCfg)
+ 1086  
+ 1087  	klet.crashLoopBackOff = flowcontrol.NewBackOff(base, boMax)
+ 1088  	klet.crashLoopBackOff.HasExpiredFunc = func(eventTime time.Time, lastUpdate time.Time, maxDuration time.Duration) bool {
+ 1089  		return eventTime.Sub(lastUpdate) > 600*time.Second
+ 1090  	}
+
+## KubeletCrashLoopBackOffMax 가 켜졌을 때 maxContainerRestartPeriod 기본값
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/apis/config/v1beta1/defaults.go
+   44  	// MaxContainerBackOff is the max backoff period for container restarts, exported for the e2e test
+   45  	MaxContainerBackOff = 300 * time.Second
+  ...
+  310  	if localFeatureGate.Enabled(features.KubeletCrashLoopBackOffMax) {
+  311  		if obj.CrashLoopBackOff.MaxContainerRestartPeriod == nil {
+  312  			obj.CrashLoopBackOff.MaxContainerRestartPeriod = &metav1.Duration{Duration: MaxContainerBackOff}
+  313  		}
+
+## CrashLoopBackOffConfig 필드 설명
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/kubelet/config/v1beta1/types.go
+ 1078  type CrashLoopBackOffConfig struct {
+ 1079  	// maxContainerRestartPeriod is the maximum duration the backoff delay can accrue
+ 1080  	// to for container restarts, minimum 1 second, maximum 300 seconds. If not set,
+ 1081  	// defaults to the internal crashloopbackoff maximum (300s).
+ 1082  	// +featureGate=KubeletCrashLoopBackOffMax
+ 1083  	// +optional
+ 1084  	MaxContainerRestartPeriod *metav1.Duration `json:"maxContainerRestartPeriod,omitempty"`
+ 1085  }
+
+## flowcontrol.Backoff: Next 와 IsInBackOffSince
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/client-go/util/flowcontrol/backoff.go
+   94  
+   95  // move backoff to the next mark, capping at maxDuration
+   96  func (p *Backoff) Next(id string, eventTime time.Time) {
+   97  	p.Lock()
+   98  	defer p.Unlock()
+   99  	entry, ok := p.perItemBackoff[id]
+  100  	if !ok || p.hasExpired(eventTime, entry.lastUpdate, p.maxDuration) {
+  101  		entry = p.initEntryUnsafe(id)
+  102  		entry.backoff += p.jitter(entry.backoff)
+  103  	} else {
+  104  		delay := entry.backoff * 2       // exponential
+  105  		delay += p.jitter(entry.backoff) // add some jitter to the delay
+  106  		entry.backoff = min(delay, p.maxDuration)
+  107  	}
+  ...
+  118  // Returns True if the elapsed time since eventTime is smaller than the current backoff window
+  119  func (p *Backoff) IsInBackOffSince(id string, eventTime time.Time) bool {
+  120  	p.RLock()
+  121  	defer p.RUnlock()
+  122  	entry, ok := p.perItemBackoff[id]
+  123  	if !ok {
+  124  		return false
+  125  	}
+  126  	if p.hasExpired(eventTime, entry.lastUpdate, p.maxDuration) {
+  127  		return false
+  128  	}
+  129  	return p.Clock.Since(eventTime) < entry.backoff
+  130  }
+  ...
+  180  
+  181  // Unless an alternate function is provided, after 2*maxDuration we restart the backoff factor to the beginning
+  182  func (p *Backoff) hasExpired(eventTime time.Time, lastUpdate time.Time, maxDuration time.Duration) bool {
+  183  	if p.HasExpiredFunc != nil {
+  184  		return p.HasExpiredFunc(eventTime, lastUpdate, maxDuration)
+  185  	}
+  186  	return eventTime.Sub(lastUpdate) > maxDuration*2 // consider stable if it's ok for twice the maxDuration
+  187  }
+
+## 백오프 키: 파드 이름·네임스페이스·UID·컨테이너 이름·이미지·자원
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kuberuntime/helpers.go
+  190  // GetBackoffKey generates a key (string) to uniquely identify a (pod, container) tuple for tracking
+  191  // container backoff. The key should include any content of the container that is tied to the
+  192  // backoff, so that any change generates a new key.
+  193  func GetBackoffKey(pod *v1.Pod, container *v1.Container) string {
+  194  	// Include stable identifiers (name, namespace, uid) as well as any
+  195  	// fields that should reset the backoff when changed.
+  196  	key := []string{
+  197  		pod.Name,
+  198  		pod.Namespace,
+  199  		string(pod.UID),
+  200  		container.Name,
+  201  		container.Image,
+  202  		container.Resources.String(),
+  203  	}
+  204  	hash := fnv.New64a()
+  205  	hash.Write([]byte(strings.Join(key, "/")))
+  206  	return strconv.FormatUint(hash.Sum64(), 16)
+
+## doBackOff: 끝난 시각(FinishedAt)부터 백오프를 잰다
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kuberuntime/kuberuntime_manager.go
+ 2077  func (m *kubeGenericRuntimeManager) doBackOff(ctx context.Context, pod *v1.Pod, container *v1.Container, podStatus *kubecontainer.PodStatus, backOff *flowcontrol.Backoff) (bool, string, error) {
+ 2078  	logger := klog.FromContext(ctx)
+ 2079  	var cStatus *kubecontainer.Status
+ 2080  	for _, c := range podStatus.ContainerStatuses {
+ 2081  		if c.Name == container.Name && c.State == kubecontainer.ContainerStateExited {
+ 2082  			cStatus = c
+ 2083  			break
+ 2084  		}
+ 2085  	}
+ 2086  
+ 2087  	if cStatus == nil {
+ 2088  		return false, "", nil
+ 2089  	}
+ 2090  
+ 2091  	logger.V(3).Info("Checking backoff for container in pod", "containerName", container.Name, "pod", klog.KObj(pod))
+ 2092  	// Use the finished time of the latest exited container as the start point to calculate whether to do back-off.
+ 2093  	ts := cStatus.FinishedAt
+ 2094  	// backOff requires a unique key to identify the container.
+ 2095  	key := GetBackoffKey(pod, container)
+ 2096  	if backOff.IsInBackOffSince(key, ts) {
+ 2097  		if containerRef, err := kubecontainer.GenerateContainerRef(pod, container); err == nil {
+ 2098  			m.recorder.WithLogger(logger).Eventf(containerRef, v1.EventTypeWarning, events.BackOffStartContainer,
+ 2099  				"Back-off restarting failed container %s in pod %s", container.Name, format.Pod(pod))
+ 2100  		}
+ 2101  		backoff := backOff.Get(key)
+ 2102  		err := fmt.Errorf("back-off %s restarting failed container=%s pod=%s", backoff, container.Name, format.Pod(pod))
+ 2103  		logger.V(3).Info("Back-off restarting failed container", "err", err.Error())
+ 2104  		return true, err.Error(), kubecontainer.NewBackoffError(kubecontainer.ErrCrashLoopBackOff, ts.Add(backoff))
+ 2105  	}
+ 2106  
+ 2107  	backOff.Next(key, ts)
+ 2108  	return false, "", nil
+ 2109  }
+
+## completeWork: 백오프가 끝나는 시각에 지터를 더해 다음 동기화를 예약
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/pod_workers.go
+  326  	// jitter factor for resyncInterval
+  327  	workerResyncIntervalJitterFactor = 0.5
+  328  
+  329  	// jitter factor for backOffPeriod and backOffOnTransientErrorPeriod
+  330  	workerBackOffPeriodJitterFactor = 0.5
+  331  
+  332  	// backoff period when transient error occurred.
+  333  	backOffOnTransientErrorPeriod = time.Second
+  ...
+ 1524  func (p *podWorkers) completeWork(logger klog.Logger, podUID types.UID, phaseTransition bool, syncErr error) {
+ 1525  	// Requeue the last update if the last sync returned error.
+ 1526  	switch {
+ 1527  	case phaseTransition:
+ 1528  		p.workQueue.Enqueue(podUID, 0)
+ 1529  	case syncErr == nil:
+ 1530  		// No error; requeue at the regular resync interval.
+ 1531  		p.workQueue.Enqueue(podUID, wait.Jitter(p.resyncInterval, workerResyncIntervalJitterFactor))
+ 1532  	case strings.Contains(syncErr.Error(), NetworkNotReadyErrorMsg):
+ 1533  		// Network is not ready; back off for short period of time and retry as network might be ready soon.
+ 1534  		p.workQueue.Enqueue(podUID, wait.Jitter(backOffOnTransientErrorPeriod, workerBackOffPeriodJitterFactor))
+ 1535  	default:
+ 1536  		// Error occurred during the sync; back off and then retry. If the error includes a backoff expiration,
+ 1537  		// wait until then instead of the default to avoid adding extra time to the backoff.
+ 1538  		backoff := p.backOffPeriod
+ 1539  		if backoffAt, isBackoffErr := kubecontainer.MinBackoffExpiration(syncErr); isBackoffErr {
+ 1540  			backoff = backoffAt.Sub(p.clock.Now())
+ 1541  		}
+ 1542  		if backoff < 0 {
+ 1543  			backoff = 0
+ 1544  		} else if backoff > p.resyncInterval {
+ 1545  			backoff = p.resyncInterval
+ 1546  		}
+ 1547  		p.workQueue.Enqueue(podUID, wait.Jitter(backoff, workerBackOffPeriodJitterFactor))
+ 1548  	}
+
+## wait.Jitter
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apimachinery/pkg/util/wait/wait.go
+   87  // Jitter returns a time.Duration between duration and duration + maxFactor *
+   88  // duration.
+   89  //
+   90  // This allows clients to avoid converging on periodic behavior. If maxFactor
+   91  // is 0.0, a suggested default value will be chosen.
+   92  func Jitter(duration time.Duration, maxFactor float64) time.Duration {
+   93  	if maxFactor <= 0.0 {
+   94  		maxFactor = 1.0
+   95  	}
+   96  	wait := duration + time.Duration(jitterRand()*maxFactor*float64(duration))
+   97  	return wait
+   98  }
+
+## 1초마다 작업 큐에서 때가 된 파드를 꺼내 동기화
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet.go
+ 2590  func (kl *Kubelet) getPodsToSync() []*v1.Pod {
+ 2591  	allPods := kl.podManager.GetPods()
+ 2592  	podUIDs := kl.workQueue.GetWork()
+ 2593  	podUIDSet := sets.New[string]()
+ 2594  	for _, podUID := range podUIDs {
+ 2595  		podUIDSet.Insert(string(podUID))
+ 2596  	}
+ 2597  	var podsToSync []*v1.Pod
+ 2598  	for _, pod := range allPods {
+ 2599  		if podUIDSet.Has(string(pod.UID)) {
+ 2600  			// The work of the pod is ready
+ 2601  			podsToSync = append(podsToSync, pod)
+ 2602  			continue
+  ...
+ 2677  	syncTicker := time.NewTicker(time.Second)
+
+## SyncPod: status 를 먼저 만들고, 그다음 컨테이너 시작 결과를 reasonCache 에 적는다
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet.go
+ 2107  	// Generate final API pod status with pod and status manager status
+ 2108  	apiPodStatus := kl.generateAPIPodStatus(ctx, pod, podStatus, false)
+  ...
+ 2267  	result := kl.containerRuntime.SyncPod(sctx, pod, podStatus, pullSecrets, kl.crashLoopBackOff, restartingAllContainers)
+ 2268  	kl.reasonCache.Update(pod.UID, result)
+
+## reasonCache 에 사유가 있을 때만 Waiting(CrashLoopBackOff 등)으로 바꾼다
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet_pods.go
+ 2768  		}
+ 2769  		status := statuses[container.Name]
+ 2770  		reason, ok := kl.reasonCache.Get(pod.UID, container.Name)
+ 2771  		if !ok {
+ 2772  			// In fact, we could also apply Waiting state here, but it is less informative,
+ 2773  			// and the container will be restarted soon, so we prefer the original state here.
+ 2774  			// Note that with the current implementation of ShouldContainerBeRestarted the original state here
+ 2775  			// could be:
+ 2776  			//   * Waiting: There is no associated historical container and start failure reason record.
+ 2777  			//   * Terminated: The container is terminated.
+ 2778  			continue
+ 2779  		}
+ 2780  		if status.State.Terminated != nil {
+ 2781  			status.LastTerminationState = status.State
+ 2782  		}
+ 2783  		status.State = v1.ContainerState{
+ 2784  			Waiting: &v1.ContainerStateWaiting{
+ 2785  				Reason:  reason.Err.Error(),
+ 2786  				Message: reason.Message,
+ 2787  			},
+ 2788  		}
+
+## getPhase: 모든 컨테이너가 멈췄을 때의 phase
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kubelet_pods.go
+ 1830  
+ 1831  	switch {
+ 1832  	case pendingRegularInitContainers > 0 ||
+ 1833  		(pendingRestartableInitContainers > 0 &&
+ 1834  			// This is needed to handle the case where the pod has been initialized but
+ 1835  			// the restartable init containers are restarting and the pod should not be
+ 1836  			// placed back into v1.PodPending since the regular containers have run.
+ 1837  			!podHasInitialized):
+ 1838  		fallthrough
+ 1839  	case waiting > 0:
+ 1840  		logger.V(5).Info("Pod waiting > 0, pending")
+ 1841  		// One or more containers has not been started
+ 1842  		return v1.PodPending
+ 1843  	case running > 0 && unknown == 0:
+ 1844  		// All containers have been started, and at least
+ 1845  		// one container is running
+ 1846  		return v1.PodRunning
+ 1847  	case running == 0 && stopped > 0 && unknown == 0:
+ 1848  		// The pod is terminal so its containers won't be restarted regardless
+ 1849  		// of the restart policy.
+ 1850  		if podIsTerminal {
+ 1851  			// TODO(#116484): Also assign terminal phase to static pods.
+ 1852  			if !kubetypes.IsStaticPod(pod) {
+ 1853  				// All regular containers are terminated in success and all restartable
+ 1854  				// init containers are stopped.
+ 1855  				if stopped == succeeded {
+ 1856  					return v1.PodSucceeded
+ 1857  				}
+ 1858  				// There is at least one failure
+ 1859  				return v1.PodFailed
+ 1860  			}
+ 1861  		}
+ 1862  		// All containers are terminated
+ 1863  		if utilfeature.DefaultFeatureGate.Enabled(features.ContainerRestartRules) {
+ 1864  			if stopped != stoppedNotRestartable {
+ 1865  				// At least one containers are in the process of restarting
+ 1866  				return v1.PodRunning
+ 1867  			}
+ 1868  			if stopped == succeeded {
+ 1869  				return v1.PodSucceeded
+ 1870  			}
+ 1871  			return v1.PodFailed
+ 1872  		}
+ 1873  		if spec.RestartPolicy == v1.RestartPolicyAlways {
+ 1874  			// All containers are in the process of restarting
+ 1875  			return v1.PodRunning
+ 1876  		}
+ 1877  		if stopped == succeeded {
+ 1878  			// RestartPolicy is not Always, all containers are terminated in success
+ 1879  			// and all restartable init containers are stopped.
+ 1880  			return v1.PodSucceeded
+ 1881  		}
+ 1882  		if spec.RestartPolicy == v1.RestartPolicyNever {
+ 1883  			// RestartPolicy is Never, and all containers are
+ 1884  			// terminated with at least one in failure
+ 1885  			return v1.PodFailed
+ 1886  		}
+ 1887  		// RestartPolicy is OnFailure, and at least one in failure
+ 1888  		// and in the process of restarting
+ 1889  		return v1.PodRunning
+ 1890  	default:
+
+## 본 리소스 업데이트는 status 를 옛 값으로, /status 업데이트는 spec 을 옛 값으로 되돌린다
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/registry/core/pod/strategy.go
+  107  func (podStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
+  108  	newPod := obj.(*api.Pod)
+  109  	oldPod := old.(*api.Pod)
+  110  	newPod.Status = oldPod.Status
+  ...
+  227  func (podStatusStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
+  228  	newPod := obj.(*api.Pod)
+  229  	oldPod := old.(*api.Pod)
+  230  	newPod.Spec = oldPod.Spec
+  231  	newPod.DeletionTimestamp = nil
+
+## 10초 주기 재조정, kubelet 이 소유하지 않은 condition 은 남기고 합친다
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/status/status_manager.go
+  215  const syncPeriod = 10 * time.Second
+  ...
+  286  	syncTicker := time.NewTicker(syncPeriod).C
+  287  
+  288  	// syncPod and syncBatch share the same go routine to avoid sync races.
+  289  	go wait.Forever(func() {
+  290  		for {
+  291  			select {
+  292  			case <-m.podStatusChannel:
+  293  				logger.V(4).Info("Syncing updated statuses")
+  294  				m.syncBatch(ctx, false)
+  295  			case <-syncTicker:
+  296  				logger.V(4).Info("Syncing all statuses")
+  297  				m.syncBatch(ctx, true)
+  ...
+ 1348  		return true
+ 1349  	}
+ 1350  	return false
+ 1351  }
+ 1352  
+ 1353  // needsReconcile compares the given status with the status in the pod manager (which
+ 1354  // in fact comes from apiserver), returns whether the status needs to be reconciled with
+ 1355  // the apiserver. Now when pod status is inconsistent between apiserver and kubelet,
+  ...
+ 1452  func mergePodStatus(pod *v1.Pod, oldPodStatus, newPodStatus v1.PodStatus, couldHaveRunningContainers bool) v1.PodStatus {
+ 1453  	podConditions := make([]v1.PodCondition, 0, len(oldPodStatus.Conditions)+len(newPodStatus.Conditions))
+ 1454  
+ 1455  	for _, c := range oldPodStatus.Conditions {
+ 1456  		if !kubetypes.PodConditionByKubelet(c.Type) {
+ 1457  			podConditions = append(podConditions, c)
+ 1458  		}
+ 1459  	}
+ 1460  
+ 1461  	transitioningToTerminalPhase := !podutil.IsPodPhaseTerminal(oldPodStatus.Phase) && podutil.IsPodPhaseTerminal(newPodStatus.Phase)
+ 1462  
+ 1463  	for _, c := range newPodStatus.Conditions {
+ 1464  		if kubetypes.PodConditionByKubelet(c.Type) {
+ 1465  			podConditions = append(podConditions, c)
+ 1466  		} else if kubetypes.PodConditionSharedByKubelet(c.Type) {
+
+## kubelet 이 소유하는 pod condition
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/types/pod_status.go
+   25  // PodConditionsByKubelet is the list of pod conditions owned by kubelet
+   26  var PodConditionsByKubelet = []v1.PodConditionType{
+   27  	v1.PodScheduled,
+   28  	v1.PodReady,
+   29  	v1.PodInitialized,
+   30  	v1.ContainersReady,
+   31  	v1.PodResizeInProgress,
+   32  	v1.PodResizePending,
+   33  }
+  ...
+   35  // PodConditionByKubelet returns if the pod condition type is owned by kubelet
+   36  func PodConditionByKubelet(conditionType v1.PodConditionType) bool {
+   37  	for _, c := range PodConditionsByKubelet {
+   38  		if c == conditionType {
+   39  			return true
+   40  		}
+   41  	}
+   42  	if utilfeature.DefaultFeatureGate.Enabled(features.PodReadyToStartContainersCondition) {
+   43  		if conditionType == v1.PodReadyToStartContainers {
+   44  			return true
+   45  		}
+   46  	}
+
+## kubelet 상태 코드에서 LastProbeTime 을 채우는 곳(크기 변경 condition)
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/status/status_manager.go
+ 1545  	var lastTransitionTime metav1.Time
+ 1546  	if oldCondition == nil || oldCondition.Reason != reason {
+ 1547  		lastTransitionTime = now
+ 1548  	} else {
+ 1549  		lastTransitionTime = oldCondition.LastTransitionTime
+ 1550  	}
+ 1551  
+ 1552  	return &v1.PodCondition{
+ 1553  		Type:               conditionType,
+ 1554  		Status:             v1.ConditionTrue,
+ 1555  		LastProbeTime:      now,
+ 1556  		LastTransitionTime: lastTransitionTime,
+ 1557  		ObservedGeneration: observedGeneration,
+ 1558  		Reason:             reason,
+ 1559  		Message:            message,
+
+## Unschedulable 은 PodScheduled condition 의 reason
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/api/core/v1/types.go
+ 3772  // These are reasons for a pod's transition to a condition.
+ 3773  const (
+ 3774  	// PodReasonUnschedulable reason in PodScheduled PodCondition means that the scheduler
+ 3775  	// can't schedule the pod right now, for example due to insufficient resources in the cluster.
+ 3776  	PodReasonUnschedulable = "Unschedulable"
+ 3777  
+ 3778  	// PodReasonSchedulingGated reason in PodScheduled PodCondition means that the scheduler
+ 3779  	// skips scheduling the pod because one or more scheduling gates are still present.
+ 3780  	PodReasonSchedulingGated = "SchedulingGated"
+
+## 노드 컨트롤러는 Ready 를 False 로만 바꾼다(phase 는 그대로)
+# https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/util/node/controller_utils.go
+  121  func MarkPodsNotReady(ctx context.Context, kubeClient clientset.Interface, recorder record.EventRecorder, pods []*v1.Pod, nodeName string) error {
+  ...
+  134  		for _, cond := range pod.Status.Conditions {
+  135  			if cond.Type != v1.PodReady {
+  136  				continue
+  137  			}
+  138  
+  139  			cond.Status = v1.ConditionFalse
+  140  			if !utilpod.UpdatePodCondition(&pod.Status, &cond) {
+  141  				break
+  142  			}
+  143  
+  144  			logger.V(2).Info("Updating ready status of pod to false", "pod", klog.KObj(pod))
+  145  			if _, err := kubeClient.CoreV1().Pods(pod.Namespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {

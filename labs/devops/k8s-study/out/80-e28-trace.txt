@@ -1,0 +1,279 @@
+# 80 e28 추적 (2026-11-21 19:23:14 KST), 조건: a d a b
+client 파드: 노드 k8s-worker1
+노드 시계 - Mac 시계(초):
+  k8s-master   +0.031
+  k8s-worker1  +0.100
+  k8s-worker2  +0.036
+  k8s-worker3  +0.094
+
+## (a) fast-exit, preStop 없음, readiness 없음  [e28-a-1]
+  rollout restart -> status 끝 1.7초, tcpdump: 28435 packets captured 0 packets dropped by kernel 
+  (이 회차만: 처음 쓴 요약 awk 가 응답 본문 줄까지 전송으로 세어 분석이 멈췄다. 분석기가 curl -w 형식의 실패 줄만 고르게 고친 뒤 같은 원자료로 다시 분석했다.
+   loop 별 전송 수는 남지 않아서 아래 요청 수 = 200 응답 수 + 실패 수)
+  요청 131603, 실패 61: e28 연결 단계(새 연결, connect 못 함) 49, e7 12
+  rollout restart = 노드 시각 1795256603.0 (아래 +초는 restart 기준, client 노드 시계, Mac 과 차이 +0.10s)
+  옛 파드: 2nv5l=10.244.126.17@worker2 fk92p=10.244.194.103@worker1 gmcl5=10.244.100.230@worker3
+  새 파드: t65mb=10.244.194.101@worker1 wh4d7=10.244.126.48@worker2 wj4zx=10.244.100.243@worker3
+  실패 전송 시작 시각(restart 기준 초, 종류, c=연결된 뒤): +0s e28x2 +0s e7x12 +1s e28x2 +2s e28x1 +7s e28x2 +12s e28x1 +17s e28x1 +18s e28x3 +22s e28x4 +25s e28x5 +27s e28x5 +29s e28x5 +31s e28x2 +33s e28x2 +35s e28x2 +37s e28x2 +39s e28x2 +41s e28x2 +43s e28x2 +45s e28x2 +47s e28x2
+  tcpdump SYN 시도 14164개, RST 받은 시도 12개, 1초 안에 응답 없어 SYN 을 다시 보낸 시도 44개
+      +0.8s 포트 60470 SYN 2번 DNAT→새파드 wj4zx(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 없음
+      +0.8s 포트 60488 SYN 2번 DNAT→새파드 wj4zx(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 없음
+      +0.9s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은117s
+      +0.9s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은117s
+      +1.0s 포트 60620 SYN 2번 DNAT→새파드 wj4zx(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 없음
+      +1.9s 포트 60658 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은117s
+      +1.9s 포트 60734 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은117s
+      +2.1s 포트 60770 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은117s
+      +7.2s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:   +0.9s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은117s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은114s
+      +7.2s 포트 60734 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:   +1.9s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은114s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은111s
+     +12.5s 포트 60770 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:   +2.1s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은111s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은108s
+     +18.0s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:   +7.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은105s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은102s
+     +18.0s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:   +0.9s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은105s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은102s
+     +18.0s 포트 60658 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:   +1.9s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은105s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은102s
+     +18.0s 포트 60734 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:   +7.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은105s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은102s
+     +22.5s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +18.0s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은102s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은99s
+     +22.5s 포트 60658 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +18.0s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은102s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은99s
+     +22.5s 포트 60734 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +18.0s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은99s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은96s
+     +22.6s 포트 60770 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +12.5s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은99s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은96s
+     +25.1s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +22.5s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은99s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은96s
+     +25.1s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +18.0s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은99s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은96s
+     +25.1s 포트 60658 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +22.5s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은99s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은96s
+     +25.1s 포트 60734 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +22.5s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은99s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은96s
+     +25.1s 포트 60770 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +22.6s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은99s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은96s
+     +27.2s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +25.1s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은96s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은93s
+     +27.2s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +25.1s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은96s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은93s
+     +27.2s 포트 60658 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +25.1s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은96s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은93s
+     +27.2s 포트 60734 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +25.1s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은96s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은93s
+     +27.2s 포트 60770 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +25.1s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은96s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은93s
+     +29.2s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +27.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은93s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은90s
+     +29.2s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +27.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은93s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은90s
+     +29.2s 포트 60658 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +27.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은93s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은89s
+     +29.2s 포트 60734 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +27.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은93s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은90s
+     +29.3s 포트 60770 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +27.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은93s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은90s
+     +31.3s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +29.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은93s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은90s
+     +31.3s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +29.2s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은93s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은90s
+     +33.3s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +31.3s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은90s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은86s
+     +33.3s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +31.3s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은90s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은86s
+     +35.3s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +33.3s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은86s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은83s
+     +35.3s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +33.3s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은86s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은83s
+     +37.3s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +35.3s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은86s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은83s
+     +37.3s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +35.3s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은86s 직후 SYN_SENT->옛파드 gmcl5(worker3) 남은83s
+     +39.3s 포트 60552 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +37.3s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은83s 직후 없음
+     +39.3s 포트 60572 SYN 2번 DNAT→옛파드 gmcl5(worker3) | 이 포트 앞선 사용:  +37.3s 무응답→옛파드 gmcl5(worker3) | conntrack 직전 SYN_SENT->옛파드 gmcl5(worker3) 남은83s 직후 없음
+  응답 없는 시도 44개 중 같은 출발 포트를 이 회차에서 앞서 쓴 것 36개
+  client 가 보낸 SYN 사이가 0.8초 넘게 빈 때(restart 기준):   +1.0s~0.84s  +25.1s~1.02s  +26.2s~0.98s  +27.2s~1.03s  +28.2s~0.95s  +29.3s~0.99s  +30.3s~0.93s  +31.3s~1.05s  +32.3s~0.95s  +33.3s~1.04s  +34.3s~0.97s  +35.3s~1.02s  +36.3s~0.99s  +37.3s~1.06s  +38.3s~0.94s  +39.3s~1.04s
+  conntrack 덤프(client→ClusterIP:80, TIME_WAIT 아닌 항목만 상태별, 옛 파드 IP 로 가는 것):
+      -4.9s 전체 0, 옛 파드 TIME_WAIT 0, 그 밖: 없음
+      -1.9s 전체 1248, 옛 파드 TIME_WAIT 1246, 그 밖: 2nv5l/ESTABLISHED=2
+      +1.1s 전체 1957, 옛 파드 TIME_WAIT 1936, 그 밖: 없음
+      +4.2s 전체 2590, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+      +7.2s 전체 4601, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +10.2s 전체 6258, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +13.3s 전체 8078, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +16.4s 전체 9911, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +19.4s 전체 10996, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +22.5s 전체 12582, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +25.6s 전체 13079, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +28.7s 전체 13085, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +31.8s 전체 13141, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +34.9s 전체 13141, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+     +38.1s 전체 13141, 옛 파드 TIME_WAIT 1936, 그 밖: gmcl5/SYN_SENT=5
+  client 노드 CPU 바쁨: 전체 2~94%, e28 시작 ±1.5초 안 2~94%
+  client 파드 소켓(/proc/net/sockstat): TIME_WAIT 0~14111, inuse 0~5 (출발 포트 범위 32768~60999 = 28232개)
+  e28 49건 대조: 옛 파드로 DNAT·포트 다시 씀 36, 옛 파드로 DNAT·포트 처음 5, tcpdump 이 끝난  +39.3s 뒤라 대조 못 함 8
+  e28 이 아닌 응답 없는 시도 3개:   +0.8s→새 파드   +0.8s→새 파드   +1.0s→새 파드 (실패한 전송과 짝이 없다: 다시 보낸 SYN 뒤에 응답을 받은 것으로 본다)
+  응답 없는 시도의 출발 포트가 모두 짝수: True
+  k8s-worker1 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.053s
+  k8s-worker2 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.052s
+  k8s-worker3 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.052s
+  파드 이벤트(시작·종료):
+    10:23:16 UTC Started 2nv5l
+    10:23:16 UTC Started fk92p
+    10:23:16 UTC Started gmcl5
+    10:23:23 UTC Killing fk92p
+    10:23:23 UTC Started t65mb
+    10:23:24 UTC Killing 2nv5l
+    10:23:24 UTC Killing gmcl5
+    10:23:24 UTC Started wh4d7
+    10:23:24 UTC Started wj4zx
+
+## (d) fast-exit + readinessProbe, preStop 없음  [e28-d-2]
+  rollout restart -> status 끝 3.1초, tcpdump: 28054 packets captured 0 packets dropped by kernel 
+  요청 129682, 실패 86: e28 연결 단계(새 연결, connect 못 함) 30, e56 4, e7 52
+  rollout restart = 노드 시각 1795256665.9 (아래 +초는 restart 기준, client 노드 시계, Mac 과 차이 +0.10s)
+  옛 파드: g8wbq=10.244.194.104@worker1 kgdm8=10.244.126.9@worker2 m2kxb=10.244.100.237@worker3
+  새 파드: 7tn8z=10.244.100.212@worker3 g56fh=10.244.194.105@worker1 hcc2g=10.244.126.43@worker2
+  실패 전송 시작 시각(restart 기준 초, 종류, c=연결된 뒤): +0s e28x5 +0s e56(c)x3 +0s e7x23 +3s e28x5 +3s e56(c)x1 +3s e7x29 +9s e28x4 +13s e28x1 +18s e28x5 +25s e28x5 +28s e28x5
+  tcpdump SYN 시도 13939개, RST 받은 시도 58개, 1초 안에 응답 없어 SYN 을 다시 보낸 시도 30개
+      +1.0s 포트 36126 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은119s
+      +1.0s 포트 36140 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은119s
+      +1.0s 포트 36152 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은119s
+      +1.0s 포트 36156 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은119s
+      +1.0s 포트 36170 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은119s
+      +3.2s 포트 37316 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은119s
+      +3.2s 포트 37406 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은119s
+      +3.2s 포트 37418 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은119s
+      +3.2s 포트 37454 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은119s
+      +3.2s 포트 37478 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은119s
+      +9.2s 포트 36170 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:   +1.0s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은113s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은110s
+      +9.3s 포트 36488 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:   +3.1s RST→옛파드 kgdm8(worker2) | conntrack 직전 CLOSE->옛파드 kgdm8(worker2) 남은5s 직후 CLOSE->옛파드 kgdm8(worker2) 남은2s
+      +9.4s 포트 37316 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:   +3.2s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은115s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은112s
+      +9.5s 포트 37406 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:   +3.2s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은115s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은112s
+     +13.6s 포트 36156 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:   +1.0s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은107s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은104s
+     +18.6s 포트 36152 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:   +1.0s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은104s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은101s
+     +18.6s 포트 36156 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:  +13.6s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은104s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은101s
+     +18.9s 포트 37316 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:   +9.4s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은106s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은103s
+     +18.9s 포트 37406 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:   +9.5s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은106s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은103s
+     +19.0s 포트 37454 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:   +3.2s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은106s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은103s
+     +25.0s 포트 36156 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:  +18.6s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은98s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은95s
+     +25.2s 포트 37406 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:  +18.9s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은100s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은97s
+     +25.2s 포트 37418 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:   +3.2s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은100s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은97s
+     +25.2s 포트 37454 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:  +19.0s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은100s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은97s
+     +25.2s 포트 37478 SYN 2번 DNAT→옛파드 kgdm8(worker2) | 이 포트 앞선 사용:   +3.2s 무응답→옛파드 kgdm8(worker2) | conntrack 직전 SYN_SENT->옛파드 kgdm8(worker2) 남은100s 직후 SYN_SENT->옛파드 kgdm8(worker2) 남은97s
+     +28.9s 포트 36126 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:   +1.0s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은92s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은89s
+     +28.9s 포트 36140 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:   +1.0s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은92s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은89s
+     +28.9s 포트 36152 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:  +18.6s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은92s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은89s
+     +28.9s 포트 36156 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:  +25.0s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은92s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은89s
+     +28.9s 포트 36170 SYN 2번 DNAT→옛파드 m2kxb(worker3) | 이 포트 앞선 사용:   +9.2s 무응답→옛파드 m2kxb(worker3) | conntrack 직전 SYN_SENT->옛파드 m2kxb(worker3) 남은92s 직후 SYN_SENT->옛파드 m2kxb(worker3) 남은89s
+  응답 없는 시도 30개 중 같은 출발 포트를 이 회차에서 앞서 쓴 것 20개
+  client 가 보낸 SYN 사이가 0.8초 넘게 빈 때(restart 기준):   +1.0s~1.03s   +2.0s~0.97s   +3.2s~0.96s   +4.3s~0.91s  +25.2s~0.87s  +28.9s~1.03s  +29.9s~0.96s
+  conntrack 덤프(client→ClusterIP:80, TIME_WAIT 아닌 항목만 상태별, 옛 파드 IP 로 가는 것):
+      -4.9s 전체 0, 옛 파드 TIME_WAIT 0, 그 밖: 없음
+      -1.9s 전체 1327, 옛 파드 TIME_WAIT 1324, 그 밖: kgdm8/ESTABLISHED=2 g8wbq/ESTABLISHED=1
+      +1.1s 전체 3065, 옛 파드 TIME_WAIT 3056, 그 밖: m2kxb/CLOSE=4 m2kxb/SYN_SENT=5
+      +4.1s 전체 2164, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/CLOSE=4 m2kxb/SYN_SENT=5 kgdm8/CLOSE=3 kgdm8/SYN_SENT=5
+      +7.2s 전체 3334, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/CLOSE=4 m2kxb/SYN_SENT=5 kgdm8/CLOSE=3 kgdm8/SYN_SENT=5
+     +10.2s 전체 4753, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/CLOSE=4 m2kxb/SYN_SENT=5 kgdm8/CLOSE=3 kgdm8/SYN_SENT=5
+     +13.3s 전체 5837, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+     +16.3s 전체 7537, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+     +19.4s 전체 9096, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+     +22.5s 전체 10246, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+     +25.6s 전체 11737, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+     +28.7s 전체 12791, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+     +31.9s 전체 12842, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+     +35.0s 전체 12842, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+     +38.1s 전체 12842, 옛 파드 TIME_WAIT 2049, 그 밖: m2kxb/SYN_SENT=5 kgdm8/SYN_SENT=5
+  client 노드 CPU 바쁨: 전체 2~94%, e28 시작 ±1.5초 안 11~94%
+  client 파드 소켓(/proc/net/sockstat): TIME_WAIT 10299~14550, inuse 0~5 (출발 포트 범위 32768~60999 = 28232개)
+  e28 30건 대조: 옛 파드로 DNAT·포트 다시 씀 20, 옛 파드로 DNAT·포트 처음 10
+  e28 이 아닌 응답 없는 시도 0개: 없음
+  응답 없는 시도의 출발 포트가 모두 짝수: True
+  k8s-worker1 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.057s
+  k8s-worker2 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.053s
+  k8s-worker3 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.052s
+  파드 이벤트(시작·종료):
+    10:24:19 UTC Started g8wbq
+    10:24:19 UTC Started kgdm8
+    10:24:19 UTC Started m2kxb
+    10:24:26 UTC Killing m2kxb
+    10:24:26 UTC Started 7tn8z
+    10:24:27 UTC Killing g8wbq
+    10:24:27 UTC Started g56fh
+    10:24:28 UTC Killing kgdm8
+    10:24:28 UTC Started hcc2g
+
+## (a) fast-exit, preStop 없음, readiness 없음  [e28-a-3]
+  rollout restart -> status 끝 1.8초, tcpdump: 36355 packets captured 0 packets dropped by kernel 
+  요청 169910, 실패 24: e28 연결 단계(새 연결, connect 못 함) 10, e7 14
+  rollout restart = 노드 시각 1795256714.2 (아래 +초는 restart 기준, client 노드 시계, Mac 과 차이 +0.10s)
+  옛 파드: bztcp=10.244.100.202@worker3 hmqdh=10.244.126.31@worker2 hns5h=10.244.194.106@worker1
+  새 파드: bzc68=10.244.126.62@worker2 m7m4g=10.244.100.240@worker3 m7s4d=10.244.194.108@worker1
+  실패 전송 시작 시각(restart 기준 초, 종류, c=연결된 뒤): +0s e28x1 +0s e7x14 +2s e28x4 +6s e28x1 +19s e28x2 +25s e28x1 +26s e28x1
+  tcpdump SYN 시도 18150개, RST 받은 시도 8개, 1초 안에 응답 없어 SYN 을 다시 보낸 시도 14개
+      +1.0s 포트 50476 SYN 2번 DNAT→새파드 bzc68(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 없음
+      +1.0s 포트 50486 SYN 2번 DNAT→새파드 bzc68(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 없음
+      +1.0s 포트 50496 SYN 2번 DNAT→새파드 bzc68(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 없음
+      +1.0s 포트 50524 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 bztcp(worker3) 남은117s
+      +1.2s 포트 50594 SYN 2번 DNAT→새파드 bzc68(worker2) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 없음
+      +2.0s 포트 50646 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 bztcp(worker3) 남은117s
+      +2.0s 포트 50664 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 bztcp(worker3) 남은117s
+      +2.0s 포트 50716 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 bztcp(worker3) 남은117s
+      +2.3s 포트 50756 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용: 없음 | conntrack 직전 없음 직후 SYN_SENT->옛파드 bztcp(worker3) 남은118s
+      +6.9s 포트 50646 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용:   +2.0s 무응답→옛파드 bztcp(worker3) | conntrack 직전 SYN_SENT->옛파드 bztcp(worker3) 남은117s 직후 SYN_SENT->옛파드 bztcp(worker3) 남은114s
+     +19.3s 포트 50646 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용:   +6.9s 무응답→옛파드 bztcp(worker3) | conntrack 직전 SYN_SENT->옛파드 bztcp(worker3) 남은105s 직후 SYN_SENT->옛파드 bztcp(worker3) 남은102s
+     +19.3s 포트 50716 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용:   +2.0s 무응답→옛파드 bztcp(worker3) | conntrack 직전 SYN_SENT->옛파드 bztcp(worker3) 남은105s 직후 SYN_SENT->옛파드 bztcp(worker3) 남은102s
+     +25.3s 포트 50646 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용:  +19.3s 무응답→옛파드 bztcp(worker3) | conntrack 직전 SYN_SENT->옛파드 bztcp(worker3) 남은99s 직후 SYN_SENT->옛파드 bztcp(worker3) 남은96s
+     +26.9s 포트 50664 SYN 2번 DNAT→옛파드 bztcp(worker3) | 이 포트 앞선 사용:   +2.0s 무응답→옛파드 bztcp(worker3) | conntrack 직전 SYN_SENT->옛파드 bztcp(worker3) 남은96s 직후 SYN_SENT->옛파드 bztcp(worker3) 남은92s
+  응답 없는 시도 14개 중 같은 출발 포트를 이 회차에서 앞서 쓴 것 5개
+  client 가 보낸 SYN 사이가 0.8초 넘게 빈 때(restart 기준):   +1.2s~0.83s
+  conntrack 덤프(client→ClusterIP:80, TIME_WAIT 아닌 항목만 상태별, 옛 파드 IP 로 가는 것):
+      -4.9s 전체 0, 옛 파드 TIME_WAIT 0, 그 밖: 없음
+      -1.9s 전체 1229, 옛 파드 TIME_WAIT 1225, 그 밖: bztcp/ESTABLISHED=1 hmqdh/ESTABLISHED=3
+      +1.1s 전체 1816, 옛 파드 TIME_WAIT 1795, 그 밖: 없음
+      +4.2s 전체 2206, 옛 파드 TIME_WAIT 1795, 그 밖: bztcp/SYN_SENT=5
+      +7.2s 전체 3807, 옛 파드 TIME_WAIT 1765, 그 밖: bztcp/SYN_SENT=5
+     +10.3s 전체 5452, 옛 파드 TIME_WAIT 1765, 그 밖: bztcp/SYN_SENT=5
+     +13.4s 전체 6708, 옛 파드 TIME_WAIT 1747, 그 밖: bztcp/SYN_SENT=5
+     +16.5s 전체 8266, 옛 파드 TIME_WAIT 1747, 그 밖: bztcp/SYN_SENT=5
+     +19.6s 전체 9421, 옛 파드 TIME_WAIT 1733, 그 밖: bztcp/SYN_SENT=5
+     +22.7s 전체 10344, 옛 파드 TIME_WAIT 1733, 그 밖: bztcp/SYN_SENT=5
+     +25.9s 전체 10850, 옛 파드 TIME_WAIT 1721, 그 밖: bztcp/SYN_SENT=5
+     +29.0s 전체 11550, 옛 파드 TIME_WAIT 1711, 그 밖: bztcp/SYN_SENT=5
+     +32.1s 전체 11955, 옛 파드 TIME_WAIT 1705, 그 밖: bztcp/SYN_SENT=5
+     +35.3s 전체 11955, 옛 파드 TIME_WAIT 1705, 그 밖: bztcp/SYN_SENT=5
+     +38.4s 전체 11955, 옛 파드 TIME_WAIT 1705, 그 밖: bztcp/SYN_SENT=5
+  client 노드 CPU 바쁨: 전체 2~95%, e28 시작 ±1.5초 안 12~94%
+  client 파드 소켓(/proc/net/sockstat): TIME_WAIT 13851~16384, inuse 0~5 (출발 포트 범위 32768~60999 = 28232개)
+  e28 10건 대조: 옛 파드로 DNAT·포트 다시 씀 5, 옛 파드로 DNAT·포트 처음 5
+  e28 이 아닌 응답 없는 시도 4개:   +1.0s→새 파드   +1.0s→새 파드   +1.0s→새 파드   +1.2s→새 파드 (실패한 전송과 짝이 없다: 다시 보낸 SYN 뒤에 응답을 받은 것으로 본다)
+  응답 없는 시도의 출발 포트가 모두 짝수: True
+  k8s-worker1 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.054s
+  k8s-worker2 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.054s
+  k8s-worker3 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.057s
+  파드 이벤트(시작·종료):
+    10:25:07 UTC Started hmqdh
+    10:25:07 UTC Started hns5h
+    10:25:08 UTC Started bztcp
+    10:25:14 UTC Killing hns5h
+    10:25:14 UTC Started m7s4d
+    10:25:15 UTC Killing bztcp
+    10:25:15 UTC Killing hmqdh
+    10:25:15 UTC Started bzc68
+    10:25:15 UTC Started m7m4g
+
+## (b) fast-exit + preStop 5, readiness 없음  [e28-b-4]
+  rollout restart -> status 끝 1.9초, tcpdump: 37774 packets captured 0 packets dropped by kernel 
+  요청 176953, 실패 0: 
+  rollout restart = 노드 시각 1795256762.6 (아래 +초는 restart 기준, client 노드 시계, Mac 과 차이 +0.10s)
+  옛 파드: 2qzd5=10.244.194.109@worker1 ljth2=10.244.100.218@worker3 v45br=10.244.126.42@worker2
+  새 파드: c4cl6=10.244.194.110@worker1 mf4ds=10.244.100.207@worker3 stcmb=10.244.126.12@worker2
+  실패 전송 시작 시각(restart 기준 초, 종류, c=연결된 뒤): 
+  tcpdump SYN 시도 18886개, RST 받은 시도 0개, 1초 안에 응답 없어 SYN 을 다시 보낸 시도 0개
+  응답 없는 시도 0개 중 같은 출발 포트를 이 회차에서 앞서 쓴 것 0개
+  client 가 보낸 SYN 사이가 0.8초 넘게 빈 때(restart 기준): 없음
+  conntrack 덤프(client→ClusterIP:80, TIME_WAIT 아닌 항목만 상태별, 옛 파드 IP 로 가는 것):
+      -4.9s 전체 0, 옛 파드 TIME_WAIT 0, 그 밖: 없음
+      -1.9s 전체 1058, 옛 파드 TIME_WAIT 1057, 그 밖: 2qzd5/ESTABLISHED=1
+      +1.2s 전체 2643, 옛 파드 TIME_WAIT 2584, 그 밖: ljth2/ESTABLISHED=1 2qzd5/ESTABLISHED=1
+      +4.2s 전체 4249, 옛 파드 TIME_WAIT 2958, 그 밖: 없음
+      +7.3s 전체 4924, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +10.4s 전체 6500, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +13.5s 전체 8199, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +16.6s 전체 9469, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +19.7s 전체 10682, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +22.9s 전체 11470, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +26.0s 전체 11946, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +29.2s 전체 12240, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +32.3s 전체 12360, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +35.4s 전체 12360, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+     +38.5s 전체 12360, 옛 파드 TIME_WAIT 2010, 그 밖: 없음
+  client 노드 CPU 바쁨: 전체 2~97%, e28 시작 ±1.5초 안 -~-%
+  client 파드 소켓(/proc/net/sockstat): TIME_WAIT 10345~16384, inuse 0~4 (출발 포트 범위 32768~60999 = 28232개)
+  e28 0건 대조: 
+  e28 이 아닌 응답 없는 시도 0개: 없음
+  응답 없는 시도의 출발 포트가 모두 짝수: -
+  k8s-worker1 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.054s
+  k8s-worker2 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.052s
+  k8s-worker3 멈춤(50ms 잠들기가 0.3초 넘게 걸린 때, restart 기준):  최대 0.052s
+  파드 이벤트(시작·종료):
+    10:25:56 UTC Started 2qzd5
+    10:25:56 UTC Started ljth2
+    10:25:56 UTC Started v45br
+    10:26:03 UTC Killing 2qzd5
+    10:26:03 UTC Killing v45br
+    10:26:03 UTC Started c4cl6
+    10:26:03 UTC Started stcmb
+    10:26:04 UTC Killing ljth2
+    10:26:04 UTC Started mf4ds
+
+(이벤트는 UTC, KST = UTC+9. restart 기준 +초는 client 노드 시계)

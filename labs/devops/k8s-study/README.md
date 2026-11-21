@@ -139,6 +139,23 @@
 - 실험은 편마다 별도 네임스페이스에서 하고 끝나면 지웠다. 이날 실습과 무관한 워크로드는 replicas 0 으로 내려 두었다(실습 저장소 `shared/parked-20261115/`).
 - worker3 시계가 다른 노드보다 2.1초 늦었던 기간의 결과는 `63-pod-phases-clock-skew.txt` 하나다. 그 뒤 timesyncd 를 재시작해 맞췄다(`63-node-clocks*.txt`).
 
+## 76~81편 원자료 (2026-11-21)
+
+작성 계획·지시·감사 기록은 [ch05-76-81/](ch05-76-81/)에 있다.
+
+| 편 | 출력 파일 (`out/`) | 확인한 내용 |
+|---|---|---|
+| 76편 | [76-pod-lifecycle-ledger.txt](out/76-pod-lifecycle-ledger.txt) | 만들기 → 재시작 → nodeName 변경 거절(422) → 삭제까지 단계마다 바뀐 칸과 노드 경로·규칙 |
+| 77편 | [77-env-vs-secret.txt](out/77-env-vs-secret.txt) · [77-k8s-v1.37.2-describe-kubelet-excerpts.txt](out/77-k8s-v1.37.2-describe-kubelet-excerpts.txt) · [77-mysql-pod.txt](out/77-mysql-pod.txt) · [77-run-env-dryrun.txt](out/77-run-env-dryrun.txt) · [77-secret-apply-annotation.txt](out/77-secret-apply-annotation.txt) · [77-secret-visibility.txt](out/77-secret-visibility.txt) | env value·secretKeyRef·envFrom·볼륨의 노출 비교, pods 생성 권한만으로 로그로 읽기, client apply 주석의 평문, 필수 환경 변수 누락 시 재시작 |
+| 78편 | [78-externalip-anyaddr.txt](out/78-externalip-anyaddr.txt) · [78-externalips-background-excerpts.txt](out/78-externalips-background-excerpts.txt) · [78-imperative-run-expose.txt](out/78-imperative-run-expose.txt) · [78-iptables-backend.txt](out/78-iptables-backend.txt) · [78-k8s-v1.37.2-externalips-warning.txt](out/78-k8s-v1.37.2-externalips-warning.txt) · [78-k8s-v1.37.2-proxier-excerpts.txt](out/78-k8s-v1.37.2-proxier-excerpts.txt) · [78-label-service-ip.txt](out/78-label-service-ip.txt) | 라벨·셀렉터·EndpointSlice, 파드 IP·ClusterIP·externalIP 가 닿는 곳, externalIPs 에 아무 주소를 적었을 때 가로채기, kubectl run·expose |
+| 79편 | [79-cali-name-hash.txt](out/79-cali-name-hash.txt) · [79-calico-tunl0-not-bridge.txt](out/79-calico-tunl0-not-bridge.txt) · [79-calico-v3.33.0-vethname-excerpts.txt](out/79-calico-v3.33.0-vethname-excerpts.txt) · [79-cross-node-ipip.txt](out/79-cross-node-ipip.txt) · [79-node-to-node-routes.txt](out/79-node-to-node-routes.txt) · [79-same-node-ping-counters.txt](out/79-same-node-ping-counters.txt) | Calico 노드에 브리지 없음, 같은 노드·다른 노드 통신의 경로와 tunl0·cali 카운터, IPIP 캡처, 노드별 경로와 blockaffinities, cali 이름 해시 |
+| 80편 | [80-delete-race.txt](out/80-delete-race.txt) · [80-e28-analyze.py](out/80-e28-analyze.py) · [80-e28-rst-order.py](out/80-e28-rst-order.py) · [80-e28-rst-order.txt](out/80-e28-rst-order.txt) · [80-e28-trace.txt](out/80-e28-trace.txt) · [80-node-mon.py](out/80-node-mon.py) · [80-rollout-drop-kinds.txt](out/80-rollout-drop-kinds.txt) · [80-rollout-drop-repeat.txt](out/80-rollout-drop-repeat.txt) · [80-rollout-drop-timing.txt](out/80-rollout-drop-timing.txt) · [80-rollout-drop.txt](out/80-rollout-drop.txt) · [80-sources-excerpts.txt](out/80-sources-excerpts.txt) | 롤링 업데이트 중 실패를 조건별로 반복 측정(preStop·readiness), 실패 종류와 시각, headless DNS 캐시, e28 타임아웃의 conntrack 추적 |
+| 81편 | [81-crashloop-restart.txt](out/81-crashloop-restart.txt) · [81-crashloop-watch.txt](out/81-crashloop-watch.txt) · [81-k8s-v1.37.2-backoff-status-excerpts.txt](out/81-k8s-v1.37.2-backoff-status-excerpts.txt) · [81-k8s-v1.37.2-crashloop-gates.txt](out/81-k8s-v1.37.2-crashloop-gates.txt) · [81-pod-conditions.txt](out/81-pod-conditions.txt) · [81-status-subresource.txt](out/81-status-subresource.txt) | 컨테이너 재시작 간격과 파드 동일성, 백오프 지터, conditions 이름과 Unschedulable, status 하위 리소스 |
+
+- 같은 이름의 `.sh`는 출력을 만든 스크립트이며 실습 저장소 루트에서 실행한다. `*-excerpts.*` 는 태그를 밝힌 소스·문서 발췌다.
+- `77-mysql-pod.*` 는 원본에서 이 글과 무관한 절을 뺀 것이다(파일 머리에 적었다).
+- 80편 부하 실험은 클라이언트 파드 하나에서 keep-alive 4개 + 새 연결 1개로 보냈고, 결과는 그 조건에서의 값이다.
+
 ## 손댄 곳
 
 - 각 블록 첫 줄의 `노드$ 명령` 은 그 출력을 만든 명령을 그대로 적은 것이다. 실제로는 Mac 에서 `./lab ssh <노드> bash -c '<명령>'` 으로 실행했다.

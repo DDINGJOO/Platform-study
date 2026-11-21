@@ -1,0 +1,124 @@
+# kubectl describe 와 kubelet 이 env 의 비밀번호를 다루는 곳: kubernetes v1.37.2 소스 발췌 (2026-11-21 확인)
+
+## staging/src/k8s.io/kubectl/pkg/describe/describe.go (https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/staging/src/k8s.io/kubectl/pkg/describe/describe.go)
+# 줄 1971~2016: 컨테이너 env 출력. value 는 spec 의 문자열을 그대로, secretKeyRef 는 키와 이름만 찍는다
+func describeContainerEnvVars(container corev1.Container, resolverFn EnvVarResolverFunc, w PrefixWriter) {
+	none := ""
+	if len(container.Env) == 0 {
+		none = "\t<none>"
+	}
+	w.Write(LEVEL_2, "Environment:%s\n", none)
+
+	for _, e := range container.Env {
+		if e.ValueFrom == nil {
+			for i, s := range strings.Split(e.Value, "\n") {
+				if i == 0 {
+					w.Write(LEVEL_3, "%s:\t%s\n", e.Name, s)
+				} else {
+					w.Write(LEVEL_3, "\t%s\n", s)
+				}
+			}
+			continue
+		}
+
+		switch {
+		case e.ValueFrom.FieldRef != nil:
+			var valueFrom string
+			if resolverFn != nil {
+				valueFrom = resolverFn(e)
+			}
+			w.Write(LEVEL_3, "%s:\t%s (%s:%s)\n", e.Name, valueFrom, e.ValueFrom.FieldRef.APIVersion, e.ValueFrom.FieldRef.FieldPath)
+		case e.ValueFrom.ResourceFieldRef != nil:
+			valueFrom, err := kubectlresourcehelper.ExtractContainerResourceValue(e.ValueFrom.ResourceFieldRef, &container)
+			if err != nil {
+				valueFrom = ""
+			}
+			resource := e.ValueFrom.ResourceFieldRef.Resource
+			if valueFrom == "0" && (resource == "limits.cpu" || resource == "limits.memory") {
+				valueFrom = "node allocatable"
+			}
+			w.Write(LEVEL_3, "%s:\t%s (%s)\n", e.Name, valueFrom, resource)
+		case e.ValueFrom.SecretKeyRef != nil:
+			optional := e.ValueFrom.SecretKeyRef.Optional != nil && *e.ValueFrom.SecretKeyRef.Optional
+			w.Write(LEVEL_3, "%s:\t<set to the key '%s' in secret '%s'>\tOptional: %t\n", e.Name, e.ValueFrom.SecretKeyRef.Key, e.ValueFrom.SecretKeyRef.Name, optional)
+		case e.ValueFrom.ConfigMapKeyRef != nil:
+			optional := e.ValueFrom.ConfigMapKeyRef.Optional != nil && *e.ValueFrom.ConfigMapKeyRef.Optional
+			w.Write(LEVEL_3, "%s:\t<set to the key '%s' of config map '%s'>\tOptional: %t\n", e.Name, e.ValueFrom.ConfigMapKeyRef.Key, e.ValueFrom.ConfigMapKeyRef.Name, optional)
+		}
+	}
+}
+
+
+# 줄 2018~2041: envFrom 출력
+	none := ""
+	if len(container.EnvFrom) == 0 {
+		none = "\t<none>"
+	}
+	w.Write(LEVEL_2, "Environment Variables from:%s\n", none)
+
+	for _, e := range container.EnvFrom {
+		from := ""
+		name := ""
+		optional := false
+		if e.ConfigMapRef != nil {
+			from = "ConfigMap"
+			name = e.ConfigMapRef.Name
+			optional = e.ConfigMapRef.Optional != nil && *e.ConfigMapRef.Optional
+		} else if e.SecretRef != nil {
+			from = "Secret"
+			name = e.SecretRef.Name
+			optional = e.SecretRef.Optional != nil && *e.SecretRef.Optional
+		}
+		if len(e.Prefix) == 0 {
+			w.Write(LEVEL_3, "%s\t%s\tOptional: %t\n", name, from, optional)
+		} else {
+			w.Write(LEVEL_3, "%s\t%s with prefix '%s'\tOptional: %t\n", name, from, e.Prefix, optional)
+		}
+
+# 줄 100: describe 가 숨기는 주석
+	skipAnnotations = sets.New[string](corev1.LastAppliedConfigAnnotation)
+
+# 줄 2579~2587: describe secret 은 값 대신 바이트 수를 찍는다
+		w.Write(LEVEL_0, "\nData\n====\n")
+		for _, k := range slices.Sorted(maps.Keys(secret.Data)) {
+			switch {
+			case k == corev1.ServiceAccountTokenKey && secret.Type == corev1.SecretTypeServiceAccountToken:
+				w.Write(LEVEL_0, "%s:\t%s\n", k, string(secret.Data[k]))
+			default:
+				w.Write(LEVEL_0, "%s:\t%d bytes\n", k, len(secret.Data[k]))
+			}
+		}
+
+## pkg/kubelet/kubelet_pods.go (https://raw.githubusercontent.com/kubernetes/kubernetes/v1.37.2/pkg/kubelet/kubelet_pods.go)
+# 줄 756: 컨테이너 환경 변수를 만드는 함수
+func (kl *Kubelet) makeEnvironmentVariables(ctx context.Context, pod *v1.Pod, container *v1.Container, podIP string, podIPs []string, podVolumes kubecontainer.VolumeMap) ([]kubecontainer.EnvVar, error) {
+# 줄 919~947: secretKeyRef 는 kubelet 이 secretManager 로 Secret 을 가져와 Data[key] 를 값으로 쓴다
+			case envVar.ValueFrom.SecretKeyRef != nil:
+				s := envVar.ValueFrom.SecretKeyRef
+				name := s.Name
+				key := s.Key
+				optional := s.Optional != nil && *s.Optional
+				secret, ok := secrets[name]
+				if !ok {
+					if kl.kubeClient == nil {
+						return result, fmt.Errorf("couldn't get secret %v/%v, no kubeClient defined", pod.Namespace, name)
+					}
+					secret, err = kl.secretManager.GetSecret(pod.Namespace, name)
+					if err != nil {
+						if errors.IsNotFound(err) && optional {
+							// ignore error when marked optional
+							continue
+						}
+						return result, err
+					}
+					secrets[name] = secret
+				}
+				runtimeValBytes, ok := secret.Data[key]
+				if !ok {
+					if optional {
+						continue
+					}
+					return result, fmt.Errorf("couldn't find key %v in Secret %v/%v", key, pod.Namespace, name)
+				}
+				// TODO: validate no NUL bytes
+				runtimeVal = string(runtimeValBytes)

@@ -1,0 +1,44 @@
+# 76 파드 하나의 생애 (2026-11-21 19:15:52 KST)
+
+## 1. 만들기: Deployment life(replicas 1) + Service life-svc 를 apply 한 시각을 0 으로
+  deployment.apps/life created
+  service/life-svc created
+  +  0.2s xnj8k uid=735ebc4d node=worker3 ip=- phase=Pending ready=False restarts=0 || EndpointSlice: (없음)
+  +  0.9s xnj8k uid=735ebc4d node=worker3 ip=10.244.100.249 phase=Running ready=True restarts=0 || EndpointSlice: 10.244.100.249(r=true,s=true,t=false)
+  누가 썼나: 파드 이벤트
+    default-scheduler   Scheduled
+    kubelet             Pulled
+    kubelet             Created
+    kubelet             Started
+  누가 썼나: 파드 managedFields (작성자 / 하위 리소스)
+    kube-controller-manager / 
+    calico / status
+    kubelet / status
+  EndpointSlice 관리자 라벨: endpointslice-controller.k8s.io
+  노드 상태:
+    worker3 의 라우팅 표에서 10.244.100.249: 10.244.100.249 dev cali99f27912842 scope link metric 1024
+    master 의 iptables 에서 10.244.100.249 를 담은 줄 수: 3
+    master 의 iptables 에서 이 파드로 DNAT 하는 줄: -A KUBE-SEP-OZFRJPKGNOI5OITG -p tcp -m comment --comment "blog-76/life-svc" -m tcp -j DNAT --to-destination 10.244.100.249:80
+
+## 2. 파드를 다른 노드로 옮길 수 있나: spec.nodeName 을 worker3 에서 worker1 로 바꾸는 patch
+  The Pod "life-864d77957f-xnj8k" is invalid: spec: Forbidden: pod updates may not change fields other than `spec.containers[*].image`,`spec.initContainers[*].image`,`spec.activeDeadlineSeconds`,`spec.t
+  - "NodeName": "k8s-worker3",
+  + "NodeName": "k8s-worker1",
+  patch 뒤 nodeName: k8s-worker3
+
+## 3. 다시 띄우기: 컨테이너 PID 1(nginx)에 SIGTERM (kubectl exec -- kill 1) 한 시각을 0 으로
+  +  0.2s xnj8k uid=735ebc4d node=worker3 ip=10.244.100.249 phase=Running ready=True restarts=0 || EndpointSlice: 10.244.100.249(r=true,s=true,t=false)
+  +  1.0s xnj8k uid=735ebc4d node=worker3 ip=10.244.100.249 phase=Running ready=True restarts=1 || EndpointSlice: 10.244.100.249(r=true,s=true,t=false)
+  lastState: Completed exitCode=0
+
+## 4. 지우기: kubectl delete pod life-864d77957f-xnj8k 한 시각을 0 으로 (ReplicaSet 이 새 파드를 만든다)
+  pod "life-864d77957f-xnj8k" deleted from blog-76 namespace
+  +  0.2s xnj8k uid=735ebc4d node=worker3 ip=10.244.100.249 phase=Running ready=True restarts=1 삭제중 | nxskf uid=124eef63 node=worker3 ip=- phase=Pending ready=False restarts=0 || EndpointSlice: 10.244.100.249(r=false,s=true,t=true)
+  +  1.0s xnj8k uid=735ebc4d node=worker3 ip=10.244.100.249 phase=Succeeded ready=False restarts=1 삭제중 | nxskf uid=124eef63 node=worker3 ip=10.244.100.211 phase=Running ready=True restarts=0 || EndpointSlice: 10.244.100.211(r=true,s=true,t=false)
+  +  2.0s nxskf uid=124eef63 node=worker3 ip=10.244.100.211 phase=Running ready=True restarts=0 || EndpointSlice: 10.244.100.211(r=true,s=true,t=false)
+  새 파드 life-864d77957f-nxskf: node=k8s-worker3 ip=10.244.100.211 uid=124eef63
+  옛 파드 IP 의 노드 상태:
+    worker3 의 라우팅 표에서 10.244.100.249: 
+    master 의 iptables 에서 10.244.100.249 를 담은 줄 수: 0
+
+(네임스페이스 blog-76 삭제 요청)

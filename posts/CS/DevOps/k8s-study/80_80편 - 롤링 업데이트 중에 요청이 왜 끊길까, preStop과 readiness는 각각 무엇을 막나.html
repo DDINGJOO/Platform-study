@@ -1,0 +1,442 @@
+<!-- ============================================================
+  k8s 스터디 80편: 롤링 업데이트 중에 요청이 왜 끊길까, preStop과 readiness는 각각 무엇을 막나
+  tistory-sketch-post 스타일 · 단일 HTML
+  스타일 블록은 템플릿에서 수정 없이 그대로 복사했다.
+============================================================ -->
+<!-- lead: 부하를 건 채 rollout restart를 하자 요청 13만 건 중 64건이 연결 거부·리셋·타임아웃으로 끊겼어요. 지우는 쪽과 뜨는 쪽 중 누가 늦게 아는지 실험으로 나누고 롤아웃 뒤 타임아웃을 추적해 conntrack에서 원인을 찾았어요. -->
+<!-- tags: 롤링 업데이트 무중단, preStop, readinessProbe, EndpointSlice, conntrack, connection reset -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Gowun+Dodum&display=swap');
+.obsv-wrap { max-width: 760px; margin: 0 auto; font-family: 'Gowun Dodum', -apple-system, 'Apple SD Gothic Neo', sans-serif; color: #3d3a34; line-height: 1.85; font-size: 16.5px; background: #fdfaf3; padding: 8px 4px 40px; }
+.obsv-wrap h2 { font-family: 'Nanum Pen Script', cursive; font-size: 34px; color: #2f2c26; margin: 56px 0 16px; border-bottom: 3px dashed #d8cfba; padding-bottom: 6px; line-height: 1.3; }
+.obsv-wrap h3 { font-size: 20px; color: #2f2c26; margin: 36px 0 12px; }
+.obsv-wrap p { margin: 0 0 18px; }
+.obsv-mark { background: linear-gradient(transparent 55%, #ffe08a 55%); font-weight: 700; padding: 0 2px; }
+.obsv-series { border: 2.5px solid #3d3a34; border-radius: 14px 255px 15px 225px / 255px 15px 225px 15px; padding: 18px 22px; background: #fffdf7; margin: 24px 0 34px; }
+.obsv-series .obsv-st { font-family: 'Nanum Pen Script', cursive; font-size: 26px; margin-bottom: 6px; }
+.obsv-code { background: #2f2c26; color: #f3edd9; border-radius: 10px; padding: 16px 20px; font-family: 'D2Coding', Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; overflow-x: auto; margin: 0 0 18px; white-space: pre; }
+.obsv-callout { border-left: 5px solid #e5a33c; background: #fdf3dd; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 0 0 18px; }
+.obsv-callout .obsv-ct { font-family: 'Nanum Pen Script', cursive; font-size: 24px; color: #a86b12; }
+.obsv-term { border: 2px dashed #6b8fb8; border-radius: 12px; background: #f1f5fa; padding: 12px 16px; margin: 0 0 18px; }
+.obsv-term .obsv-tt { font-family: 'Nanum Pen Script', cursive; font-size: 23px; color: #3d6591; }
+.obsv-summary { border: 2.5px solid #b3502f; border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px; background: #fbeee7; padding: 18px 22px; margin: 28px 0; }
+.obsv-summary .obsv-st2 { font-family: 'Nanum Pen Script', cursive; font-size: 26px; color: #b3502f; margin-bottom: 4px; }
+.obsv-fig { margin: 26px 0 8px; text-align: center; }
+.obsv-figcap { text-align: center; font-family: 'Nanum Pen Script', cursive; font-size: 20px; color: #8a8272; margin: 4px 0 26px; }
+</style>
+
+<div class="obsv-wrap">
+<div class="obsv-series">
+  <div class="obsv-st">📚 k8s 스터디 · 80편</div>
+  77편. env로 넣은 비밀번호는 왜 kubectl describe에 보일까, Secret과 secretKeyRef<br>
+  78편. Service는 파드를 어떻게 찾고 파드 IP·ClusterIP·externalIP는 어디서 닿을까<br>
+  79편. Calico 노드에는 브리지가 없다, 같은 노드와 다른 노드의 파드 통신은 어디를 지나갈까<br>
+  <b>80편. 롤링 업데이트 중에 요청이 왜 끊길까, preStop과 readiness는 각각 무엇을 막나</b> &larr; 지금 이 글<br>
+  81편. CrashLoopBackOff는 파드를 다시 만드는 걸까, 재시작 백오프와 status의 주인
+</div>
+
+<p>배포할 때만 잠깐 502나 connection reset이 몇 건씩 튀고 몇 초 뒤면 조용해지는 서비스가 있어요. 다시 보면 앱 로그도 멀쩡하고 파드도 모두 Running이에요. 이 장면을 실습 클러스터에서 만들어 봤어요. nginx 파드 3개 앞의 Service에 초당 3,700건 남짓을 보내면서 <code style="font-family:Menlo,monospace;font-size:14px;">kubectl rollout restart</code>를 한 번 했어요. 롤아웃은 2초 만에 끝났는데 요청 13만 1,037건 가운데 64건이 실패했어요(<code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/80-rollout-drop-kinds.txt</code>의 (a)).</p>
+
+<div class="obsv-code">## (a) fast-exit, preStop 없음, readiness 없음
+  18:58:15 rollout restart
+  18:58:17 rollout status 끝
+  keep-alive(4개) 요청 129910, 실패 59
+  새 연결(1개)   요청 1127, 실패 5
+  실패 시각(초 단위 묶음): 09:58:11(e7)×1 09:58:12(e7)×5 09:58:16(e56)×1 09:58:16(e7)×18 09:58:18(e28)×5
+    09:58:31(e28)×1 09:58:38(e28)×1 09:58:42(e28)×2 09:58:44(e28)×2 09:58:45(e28)×3 09:58:46(e28)×1
+    09:58:47(e28)×1 09:58:51(e28)×3 09:59:04(e28)×10 09:59:05(e28)×10</div>
+
+<p>&rarr; e7은 연결 거부, e56은 받는 중에 연결이 끊김, e28은 2초 안에 끝나지 않아 curl이 포기한 것이에요. 실패 시각은 client 파드의 UTC이고 롤아웃은 09:58:15~17이었어요. 연결 거부와 리셋은 파드가 뜨고 지는 순간에 몰렸는데 타임아웃은 롤아웃이 끝나고 수십 초 뒤까지 띄엄띄엄 났어요. 앞단에 프록시나 로드밸런서가 있으면 이런 실패는 클라이언트에게 5xx 응답으로 바뀌어 보일 수 있어요(6절의 AWS 문서).</p>
+
+<p>이 글은 배포 중 끊김을 "누가 늦게 아느냐"로 나눠 봐요. 지워지는 파드가 엔드포인트 목록에서 빠지기 전에 프로세스가 먼저 사라지는 쪽, 새 파드가 포트를 열기 전에 목록에 먼저 들어가는 쪽, 이미 맺어 둔 keep-alive 연결, 그리고 headless Service에서 파드 IP를 기억하는 DNS 캐시예요. 실험은 Lima VM 4대(마스터 1, 워커 3)에 올린 kubeadm v1.37.2 클러스터(kube-proxy iptables 모드, Calico)에서 했어요.</p>
+
+<p><b>이 글에서 다룰 것</b><br>
+&middot; 파드를 지우거나 업데이트할 때 자주 있는 문제 아닌가?<br>
+&middot; 파드 하나를 지울 때는 왜 실패가 0이었을까?<br>
+&middot; preStop은 무엇을 막고 readinessProbe는 무엇을 막을까?<br>
+&middot; 롤아웃이 끝난 뒤 수십 초 동안 난 타임아웃은 무엇이었을까?<br>
+&middot; DNS 캐싱 문제처럼 보이는데 같은 건가?</p>
+
+<h2>1. 파드 하나를 지울 때는 실패가 0이었다</h2>
+
+<h3>파드를 지우거나 업데이트할 때 자주 있는 문제 아닌가?</h3>
+<p>맞아요. 쿠버네티스 문서의 파드 종료 흐름에도 이 경쟁이 그대로 적혀 있어요. 삭제 요청을 받으면 kubelet이 컨테이너 종료를 시작해요. 문서는 이어서 "At the same time as the kubelet is starting graceful shutdown of the Pod, the control plane evaluates whether to remove that shutting-down Pod from EndpointSlice objects"라고 적었어요. 컨테이너를 멈추는 일과 엔드포인트 목록에서 빼는 일이 같은 순간에 따로 시작된다는 뜻이에요. 목록이 바뀐 뒤에도 노드마다 kube-proxy가 그 목록을 받아 iptables 규칙을 고쳐야 요청이 다른 파드로 가요(28편). 컨테이너가 먼저 멈추면 그 사이에 들어온 요청은 갈 곳을 잃어요.</p>
+
+<p>이 경쟁에서 지는 요청이 있는지 가장 단순한 조건으로 먼저 봤어요. replicas 2인 nginx Deployment 앞의 Service로 마스터 노드에서 50ms마다 새 연결을 맺는 curl을 보내고 파드 하나를 지웠어요. 그동안 EndpointSlice를 0.2초씩 쉬어 가며 읽었어요(실제 간격은 0.3초 남짓,<code style="font-family:Menlo,monospace;font-size:14px;">80-delete-race.txt</code>, 같은 이름의 .sh).</p>
+
+<div class="obsv-code">## no-prestop: 대상 race-no-prestop-66b558dbbf-hdw5k
+  12:18:15.802 kubectl delete pod race-no-prestop-66b558dbbf-hdw5k
+  요청      224 번 중 200: 224, 실패: 0
+  EndpointSlice 변화(바뀔 때만, r=ready s=serving t=terminating):
+    12:18:12.811 mppk5:r=true,s=true,t=false hdw5k:r=true,s=true,t=false
+    12:18:15.877 mppk5:r=true,s=true,t=false hdw5k:r=false,s=true,t=true
+    12:18:16.155 mppk5:r=true,s=true,t=false
+    12:18:16.428 mppk5:r=true,s=true,t=false sr5ss:r=true,s=true,t=false
+
+## prestop-sleep5: 대상 race-prestop-sleep5-5cbff8fc69-84p2j
+  12:18:31.436 kubectl delete pod race-prestop-sleep5-5cbff8fc69-84p2j
+  요청      231 번 중 200: 231, 실패: 0
+    12:18:31.583 9q4wl:r=true,s=true,t=false 84p2j:r=false,s=true,t=true
+    12:18:32.145 9q4wl:r=true,s=true,t=false 84p2j:r=false,s=true,t=true m8jgv:r=true,s=true,t=false
+    12:18:36.711 9q4wl:r=true,s=true,t=false m8jgv:r=true,s=true,t=false</div>
+
+<p>&rarr; preStop이 없으면 지운 파드는 75ms 안에 ready=false, serving=true, terminating=true가 됐고 0.35초 안에 목록에서 사라졌어요. 읽은 간격이 있으니 둘 다 늦어도 그때까지라는 뜻이에요. preStop sleep 5를 넣으면 같은 상태로 5.1초쯤 남아 있다가 사라졌어요. 두 경우 모두 요청은 한 번도 실패하지 않았어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: EndpointSlice의 ready·serving·terminating</div>
+EndpointSlice는 Service가 요청을 보낼 파드 주소를 담는 목록이에요(57편). 주소마다 조건이 셋 붙어요. serving은 파드의 Ready를 옮긴 값이에요. terminating은 파드가 삭제 표시를 받았다는 뜻이에요. ready는 "serving이면서 terminating이 아님"을 줄인 값이라 지우는 중인 파드는 늘 ready=false예요. 문서에 따르면 kube-proxy 같은 Service 프록시는 terminating인 주소를 보통 건너뛰고, 모든 주소가 terminating일 때는 serving인 주소로 보낼 수 있어요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 372" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="파드 삭제 때 kubelet의 종료와 EndpointSlice·kube-proxy의 규칙 변경이 동시에 시작되는 두 갈래">
+<defs><marker id="k80-arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">파드를 지우면 두 갈래가 동시에 시작된다 (80-delete-race)</text>
+<path d="M24 158 C 70 155, 120 159, 156 157 C 158 180, 157 200, 156 222 C 110 225, 70 221, 25 223 C 22 200, 23 180, 24 158 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.4" stroke-linejoin="round"/>
+<text x="90" y="185" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="22" fill="#3d3a34">API 서버</text>
+<text x="90" y="208" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">삭제 표시를 남김</text>
+<text x="200" y="66" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d6591">A. kubelet: 컨테이너를 멈춘다</text>
+<path d="M200 78 C 240 76, 285 79, 320 77 C 322 94, 321 110, 320 126 C 285 128, 240 125, 201 127 C 198 110, 199 94, 200 78 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M360 78 C 400 76, 445 79, 480 77 C 482 94, 481 110, 480 126 C 445 128, 400 125, 361 127 C 358 110, 359 94, 360 78 Z" fill="#f1f5fa" stroke="#4a7fb5" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M520 78 C 570 76, 630 79, 676 77 C 678 94, 677 110, 676 126 C 630 128, 570 125, 521 127 C 518 110, 519 94, 520 78 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linejoin="round"/>
+<g font-family="Menlo, monospace" font-size="13" text-anchor="middle" fill="#3d3a34"><text x="260" y="100">preStop</text><text x="420" y="100">SIGTERM</text></g>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" text-anchor="middle" fill="#8a8272"><text x="260" y="119">있으면 먼저</text><text x="420" y="119">정지 신호</text></g>
+<text x="598" y="109" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#b3502f">프로세스 끝</text>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" text-anchor="middle" fill="#8a8272"><text x="270" y="148">sleep 5면 SIGTERM이 5초 뒤</text><text x="598" y="148">빠른 종료 앱은 곧바로</text></g>
+<text x="200" y="212" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#2e6b41">B. EndpointSlice 컨트롤러, 그다음 노드마다 kube-proxy</text>
+<path d="M200 224 C 260 222, 340 225, 400 223 C 402 240, 401 256, 400 272 C 340 274, 260 271, 201 273 C 198 256, 199 240, 200 224 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M440 224 C 520 222, 600 225, 676 223 C 678 240, 677 256, 676 272 C 600 274, 520 271, 441 273 C 438 256, 439 240, 440 224 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="300" y="246" text-anchor="middle" font-family="Menlo, monospace" font-size="13" fill="#3d3a34">terminating=true</text>
+<text x="300" y="265" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">ready=false로 바뀜</text>
+<text x="558" y="247" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">iptables 규칙에서 뺌</text>
+<text x="558" y="266" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">노드마다 따로</text>
+<text x="300" y="294" text-anchor="middle" font-family="Menlo, monospace" font-size="12" fill="#2e6b41">+75ms</text>
+<text x="558" y="294" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41">목록에서 빠짐 +0.35초, 규칙은 그 뒤(28편)</text>
+<path d="M158 170 C 172 140, 184 116, 196 104" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr1)"/>
+<path d="M158 210 C 172 232, 184 244, 196 248" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr1)"/>
+<path d="M322 102 C 334 101, 345 103, 356 102" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr1)"/>
+<path d="M482 102 C 494 101, 505 103, 516 102" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr1)"/>
+<path d="M402 248 C 414 247, 425 249, 436 248" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr1)"/>
+<text x="350" y="334" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#b3502f">A가 B보다 먼저 끝나면 그 사이에 온 요청은 사라진 프로세스로 간다</text>
+<text x="350" y="360" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">preStop은 A의 끝을 늦추고 readinessProbe는 새 파드가 B의 목록에 들어가는 때를 늦춘다</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 1. 컨테이너를 멈추는 길과 규칙에서 빼는 길은 서로를 기다리지 않아요.</p>
+
+<h3>그런데 왜 0이었을까?</h3>
+<p>이 실험에는 실패가 드러나기 어려운 조건이 셋 겹쳐 있었어요.</p>
+<p>&bull; 새 연결만, 초당 16건 남짓(14초에 224번) 보냈어요. 경쟁이 열려 있는 시간이 1초보다 짧으면 그 안에 요청이 한두 건 들어갈까 말까예요.<br>
+&bull; nginx 이미지의 정지 신호는 SIGQUIT이고(65편) nginx 문서는 QUIT을 graceful shutdown, 즉 하던 요청을 마치고 끝내는 신호로 적었어요. 열린 연결을 갑자기 끊지 않았어요.<br>
+&bull; 요청을 보낸 곳은 마스터 노드였고 그 노드의 kube-proxy가 고친 규칙을 바로 썼어요. 엔드포인트 목록을 따로 들고 있는 로드밸런서가 앞에 없었어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 실패 0은 "이 조건에서는 못 봤다"는 뜻이에요</div>
+&bull; 224번, 231번이 모두 성공했다고 해서 경쟁이 없는 것은 아니에요. 경쟁이 열린 시간보다 요청 간격이 길었을 뿐이에요<br>
+&bull; 요청이 많고 연결을 오래 쓰고 앱이 SIGTERM에 바로 끝나면 같은 클러스터에서도 실패가 났어요. 2절이 그 결과예요</div>
+
+<h2>2. 부하를 걸고 롤아웃하자 연결 거부·리셋·타임아웃이 섞였다</h2>
+
+<p>조건을 실제 배포에 가깝게 바꿨어요. client 파드(curlimages/curl:8.11.1)에서 keep-alive 클라이언트 4개와 매번 새 연결을 맺는 클라이언트 1개가 35초(처음 실험만 40초) 동안 Service로 요청을 보내고 시작 4초 뒤 replicas 3인 Deployment를 <code style="font-family:Menlo,monospace;font-size:14px;">rollout restart</code>했어요. 롤링 업데이트 설정은 기본값(maxSurge·maxUnavailable 25%)이에요. keep-alive 클라이언트는 curl 한 번에 URL 10개를 줘서 같은 연결로 10건을 보내요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: keep-alive 연결</div>
+HTTP/1.1에서 요청 하나가 끝나도 TCP 연결을 닫지 않고 다음 요청에 다시 쓰는 방식이에요. 연결을 맺는 비용이 줄지만 그 연결은 처음 붙은 파드에 계속 묶여요. Service 규칙이 바뀌어도 이미 맺은 연결은 옛 파드로 가요.</div>
+
+<p>앱 쪽은 세 가지로 바꿔 봤어요. nginx 기본 종료(SIGQUIT, 하던 요청 마무리), 신호를 받자마자 빠르게 끝나는 종료, 그리고 빠른 종료에 preStop sleep 5를 더한 것이에요. 빠른 종료는 셸이 PID 1로 남아 SIGTERM이나 SIGQUIT을 받으면 <code style="font-family:Menlo,monospace;font-size:14px;">nginx -s stop</code>을 부르는 래퍼로 만들었어요. SIGTERM을 받으면 열린 연결을 정리하지 않고 바로 끝나는 앱을 흉내 낸 거예요. 처음 실험은 Service의 DNS 이름으로 보냈어요(<code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop.txt</code>).</p>
+
+<div class="obsv-code">## (1) graceful: nginx 기본 종료, preStop 없음
+  keep-alive(4개) 요청 101630, 실패 26   26 ka000
+  새 연결(1개)   요청 1159, 실패 3    3 new000
+## (2) fast-exit: 신호 받자마자 빠른 종료, preStop 없음
+  keep-alive(4개) 요청 46430, 실패 110  110 ka000
+  새 연결(1개)   요청 686, 실패 14   14 new000
+## (3) fast-exit + preStop sleep 5
+  keep-alive(4개) 요청 89010, 실패 12   12 ka000
+  새 연결(1개)   요청 1080, 실패 2    2 new000</div>
+
+<p>&rarr; 기본 종료도 29건이 실패했어요. 빠른 종료는 124건이었고 여기에 preStop 5초를 더하면 14건이었어요. 하던 요청을 마무리하는 앱도 0은 아니었고 preStop도 혼자서는 0을 만들지 못했어요.</p>
+
+<p>그다음 실험(이 글에서는 종류 실험이라고 부를게요)은 DNS 조회를 빼려고 ClusterIP로 직접 보내고 curl 종료 코드를 남겼어요. 빠른 종료 앱에 preStop sleep 5와 readinessProbe(httpGet /, 1초마다)를 조합해 네 조건을 만들었어요(<code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-kinds.txt</code>). 실패 시각을 파드 이벤트와 처음 맞춘 것은 <code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-timing.txt</code>예요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: curl 종료 코드 7·56·28</div>
+7은 연결을 맺지 못함(이 글에서는 대부분 상대가 RST로 거절한 경우), 56은 데이터를 받는 중에 연결이 끊김(connection reset), 28은 정한 시간(여기서는 2초) 안에 끝나지 않음이에요. 셋 다 HTTP 응답을 못 받은 경우라 HTTP 코드는 000으로 찍혀요.</div>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">조건(빠른 종료 앱)</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">요청</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">실패</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">e7 / e56 / e28</th></tr></thead>
+<tbody><tr><td style="padding:9px;border:1px solid #d8cfba;">(a) preStop 없음, readiness 없음</td><td style="padding:9px;border:1px solid #d8cfba;">131,037</td><td style="padding:9px;border:1px solid #d8cfba;">64</td><td style="padding:9px;border:1px solid #d8cfba;">24 / 1 / 39</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">(b) preStop 5만</td><td style="padding:9px;border:1px solid #d8cfba;">97,594</td><td style="padding:9px;border:1px solid #d8cfba;">62</td><td style="padding:9px;border:1px solid #d8cfba;">33 / 0 / 29</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">(c) preStop 5 + readinessProbe</td><td style="padding:9px;border:1px solid #d8cfba;">145,715</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">0 / 0 / 0</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">(d) readinessProbe만</td><td style="padding:9px;border:1px solid #d8cfba;">130,101</td><td style="padding:9px;border:1px solid #d8cfba;">38</td><td style="padding:9px;border:1px solid #d8cfba;">22 / 2 / 14</td></tr></tbody></table></div>
+
+<p>실패 시각을 파드 이벤트(Started·Killing)와 나란히 놓으면 종류마다 난 순간이 달랐어요. 이 스크립트가 찍은 시각은 그 curl 호출이 끝난 때라서, 한 호출 안의 앞쪽 전송이 실패했으면 실제 실패는 그보다 앞설 수 있어요. 2초 타임아웃은 전송마다 따로 걸리니 "e28×10"인 호출은 첫 실패가 20초 가까이 앞서요.</p>
+<p>&bull; e7은 두 순간에 몰렸어요. 하나는 부하를 막 시작한 때, 즉 처음 배포한 파드가 막 뜬 때예요((a) 09:58:11~12에 6건, (b) 09:59:07에 33건). 다른 하나는 옛 파드가 Killing된 순간이에요((a) 09:58:16에 18건, (d) 10:00:26에 22건).<br>
+&bull; e56은 Killing 순간에만 1~2건 났어요.<br>
+&bull; e28은 (a)(b)(d)에서 롤아웃과 시각이 맞지 않게 흩어졌고 (c)에서는 없었어요.</p>
+
+<h3>(c)의 0은 우연이었을까?</h3>
+<p>종류 실험 스크립트를 네임스페이스와 이름만 바꿔 조건마다 3번씩, 회차마다 (a)(b)(c)(d) 순서로 다시 돌렸어요. 앞선 실행의 이벤트가 섞이지 않게 회차마다 이름을 달리하고 그 회차 시작 이후 이벤트만 보이게 했어요(<code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-repeat.txt</code>, 같은 이름의 .sh). 아래 표의 마지막 열은 종류 실험의 값이에요.</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">조건</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">1회</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">2회</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">3회</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">종류 실험</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">범위</th></tr></thead>
+<tbody><tr><td style="padding:9px;border:1px solid #d8cfba;">(a) 둘 다 없음</td><td style="padding:9px;border:1px solid #d8cfba;">30</td><td style="padding:9px;border:1px solid #d8cfba;">45</td><td style="padding:9px;border:1px solid #d8cfba;">36</td><td style="padding:9px;border:1px solid #d8cfba;">64</td><td style="padding:9px;border:1px solid #d8cfba;">30~64건</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">(b) preStop 5만</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">11</td><td style="padding:9px;border:1px solid #d8cfba;">62</td><td style="padding:9px;border:1px solid #d8cfba;">0~62건</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">(c) preStop 5 + readinessProbe</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">0건 (요청 565,297)</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">(d) readinessProbe만</td><td style="padding:9px;border:1px solid #d8cfba;">38</td><td style="padding:9px;border:1px solid #d8cfba;">32</td><td style="padding:9px;border:1px solid #d8cfba;">38</td><td style="padding:9px;border:1px solid #d8cfba;">38</td><td style="padding:9px;border:1px solid #d8cfba;">32~38건</td></tr></tbody></table></div>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/80/01-rollout-drop-repeat.png" alt="80-rollout-drop-repeat.sh를 조건마다 3번 돌린 결과 표: (a) 30·45·36건, (b) 0·0·11건, (c) 0·0·0건(요청 419,582), (d) 38·32·38건 실패" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 2. 반복 실험의 회차별 실패 수예요. (c)만 세 번 모두 0이었어요.</p>
+
+<p>&rarr; (c)는 세 번 모두 0이었고 종류 실험까지 합치면 ClusterIP로 보낸 네 번, 요청 56만 5,297건에서 실패가 없었어요. DNS 이름으로 보낸 실패 시각 실험(<code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-timing.txt</code>)의 (c)에서는 부하를 시작한 직후, 재시작 3초 전에 끝난 호출 하나에서 6건이 실패했어요. 롤아웃 중의 실패는 아니었고 실패 종류를 남기지 않은 실행이라 원인은 몰라요. (a)는 30~64건, (d)는 32~38건이었어요. (b)는 0, 0, 11, 62건으로 회차마다 크게 달랐어요. (b)의 3회째 11건은 모두 e28이었고 그중 5건은 재시작 전, 부하를 시작한 직후에 났어요.</p>
+
+<h2>3. 지우는 쪽: 엔드포인트에서 빠지기 전에 프로세스가 사라진다</h2>
+
+<h3>preStop은 무엇을 막을까?</h3>
+<p>preStop이 없는 (a)와 (d)는 매번 Killing 순간에 e7이 몰렸어요. 반복 실험에서 (a)는 9·20·11건, (d)는 25·17·14건이 Killing 이벤트와 같은 초에 찍혔어요. 5절의 추적 실험에서 client 노드에 tcpdump를 걸고 같은 롤아웃을 다시 봤더니 잡힌 RST는 모두 Killing된 옛 파드에서 왔어요. 다만 추적 3(a)의 e7 14건 가운데 8건은 RST가 아니었어요. client 파드가 보낸 SYN이 노드의 어느 인터페이스로도 나가지 않은 채 곧바로 연결이 실패했어요. tcpdump 필터에 ICMP를 넣지 않아서 무엇이 거절했는지는 보지 못했어요. 옛 파드 쪽은 대체로 응답, RST, SYN이 사라짐 순서로 바뀌었어요. 추적 2(d)에서 옛 파드 m2kxb로 간 새 연결은 재시작 0.87초 뒤까지 재전송도 RST도 없이 이어졌고 0.88~0.98초에는 RST를 받았고 0.99초부터는 RST도 없이 SYN이 사라졌어요. RST 구간 없이 바로 SYN이 사라진 옛 파드(gmcl5, bztcp)도 있었어요. 옛 파드별 시각과 RST 출처, e7 짝짓기는 <code style="font-family:Menlo,monospace;font-size:14px;">80-e28-trace.sh</code>가 남긴 tcpdump 원본을 다시 센 것이고 결과는 <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/80-e28-rst-order.txt</code>에 있어요. <code style="font-family:Menlo,monospace;font-size:14px;">80-e28-trace.txt</code>에는 회차 요약만 있어요.</p>
+
+<p>빠른 종료 앱은 SIGTERM을 받자마자 끝나요. 프로세스는 끝났는데 파드 네트워크가 아직 남아 있으면 커널이 RST로 거절하고(e7), 파드 네트워크까지 정리된 뒤에는 SYN이 그냥 버려진 것으로 봐요(e28). 그 시점까지도 client 노드의 kube-proxy 규칙은 이 파드로 새 연결을 보내고 있었어요. 지우는 쪽에서는 프로세스가 먼저 끝나고 규칙이 나중에 바뀌어요. 추적 2(d)의 e56 4건은 그 순간 막 맺은 연결이 응답 전에 끊긴 것이었어요.</p>
+
+<p>preStop sleep 5를 넣은 (b)는 같은 자리가 비었어요. 반복 실험 3회와 종류 실험 모두 Killing 순간의 e7·e56이 0이었어요. 5절의 추적 4(b)에서는 옛 파드로 가는 새 연결이 재시작 뒤 최대 2.8초까지 이어졌는데 모두 응답을 받았어요. 규칙이 바뀌는 동안 파드가 살아 있었기 때문이에요. 67편에서 본 대로 kubelet은 preStop을 먼저 실행하고 그게 끝난 뒤에 SIGTERM을 보내요. preStop은 앱을 바꾸지 않고 다른 쪽이 알아챌 때까지 기다리는 시간을 벌어 줘요.</p>
+
+<h3>앱이 하던 요청을 마무리하면 되지 않을까?</h3>
+<p>2절의 기본 종료 nginx가 그 경우인데 29건이 실패했어요. 하던 요청을 마무리하는 종료는 이미 맺은 연결과 처리 중인 요청을 지켜요. 하지만 규칙이 바뀌기 전에 새로 들어오는 연결까지 받아 주지는 않아요(이 실행은 실패 종류를 나누지 않았어요). preStop은 아직 옛 파드를 가리키는 노드의 규칙을 기다리고 graceful 종료는 열린 연결을 정리해요. 둘은 서로 다른 틈을 막아요. preStop만으로는 keep-alive 연결이 끝날 때 일이 남고 graceful 종료만으로는 규칙이 늦은 동안의 새 연결이 남아요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 preStop sleep은 얼마나 줄까</div>
+&bull; 기준은 "모든 노드의 kube-proxy와 앞단 LB가 이 파드를 목록에서 뺄 때까지"예요. 1절에서 EndpointSlice는 0.35초 안에 바뀌었지만 추적 4(b)의 client 노드는 옛 파드 ljth2의 Killing 이벤트(초 단위로 찍힘) 뒤로도 최대 1.4초, 재시작 기준 2.8초까지 그 파드로 새 연결을 보냈어요. 5초로 충분했던 건 이 4노드 클러스터의 값이에요<br>
+&bull; Service가 많을수록 iptables 규칙을 다시 쓰는 데 오래 걸려요(47편). 앞단에 LB가 있으면 그 LB가 대상을 빼는 시간까지 더해야 해요(6절)<br>
+&bull; preStop 시간은 terminationGracePeriodSeconds 안에서 써요. grace는 preStop과 앱 정리 시간을 합친 것보다 크게 잡아요. preStop이 grace를 다 쓰면 SIGTERM 뒤에 2초만 남아요(67편)<br>
+&bull; 1.37에서는 이미지에 sleep 바이너리가 없어도 <code style="font-family:Menlo,monospace;font-size:14px;">lifecycle.preStop.sleep.seconds</code>를 쓸 수 있었어요(<code style="font-family:Menlo,monospace;font-size:14px;">80-delete-race.sh</code>)</div>
+
+<h2>4. 뜨는 쪽: 포트가 열리기 전에 엔드포인트에 들어간다</h2>
+
+<h3>readinessProbe는 무엇을 막을까?</h3>
+<p>readinessProbe가 없으면 kubelet은 컨테이너가 실행되는 순간 Ready로 봐요(62편의 prober_manager.go). EndpointSlice에는 바로 serving=true로 들어가고 kube-proxy가 새 연결을 보내기 시작해요. 그때 앱이 아직 포트를 열지 않았으면 그 연결은 거절되거나 응답을 못 받아요.</p>
+
+<p>이 틈은 부하를 막 시작한 순간에 가장 잘 보였어요. readinessProbe가 없으면 처음 배포한 파드는 컨테이너가 뜨자마자 rollout status가 끝나고 곧바로 부하가 들어가요. 종류 실험의 (a)는 이때 e7이 6건, (b)는 33건이었고 반복 실험의 (a) 1회째도 6건이었어요. readinessProbe가 있는 (c)(d)에서는 이 순간의 e7이 한 번도 없었어요. 다만 부하 시작 직후 2초 타임아웃 5건이 한꺼번에 난 회차는 readinessProbe와 상관없이 있었어요(반복 실험 (a) 2·3회, (b) 3회, (d) 3회, 종류 실험 (d)). 추적 실험 네 회차에서는 재현되지 않아서 그 원인은 확인하지 못했어요.</p>
+
+<p>롤아웃 중에 새로 뜬 파드에서도 흔적이 보였어요. 추적 실험에서 readinessProbe가 없는 추적 1·3(a)은 재시작 0.8~1.2초 뒤 새 파드로 간 SYN 3개와 4개가 1초 안에 응답을 받지 못해 다시 보내졌어요. 이 연결들은 실패로 끝나지 않았으니 다시 보낸 SYN 뒤에 응답을 받은 것으로 봐요. 요청이 1초 남짓 늦어진 거예요. readinessProbe가 있는 추적 2(d)에는 이런 시도가 없었어요. 새 파드로 간 SYN이 어디서 기다렸는지는 이번에 보지 않았어요.</p>
+
+<p>반대로 readinessProbe만 있는 (d)는 네 번 모두 32~38건이 실패했어요. 뜨는 쪽을 막아도 지우는 쪽의 틈은 그대로이기 때문이에요. preStop만 있는 (b)는 0~62건으로 흔들렸고 두 쪽을 모두 막은 (c)만 ClusterIP로 보낸 네 번 모두 0이었어요. readinessProbe를 끄고 켤 때 EndpointSlice의 ready가 어떻게 바뀌는지는 57편에서 봤어요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 418" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="롤링 업데이트에서 새 파드 쪽과 옛 파드 쪽에 열리는 틈과 각각을 막는 설정">
+<defs><marker id="k80-arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">롤링 업데이트 한 번에 열리는 틈</text>
+<text x="40" y="82" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#2e6b41">새 파드</text>
+<path d="M120 104 C 160 103, 220 105, 258 104" fill="none" stroke="#e5a33c" stroke-width="14" stroke-linecap="round"/>
+<path d="M262 104 C 380 103, 520 105, 662 104" fill="none" stroke="#5a9e6f" stroke-width="14" stroke-linecap="round"/>
+<path d="M120 86 C 121 98, 119 110, 120 122" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+<path d="M260 86 C 261 98, 259 110, 260 122" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle"><text x="120" y="142">컨테이너 시작</text><text x="260" y="142">응답 시작</text><text x="460" y="96">요청을 받음</text></g>
+<text x="40" y="170" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#c07f18">뜨는 쪽 틈: 프로브가 없으면 목록에 먼저 들어감 → e7, SYN 1초 지연</text>
+<text x="40" y="192" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">막는 설정: readinessProbe</text>
+<text x="40" y="236" font-family="'Nanum Pen Script', cursive" font-size="21" fill="#3d6591">옛 파드</text>
+<path d="M40 258 C 100 257, 160 259, 198 258" fill="none" stroke="#5a9e6f" stroke-width="14" stroke-linecap="round"/>
+<path d="M202 258 C 270 257, 350 259, 418 258" fill="none" stroke="#e5533c" stroke-width="14" stroke-linecap="round"/>
+<path d="M424 258 C 500 257, 590 259, 662 258" fill="none" stroke="#e5533c" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round"/>
+<path d="M200 240 C 201 252, 199 264, 200 276" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+<path d="M420 240 C 421 252, 419 264, 420 276" fill="none" stroke="#3d3a34" stroke-width="2.2" stroke-linecap="round"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272" text-anchor="middle"><text x="200" y="296">Killing, 빠른 종료</text><text x="420" y="296">client 노드 규칙에서 빠짐</text><text x="310" y="248">끝났는데 규칙엔 남음</text></g>
+<text x="40" y="324" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">지우는 쪽 틈: e7(RST), e28(SYN이 사라짐), e56(막 맺은 연결이 끊김)</text>
+<text x="40" y="346" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">막는 설정: preStop (열린 연결은 앱의 graceful 종료)</text>
+<text x="662" y="248" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">죽은 IP로 가는 conntrack 항목 120초(5절)</text>
+<path d="M40 372 C 250 370, 450 374, 666 372" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr2)"/>
+<text x="666" y="392" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272">시간</text>
+<text x="350" y="410" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#2e6b41">둘 다 막은 (c): 네 번 모두 실패 0</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 3. 새 파드는 준비 전에 목록에 들어가고 옛 파드는 목록에서 빠지기 전에 끝나요.</p>
+
+<h2>5. 롤아웃이 끝난 뒤의 타임아웃은 죽은 파드를 가리키는 conntrack 항목이었다</h2>
+
+<p>2절의 e28은 이상했어요. 롤아웃은 2초 만에 끝났는데 2초 타임아웃은 그 뒤 수십 초 동안 띄엄띄엄 났고 종류 실험의 (a)에서는 "e28×10"이 두 번 연달아 찍히기도 했어요. 후보는 셋이었어요. (i) client와 ClusterIP:80 사이의 같은 5-tuple을 다시 쓰다가 이미 사라진 파드 IP로 DNAT된 conntrack 항목을 만나는 것, (ii) client 쪽 CPU나 출발 포트가 모자란 것, (iii) 그 밖의 것이에요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: conntrack과 5-tuple</div>
+conntrack은 리눅스 커널이 노드를 지나는 연결마다 남기는 기록이에요. 연결은 5-tuple(프로토콜, 출발 IP·포트, 목적지 IP·포트)로 구분해요. 첫 SYN 때 kube-proxy 규칙이 정한 DNAT(ClusterIP → 파드 IP)를 이 기록에 붙여 같은 연결의 다음 패킷에도 그대로 써요. 기록은 TCP 상태마다 정한 시간 동안 남아요. 커널 v6.8 기본값은 SYN_SENT 120초, TIME_WAIT 120초, CLOSE 10초이고 이 노드의 덤프에 찍힌 SYN_SENT·CLOSE 항목의 남은 시간도 그 값과 맞았어요.</div>
+
+<p>원인을 가르려고 추적 실험을 따로 만들었어요(<code style="font-family:Menlo,monospace;font-size:14px;">80-e28-trace.sh</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-node-mon.py</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-e28-analyze.py</code>). 부하와 앱은 같고 다음을 함께 기록했어요. 조건 (a)(d)(a)(b) 순서로 네 번 돌렸고 아래에서는 추적 1~4라고 불러요.</p>
+<p>&bull; curl이 전송마다 남긴 걸린 시간과 연결 여부. 실패한 전송이 언제 시작했는지 0.01초 단위로 다시 계산했어요<br>
+&bull; client 노드에서 client 파드가 보내고 받은 SYN과 RST(tcpdump). 같은 SYN이 노드에 들어온 모습(목적지 ClusterIP)과 나간 모습(목적지 파드 IP)을 맞춰 DNAT 결과를 알아냈어요<br>
+&bull; client 노드의 conntrack 항목. 노드에 conntrack 명령도 <code style="font-family:Menlo,monospace;font-size:14px;">/proc/net/nf_conntrack</code>도 없어서, 아무것도 설치하지 않고 커널의 nfnetlink conntrack 인터페이스에 읽기 전용 덤프를 3초마다 요청했어요(55편과 같은 방법)<br>
+&bull; client 노드의 CPU, 워커 3대에서 50ms 잠들기가 얼마나 늦게 깨는지(VM이 통째로 멈추는지), client 파드의 소켓 수</p>
+
+<div style="overflow-x:auto;margin:20px 0;"><table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.7;">
+<thead><tr style="background:#f1eadc;"><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">회차</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">실패</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">e28</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">e28과 짝이 맞은 SYN(옛 파드로 DNAT, 처음 / 포트 다시 씀)</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">CPU 최고</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">50ms 잠들기 최대(워커)</th><th style="padding:9px;border:1px solid #d8cfba;text-align:left;">client TIME_WAIT 최고</th></tr></thead>
+<tbody><tr><td style="padding:9px;border:1px solid #d8cfba;">추적 1 (a)</td><td style="padding:9px;border:1px solid #d8cfba;">61</td><td style="padding:9px;border:1px solid #d8cfba;">49</td><td style="padding:9px;border:1px solid #d8cfba;">41 (5 / 36), 나머지 8건은 tcpdump가 끝난 뒤</td><td style="padding:9px;border:1px solid #d8cfba;">94%</td><td style="padding:9px;border:1px solid #d8cfba;">0.053초</td><td style="padding:9px;border:1px solid #d8cfba;">14,111</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">추적 2 (d)</td><td style="padding:9px;border:1px solid #d8cfba;">86</td><td style="padding:9px;border:1px solid #d8cfba;">30</td><td style="padding:9px;border:1px solid #d8cfba;">30 (10 / 20)</td><td style="padding:9px;border:1px solid #d8cfba;">94%</td><td style="padding:9px;border:1px solid #d8cfba;">0.057초</td><td style="padding:9px;border:1px solid #d8cfba;">14,550</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">추적 3 (a)</td><td style="padding:9px;border:1px solid #d8cfba;">24</td><td style="padding:9px;border:1px solid #d8cfba;">10</td><td style="padding:9px;border:1px solid #d8cfba;">10 (5 / 5)</td><td style="padding:9px;border:1px solid #d8cfba;">95%</td><td style="padding:9px;border:1px solid #d8cfba;">0.057초</td><td style="padding:9px;border:1px solid #d8cfba;">16,384</td></tr>
+<tr><td style="padding:9px;border:1px solid #d8cfba;">추적 4 (b)</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">0</td><td style="padding:9px;border:1px solid #d8cfba;">없음, 옛 파드로 가는 SYN_SENT 항목도 없음</td><td style="padding:9px;border:1px solid #d8cfba;">97%</td><td style="padding:9px;border:1px solid #d8cfba;">0.054초</td><td style="padding:9px;border:1px solid #d8cfba;">16,384</td></tr></tbody></table></div>
+
+<p>&rarr; tcpdump가 기록하는 동안 난 e28 81건은 모두 SYN을 두 번 보내고도 응답이 없었던 연결 시도와 짝이 맞았고 그 시도는 모두 Killing된 옛 파드 IP로 DNAT돼 있었어요. 이미 맺은 연결에서 응답을 기다리다 난 e28은 한 건도 없었어요. 81건 가운데 처음 쓰는 출발 포트는 20건이었고 61건은 같은 회차에서 이미 실패했던 출발 포트를 다시 쓴 것이었어요.</p>
+
+<div class="obsv-fig"><img src="https://raw.githubusercontent.com/DDINGJOO/Platform-study/main/posts/CS/DevOps/k8s-study/images/80/02-e28-conntrack.png" alt="80-e28-trace.sh의 추적 2(d) conntrack 덤프: 옛 파드 m2kxb·kgdm8로 가는 SYN_SENT 항목이 5개씩 각각 재시작 +1.1초·+4.1초부터 +38.1초까지 남아 있고 e28 30건이 모두 옛 파드로 DNAT된 SYN(처음 10, 포트 다시 씀 20)과 짝이 맞은 실행 화면" style="max-width:100%;height:auto;border-radius:10px;" loading="lazy"></div>
+<p class="obsv-figcap">그림 4. 롤아웃은 3초 만에 끝났지만 죽은 옛 파드로 가는 SYN_SENT 항목은 덤프가 끝날 때까지 남았어요.</p>
+
+<p>추적 1(a)의 포트 60552가 가장 많이 돌았어요. <code style="font-family:Menlo,monospace;font-size:14px;">80-e28-trace.txt</code>에서 이 포트의 줄만 골라 줄여 옮겼어요.</p>
+
+<div class="obsv-code">  재시작 뒤   출발 포트 60552의 SYN              DNAT 목적지      conntrack 항목(앞뒤 덤프)
+     +0.9s   처음 씀, 두 번 보내고 응답 없음     옛 파드 gmcl5    직후 SYN_SENT → gmcl5, 남은 117초
+     +7.2s   다시 씀, 응답 없음                  옛 파드 gmcl5    117초 → 114초
+    +18.0s   다시 씀, 응답 없음                  옛 파드 gmcl5    105초 → 102초
+    +22.5s   다시 씀, 응답 없음                  옛 파드 gmcl5    102초 → 99초
+    +25.1s ~ +39.3s  2초마다 다시 씀(8번), 응답 없음   옛 파드 gmcl5    99초 → 83초</div>
+
+<p>&rarr; 0.9초에 옛 파드 gmcl5로 간 SYN이 응답을 못 받았고 노드에는 출발 포트 60552에서 gmcl5로 DNAT된 SYN_SENT 항목이 남았어요. 그 뒤 이 포트로 나간 연결 시도 11번(시도마다 SYN 2개)은 모두 그 항목을 따라 다시 gmcl5로 갔어요. 남은 시간은 117초에서 83초까지 줄기만 했어요. 이 항목은 처음 실패한 때부터 120초 동안 이 출발 포트를 죽은 파드에 묶어 둬요.</p>
+
+<h3>왜 하필 실패한 포트를 계속 다시 썼을까?</h3>
+<p>출발 포트는 28,232개(32768~60999)인데 같은 포트가 2초마다 돌아왔어요. 이유는 TIME_WAIT에 있었어요. curl은 끝날 때 연결을 먼저 닫으니 client 쪽에 닫은 소켓이 TIME_WAIT로 60초 동안 남아요. 이 회차에서 client 파드의 TIME_WAIT는 14,111개까지 쌓였어요. 리눅스 v6.8의 connect는 출발 포트를 고를 때 짝수 포트부터 훑어요(inet_hashtables.c의 "In first pass we try ports of @low parity"). 32768~60999의 짝수 포트는 14,116개라서 거의 다 TIME_WAIT가 차지한 셈이에요. 반면 SYN만 보내고 타임아웃으로 닫힌 소켓은 TIME_WAIT 없이 포트를 바로 내놔요. 14,116에서 14,111을 빼면 5개로, gmcl5에 묶인 SYN_SENT 항목 수와 같아요. +25.1·+27.2·+29.2초에는 그 다섯 포트가 한꺼번에 다시 쓰였고 그 사이에 나간 다른 SYN은 없었어요. 그래서 남은 빈 짝수 포트가 바로 죽은 파드에 묶인 그 포트들이었다고 봐요. 세 회차에서 응답 없는 시도의 출발 포트는 모두 짝수였어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: TIME_WAIT</div>
+TCP 연결을 먼저 닫은 쪽의 소켓이 닫은 뒤에도 일정 시간 남아 있는 상태예요. 리눅스에서는 60초(TCP_TIMEWAIT_LEN)예요. 그동안 같은 출발 IP·포트와 목적지 IP·포트 조합을 새 연결에 쓰지 않아요. 짧은 연결을 많이 맺는 클라이언트일수록 많이 쌓여요.</div>
+
+<p>커널은 그 SYN을 새 연결로 보지 않았어요. v6.8의 nf_conntrack_proto_tcp.c 상태표에서 SYN_SENT 항목에 같은 방향의 SYN이 오면 "sSS -&gt; sSS Retransmitted SYN", 즉 재전송된 SYN으로 처리해요. 항목도 DNAT도 그대로라서 새 SYN은 처음 정한 죽은 파드 IP로 갔어요. 같은 상태표는 TIME_WAIT 항목에 온 SYN을 "Reopened connection"으로 봐요. 그리고 같은 파일의 tcp_packet()은 앞 연결이 FIN(또는 같은 쪽이 보낸 RST)으로 닫힌 흔적이 있으면 그 항목을 지우고 규칙을 다시 타게 해요. SYN_SENT 항목에는 그런 길이 없어요. 서버의 RST로 끝난 CLOSE 항목도 다시 열리지 않았어요. 추적 2(d)의 포트 36488은 3.1초에 RST를 받고 9.3초에 다시 쓰였는데, 5초 남은 CLOSE 항목을 따라 이미 사라진 옛 파드로 가서 응답을 못 받았어요.</p>
+
+<p>죽은 파드마다 처음 생긴 SYN_SENT 항목은 꼭 5개였어요(gmcl5, m2kxb, kgdm8, bztcp 모두 5개). 부하를 낸 클라이언트가 5개(keep-alive 4, 새 연결 1)라서, 규칙이 바뀌기 전 1~2초 동안 클라이언트마다 하나씩 죽은 파드로 SYN을 보내고 2초 동안 묶였다고 봐요. 2절 종류 실험 (a)의 롤아웃 직후 "e28×5"도 같은 숫자지만 그 실행은 추적하지 않아 같은 경로였는지는 몰라요.</p>
+
+<p>이 항목을 치워 줄 쪽도 없었어요. kube-proxy v1.37.2의 conntrack 정리 코드(cleanup.go)는 "Kubernetes UDP services can be affected by stale conntrack entries"로 시작하고 "we are only interested in UDP services"라며 UDP 항목만 지워요. TCP 항목은 상태별 시간이 지나 저절로 사라질 때까지 남아요.</p>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 398" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="죽은 파드로 DNAT된 SYN_SENT 항목과 TIME_WAIT로 찬 짝수 포트 때문에 같은 출발 포트가 되풀이해 타임아웃 나는 고리">
+<defs><marker id="k80-arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="23" fill="#3d3a34">같은 출발 포트가 죽은 파드로 되풀이해 간 고리 (추적 1, a)</text>
+<path d="M28 52 C 120 49, 240 53, 330 51 C 332 76, 331 102, 330 126 C 240 129, 120 125, 29 127 C 26 102, 27 76, 28 52 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M378 52 C 470 49, 590 53, 672 51 C 674 76, 673 102, 672 126 C 590 129, 470 125, 379 127 C 376 102, 377 76, 378 52 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M378 216 C 470 213, 590 217, 672 215 C 674 240, 673 266, 672 290 C 590 293, 470 289, 379 291 C 376 266, 377 240, 378 216 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<path d="M28 216 C 120 213, 240 217, 330 215 C 332 240, 331 266, 330 290 C 240 293, 120 289, 29 291 C 26 266, 27 240, 28 216 Z" fill="#fffdf7" stroke="#4a7fb5" stroke-width="2.3" stroke-linejoin="round"/>
+<g font-family="'Nanum Pen Script', cursive" text-anchor="middle">
+<text x="179" y="76" font-size="20" fill="#b3502f">① Killing 직후 1~2초</text>
+<text x="179" y="98" font-size="16" fill="#3d3a34">client 노드 규칙이 아직 옛 파드로 DNAT</text>
+<text x="179" y="118" font-size="16" fill="#3d3a34">파드 네트워크는 이미 없어 응답이 없음</text>
+<text x="525" y="76" font-size="20" fill="#a86b12">② conntrack에 SYN_SENT 항목</text>
+<text x="525" y="98" font-size="16" fill="#3d3a34">출발 포트 60552 → 죽은 파드 IP</text>
+<text x="525" y="118" font-size="16" fill="#3d3a34">남은 시간 117초에서 줄기만 함</text>
+<text x="525" y="240" font-size="20" fill="#3d6591">③ curl 2초 타임아웃(e28)</text>
+<text x="525" y="262" font-size="16" fill="#3d3a34">SYN만 보낸 소켓이라 TIME_WAIT 없이</text>
+<text x="525" y="282" font-size="16" fill="#3d3a34">포트가 바로 빈다</text>
+<text x="179" y="240" font-size="20" fill="#3d6591">④ 다음 connect가 이 포트를 고름</text>
+<text x="179" y="262" font-size="16" fill="#3d3a34">짝수 포트는 TIME_WAIT 1만 4천 개가 차지</text>
+<text x="179" y="282" font-size="16" fill="#3d3a34">남은 빈 짝수 포트가 바로 이것</text>
+</g>
+<path d="M334 88 C 348 87, 362 89, 374 88" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr3)"/>
+<path d="M600 130 C 606 160, 604 186, 600 210" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr3)"/>
+<path d="M374 262 C 362 261, 348 263, 336 262" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr3)"/>
+<path d="M250 212 C 300 178, 380 150, 440 132" fill="none" stroke="#b3502f" stroke-width="2.2" stroke-dasharray="8 6" stroke-linecap="round" marker-end="url(#k80-arr3)"/>
+<text x="300" y="164" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">같은 출발 포트의 SYN은 '재전송 SYN'</text>
+<text x="268" y="186" text-anchor="end" font-family="'Nanum Pen Script', cursive" font-size="16" fill="#b3502f">같은 항목·같은 DNAT으로 간다</text>
+<text x="350" y="328" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="19" fill="#3d3a34">+0.9초부터 +39.3초까지 12번, 모두 같은 죽은 파드 gmcl5로 갔다</text>
+<text x="350" y="356" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">kube-proxy는 TCP conntrack 항목을 지우지 않는다 (UDP만 정리)</text>
+<text x="350" y="384" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">preStop이 있던 추적 4(b)에는 ①이 없어 고리가 시작되지 않았다</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 5. 롤아웃 순간에 생긴 항목 하나가 TIME_WAIT 때문에 같은 포트로 계속 불려 나왔어요.</p>
+
+<h3>CPU나 포트가 모자란 건 아니었을까?</h3>
+<p>client 노드의 CPU는 부하를 거는 동안 네 회차 모두 94~97%까지 올랐고 실패가 0인 추적 4(b)가 97%로 가장 높았어요. 워커 3대에서 50ms 잠들기가 가장 늦게 깬 것도 0.057초라서 VM이 통째로 멈춘 순간은 없었어요. 출발 포트도 바닥나지 않았어요. 포트가 없으면 connect가 SYN을 내보내기도 전에 실패해야 하는데 그런 실패는 없었고(e7이 난 시도는 모두 tcpdump에 SYN이 잡혔어요), TIME_WAIT가 16,384개까지 쌓인 추적 4(b)도 실패가 0이었어요. 포트가 빠듯했던 것은 원인이 아니라 실패한 포트를 다시 고르게 만든 조건이었어요.</p>
+
+<p>정리하면 추적한 세 회차에서 tcpdump와 맞춰 본 e28 81건은 모두 (i)이었어요. 추적 1의 마지막 8건은 tcpdump가 끝난 뒤라 맞춰 보지 못했어요. 롤아웃 순간 client 노드의 규칙이 아직 죽은 파드를 가리킬 때 보낸 SYN이 SYN_SENT 항목(120초)을 남겼고 같은 출발 포트를 다시 쓴 SYN이 그 항목의 DNAT를 따라 죽은 파드 IP로 갔어요. 지우는 쪽의 경쟁이 롤아웃이 끝난 뒤까지 이어진 거예요. 추적하지 않은 종류 실험과 반복 실험의 e28, 특히 preStop이 있던 (b)에서 난 e28은 같은 경로였는지 확인하지 못했어요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">⚠️ 이 e28이 나는 조건과 확인하는 법</div>
+&bull; 두 가지가 겹쳐야 해요. 롤아웃 중 SYN이 이미 죽은 파드로 DNAT되는 순간이 있어야 해요. 그리고 같은 client가 같은 ClusterIP:포트로 120초 안에 같은 출발 포트를 다시 써야 해요. 이번에는 초당 수백 개의 새 연결로 TIME_WAIT가 짝수 포트를 채워 다시 쓰기가 잦았어요<br>
+&bull; 연결 풀을 쓰는 보통의 클라이언트에서 얼마나 자주 나는지는 재지 않았어요. 다만 죽은 파드를 가리키는 SYN_SENT 항목 자체는 다시 쓰기와 상관없이 120초 동안 남아요<br>
+&bull; 노드에서 <code style="font-family:Menlo,monospace;font-size:14px;">conntrack -L -p tcp --state SYN_SENT -d &lt;ClusterIP&gt;</code>로 응답 쪽 출발지가 이미 없는 파드 IP인 항목을 찾아봐요. 명령이 없으면 이 글의 80-node-mon.py처럼 nfnetlink로 읽을 수 있어요<br>
+&bull; 막는 길은 죽은 파드로 SYN이 가지 않게 하는 것이에요. preStop이 있던 추적 4(b)에는 옛 파드로 가는 SYN_SENT 항목이 하나도 없었어요. 다만 preStop만 넣은 종류 실험 (b)에서도 e28이 29건 났고 그 경로는 추적하지 못했어요</div>
+
+<h2>6. DNS 캐싱 문제처럼 보이는데 같은 건가</h2>
+
+<p>같은 종류의 문제예요. 누군가 옛 목록을 들고 있다가 이미 없는 파드로 보내는 거예요. 다만 일반 Service에서는 DNS가 늦게 아는 쪽이 아니에요. ClusterIP Service의 DNS 이름은 ClusterIP 하나를 돌려주고 그 IP는 롤아웃 동안 바뀌지 않아요. 늦게 아는 쪽은 그 IP를 파드 IP로 바꾸는 kube-proxy 규칙, 이미 맺은 연결과 그 conntrack 항목, 그리고 앞단 LB예요. 2절에서 DNS 조회를 빼고 ClusterIP로 직접 보낸 종류 실험에서도 실패가 그대로 난 것이 그 근거예요.</p>
+
+<p>headless Service는 달라요. DNS가 파드 IP를 직접 돌려주니 DNS 응답을 기억하는 쪽이 늦게 아는 쪽이 돼요. 처음 실험에서 headless Service를 롤아웃하며 두 클라이언트를 비교했어요. 처음 받은 파드 IP 하나를 계속 쓰는 쪽(cached)과 요청마다 이름을 조회하는 쪽(fresh)이에요(<code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop.txt</code>의 (4)).</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: headless Service</div>
+clusterIP를 None으로 둔 Service예요. ClusterIP와 kube-proxy 규칙이 없고 DNS 이름을 조회하면 준비된 파드 IP들이 A 레코드로 바로 나와요. 클라이언트가 파드에 직접 붙으니 어떤 IP를 언제까지 쓸지는 클라이언트가 정해요.</div>
+
+<div class="obsv-code">## (4) headless Service: DNS 가 파드 IP 를 준다, 한 번 받은 IP 를 계속 쓰면
+  DNS 응답(TTL, 마스터에서 dig @CoreDNS):
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.194.116
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.126.60
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.100.209
+  클라이언트가 처음 받은 파드 IP: 10.244.100.209
+  cached: 요청 74, 실패 33
+  fresh: 요청 74, 실패 0
+  rollout 뒤 DNS 응답:
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.194.115
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.100.202
+    drop-headless.ch05.svc.cluster.local. 30 IN A	10.244.126.49</div>
+
+<p>&rarr; 처음 받은 IP를 계속 쓴 쪽은 74번 중 33번 실패했고 매번 조회한 쪽은 0번이었어요. 롤아웃 뒤 DNS는 새 파드 IP 셋을 돌려줬어요. 응답의 TTL은 30초예요. 이 클러스터의 CoreDNS는 kubernetes 플러그인에 ttl 30을 줬어요(Corefile은 29편, 문서상 기본값은 5초). cache 30도 있지만 cluster.local 영역은 disable success·denial로 캐시하지 않아요. 그래서 매번 조회한 쪽은 CoreDNS가 지금 보고 있는 파드 목록을 바로 받았어요. TTL을 지키며 캐시하는 클라이언트는 파드가 사라진 뒤 최대 30초 동안 옛 IP를 쓸 수 있어요. 스스로 더 오래 기억하는 클라이언트는 그보다 길어요.</p>
+
+<h3>앞단 Ingress나 클라우드 LB는 더 늦게 알까?</h3>
+<p>이 클러스터에는 Ingress 컨트롤러가 없어서 직접 재지 않았어요. 공식 문서로 확인한 것만 적을게요. AWS Load Balancer Controller에서 target-type이 ip이면 파드가 ALB·NLB 대상 그룹의 대상이 돼요. 문서의 Pod readiness gate 항목은 "Rollout of new pods takes less time than it takes the AWS Load Balancer controller to register the new pods and for their health state to become »Healthy« in the target group"인 경우 대상 그룹에 Initial이나 Draining 상태의 대상만 남아 장애가 날 수 있다고 적었어요. 쿠버네티스가 새 파드를 Ready로 보는 때와 LB가 그 대상을 Healthy로 보는 때 사이에 틈이 따로 있다는 뜻이에요. 그래서 네임스페이스에 라벨을 붙이면 컨트롤러가 파드에 readiness gate를 넣어, 대상 그룹에서 Healthy가 될 때까지 파드를 Ready로 두지 않아요. 뜨는 쪽 틈을 LB까지 넓혀 막는 방법이에요.</p>
+
+<p>지우는 쪽도 LB에서 한 번 더 열려요. AWS ELB 문서는 등록 해제 중인 대상에는 새 요청을 보내지 않고 기본 300초 동안 처리 중인 요청을 기다린다고 해요. 그리고 "If a deregistering target terminates the connection before the deregistration delay elapses, the client receives a 500-level error response"라고 적었어요. 대상 그룹은 컨트롤러가 엔드포인트를 보고 따로 맞추는 목록이라 해제도 쿠버네티스보다 늦을 수 있어요. 그 전에 파드가 끝나면 1절의 경쟁이 LB 앞에서 한 번 더 일어나요. preStop sleep을 컨트롤러와 LB가 대상을 빼는 시간보다 길게 잡는 이유예요. 그 시간이 얼마인지는 환경마다 달라서 이 글에서는 재지 않았어요.</p>
+
+<div class="obsv-term"><div class="obsv-tt">📖 용어: deregistration delay (등록 해제 지연)</div>
+AWS ELB가 대상 그룹에서 빠지는 대상에 새 요청을 보내지 않으면서, 이미 처리 중인 요청이 끝나기를 기다리는 시간이에요. 기본 300초이고 그동안 대상 상태는 draining이에요. 처리 중인 요청도 연결도 없으면 기다리지 않고 바로 끝내요.</div>
+
+<div class="obsv-fig">
+<svg viewBox="0 0 700 430" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:700px;height:auto;" role="img" aria-label="배포 중 옛 목록을 들고 있는 곳: DNS 캐시, kube-proxy 규칙, conntrack과 연결, 앞단 LB와 각각을 막는 설정">
+<defs><marker id="k80-arr4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 1 1.5 C 4 3, 6 4, 8.5 5 C 6 6, 4 7, 1 8.5" fill="none" stroke="#3d3a34" stroke-width="1.6" stroke-linecap="round"/></marker></defs>
+<text x="350" y="30" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="24" fill="#3d3a34">배포 중 옛 목록을 들고 있는 곳과 막는 설정</text>
+<path d="M18 188 C 50 186, 84 189, 112 187 C 114 204, 113 220, 112 236 C 84 238, 50 235, 19 237 C 16 220, 17 204, 18 188 Z" fill="#fffdf7" stroke="#3d3a34" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="65" y="217" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#3d3a34">클라이언트</text>
+<path d="M140 188 C 180 186, 230 189, 268 187 C 270 204, 269 220, 268 236 C 230 238, 180 235, 141 237 C 138 220, 139 204, 140 188 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="204" y="217" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#a86b12">DNS 캐시</text>
+<path d="M296 188 C 336 186, 384 189, 422 187 C 424 204, 423 220, 422 236 C 384 238, 336 235, 297 237 C 294 220, 295 204, 296 188 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="359" y="217" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#a86b12">kube-proxy 규칙</text>
+<path d="M450 188 C 480 186, 520 189, 562 187 C 564 204, 563 220, 562 236 C 520 238, 480 235, 451 237 C 448 220, 449 204, 450 188 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="506" y="210" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#a86b12">conntrack·</text>
+<text x="506" y="229" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#a86b12">맺은 연결</text>
+<path d="M592 150 C 620 148, 652 151, 682 149 C 684 162, 683 176, 682 190 C 652 192, 620 189, 593 191 C 590 176, 591 162, 592 150 Z" fill="#fbeee7" stroke="#e5533c" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="637" y="176" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">옛 파드</text>
+<path d="M592 236 C 620 234, 652 237, 682 235 C 684 248, 683 262, 682 276 C 652 278, 620 275, 593 277 C 590 262, 591 248, 592 236 Z" fill="#eef6ef" stroke="#5a9e6f" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="637" y="262" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#2e6b41">새 파드</text>
+<path d="M296 62 C 380 60, 470 63, 562 61 C 564 76, 563 90, 562 104 C 470 106, 380 103, 297 105 C 294 90, 295 76, 296 62 Z" fill="#fdf3dd" stroke="#e5a33c" stroke-width="2.2" stroke-linejoin="round"/>
+<text x="429" y="89" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="20" fill="#a86b12">앞단 LB·Ingress의 대상 목록</text>
+<path d="M114 212 C 122 211, 130 213, 136 212" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr4)"/>
+<path d="M270 212 C 278 211, 286 213, 292 212" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr4)"/>
+<path d="M424 212 C 432 211, 440 213, 446 212" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr4)"/>
+<path d="M564 204 C 572 196, 580 188, 588 180" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr4)"/>
+<path d="M564 222 C 572 232, 580 242, 588 250" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" marker-end="url(#k80-arr4)"/>
+<path d="M66 184 C 90 120, 200 88, 290 84" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-dasharray="7 6" marker-end="url(#k80-arr4)"/>
+<path d="M564 84 C 610 90, 632 112, 636 144" fill="none" stroke="#3d3a34" stroke-width="2" stroke-linecap="round" stroke-dasharray="7 6" marker-end="url(#k80-arr4)"/>
+<g font-family="'Nanum Pen Script', cursive" font-size="16" fill="#8a8272" text-anchor="middle">
+<text x="429" y="124">컨트롤러가 따로 등록·해제</text>
+<text x="204" y="262">headless일 때만 파드 IP</text>
+<text x="204" y="282">TTL 30초</text>
+<text x="359" y="262">삭제 뒤 1~2초 옛 파드</text>
+<text x="359" y="282">프로브 없으면 시작 즉시 새 파드</text>
+<text x="506" y="262">맺은 연결은 옛 파드로</text>
+<text x="506" y="282">죽은 IP 항목 120초</text>
+</g>
+<g font-family="'Nanum Pen Script', cursive" font-size="17" fill="#2e6b41" text-anchor="middle">
+<text x="429" y="144">readiness gate, 해제보다 긴 preStop</text>
+<text x="204" y="310">실패하면 다시 조회</text>
+<text x="359" y="310">preStop, readinessProbe</text>
+<text x="506" y="310">앱의 graceful 종료</text>
+<text x="506" y="330">죽은 파드로 SYN 안 가게</text>
+</g>
+<text x="350" y="380" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="18" fill="#b3502f">일반 Service의 DNS는 ClusterIP만 준다: 늦게 아는 쪽은 kube-proxy·연결·LB</text>
+<text x="350" y="410" text-anchor="middle" font-family="'Nanum Pen Script', cursive" font-size="17" fill="#8a8272">headless Service에서만 DNS 캐시가 늦게 아는 쪽이 된다</text>
+</svg>
+</div>
+<p class="obsv-figcap">그림 6. 늦게 아는 곳마다 막는 설정이 달라요. 주황 상자가 옛 목록을 들고 있을 수 있는 곳이에요.</p>
+
+<div class="obsv-callout"><div class="obsv-ct">💡 배포 중 끊김을 줄이는 점검표</div>
+&bull; <b>preStop sleep</b>: 지우는 쪽. 모든 노드의 규칙과 앞단 LB가 파드를 뺄 시간만큼 줘요. grace는 그보다 넉넉히 잡아요(67편)<br>
+&bull; <b>readinessProbe</b>: 뜨는 쪽. 그 컨테이너만 답할 수 있는 포트와 경로로 정해요(62편). 앞단 LB가 따로 있으면 readiness gate 같은 연동도 확인해요<br>
+&bull; <b>앱의 graceful 종료</b>: SIGTERM을 받으면 새 연결은 그만 받고 하던 요청을 마치고 keep-alive 연결을 닫아요. 셸이 PID 1이면 신호가 앱까지 가지 않을 수 있어요(64편, 65편). 사이드카가 있으면 종료 순서도 봐요(70편)<br>
+&bull; <b>클라이언트</b>: 멱등한 요청은 연결 실패(curl로 치면 7·56·28) 때 한 번 다시 시도해요. 새 연결을 초당 수백 개씩 맺기보다 연결을 재사용하면 TIME_WAIT도, 같은 출발 포트를 다시 쓰는 일도 줄어요<br>
+&bull; <b>headless Service</b>: 실패하면 이름을 다시 조회하고 TTL보다 오래 IP를 들고 있지 않아요<br>
+&bull; <b>확인</b>: rollout status가 끝나도 옛 파드는 아직 종료 중일 수 있어요. 다음 단계 전에 terminatingReplicas가 0인지 봐요(62편)</div>
+
+<p><b>출처와 원자료</b><br>
+&middot; 파드 종료와 EndpointSlice: <a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-termination/">Termination of Pods</a>, <a href="https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/#conditions">EndpointSlices: Conditions</a>, <a href="https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/1672-tracking-terminating-endpoints">KEP-1672 Tracking Terminating Endpoints</a><br>
+&middot; nginx 신호: <a href="https://nginx.org/en/docs/control.html">Controlling nginx</a> (QUIT은 graceful shutdown, TERM·INT는 fast shutdown)<br>
+&middot; kube-proxy의 conntrack 정리: <a href="https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/conntrack/cleanup.go">cleanup.go (v1.37.2)</a><br>
+&middot; 커널: <a href="https://github.com/torvalds/linux/blob/v6.8/net/netfilter/nf_conntrack_proto_tcp.c">nf_conntrack_proto_tcp.c</a>, <a href="https://github.com/torvalds/linux/blob/v6.8/net/ipv4/inet_hashtables.c">inet_hashtables.c</a>, <a href="https://github.com/torvalds/linux/blob/v6.8/include/net/tcp.h">tcp.h</a> (v6.8)<br>
+&middot; CoreDNS: <a href="https://github.com/coredns/coredns/blob/master/plugin/kubernetes/README.md">kubernetes 플러그인</a>, <a href="https://github.com/coredns/coredns/blob/master/plugin/cache/README.md">cache 플러그인</a><br>
+&middot; 앞단 LB: <a href="https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/deploy/pod_readiness_gate.md">AWS Load Balancer Controller, Pod readiness gate</a>, <a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-target-group-attributes.html">Elastic Load Balancing, Deregistration delay</a><br>
+&middot; 인용한 원문 줄 모음: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/80-sources-excerpts.txt</code><br>
+&middot; 이 글의 실험: <code style="font-family:Menlo,monospace;font-size:14px;">labs/devops/k8s-study/out/80-delete-race</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-timing</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-kinds</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-rollout-drop-repeat</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-e28-trace</code>(.sh/.txt), 추적 도우미 <code style="font-family:Menlo,monospace;font-size:14px;">80-node-mon.py</code>, <code style="font-family:Menlo,monospace;font-size:14px;">80-e28-analyze.py</code></p>
+
+<div class="obsv-summary">
+<div class="obsv-st2">✍️ 오늘의 요약</div>
+<p>배포 중 끊김은 누가 늦게 아느냐의 문제였어요. 파드를 지우면 kubelet의 종료와 EndpointSlice 정리가 동시에 시작되고 노드마다 kube-proxy는 그보다 늦게 규칙을 바꿔요. 파드 하나를 가볍게 지운 실험에서는 실패가 0이었지만, 초당 3,700건 남짓의 부하로 롤아웃하자 빠르게 끝나는 앱은 Killing 순간 RST(e7)를 냈고 파드 네트워크까지 사라진 뒤에는 SYN을 버렸어요. readinessProbe가 없는 새 파드는 응답하기 전에 목록에 들어갔어요.</p>
+<p>preStop 5초와 readinessProbe를 둘 다 넣은 조건만 네 번 모두 실패 0(요청 56만 5,297건)이었어요. readinessProbe만 넣으면 32~38건, preStop만 넣으면 0~62건이었어요. tcpdump로 추적한 세 회차에서 롤아웃이 끝난 뒤의 2초 타임아웃은 롤아웃 순간 죽은 파드로 DNAT된 SYN이 남긴 SYN_SENT conntrack 항목(120초) 때문이었어요. 추적하지 않은 실행, 특히 preStop만 넣은 (b)의 타임아웃은 같은 경로인지 확인하지 못했어요. TIME_WAIT로 짝수 포트가 거의 다 찬 client가 그 출발 포트를 다시 쓸 때마다 죽은 IP로 갔고 CPU나 VM 멈춤은 원인이 아니었어요. headless Service에서는 처음 받은 파드 IP를 계속 쓴 클라이언트가 74번 중 33번 실패했어요.</p>
+<p style="margin-bottom:0;">preStop은 지우는 쪽이 알아챌 시간을, readinessProbe는 뜨는 쪽이 준비될 시간을 벌어 줘요. 하나만 넣으면 다른 쪽 틈이 그대로 남아요.</p>
+</div>
+</div>
